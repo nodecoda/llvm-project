@@ -147,6 +147,7 @@ add_llvm_component_library(LLVMCodeGen
   MachineIDFSSAUpdater.cpp
   MachineInstrBundle.cpp
   MachineInstr.cpp
+  MachineInstCount.cpp
   MachineLateInstrsCleanup.cpp
   MachineLICM.cpp
   MachineLoopInfo.cpp

@@ -81,6 +81,17 @@ LLVM_ABI MachineFunctionPass *createInsertCodePrefetchPass();
 /// createMachineBlockHashInfoPass - This pass computes basic block hashes.
 LLVM_ABI MachineFunctionPass *createMachineBlockHashInfoPass();
 
+/// Count generic machine instructions immediately before legalization.
+LLVM_ABI MachineFunctionPass *createPreLegalizerInstCountPass();
+
+/// Count generic machine instructions immediately before register-bank
+/// selection.
+LLVM_ABI MachineFunctionPass *createPreRegBankSelectInstCountPass();
+
+/// Count generic machine instructions immediately before instruction
+/// selection.
+LLVM_ABI MachineFunctionPass *createPreInstructionSelectInstCountPass();
+
 /// createStaticDataSplitterPass - This is a machine-function pass that
 /// categorizes static data hotness using profile information.
 LLVM_ABI MachineFunctionPass *createStaticDataSplitterLegacyPass();
