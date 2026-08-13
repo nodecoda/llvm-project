@@ -13,6 +13,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/CodeGen/GlobalISel/LegalizerHelper.h"
+#include "llvm/ADT/Statistic.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/CodeGen/GlobalISel/CallLowering.h"
 #include "llvm/CodeGen/GlobalISel/GISelChangeObserver.h"
 #include "llvm/CodeGen/GlobalISel/GISelValueTracking.h"
@@ -34,6 +36,7 @@
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
@@ -46,6 +49,65 @@
 using namespace llvm;
 using namespace LegalizeActions;
 using namespace MIPatternMatch;
+
+namespace {
+struct LegalizerActionStatistic {
+  std::string Name;
+  std::string Description;
+  Statistic Count;
+
+  LegalizerActionStatistic(StringRef OpcodeName, StringRef ActionName)
+      : Name((Twine(OpcodeName) + "." + ActionName).str()),
+        Description((Twine("Number of ") + OpcodeName +
+                     " instructions with the " + ActionName +
+                     " legalization action")
+                        .str()),
+        Count("gisel-legalizer", Name.c_str(), Description.c_str()) {}
+};
+} // namespace
+
+static ManagedStatic<StringMap<std::unique_ptr<LegalizerActionStatistic>>>
+    LegalizerActionStatistics;
+
+static StringRef getLegalizeActionName(LegalizeAction Action) {
+  switch (Action) {
+  case Legal:
+    return "Legal";
+  case NarrowScalar:
+    return "NarrowScalar";
+  case WidenScalar:
+    return "WidenScalar";
+  case FewerElements:
+    return "FewerElements";
+  case MoreElements:
+    return "MoreElements";
+  case Bitcast:
+    return "Bitcast";
+  case Lower:
+    return "Lower";
+  case Libcall:
+    return "Libcall";
+  case Custom:
+    return "Custom";
+  case Unsupported:
+    return "Unsupported";
+  case NotFound:
+    return "NotFound";
+  }
+  llvm_unreachable("unknown legalize action");
+}
+
+static void recordLegalizerAction(MachineIRBuilder &MIRBuilder,
+                                  const MachineInstr &MI,
+                                  LegalizeAction Action) {
+  StringRef OpcodeName = MIRBuilder.getTII().getName(MI.getOpcode());
+  StringRef ActionName = getLegalizeActionName(Action);
+  std::string Name = (Twine(OpcodeName) + "." + ActionName).str();
+  auto &Stat = (*LegalizerActionStatistics)[Name];
+  if (!Stat)
+    Stat = std::make_unique<LegalizerActionStatistic>(OpcodeName, ActionName);
+  ++Stat->Count;
+}
 
 /// Try to break down \p OrigTy into \p NarrowTy sized pieces.
 ///
@@ -125,9 +187,14 @@ LegalizerHelper::legalizeInstrStep(MachineInstr &MI,
 
   MIRBuilder.setInstrAndDebugLoc(MI);
 
-  if (isa<GIntrinsic>(MI))
+  if (isa<GIntrinsic>(MI)) {
+    if (AreStatisticsEnabled())
+      recordLegalizerAction(MIRBuilder, MI, Custom);
     return LI.legalizeIntrinsic(*this, MI) ? Legalized : UnableToLegalize;
+  }
   auto Step = LI.getAction(MI, MRI);
+  if (AreStatisticsEnabled())
+    recordLegalizerAction(MIRBuilder, MI, Step.Action);
   switch (Step.Action) {
   case Legal:
     LLVM_DEBUG(dbgs() << ".. Already legal\n");

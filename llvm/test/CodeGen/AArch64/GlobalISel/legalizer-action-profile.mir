@@ -1,0 +1,21 @@
+# RUN: llc -mtriple=aarch64 -run-pass=legalizer \
+# RUN:   --save-stats=obj %s -o %t.mir
+# RUN: FileCheck %s < %t.stats
+# REQUIRES: asserts
+
+# CHECK: "gisel-legalizer.G_BR.Legal": 1
+
+--- |
+  define void @profile_legalizer_actions() {
+    ret void
+  }
+...
+---
+name: profile_legalizer_actions
+body: |
+  bb.0:
+    G_BR %bb.1
+
+  bb.1:
+    RET_ReallyLR
+...
