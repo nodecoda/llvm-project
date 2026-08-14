@@ -14,6 +14,8 @@
 
 #include "llvm/CodeGen/GlobalISel/Legalizer.h"
 #include "llvm/ADT/PostOrderIterator.h"
+#include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/OptimizationRemarkEmitter.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/CodeGen/GlobalISel/CSEInfo.h"
@@ -123,13 +125,18 @@ namespace {
 class LegalizerWorkListManager : public GISelChangeObserver {
   InstListTy &InstList;
   ArtifactListTy &ArtifactList;
+  SmallPtrSetImpl<MachineInstr *> &InitialInstrs;
+  SmallPtrSetImpl<MachineInstr *> &VisitedInstrs;
 #ifndef NDEBUG
   SmallVector<MachineInstr *, 4> NewMIs;
 #endif
 
 public:
-  LegalizerWorkListManager(InstListTy &Insts, ArtifactListTy &Arts)
-      : InstList(Insts), ArtifactList(Arts) {}
+  LegalizerWorkListManager(InstListTy &Insts, ArtifactListTy &Arts,
+                           SmallPtrSetImpl<MachineInstr *> &InitialInstrs,
+                           SmallPtrSetImpl<MachineInstr *> &VisitedInstrs)
+      : InstList(Insts), ArtifactList(Arts), InitialInstrs(InitialInstrs),
+        VisitedInstrs(VisitedInstrs) {}
 
   void createdOrChangedInstr(MachineInstr &MI) {
     // Only legalize pre-isel generic instructions.
@@ -160,6 +167,8 @@ public:
     LLVM_DEBUG(dbgs() << ".. .. Erasing: " << MI);
     InstList.remove(&MI);
     ArtifactList.remove(&MI);
+    InitialInstrs.erase(&MI);
+    VisitedInstrs.erase(&MI);
   }
 
   void changingInstr(MachineInstr &MI) override {
@@ -187,6 +196,8 @@ LegalizerMFResult llvm::legalizeMachineFunction(
   // Populate worklists.
   InstListTy InstList;
   ArtifactListTy ArtifactList;
+  SmallPtrSet<MachineInstr *, 32> InitialInstrs;
+  SmallPtrSet<MachineInstr *, 32> VisitedInstrs;
   ReversePostOrderTraversal<MachineFunction *> RPOT(&MF);
   // Perform legalization bottom up so we can DCE as we legalize.
   // Traverse BB in RPOT and within each basic block, add insts top down,
@@ -199,6 +210,8 @@ LegalizerMFResult llvm::legalizeMachineFunction(
       // and are assumed to be legal.
       if (!isPreISelGenericOpcode(MI.getOpcode()))
         continue;
+      if (AreStatisticsEnabled())
+        InitialInstrs.insert(&MI);
       if (isArtifact(MI))
         ArtifactList.deferred_insert(&MI);
       else
@@ -209,7 +222,8 @@ LegalizerMFResult llvm::legalizeMachineFunction(
   InstList.finalize();
 
   // This observer keeps the worklists updated.
-  LegalizerWorkListManager WorkListObserver(InstList, ArtifactList);
+  LegalizerWorkListManager WorkListObserver(InstList, ArtifactList,
+                                            InitialInstrs, VisitedInstrs);
   // We want both WorkListObserver as well as all the auxiliary observers (e.g.
   // CSEInfo) to observe all changes. Use the wrapper observer.
   GISelObserverWrapper WrapperObserver(&WorkListObserver);
@@ -238,7 +252,10 @@ LegalizerMFResult llvm::legalizeMachineFunction(
       }
 
       // Do the legalization for this instruction.
-      auto Res = Helper.legalizeInstrStep(MI, LocObserver);
+      bool IsInitialInstr = InitialInstrs.contains(&MI);
+      bool IsFirstVisit = VisitedInstrs.insert(&MI).second;
+      auto Res = Helper.legalizeInstrStep(MI, LocObserver, IsInitialInstr,
+                                          IsFirstVisit);
       // Error out if we couldn't legalize this instruction. We may want to
       // fall back to DAG ISel instead in the future.
       if (Res == LegalizerHelper::UnableToLegalize) {

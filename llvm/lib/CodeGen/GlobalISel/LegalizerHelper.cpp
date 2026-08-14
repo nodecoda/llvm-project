@@ -13,7 +13,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/CodeGen/GlobalISel/LegalizerHelper.h"
+#include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/CodeGen/GlobalISel/CallLowering.h"
 #include "llvm/CodeGen/GlobalISel/GISelChangeObserver.h"
@@ -64,10 +66,24 @@ struct LegalizerActionStatistic {
                         .str()),
         Count("gisel-legalizer", Name.c_str(), Description.c_str()) {}
 };
+
+struct LegalizerQueryStatistic {
+  std::string Name;
+  std::string Description;
+  Statistic Count;
+
+  explicit LegalizerQueryStatistic(StringRef Signature)
+      : Name((Twine("q") + toHex(Signature)).str()),
+        Description(
+            (Twine("Number of legalizer queries matching ") + Signature).str()),
+        Count("gisel-legalizer-query", Name.c_str(), Description.c_str()) {}
+};
 } // namespace
 
 static ManagedStatic<StringMap<std::unique_ptr<LegalizerActionStatistic>>>
     LegalizerActionStatistics;
+static ManagedStatic<StringMap<std::unique_ptr<LegalizerQueryStatistic>>>
+    LegalizerQueryStatistics;
 
 static StringRef getLegalizeActionName(LegalizeAction Action) {
   switch (Action) {
@@ -98,15 +114,70 @@ static StringRef getLegalizeActionName(LegalizeAction Action) {
 }
 
 static void recordLegalizerAction(MachineIRBuilder &MIRBuilder,
+                                  const MachineRegisterInfo &MRI,
                                   const MachineInstr &MI,
-                                  LegalizeAction Action) {
+                                  LegalizeActionStep Step, bool IsInitialInstr,
+                                  bool IsFirstVisit) {
   StringRef OpcodeName = MIRBuilder.getTII().getName(MI.getOpcode());
-  StringRef ActionName = getLegalizeActionName(Action);
+  StringRef ActionName = getLegalizeActionName(Step.Action);
   std::string Name = (Twine(OpcodeName) + "." + ActionName).str();
   auto &Stat = (*LegalizerActionStatistics)[Name];
   if (!Stat)
     Stat = std::make_unique<LegalizerActionStatistic>(OpcodeName, ActionName);
   ++Stat->Count;
+
+  SmallVector<LLT, 8> Types;
+  SmallBitVector SeenTypes(8);
+  ArrayRef<MCOperandInfo> OpInfo = MI.getDesc().operands();
+  for (unsigned I = 0; I < MI.getDesc().getNumOperands(); ++I) {
+    if (!OpInfo[I].isGenericType())
+      continue;
+
+    unsigned TypeIdx = OpInfo[I].getGenericTypeIndex();
+    if (SeenTypes[TypeIdx])
+      continue;
+    SeenTypes.set(TypeIdx);
+
+    if (MI.getOpcode() == TargetOpcode::G_UNMERGE_VALUES && TypeIdx == 1)
+      Types.push_back(
+          MRI.getType(MI.getOperand(MI.getNumOperands() - 1).getReg()));
+    else
+      Types.push_back(MRI.getType(MI.getOperand(I).getReg()));
+  }
+
+  std::string Signature;
+  raw_string_ostream OS(Signature);
+  OS << OpcodeName << '|' << (IsInitialInstr ? "initial" : "generated") << '|'
+     << (IsFirstVisit ? "first" : "revisit") << '|';
+  if (Types.empty()) {
+    OS << '-';
+  } else {
+    llvm::interleave(Types, OS, ",");
+  }
+  OS << '|';
+  if (MI.memoperands_empty()) {
+    OS << '-';
+  } else {
+    llvm::interleave(
+        MI.memoperands(), OS,
+        [&OS](const MachineMemOperand *MMO) {
+          OS << MMO->getMemoryType() << '@' << MMO->getAlign().value() * 8
+             << '@' << toIRString(MMO->getSuccessOrdering()) << '@'
+             << toIRString(MMO->getFailureOrdering());
+        },
+        ",");
+  }
+  OS << '|' << ActionName << '|' << Step.TypeIdx << '|';
+  if (Step.NewType.isValid())
+    OS << Step.NewType;
+  else
+    OS << '-';
+  OS.flush();
+
+  auto &QueryStat = (*LegalizerQueryStatistics)[Signature];
+  if (!QueryStat)
+    QueryStat = std::make_unique<LegalizerQueryStatistic>(Signature);
+  ++QueryStat->Count;
 }
 
 /// Try to break down \p OrigTy into \p NarrowTy sized pieces.
@@ -182,19 +253,22 @@ LegalizerHelper::LegalizerHelper(MachineFunction &MF, const LegalizerInfo &LI,
 
 LegalizerHelper::LegalizeResult
 LegalizerHelper::legalizeInstrStep(MachineInstr &MI,
-                                   LostDebugLocObserver &LocObserver) {
+                                   LostDebugLocObserver &LocObserver,
+                                   bool IsInitialInstr, bool IsFirstVisit) {
   LLVM_DEBUG(dbgs() << "\nLegalizing: " << MI);
 
   MIRBuilder.setInstrAndDebugLoc(MI);
 
   if (isa<GIntrinsic>(MI)) {
     if (AreStatisticsEnabled())
-      recordLegalizerAction(MIRBuilder, MI, Custom);
+      recordLegalizerAction(MIRBuilder, MRI, MI, {Custom, 0, LLT{}},
+                            IsInitialInstr, IsFirstVisit);
     return LI.legalizeIntrinsic(*this, MI) ? Legalized : UnableToLegalize;
   }
   auto Step = LI.getAction(MI, MRI);
   if (AreStatisticsEnabled())
-    recordLegalizerAction(MIRBuilder, MI, Step.Action);
+    recordLegalizerAction(MIRBuilder, MRI, MI, Step, IsInitialInstr,
+                          IsFirstVisit);
   switch (Step.Action) {
   case Legal:
     LLVM_DEBUG(dbgs() << ".. Already legal\n");

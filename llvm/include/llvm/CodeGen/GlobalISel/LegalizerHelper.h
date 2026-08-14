@@ -100,7 +100,9 @@ public:
   /// Considered as an opaque blob, the legal code will use and define the same
   /// registers as \p MI.
   LLVM_ABI LegalizeResult legalizeInstrStep(MachineInstr &MI,
-                                            LostDebugLocObserver &LocObserver);
+                                            LostDebugLocObserver &LocObserver,
+                                            bool IsInitialInstr,
+                                            bool IsFirstVisit);
 
   /// Legalize an instruction by emiting a runtime library call instead.
   LLVM_ABI LegalizeResult libcall(MachineInstr &MI,

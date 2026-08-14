@@ -4,6 +4,7 @@
 # REQUIRES: asserts
 
 # CHECK: "gisel-legalizer.G_BR.Legal": 1
+# CHECK: "gisel-legalizer-query.q{{[0-9A-F]+}}": 1
 
 --- |
   define void @profile_legalizer_actions() {
