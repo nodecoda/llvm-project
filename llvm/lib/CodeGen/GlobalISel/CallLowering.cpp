@@ -12,6 +12,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/CodeGen/GlobalISel/CallLowering.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/Statistic.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/CallingConvLower.h"
 #include "llvm/CodeGen/GlobalISel/MachineIRBuilder.h"
@@ -23,11 +27,178 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include "llvm/Support/ManagedStatic.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 
 #define DEBUG_TYPE "call-lowering"
 
 using namespace llvm;
+
+namespace {
+struct IRCallStatistic {
+  std::string Name;
+  std::string Description;
+  Statistic Count;
+
+  explicit IRCallStatistic(StringRef Signature)
+      : Name((Twine("c") + toHex(Signature)).str()),
+        Description(
+            (Twine("Number of IRTranslator calls matching ") + Signature)
+                .str()),
+        Count("gisel-irtranslator-call", Name.c_str(), Description.c_str()) {}
+};
+} // namespace
+
+static ManagedStatic<StringMap<std::unique_ptr<IRCallStatistic>>>
+    IRCallStatistics;
+
+static std::string encodeCallType(const Type *Ty) {
+  std::string TypeName;
+  raw_string_ostream OS(TypeName);
+  Ty->print(OS, /*IsForDebug=*/false, /*NoDetails=*/true);
+  OS.flush();
+  return toHex(TypeName);
+}
+
+static StringRef getCallTypeKind(const Type *Ty) {
+  if (Ty->isVoidTy())
+    return "void";
+  if (Ty->isPointerTy())
+    return "pointer";
+  if (Ty->isIntegerTy())
+    return "integer";
+  if (Ty->isFloatingPointTy())
+    return "float";
+  if (Ty->isVectorTy())
+    return "vector";
+  if (Ty->isAggregateType())
+    return "aggregate";
+  return "other";
+}
+
+static void printCallArgFlags(raw_ostream &OS, ISD::ArgFlagsTy Flags) {
+  bool First = true;
+  auto Print = [&](StringRef Name, bool IsSet) {
+    if (!IsSet)
+      return;
+    if (!First)
+      OS << '+';
+    OS << Name;
+    First = false;
+  };
+  Print("zext", Flags.isZExt());
+  Print("sext", Flags.isSExt());
+  Print("noext", Flags.isNoExt());
+  Print("inreg", Flags.isInReg());
+  Print("sret", Flags.isSRet());
+  Print("byval", Flags.isByVal());
+  Print("byref", Flags.isByRef());
+  Print("nest", Flags.isNest());
+  Print("returned", Flags.isReturned());
+  Print("split", Flags.isSplit());
+  Print("inalloca", Flags.isInAlloca());
+  Print("preallocated", Flags.isPreallocated());
+  Print("split-end", Flags.isSplitEnd());
+  Print("swiftself", Flags.isSwiftSelf());
+  Print("swiftasync", Flags.isSwiftAsync());
+  Print("swifterror", Flags.isSwiftError());
+  Print("cfguardtarget", Flags.isCFGuardTarget());
+  Print("hva", Flags.isHva());
+  Print("hva-start", Flags.isHvaStart());
+  Print("second-arg", Flags.isSecArgPass());
+  Print("consecutive-last", Flags.isInConsecutiveRegsLast());
+  Print("consecutive", Flags.isInConsecutiveRegs());
+  Print("copy-elision", Flags.isCopyElisionCandidate());
+  Print("pointer", Flags.isPointer());
+  Print("vararg", Flags.isVarArg());
+  if (First)
+    OS << '-';
+}
+
+static void printCallArg(raw_ostream &OS, const CallLowering::ArgInfo &Arg,
+                         const DataLayout &DL) {
+  OS << encodeCallType(Arg.Ty) << '@';
+  if (Arg.Ty->isVoidTy() || !Arg.Ty->isSized()) {
+    OS << "-@-@";
+  } else {
+    TypeSize Size = DL.getTypeSizeInBits(Arg.Ty);
+    OS << Size.getKnownMinValue() << '@' << Size.isScalable() << '@';
+  }
+  OS << getCallTypeKind(Arg.Ty) << '@' << Arg.Ty->isSingleValueType() << '@'
+     << Arg.Regs.size() << '@';
+  if (Arg.Flags.empty()) {
+    OS << '-';
+    return;
+  }
+  llvm::interleave(
+      Arg.Flags, OS,
+      [&OS](ISD::ArgFlagsTy Flags) { printCallArgFlags(OS, Flags); }, ",");
+}
+
+static void printCallArgs(raw_ostream &OS, ArrayRef<CallLowering::ArgInfo> Args,
+                          const DataLayout &DL) {
+  if (Args.empty()) {
+    OS << '-';
+    return;
+  }
+  llvm::interleave(
+      Args, OS,
+      [&OS, &DL](const CallLowering::ArgInfo &Arg) {
+        printCallArg(OS, Arg, DL);
+      },
+      ";");
+}
+
+static void recordIRCall(const CallBase &CB,
+                         const CallLowering::CallLoweringInfo &Info,
+                         ArrayRef<CallLowering::ArgInfo> SplitArgs,
+                         ArrayRef<CallLowering::ArgInfo> SplitRet,
+                         const DataLayout &DL) {
+  std::string Features;
+  raw_string_ostream FeatureOS(Features);
+  bool FirstFeature = true;
+  auto PrintFeature = [&](StringRef Name, bool IsSet) {
+    if (!IsSet)
+      return;
+    if (!FirstFeature)
+      FeatureOS << ',';
+    FeatureOS << Name;
+    FirstFeature = false;
+  };
+  PrintFeature("ptrauth", Info.PAI.has_value());
+  PrintFeature("swifterror", Info.SwiftErrorVReg.isValid());
+  PrintFeature("cfi", Info.CFIType != nullptr);
+  PrintFeature("deactivation", Info.DeactivationSymbol != nullptr);
+  PrintFeature(
+      "attachedcall",
+      CB.getOperandBundle(LLVMContext::OB_clang_arc_attachedcall).has_value());
+  PrintFeature("returns-twice", CB.hasFnAttr(Attribute::ReturnsTwice));
+  if (FirstFeature)
+    FeatureOS << '-';
+  FeatureOS.flush();
+
+  std::string Signature;
+  raw_string_ostream OS(Signature);
+  OS << CB.getOpcodeName() << '|'
+     << (Info.Callee.isReg() ? "indirect" : "direct") << '|'
+     << static_cast<unsigned>(Info.CallConv) << '|' << Info.IsVarArg << '|'
+     << Info.IsTailCall << '|' << Info.IsMustTailCall << '|'
+     << Info.CanLowerReturn << '|' << Features << '|';
+  printCallArg(OS, Info.OrigRet, DL);
+  OS << '|';
+  printCallArgs(OS, Info.OrigArgs, DL);
+  OS << '|';
+  printCallArgs(OS, SplitRet, DL);
+  OS << '|';
+  printCallArgs(OS, SplitArgs, DL);
+  OS.flush();
+
+  auto &Stat = (*IRCallStatistics)[Signature];
+  if (!Stat)
+    Stat = std::make_unique<IRCallStatistic>(Signature);
+  ++Stat->Count;
+}
 
 void CallLowering::anchor() {}
 
@@ -244,6 +415,15 @@ bool CallLowering::lowerCall(MachineIRBuilder &MIRBuilder, const CallBase &CB,
   Info.IsMustTailCall = CB.isMustTailCall();
   Info.IsTailCall = CanBeTailCalled;
   Info.IsVarArg = IsVarArg;
+  if (AreStatisticsEnabled()) {
+    SmallVector<ArgInfo, 8> SplitCallArgs;
+    for (const ArgInfo &Arg : Info.OrigArgs)
+      splitToValueTypes(Arg, SplitCallArgs, DL, Info.CallConv);
+    SmallVector<ArgInfo, 4> SplitRet;
+    if (!Info.OrigRet.Ty->isVoidTy())
+      splitToValueTypes(Info.OrigRet, SplitRet, DL, Info.CallConv);
+    recordIRCall(CB, Info, SplitCallArgs, SplitRet, DL);
+  }
   if (!lowerCall(MIRBuilder, Info))
     return false;
 

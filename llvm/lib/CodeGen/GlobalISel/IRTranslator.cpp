@@ -14,6 +14,9 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/Statistic.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/BranchProbabilityInfo.h"
@@ -83,6 +86,7 @@
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
@@ -100,6 +104,49 @@
 #define DEBUG_TYPE "ir-translator"
 
 using namespace llvm;
+
+namespace {
+struct IRInstructionStatistic {
+  std::string Name;
+  std::string Description;
+  Statistic Count;
+
+  explicit IRInstructionStatistic(StringRef Signature)
+      : Name((Twine("i") + toHex(Signature)).str()),
+        Description(
+            (Twine("Number of IRTranslator input instructions matching ") +
+             Signature)
+                .str()),
+        Count("gisel-irtranslator", Name.c_str(), Description.c_str()) {}
+};
+} // namespace
+
+static ManagedStatic<StringMap<std::unique_ptr<IRInstructionStatistic>>>
+    IRInstructionStatistics;
+
+static std::string encodeIRType(const Type *Ty) {
+  std::string TypeName;
+  raw_string_ostream OS(TypeName);
+  Ty->print(OS, /*IsForDebug=*/false, /*NoDetails=*/true);
+  OS.flush();
+  return toHex(TypeName);
+}
+
+static void recordIRInstruction(const Instruction &Inst) {
+  std::string Signature;
+  raw_string_ostream OS(Signature);
+  OS << Inst.getOpcodeName() << '|' << encodeIRType(Inst.getType()) << '|';
+  llvm::interleave(
+      Inst.operands(), OS,
+      [&OS](const Use &Operand) { OS << encodeIRType(Operand->getType()); },
+      ",");
+  OS.flush();
+
+  auto &Stat = (*IRInstructionStatistics)[Signature];
+  if (!Stat)
+    Stat = std::make_unique<IRInstructionStatistic>(Signature);
+  ++Stat->Count;
+}
 
 static cl::opt<bool>
     EnableCSEInIRTranslator("enable-cse-in-ir-translator",
@@ -4760,6 +4807,9 @@ void IRTranslatorImpl::translateDbgInfo(const Instruction &Inst,
 }
 
 bool IRTranslatorImpl::translate(const Instruction &Inst) {
+  if (AreStatisticsEnabled())
+    recordIRInstruction(Inst);
+
   CurBuilder->setDebugLoc(Inst.getDebugLoc());
   CurBuilder->setPCSections(Inst.getMetadata(LLVMContext::MD_pcsections));
   CurBuilder->setMMRAMetadata(Inst.getMetadata(LLVMContext::MD_mmra));
