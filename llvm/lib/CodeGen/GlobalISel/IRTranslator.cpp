@@ -124,6 +124,42 @@ struct IRInstructionStatistic {
 static ManagedStatic<StringMap<std::unique_ptr<IRInstructionStatistic>>>
     IRInstructionStatistics;
 
+static Statistic
+    NumGEPAllZero("gisel-irtranslator-gep", "AllZero",
+                  "Number of IRTranslator GEPs with all-zero indices");
+static Statistic NumGEPConstantOffsetOnly(
+    "gisel-irtranslator-gep", "ConstantOffsetOnly",
+    "Number of IRTranslator GEPs lowered using only constant offsets");
+static Statistic NumGEPOneDynamicUnitStride(
+    "gisel-irtranslator-gep", "OneDynamicUnitStride",
+    "Number of IRTranslator GEPs with one dynamic unit-stride index");
+static Statistic NumGEPOneDynamicScaled(
+    "gisel-irtranslator-gep", "OneDynamicScaled",
+    "Number of IRTranslator GEPs with one dynamic scaled index");
+static Statistic NumGEPMultipleDynamic(
+    "gisel-irtranslator-gep", "MultipleDynamic",
+    "Number of IRTranslator GEPs with multiple dynamic indices");
+static Statistic NumGEPSingleIndexI8Constant(
+    "gisel-irtranslator-gep-i8", "SingleIndexConstant",
+    "Number of scalar single-index i8 GEPs with a constant index");
+static Statistic NumGEPSingleIndexI8Dynamic(
+    "gisel-irtranslator-gep-i8", "SingleIndexDynamic",
+    "Number of scalar single-index i8 GEPs with a dynamic index");
+static Statistic
+    NumGEPZeroPtrAdds("gisel-irtranslator-gep-ptr-adds", "NoPtrAdds",
+                      "Number of IRTranslator GEPs emitting no G_PTR_ADD");
+static Statistic
+    NumGEPOnePtrAdd("gisel-irtranslator-gep-ptr-adds", "OnePtrAdd",
+                    "Number of IRTranslator GEPs emitting one G_PTR_ADD");
+static Statistic NumGEPTwoPtrAdds(
+    "gisel-irtranslator-gep-ptr-adds", "TwoPtrAdds",
+    "Number of IRTranslator GEPs emitting two G_PTR_ADD instructions");
+static Statistic
+    NumGEPThreeOrMorePtrAdds("gisel-irtranslator-gep-ptr-adds",
+                             "ThreeOrMorePtrAdds",
+                             "Number of IRTranslator GEPs emitting at least "
+                             "three G_PTR_ADD instructions");
+
 static std::string encodeIRType(const Type *Ty) {
   std::string TypeName;
   raw_string_ostream OS(TypeName);
@@ -146,6 +182,58 @@ static void recordIRInstruction(const Instruction &Inst) {
   if (!Stat)
     Stat = std::make_unique<IRInstructionStatistic>(Signature);
   ++Stat->Count;
+}
+
+static void recordGEPShape(const User &U, const DataLayout &DL) {
+  const auto &GEP = cast<GEPOperator>(U);
+  if (GEP.getType()->isPointerTy() &&
+      GEP.getSourceElementType()->isIntegerTy(8) && GEP.getNumIndices() == 1) {
+    if (isa<ConstantInt>(U.getOperand(1)))
+      ++NumGEPSingleIndexI8Constant;
+    else
+      ++NumGEPSingleIndexI8Dynamic;
+  }
+
+  if (GEP.hasAllZeroIndices()) {
+    ++NumGEPAllZero;
+    return;
+  }
+
+  unsigned NumDynamicIndices = 0;
+  uint64_t DynamicIndexStride = 0;
+  for (gep_type_iterator GTI = gep_type_begin(&U), E = gep_type_end(&U);
+       GTI != E; ++GTI) {
+    if (GTI.getStructTypeOrNull())
+      continue;
+
+    const auto *CI = dyn_cast<ConstantInt>(GTI.getOperand());
+    if (CI && CI->getValue().trySExtValue())
+      continue;
+
+    ++NumDynamicIndices;
+    if (NumDynamicIndices == 1)
+      DynamicIndexStride = GTI.getSequentialElementStride(DL);
+  }
+
+  if (NumDynamicIndices == 0)
+    ++NumGEPConstantOffsetOnly;
+  else if (NumDynamicIndices > 1)
+    ++NumGEPMultipleDynamic;
+  else if (DynamicIndexStride == 1)
+    ++NumGEPOneDynamicUnitStride;
+  else
+    ++NumGEPOneDynamicScaled;
+}
+
+static void recordGEPPtrAdds(unsigned NumPtrAdds) {
+  if (NumPtrAdds == 0)
+    ++NumGEPZeroPtrAdds;
+  else if (NumPtrAdds == 1)
+    ++NumGEPOnePtrAdd;
+  else if (NumPtrAdds == 2)
+    ++NumGEPTwoPtrAdds;
+  else
+    ++NumGEPThreeOrMorePtrAdds;
 }
 
 static cl::opt<bool>
@@ -2444,6 +2532,10 @@ bool IRTranslatorImpl::translateCast(unsigned Opcode, const User &U,
 
 bool IRTranslatorImpl::translateGetElementPtr(const User &U,
                                               MachineIRBuilder &MIRBuilder) {
+  bool RecordStatistics = AreStatisticsEnabled();
+  if (RecordStatistics)
+    recordGEPShape(U, *DL);
+  unsigned NumPtrAdds = 0;
   Value &Op0 = *U.getOperand(0);
   Register BaseReg = getOrCreateVReg(Op0);
   Type *PtrIRTy = Op0.getType();
@@ -2478,8 +2570,11 @@ bool IRTranslatorImpl::translateGetElementPtr(const User &U,
     WantSplatVector = VectorWidth > 1;
   }
 
-  if (cast<GEPOperator>(U).hasAllZeroIndices())
+  if (cast<GEPOperator>(U).hasAllZeroIndices()) {
+    if (RecordStatistics)
+      recordGEPPtrAdds(NumPtrAdds);
     return translateCopy(U, BaseReg, MIRBuilder);
+  }
 
   // We might need to splat the base pointer into a vector if the offsets
   // are vectors.
@@ -2520,6 +2615,7 @@ bool IRTranslatorImpl::translateGetElementPtr(const User &U,
                       .buildPtrAdd(PtrTy, BaseReg, OffsetMIB.getReg(0),
                                    PtrAddFlagsWithConst(Offset))
                       .getReg(0);
+        ++NumPtrAdds;
         Offset = 0;
       }
 
@@ -2559,6 +2655,7 @@ bool IRTranslatorImpl::translateGetElementPtr(const User &U,
       BaseReg =
           MIRBuilder.buildPtrAdd(PtrTy, BaseReg, GepOffsetReg, PtrAddFlags)
               .getReg(0);
+      ++NumPtrAdds;
     }
   }
 
@@ -2568,9 +2665,14 @@ bool IRTranslatorImpl::translateGetElementPtr(const User &U,
 
     MIRBuilder.buildPtrAdd(getOrCreateVReg(U), BaseReg, OffsetMIB.getReg(0),
                            PtrAddFlagsWithConst(Offset));
+    ++NumPtrAdds;
+    if (RecordStatistics)
+      recordGEPPtrAdds(NumPtrAdds);
     return true;
   }
 
+  if (RecordStatistics)
+    recordGEPPtrAdds(NumPtrAdds);
   return translateCopy(U, BaseReg, MIRBuilder);
 }
 

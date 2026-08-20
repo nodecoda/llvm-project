@@ -7,6 +7,17 @@
 ; CHECK: "gisel-irtranslator.i696E766F6B657C{{[0-9A-F]+}}": 1
 ; CHECK: "gisel-irtranslator-call.c63616C6C7C{{[0-9A-F]+}}": 1
 ; CHECK: "gisel-irtranslator-call.c696E766F6B657C{{[0-9A-F]+}}": 1
+; CHECK: "gisel-irtranslator-gep.AllZero": 1
+; CHECK: "gisel-irtranslator-gep.ConstantOffsetOnly": 2
+; CHECK: "gisel-irtranslator-gep.MultipleDynamic": 2
+; CHECK: "gisel-irtranslator-gep.OneDynamicScaled": 2
+; CHECK: "gisel-irtranslator-gep.OneDynamicUnitStride": 1
+; CHECK: "gisel-irtranslator-gep-i8.SingleIndexConstant": 1
+; CHECK: "gisel-irtranslator-gep-i8.SingleIndexDynamic": 1
+; CHECK: "gisel-irtranslator-gep-ptr-adds.NoPtrAdds": 1
+; CHECK: "gisel-irtranslator-gep-ptr-adds.OnePtrAdd": 4
+; CHECK: "gisel-irtranslator-gep-ptr-adds.ThreeOrMorePtrAdds": 1
+; CHECK: "gisel-irtranslator-gep-ptr-adds.TwoPtrAdds": 2
 
 declare i64 @callee(ptr, i32)
 declare void @sink()
@@ -28,4 +39,17 @@ normal:
 unwind:
   %landingpad = landingpad { ptr, i32 } cleanup
   resume { ptr, i32 } %landingpad
+}
+
+define void @geps(ptr %base, i64 %i, i64 %j, i64 %k) {
+  %zero = getelementptr [4 x i32], ptr %base, i64 0, i64 0
+  %constant = getelementptr [4 x i32], ptr %base, i64 0, i64 3
+  %i8.constant = getelementptr i8, ptr %base, i64 12
+  %i8.dynamic = getelementptr i8, ptr %base, i64 %i
+  %scaled = getelementptr i32, ptr %base, i64 %i
+  %multiple = getelementptr [16 x i32], ptr %base, i64 %i, i64 %j
+  %two.adds = getelementptr [16 x i32], ptr %base, i64 1, i64 %i
+  %three.adds = getelementptr [4 x [8 x i32]], ptr %base, i64 %i, i64 %j,
+    i64 %k
+  ret void
 }
