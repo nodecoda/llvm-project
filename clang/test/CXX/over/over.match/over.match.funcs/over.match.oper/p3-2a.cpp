@@ -556,7 +556,7 @@ namespace problem_cases {
     bool operator==(const const_iterator&) const;
   };
   struct iterator {
-    bool operator==(const const_iterator &o) const { // expected-warning {{all paths through this function will call itself}}
+    bool operator==(const const_iterator &o) const { // expected-warning {{in order to understand recursion}}
       return o == *this;
     }
   };
