@@ -85,6 +85,7 @@ class LegalizerInfoEmitter {
         .Default("");
   }
 
+  void emitContext(raw_ostream &OS, const Record &Context);
   void verifyRule(const Record &Rule);
   void emitRuleSet(raw_ostream &OS, const Record &RuleSet);
 
@@ -94,6 +95,32 @@ public:
 };
 
 } // namespace
+
+void LegalizerInfoEmitter::emitContext(raw_ostream &OS, const Record &Context) {
+  for (StringRef Comment : Context.getValueAsListOfStrings("Comments"))
+    OS << "  // " << Comment << "\n";
+
+  std::vector<const Record *> Bools = Context.getValueAsListOfDefs("Bools");
+  for (const Record *B : Bools)
+    OS << "  bool " << B->getValueAsString("Name") << " = "
+       << B->getValueAsString("Expr") << ";\n";
+  if (!Bools.empty())
+    OS << "\n";
+
+  std::vector<const Record *> Types = Context.getValueAsListOfDefs("Types");
+  for (const Record *T : Types)
+    OS << "  const LLT " << T->getValueAsString("Name") << " = "
+       << T->getValueAsString("Expr") << ";\n";
+  if (!Types.empty())
+    OS << "\n";
+
+  std::vector<const Record *> Lists = Context.getValueAsListOfDefs("TypeLists");
+  for (const Record *L : Lists)
+    OS << "  const std::initializer_list<LLT> " << L->getValueAsString("Name")
+       << " = {" << join(L->getValueAsListOfStrings("Elems"), ", ") << "};\n";
+  if (!Lists.empty())
+    OS << "\n";
+}
 
 void LegalizerInfoEmitter::verifyRule(const Record &Rule) {
   StringRef Method = Rule.getValueAsString("Method");
@@ -153,6 +180,32 @@ void LegalizerInfoEmitter::emitRuleSet(raw_ostream &OS, const Record &RuleSet) {
 
 void LegalizerInfoEmitter::run(raw_ostream &OS) {
   emitSourceFileHeader("GlobalISel legalizer rule fragments", OS);
+
+  std::vector<const Record *> Contexts =
+      Records.getAllDerivedDefinitions("LegalizeContext");
+  llvm::sort(Contexts, [](const Record *L, const Record *R) {
+    return L->getID() < R->getID();
+  });
+
+  // A predicate naming a feature the context does not declare is a typo.  The
+  // C++ compiler does catch it, but the diagnostic points into the generated
+  // file; this check points at the .td line instead.  Do it before emitting
+  // anything so a bad .td file produces no partial output.
+  if (!Contexts.empty()) {
+    StringSet<> Declared;
+    for (const Record *Context : Contexts)
+      for (const Record *B : Context->getValueAsListOfDefs("Bools"))
+        Declared.insert(B->getValueAsString("Name"));
+
+    for (const Record *F : Records.getAllDerivedDefinitions("LGFeature"))
+      if (!Declared.contains(F->getValueAsString("Name")))
+        PrintFatalError(F->getLoc(), "feature '" + F->getValueAsString("Name") +
+                                         "' is not declared by a "
+                                         "LegalizeContext");
+  }
+
+  for (const Record *Context : Contexts)
+    emitContext(OS, *Context);
 
   std::vector<const Record *> RuleSets =
       Records.getAllDerivedDefinitions("LegalizeRuleSet");

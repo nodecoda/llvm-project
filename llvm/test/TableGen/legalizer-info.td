@@ -5,6 +5,22 @@
 
 include "llvm/Target/LegalizerInfo.td"
 
+// The declared vocabulary is emitted ahead of the rules, in declaration order.
+def Test_Context : LegalizeContext {
+  let Bools = [
+    LG_Bool<"Is64Bit", "Subtarget.is64Bit()">,
+    LG_Bool<"HasPOPCNT", "Subtarget.hasPOPCNT()">,
+    LG_Bool<"HasVPOPCNTDQ", "Subtarget.hasVPOPCNTDQ()">,
+    LG_Bool<"NoVLX", "!Subtarget.hasVLX()">,
+  ];
+  let Types = [LG_Type<"s32", "LLT::scalar(32)">];
+  let TypeLists = [LG_TypeList<"Tys", ["s32"]>];
+}
+
+// CHECK:      bool Is64Bit = Subtarget.is64Bit();
+// CHECK:      const LLT s32 = LLT::scalar(32);
+// CHECK:      const std::initializer_list<LLT> Tys = {s32};
+
 def Test_CTPOP : LegalizeRuleSet<["G_CTPOP"]> {
   let Rules = [
     LG_LegalFor<LGFeature<"HasPOPCNT">, ["s16, s16", "s32, s32"]>,
