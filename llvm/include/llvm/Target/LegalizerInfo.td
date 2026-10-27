@@ -19,7 +19,9 @@
 //    hand-written API these live in two different places and nothing ties
 //    them together (PR220802 is exactly that bug class).
 //  * Predicates are a closed AST (see LegalizePredicate).  Leaves name
-//    existing C++ predicates; composition is TableGen record composition.
+//    existing C++ predicates; composition is TableGen record composition.  An
+//    LGExpr that is nothing but a boolean combination of declared features is
+//    rejected, so the AST cannot silently degrade into opaque text.
 //  * Rules whose guard cannot be expressed in the AST yet use LG_Opaque,
 //    which carries the C++ text verbatim.  The escape hatch is meant to
 //    shrink over time, not to be the normal path.
@@ -46,9 +48,13 @@ class LGFeature<string name> : LegalizePredicate {
   let Text = name;
 }
 
-/// A C++ expression not (yet) modelled as AST nodes.
-class LGExpr<string Expr> : LegalizePredicate {
-  let Text = Expr;
+/// A C++ expression that cannot be modelled as AST nodes, e.g.
+/// "scalarOrEltWiderThan(0, 64)".  -gen-legalizer rejects one whose text is
+/// merely a boolean combination of declared features; those must be written
+/// with LGAnd / LGOr / LGNot, so that the escape hatch stays an escape hatch.
+class LGExpr<string expr> : LegalizePredicate {
+  string Expr = expr;
+  let Text = expr;
 }
 
 class LGAnd<LegalizePredicate A, LegalizePredicate B> : LegalizePredicate {
@@ -59,8 +65,10 @@ class LGOr<LegalizePredicate A, LegalizePredicate B> : LegalizePredicate {
   let Text = "(" # A.Text # " || " # B.Text # ")";
 }
 
+/// Compound operands parenthesize themselves, so "!" needs no extra pair and
+/// `!HasCMOV` stays readable instead of becoming `!(HasCMOV)`.
 class LGNot<LegalizePredicate A> : LegalizePredicate {
-  let Text = "!(" # A.Text # ")";
+  let Text = "!" # A.Text;
 }
 
 //===----------------------------------------------------------------------===//
