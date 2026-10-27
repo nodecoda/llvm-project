@@ -7,9 +7,9 @@
 
 include "llvm/Target/LegalizerInfo.td"
 
-def Wide : LegalizeType<"Subtarget.is64Bit() ? s64 : s32">;
-def s32 : LegalizeType<"LLT::scalar(32)">;
-def s64 : LegalizeType<"LLT::scalar(64)">;
+def Wide : LegalizeNamedType<"Subtarget.is64Bit() ? s64 : s32">;
+def s32 : LegalizeNamedType<"LLT::scalar(32)">;
+def s64 : LegalizeNamedType<"LLT::scalar(64)">;
 
 def Bad : LegalizeRuleSet<["G_ADD"]> {
   let Rules = [Lower];

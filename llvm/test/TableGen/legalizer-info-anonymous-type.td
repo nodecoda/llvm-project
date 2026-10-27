@@ -7,8 +7,8 @@ include "llvm/Target/LegalizerInfo.td"
 
 def Bad : LegalizeRuleSet<["G_ADD"]> {
   let Rules = [
-    LegalFor<[LegalizeType<"LLT::scalar(8)">]>,
+    LegalFor<[LegalizeNamedType<"LLT::scalar(8)">]>,
   ];
 }
 
-// CHECK: error: a legalizer type has to be a named def, e.g. `def s32 : LegalizeType<...>`
+// CHECK: error: a legalizer type has to be a named def, e.g. `def s32 : LegalizeNamedType<...>`
