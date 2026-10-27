@@ -73,6 +73,47 @@ class LegalizePredicateDag<dag cond> : LegalizePredicate {
 }
 
 //===----------------------------------------------------------------------===//
+// Actions
+//
+// The action a rule implements and the mutation direction that action implies.
+// In hand-written C++ these two live in different places -- the builder call
+// picks the action, the mutation the rule performs implies the direction --
+// and nothing ties them together, which is how
+// https://github.com/llvm/llvm-project/issues/220802 happened.  Keeping both
+// on one record lets -gen-legalizer reject the disagreement.
+//
+// Most of these are LegalizeActions::LegalizeAction values.  ClampScalar,
+// ScalarSameSizeAs and ClampNumElements are not: they are composites that
+// expand to more than one applied action (LegalizerInfo.h: clampScalar and
+// clampScalarOrElt -> minScalar + maxScalar, scalarSameSizeAs ->
+// minScalarSameAs + maxScalarSameAs, clampNumElements -> clampMinNumElements +
+// clampMaxNumElements), so they only exist at this level and accept either
+// direction.  Unsupported and NotFound are not rule actions and have no entry.
+//===----------------------------------------------------------------------===//
+
+class LegalizeAction<string name, string mutation> {
+  /// C++ spelling, for diagnostics.
+  string Name = name;
+
+  /// Direction the action implies: "widen", "narrow", "split", "merge",
+  /// "bitcast", "neutral", "any", or "" if the action prescribes none.
+  string Mutation = mutation;
+}
+
+def ActionLegal            : LegalizeAction<"Legal", "">;
+def ActionLower            : LegalizeAction<"Lower", "">;
+def ActionLibcall          : LegalizeAction<"Libcall", "">;
+def ActionCustom           : LegalizeAction<"Custom", "">;
+def ActionWidenScalar      : LegalizeAction<"WidenScalar", "widen">;
+def ActionNarrowScalar     : LegalizeAction<"NarrowScalar", "narrow">;
+def ActionFewerElements    : LegalizeAction<"FewerElements", "split">;
+def ActionMoreElements     : LegalizeAction<"MoreElements", "merge">;
+def ActionBitcast          : LegalizeAction<"Bitcast", "bitcast">;
+def ActionClampScalar      : LegalizeAction<"ClampScalar", "any">;
+def ActionScalarSameSizeAs : LegalizeAction<"ScalarSameSizeAs", "any">;
+def ActionClampNumElements : LegalizeAction<"ClampNumElements", "any">;
+
+//===----------------------------------------------------------------------===//
 // Rules
 //===----------------------------------------------------------------------===//
 
@@ -87,27 +128,29 @@ class LegalizeRule {
   /// for guards that are still raw lambdas.
   code OpaqueArgs = "";
 
-  /// Action this rule implements.  -gen-legalizer checks that the mutation
-  /// carried by the rule can actually produce it.
-  string Action = "Legal";
+  /// Action this rule implements.  Every rule states one: -gen-legalizer
+  /// rejects a rule that leaves it out, and rejects a mutation direction that
+  /// the action cannot produce.
+  LegalizeAction Action = ?;
 
-  /// Mutation direction: "widen", "narrow", "split", "merge", "bitcast",
-  /// "neutral" or "any".  Empty for rules that carry no mutation.
+  /// Mutation direction this rule performs: "widen", "narrow", "split",
+  /// "merge", "bitcast", "neutral", "any", or "" for none.
   string Mutation = "";
 }
 
-class LegalizeSimpleRule<string method, list<string> args,
-                         string action = "Legal", string mutation = "">
-    : LegalizeRule {
+/// A rule built from a builder method, its arguments and an action.
+class LegalizeCall<string method, list<string> args, LegalizeAction action,
+                   string mutation = ""> : LegalizeRule {
   let Method = method;
   let Args = args;
   let Action = action;
   let Mutation = mutation;
 }
 
-class LegalizePredRule<string method, LegalizePredicate P, list<string> args,
-                       string action = "Legal", string mutation = "">
-    : LegalizeRule {
+/// The same, with a subtarget guard.
+class LegalizeGuardedCall<string method, LegalizePredicate P,
+                          list<string> args, LegalizeAction action,
+                          string mutation = ""> : LegalizeRule {
   let Method = method;
   let Pred = P;
   let Args = args;
@@ -116,7 +159,7 @@ class LegalizePredRule<string method, LegalizePredicate P, list<string> args,
 }
 
 /// A rule whose guard (and possibly mutation) is still raw C++.
-class LegalizeOpaqueRule<string method, code body, string action = "Legal",
+class LegalizeOpaqueRule<string method, code body, LegalizeAction action,
                          string mutation = ""> : LegalizeRule {
   let Method = method;
   let OpaqueArgs = body;
@@ -135,95 +178,95 @@ class LegalizeTypes<list<string> Types, bit Pairs> {
 //===----------------------------------------------------------------------===//
 
 class LegalFor<list<string> Types, bit Pairs = 1>
-    : LegalizeSimpleRule<"legalFor", [LegalizeTypes<Types, Pairs>.Text], "Legal",
-                         "">;
+    : LegalizeCall<"legalFor", [LegalizeTypes<Types, Pairs>.Text], ActionLegal>;
 
 class LegalForIf<LegalizePredicate P, list<string> Types, bit Pairs = 1>
-    : LegalizePredRule<"legalFor", P, [LegalizeTypes<Types, Pairs>.Text],
-                       "Legal", "">;
+    : LegalizeGuardedCall<"legalFor", P, [LegalizeTypes<Types, Pairs>.Text],
+                          ActionLegal>;
 
 class LegalForCartesianProduct<string T0, string T1>
-    : LegalizeSimpleRule<"legalForCartesianProduct", [T0, T1], "Legal", "">;
+    : LegalizeCall<"legalForCartesianProduct", [T0, T1], ActionLegal>;
 
 class LowerForIf<LegalizePredicate P, list<string> Types, bit Pairs = 1>
-    : LegalizePredRule<"lowerFor", P, [LegalizeTypes<Types, Pairs>.Text],
-                       "Lower", "">;
+    : LegalizeGuardedCall<"lowerFor", P, [LegalizeTypes<Types, Pairs>.Text],
+                          ActionLower>;
 
 class LegalForMemDesc<list<string> Types>
-    : LegalizeSimpleRule<"legalForTypesWithMemDesc",
-                         [LegalizeTypes<Types, 1>.Text], "Legal", "">;
+    : LegalizeCall<"legalForTypesWithMemDesc", [LegalizeTypes<Types, 1>.Text],
+                   ActionLegal>;
 
 class LegalForMemDescIf<LegalizePredicate P, list<string> Types>
-    : LegalizePredRule<"legalForTypesWithMemDesc", P,
-                       [LegalizeTypes<Types, 1>.Text], "Legal", "">;
+    : LegalizeGuardedCall<"legalForTypesWithMemDesc", P,
+                          [LegalizeTypes<Types, 1>.Text], ActionLegal>;
 
-def Lower : LegalizeSimpleRule<"lower", [], "Lower", "">;
+def Lower : LegalizeCall<"lower", [], ActionLower>;
 
-def Libcall : LegalizeSimpleRule<"libcall", [], "Libcall", "">;
+def Libcall : LegalizeCall<"libcall", [], ActionLibcall>;
 
 class LibcallFor<list<string> Types, bit Pairs = 0>
-    : LegalizeSimpleRule<"libcallFor", [LegalizeTypes<Types, Pairs>.Text],
-                         "Libcall", "">;
+    : LegalizeCall<"libcallFor", [LegalizeTypes<Types, Pairs>.Text],
+                   ActionLibcall>;
 
 class CustomFor<list<string> Types, bit Pairs = 0>
-    : LegalizeSimpleRule<"customFor", [LegalizeTypes<Types, Pairs>.Text],
-                         "Custom", "">;
+    : LegalizeCall<"customFor", [LegalizeTypes<Types, Pairs>.Text],
+                   ActionCustom>;
 
-class CustomForCartesianProductIf<LegalizePredicate P, string T0,
-                                        string T1>
-    : LegalizePredRule<"customForCartesianProduct", P, [T0, T1], "Custom", "">;
+class CustomForCartesianProductIf<LegalizePredicate P, string T0, string T1>
+    : LegalizeGuardedCall<"customForCartesianProduct", P, [T0, T1],
+                          ActionCustom>;
 
-def AlwaysLegal : LegalizeSimpleRule<"alwaysLegal", [], "Legal", "">;
+def AlwaysLegal : LegalizeCall<"alwaysLegal", [], ActionLegal>;
 
 class ClampScalar<string Idx, string MinTy, string MaxTy>
-    : LegalizeSimpleRule<"clampScalar", [Idx, MinTy, MaxTy], "ClampScalar",
-                         "any">;
+    : LegalizeCall<"clampScalar", [Idx, MinTy, MaxTy], ActionClampScalar,
+                   "any">;
 
 class ClampScalarOrElt<string Idx, string MinTy, string MaxTy>
-    : LegalizeSimpleRule<"clampScalarOrElt", [Idx, MinTy, MaxTy], "ClampScalar",
-                         "any">;
+    : LegalizeCall<"clampScalarOrElt", [Idx, MinTy, MaxTy], ActionClampScalar,
+                   "any">;
 
 class WidenScalarToNextPow2<string Idx, string Min = "">
-    : LegalizeSimpleRule<"widenScalarToNextPow2",
-                         !if(!eq(Min, ""), [Idx], [Idx, "/*Min=*/" # Min]),
-                         "WidenScalar", "widen">;
+    : LegalizeCall<"widenScalarToNextPow2",
+                   !if(!eq(Min, ""), [Idx], [Idx, "/*Min=*/" # Min]),
+                   ActionWidenScalar, "widen">;
 
 class WidenScalarOrEltToNextPow2<string Idx, string Min = "">
-    : LegalizeSimpleRule<"widenScalarOrEltToNextPow2",
-                         !if(!eq(Min, ""), [Idx], [Idx, "/*Min=*/" # Min]),
-                         "WidenScalar", "widen">;
+    : LegalizeCall<"widenScalarOrEltToNextPow2",
+                   !if(!eq(Min, ""), [Idx], [Idx, "/*Min=*/" # Min]),
+                   ActionWidenScalar, "widen">;
 
 class MinScalar<string Idx, string Ty>
-    : LegalizeSimpleRule<"minScalar", [Idx, Ty], "WidenScalar", "widen">;
+    : LegalizeCall<"minScalar", [Idx, Ty], ActionWidenScalar, "widen">;
 
 class MaxScalar<string Idx, string Ty>
-    : LegalizeSimpleRule<"maxScalar", [Idx, Ty], "NarrowScalar", "narrow">;
+    : LegalizeCall<"maxScalar", [Idx, Ty], ActionNarrowScalar, "narrow">;
 
 class ScalarSameSizeAs<string Idx, string OtherIdx>
-    : LegalizeSimpleRule<"scalarSameSizeAs", [Idx, OtherIdx],
-                         "ScalarSameSizeAs", "neutral">;
+    : LegalizeCall<"scalarSameSizeAs", [Idx, OtherIdx], ActionScalarSameSizeAs,
+                   "neutral">;
 
 class Scalarize<string Idx>
-    : LegalizeSimpleRule<"scalarize", [Idx], "FewerElements", "split">;
+    : LegalizeCall<"scalarize", [Idx], ActionFewerElements, "split">;
 
 class ScalarizeIf<LegalizePredicate P, string Idx>
-    : LegalizePredRule<"scalarizeIf", P, [Idx], "FewerElements", "split">;
+    : LegalizeGuardedCall<"scalarizeIf", P, [Idx], ActionFewerElements,
+                          "split">;
 
 class MoreElementsToNextPow2<string Idx>
-    : LegalizeSimpleRule<"moreElementsToNextPow2", [Idx], "MoreElements",
-                         "merge">;
+    : LegalizeCall<"moreElementsToNextPow2", [Idx], ActionMoreElements,
+                   "merge">;
 
 class ClampNumElements<string Idx, string EltTy, string MaxTy>
-    : LegalizeSimpleRule<"clampNumElements", [Idx, EltTy, MaxTy],
-                         "ClampNumElements", "any">;
+    : LegalizeCall<"clampNumElements", [Idx, EltTy, MaxTy],
+                   ActionClampNumElements, "any">;
 
 class ClampMinNumElements<string Idx, string EltTy, string Num>
-    : LegalizeSimpleRule<"clampMinNumElements", [Idx, EltTy, Num],
-                         "ClampNumElements", "any">;
+    : LegalizeCall<"clampMinNumElements", [Idx, EltTy, Num],
+                   ActionClampNumElements, "any">;
 
 class ClampMaxNumElements<string Idx, string EltTy, string Num>
-    : LegalizeSimpleRule<"clampMaxNumElements", [Idx, EltTy, Num],
-                         "ClampNumElements", "any">;
+    : LegalizeCall<"clampMaxNumElements", [Idx, EltTy, Num],
+                   ActionClampNumElements, "any">;
 
 //===----------------------------------------------------------------------===//
 // Target vocabulary

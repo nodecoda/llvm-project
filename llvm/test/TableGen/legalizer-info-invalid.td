@@ -10,7 +10,7 @@ include "llvm/Target/LegalizerInfo.td"
 def BadRule : LegalizeRule {
   let Method = "widenScalarToNextPow2";
   let Args = ["1", "16"];
-  let Action = "NarrowScalar";
+  let Action = ActionNarrowScalar;
   let Mutation = "widen";
 }
 
