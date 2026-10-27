@@ -9,10 +9,10 @@ include "llvm/Target/LegalizerInfo.td"
 def Used : LegalizeFeature<"Subtarget.hasAVX()">;
 def AlsoUsed : LegalizeFeature<"Subtarget.hasAVX2()">;
 def Unused : LegalizeFeature<"Subtarget.hasAVX512()">;
-def s8 : LegalizeType<"LLT::scalar(8)">;
+def s8 : LegalizeNamedType<"LLT::scalar(8)">;
 
 def Test : LegalizeRuleSet<["G_ADD"]> {
-  let Rules = [LegalForIf<Used, [s8]>, ScalarizeIf<AlsoUsed, 0>];
+  let Rules = [LegalForIf<Used, [s8]>, LegalForIf<AlsoUsed, [s8]>];
 }
 
 // CHECK: warning: legalizer feature 'Unused' is never used and is not emitted

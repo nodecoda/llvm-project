@@ -27,7 +27,6 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSet.h"
-#include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TableGen/Error.h"
 #include "llvm/TableGen/Record.h"
@@ -77,7 +76,7 @@ static bool parseBoolOperand(StringRef S, size_t &I,
 
 /// True if \p Expr is a boolean combination of identifiers and nothing else,
 /// e.g. "HasSSE1 || UseX87".  Anything else - a call, a comparison, a literal -
-/// is what LegalizeOpaquePred exists for.  Precedence is irrelevant here: the
+/// is what LegalizeOpaqueBool exists for.  Precedence is irrelevant here: the
 /// only question is whether the text could have been written as a
 /// LegalizePredicateDag with the all_of / any_of / none_of / not operators.
 static bool isBooleanCombination(StringRef Expr,
@@ -169,9 +168,10 @@ public:
 
 } // namespace
 
-/// Collapse whitespace runs, including newlines, into single spaces and trim.
-/// A condition may be written across several lines in the .td; the generated
-/// code is one statement per feature.
+/// Collapse whitespace runs into single spaces and trim, so that a feature's
+/// declaration is one statement on one line.  TableGen rejects a literal
+/// newline inside a string literal, so this only fires for a "\n" escape or for
+/// a condition pasted in from a formatted block.
 static std::string squashSpace(StringRef S) {
   std::string Out;
   bool PendingSpace = false;
@@ -245,9 +245,7 @@ static void collectPredicateFeatures(const Record *P, StringSet<> &Out) {
 void LegalizerInfoEmitter::emitFeatures(raw_ostream &OS) {
   std::vector<const Record *> Features =
       Records.getAllDerivedDefinitions("LegalizeFeature");
-  llvm::sort(Features, [](const Record *L, const Record *R) {
-    return L->getID() < R->getID();
-  });
+  llvm::sort(Features, LessRecordByID());
   unsigned Emitted = 0;
   for (const Record *F : Features) {
     if (!UsedFeatures.contains(F->getName()))
@@ -262,7 +260,8 @@ void LegalizerInfoEmitter::emitFeatures(raw_ostream &OS) {
 
 /// Lower one predicate record to a C++ boolean expression.  A combination is
 /// walked by the shared emitPredicateDag(); a leaf is either a cached bool
-/// (LegalizeFeature) or verbatim text (LegalizeOpaquePred).
+/// (LegalizeFeature) or verbatim text (LegalizeOpaqueBool and
+/// LegalizeQueryPredicate).
 void LegalizerInfoEmitter::emitPredicate(const Record &P, raw_ostream &OS) {
   if (P.isSubClassOf("LegalizePredicateDag")) {
     auto EmitLeaf = [&](const Init &Leaf, raw_ostream &OS) -> bool {
@@ -281,7 +280,8 @@ void LegalizerInfoEmitter::emitPredicate(const Record &P, raw_ostream &OS) {
     OS << P.getName();
     return;
   }
-  if (P.isSubClassOf("LegalizeOpaquePred")) {
+  if (P.isSubClassOf("LegalizeOpaqueBool") ||
+      P.isSubClassOf("LegalizeQueryPredicate")) {
     OS << squashSpace(P.getValueAsString("Expr"));
     return;
   }
@@ -293,13 +293,9 @@ void LegalizerInfoEmitter::emitPredicate(const Record &P, raw_ostream &OS) {
 /// it would generate code that does not compile, which is why the names are
 /// also checked for declaration order (see run()).
 void LegalizerInfoEmitter::emitTypes(raw_ostream &OS) {
-  auto BySourceOrder = [](const Record *L, const Record *R) {
-    return L->getID() < R->getID();
-  };
-
   std::vector<const Record *> Types =
-      Records.getAllDerivedDefinitions("LegalizeType");
-  llvm::sort(Types, BySourceOrder);
+      Records.getAllDerivedDefinitions("LegalizeNamedType");
+  llvm::sort(Types, LessRecordByID());
   for (const Record *T : Types)
     OS << "  const LLT " << T->getName() << " = " << T->getValueAsString("Expr")
        << ";\n";
@@ -307,8 +303,8 @@ void LegalizerInfoEmitter::emitTypes(raw_ostream &OS) {
     OS << "\n";
 
   std::vector<const Record *> Lists =
-      Records.getAllDerivedDefinitions("LegalizeTypeList");
-  llvm::sort(Lists, BySourceOrder);
+      Records.getAllDerivedDefinitions("LegalizeNamedTypeList");
+  llvm::sort(Lists, LessRecordByID());
   for (const Record *L : Lists) {
     SmallVector<StringRef, 8> Elems;
     for (const Record *E : L->getValueAsListOfDefs("Elems"))
@@ -355,35 +351,19 @@ void LegalizerInfoEmitter::verifyRule(const Record &Rule) {
                                        "rule carries '" +
                                        Mutation + "'");
 
-  // The emitter prints an opaque body and never looks at Pred, so a rule that
-  // carries both would silently lose its guard.
-  if (!Rule.getValueAsString("OpaqueArgs").empty() &&
-      Rule.getValueAsOptionalDef("Pred"))
-    PrintFatalError(Rule.getLoc(),
-                    "legalizer rule '" + Method +
-                        "' has both a Pred and an opaque body; the predicate "
-                        "would be dropped");
-
-  // A type is rendered by its record name, so it has to be a named def: an
-  // inline `LegalizeType<...>` would generate an identifier called anonymous_0.
-  auto CheckNamed = [](const Record *T) {
-    if (T->isSubClassOf("LegalizeType") && T->isAnonymous())
-      PrintFatalError(T, "a legalizer type has to be a named def, e.g. "
-                         "`def s32 : LegalizeType<...>`");
-  };
-  for (const Record *Arg : Rule.getValueAsListOfDefs("Args")) {
-    CheckNamed(Arg);
-    if (Arg->isSubClassOf("LegalizeTypePair")) {
-      CheckNamed(Arg->getValueAsDef("Type0"));
-      CheckNamed(Arg->getValueAsDef("Type1"));
-    } else if (Arg->isSubClassOf("LegalizeMemDesc")) {
-      CheckNamed(Arg->getValueAsDef("Type0"));
-      CheckNamed(Arg->getValueAsDef("Type1"));
-      CheckNamed(Arg->getValueAsDef("MemTy"));
-    } else if (Arg->isSubClassOf("LegalizeInlineTypeList")) {
-      for (const Record *E : Arg->getValueAsListOfDefs("Elems"))
-        CheckNamed(E);
-    }
+  // The emitter prints an opaque body and never looks at Pred or Args, so a
+  // rule that carries either alongside it would lose them without a word.
+  if (!Rule.getValueAsString("OpaqueArgs").empty()) {
+    if (Rule.getValueAsOptionalDef("Pred"))
+      PrintFatalError(Rule.getLoc(),
+                      "legalizer rule '" + Method +
+                          "' has both a Pred and an opaque body; the predicate "
+                          "would be dropped");
+    if (!Rule.getValueAsListOfDefs("Args").empty())
+      PrintFatalError(Rule.getLoc(),
+                      "legalizer rule '" + Method +
+                          "' has both Args and an opaque body; the arguments "
+                          "would be dropped");
   }
 }
 
@@ -391,13 +371,13 @@ void LegalizerInfoEmitter::verifyRule(const Record &Rule) {
 /// themselves, so a list of pairs reads {{a, b}, {c, d}}; the brace around the
 /// whole list is added by emitArgList.
 void LegalizerInfoEmitter::emitArg(const Record &Arg, raw_ostream &OS) {
-  if (Arg.isSubClassOf("LegalizeType") ||
-      Arg.isSubClassOf("LegalizeTypeList")) {
+  if (Arg.isSubClassOf("LegalizeNamedType") ||
+      Arg.isSubClassOf("LegalizeNamedTypeList")) {
     OS << Arg.getName();
     return;
   }
-  if (Arg.isSubClassOf("LegalizeTypeExpr") ||
-      Arg.isSubClassOf("LegalizeTypeListExpr")) {
+  if (Arg.isSubClassOf("LegalizeInlineType") ||
+      Arg.isSubClassOf("LegalizeTypeListChoice")) {
     OS << Arg.getValueAsString("Text");
     return;
   }
@@ -446,8 +426,8 @@ static bool isBracedGroup(ArrayRef<const Record *> Args) {
   if (Args.empty())
     return false;
   return all_of(Args, [](const Record *A) {
-    return A->isSubClassOf("LegalizeType") ||
-           A->isSubClassOf("LegalizeTypeExpr") ||
+    return A->isSubClassOf("LegalizeNamedType") ||
+           A->isSubClassOf("LegalizeInlineType") ||
            A->isSubClassOf("LegalizeTypePair") ||
            A->isSubClassOf("LegalizeMemDesc");
   });
@@ -519,21 +499,39 @@ void LegalizerInfoEmitter::run(raw_ostream &OS) {
   for (const Record *F : Records.getAllDerivedDefinitions("LegalizeFeature"))
     Declared.insert(F->getName());
 
-  for (const Record *E :
-       Records.getAllDerivedDefinitions("LegalizeOpaquePred")) {
-    SmallVector<StringRef, 4> Idents;
-    StringRef Expr = E->getValueAsString("Expr");
-    if (!isBooleanCombination(Expr, Idents))
-      continue;
-    if (!all_of(Idents, [&](StringRef Id) {
-          return Id == "true" || Id == "false" || Declared.contains(Id);
-        }))
-      continue;
-    PrintFatalError(E->getLoc(),
-                    "LegalizeOpaquePred '" + Expr +
-                        "' is a boolean combination of declared features; "
-                        "write it with all_of / any_of / not");
-  }
+  // The same question has to be asked of both escape hatches: text that is
+  // nothing but declared features and boolean operators is a predicate that
+  // looks structured but is not, so it belongs in the AST (or, for a query
+  // predicate, is a cached bool passed where a callable is expected).
+  auto CheckOpaqueGuard = [&](StringRef Class, StringRef Fix) {
+    for (const Record *E : Records.getAllDerivedDefinitions(Class)) {
+      SmallVector<StringRef, 4> Idents;
+      StringRef Expr = E->getValueAsString("Expr");
+      if (!isBooleanCombination(Expr, Idents))
+        continue;
+      if (!all_of(Idents, [&](StringRef Id) {
+            return Id == "true" || Id == "false" || Declared.contains(Id);
+          }))
+        continue;
+      PrintFatalError(E->getLoc(), Twine(Class) + " '" + Expr +
+                                       "' is a boolean combination of declared "
+                                       "features; " +
+                                       Fix);
+    }
+  };
+  CheckOpaqueGuard("LegalizeOpaqueBool", "write it with all_of / any_of / not");
+  CheckOpaqueGuard(
+      "LegalizeQueryPredicate",
+      "use a predicate the query can evaluate, e.g. typeIs(0, s32)");
+
+  // A type is rendered by its record name, so it has to be a named def: an
+  // inline `LegalizeNamedType<...>` would emit an identifier called
+  // anonymous_0.  Checking the class itself covers every position a type can
+  // appear in, including the elements of a type list.
+  for (const Record *T : Records.getAllDerivedDefinitions("LegalizeNamedType"))
+    if (T->isAnonymous())
+      PrintFatalError(T, "a legalizer type has to be a named def, e.g. "
+                         "`def s32 : LegalizeNamedType<...>`");
 
   // The fragment is emitted in .td order, so a record that names one declared
   // further down would be emitted before its declaration and the generated C++
@@ -557,7 +555,8 @@ void LegalizerInfoEmitter::run(raw_ostream &OS) {
       }
     }
   };
-  CheckDeclarationOrder("LegalizeType", "Expr");
+
+  CheckDeclarationOrder("LegalizeNamedType", "Expr");
   CheckDeclarationOrder("LegalizeFeature", "Cond");
 
   // Everything a feature name can be written in: a predicate dag's leaves, and
@@ -577,14 +576,19 @@ void LegalizerInfoEmitter::run(raw_ostream &OS) {
     if (const Record *Pred = P->getValueAsOptionalDef("Pred"))
       collectPredicateFeatures(Pred, UsedFeatures);
   }
-  for (const Record *E : Records.getAllDerivedDefinitions("LegalizeOpaquePred"))
+  for (const Record *E : Records.getAllDerivedDefinitions("LegalizeOpaqueBool"))
     CollectUsed(E->getValueAsString("Expr"));
-  for (const Record *T : Records.getAllDerivedDefinitions("LegalizeType"))
+  // A feature whose condition names another feature is a reference like any
+  // other: without this, the named feature would be reported as unused and not
+  // declared, and the generated bool would not compile.
+  for (const Record *F : Records.getAllDerivedDefinitions("LegalizeFeature"))
+    CollectUsed(F->getValueAsString("Cond"));
+  for (const Record *T : Records.getAllDerivedDefinitions("LegalizeNamedType"))
     CollectUsed(T->getValueAsString("Expr"));
-  for (const Record *X : Records.getAllDerivedDefinitions("LegalizeTypeExpr"))
+  for (const Record *X : Records.getAllDerivedDefinitions("LegalizeInlineType"))
     CollectUsed(X->getValueAsString("Text"));
   for (const Record *X :
-       Records.getAllDerivedDefinitions("LegalizeTypeListExpr"))
+       Records.getAllDerivedDefinitions("LegalizeTypeListChoice"))
     CollectUsed(X->getValueAsString("Text"));
   for (const Record *X : Records.getAllDerivedDefinitions("LegalizeRawArg"))
     CollectUsed(X->getValueAsString("Text"));
@@ -604,10 +608,8 @@ void LegalizerInfoEmitter::run(raw_ostream &OS) {
 
   // getAllDerivedDefinitions() returns the records sorted by name.  Emit them
   // in source order instead, so that a generated fragment lines up with the
-  // .td file and, for a mechanical conversion, with the code it replaces.
-  llvm::sort(RuleSets, [](const Record *L, const Record *R) {
-    return L->getID() < R->getID();
-  });
+  // .td file it was written in.
+  llvm::sort(RuleSets, LessRecordByID());
 
   // A duplicated opcode silently *appends* rules to the same rule set at
   // runtime, so this cannot be caught by the C++ compiler either.

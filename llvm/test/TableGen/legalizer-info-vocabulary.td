@@ -7,7 +7,7 @@
 include "llvm/Target/LegalizerInfo.td"
 
 def HasAVX : LegalizeFeature<"Subtarget.hasAVX()">;
-def s32 : LegalizeType<"LLT::scalar(32)">;
+def s32 : LegalizeNamedType<"LLT::scalar(32)">;
 
 def Bad : LegalizePredicateDag<(any_of HasAVX, "HasAVXX")>;
 

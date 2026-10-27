@@ -9,12 +9,12 @@ include "llvm/Target/LegalizerInfo.td"
 
 def HasSSE1 : LegalizeFeature<"Subtarget.hasSSE1()">;
 def UseX87 : LegalizeFeature<"Subtarget.hasX87()">;
-def s32 : LegalizeType<"LLT::scalar(32)">;
+def s32 : LegalizeNamedType<"LLT::scalar(32)">;
 
 def Bad : LegalizeRuleSet<["G_FSQRT"]> {
   let Rules = [
-    LegalForIf<LegalizeOpaquePred<"HasSSE1 || UseX87">, [s32]>,
+    LegalForIf<LegalizeOpaqueBool<"HasSSE1 || UseX87">, [s32]>,
   ];
 }
 
-// CHECK: error: LegalizeOpaquePred 'HasSSE1 || UseX87' is a boolean combination of declared features; write it with all_of / any_of / not
+// CHECK: error: LegalizeOpaqueBool 'HasSSE1 || UseX87' is a boolean combination of declared features; write it with all_of / any_of / not

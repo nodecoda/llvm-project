@@ -12,6 +12,13 @@ def HasPOPCNT : LegalizeFeature<"Subtarget.hasPOPCNT()">;
 def HasVPOPCNTDQ : LegalizeFeature<"Subtarget.hasVPOPCNTDQ()">;
 def NoVLX : LegalizeFeature<"!Subtarget.hasVLX()">;
 
+// A condition may name another feature, and that reference keeps the named one
+// reachable.  SlowMem is named here and nowhere else: if -gen-legalizer did not
+// follow the reference it would report SlowMem as unused, not declare it, and
+// the generated SlowMemOr64 would not compile.
+def SlowMem : LegalizeFeature<"Subtarget.hasSlowUAMem()">;
+def SlowMemOr64 : LegalizeFeature<"SlowMem || Is64Bit">;
+
 // Combinations are named records: a dag argument cannot hold a bare record.
 def PopcntAndIs64Bit : LegalizePredicateDag<(all_of HasPOPCNT, Is64Bit)>;
 def VpopcntdqOrNotNoVLX
@@ -19,14 +26,15 @@ def VpopcntdqOrNotNoVLX
 def NeitherVpopcntdqNorVLX
     : LegalizePredicateDag<(none_of HasVPOPCNTDQ, NoVLX)>;
 
-def s16 : LegalizeType<"LLT::scalar(16)">;
-def s32 : LegalizeType<"LLT::scalar(32)">;
-def s64 : LegalizeType<"LLT::scalar(64)">;
-def sMaxScalar : LegalizeType<"Subtarget.is64Bit() ? s64 : s32">;
-def v4s32 : LegalizeType<"LLT::fixed_vector(4, 32)">;
-def Tys : LegalizeTypeList<[s32]>;
+def s16 : LegalizeNamedType<"LLT::scalar(16)">;
+def s32 : LegalizeNamedType<"LLT::scalar(32)">;
+def s64 : LegalizeNamedType<"LLT::scalar(64)">;
+def sMaxScalar : LegalizeNamedType<"Subtarget.is64Bit() ? s64 : s32">;
+def v4s32 : LegalizeNamedType<"LLT::fixed_vector(4, 32)">;
+def Tys : LegalizeNamedTypeList<[s32]>;
 
-// CHECK:      bool Is64Bit = Subtarget.is64Bit();
+// CHECK:      bool SlowMem = Subtarget.hasSlowUAMem();
+// CHECK:      bool SlowMemOr64 = SlowMem || Is64Bit;
 // CHECK:      const LLT s32 = LLT::scalar(32);
 // CHECK:      const std::initializer_list<LLT> Tys = {s32};
 
@@ -59,7 +67,7 @@ def Test_ADD : LegalizeRuleSet<["G_ADD"]> {
     LegalForIf<NeitherVpopcntdqNorVLX, [s32]>,
     // A call is not a boolean combination, so this one keeps the escape
     // hatch: it is for guards that have no AST form yet.
-    ScalarizeIf<LegalizeOpaquePred<"scalarOrEltWiderThan(0, 64)">, 0>,
+    ScalarizeIf<LegalizeQueryPredicate<"scalarOrEltWiderThan(0, 64)">, 0>,
     Lower,
   ];
 }
@@ -70,14 +78,25 @@ def Test_ADD : LegalizeRuleSet<["G_ADD"]> {
 // CHECK-NEXT: .lower();
 
 // A cartesian product takes two type lists.  The braces around an inline list
-// belong to the emitter; a list picked by an expression cannot carry them,
-// because the choice is made at run time.
+// belong to the emitter; a named list is passed by name, and an expression that
+// picks one of two named lists cannot carry braces because the choice is made
+// at run time.
 def Test_CARTESIAN : LegalizeRuleSet<["G_PTRTOINT"]> {
   let Rules = [
-    LegalForCartesianProduct<LegalizeInlineTypeList<[s16, s32]>,
-                             LegalizeTypeListExpr<"Is64Bit ? Tys : Tys">>,
+    LegalForCartesianProduct<LegalizeInlineTypeList<[s16, s32]>, Tys>,
+    LegalForCartesianProduct<LegalizeTypeListChoice<"Is64Bit ? Tys : Tys">, Tys>,
   ];
 }
 
 // CHECK:      getActionDefinitionsBuilder(G_PTRTOINT)
-// CHECK-NEXT: .legalForCartesianProduct({s16, s32}, Is64Bit ? Tys : Tys);
+// CHECK-NEXT: .legalForCartesianProduct({s16, s32}, Tys)
+// CHECK-NEXT: .legalForCartesianProduct(Is64Bit ? Tys : Tys, Tys);
+
+// The only reference to SlowMem is the condition of SlowMemOr64, so this rule
+// set is what keeps both of them in the generated constructor.
+def Test_FENCE : LegalizeRuleSet<["G_FENCE"]> {
+  let Rules = [LegalForIf<SlowMemOr64, [s32]>];
+}
+
+// CHECK:      getActionDefinitionsBuilder(G_FENCE)
+// CHECK-NEXT: .legalFor(SlowMemOr64, {{[{]s32[}]}});
