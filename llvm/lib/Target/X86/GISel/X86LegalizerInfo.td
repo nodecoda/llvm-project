@@ -13,6 +13,10 @@
 // to one getActionDefinitionsBuilder() call; the generated C++ is identical up
 // to whitespace and redundant parentheses.
 //
+// X86_Context declares the subtarget-feature booleans and LLT constants the
+// rules are written in terms of, so this file is the whole legalizer: there is
+// no longer a hand-written prologue in the constructor.
+//
 // LG_OpaqueRule is the escape hatch for guards that are still raw C++
 // lambdas: 10 rules out of 239.
 //
@@ -24,6 +28,74 @@
 //
 
 include "llvm/Target/LegalizerInfo.td"
+
+/// The subtarget-feature booleans and LLT constants the rules are written in
+/// terms of.  Order matters: a derived entry may use the ones above it.
+def X86_Context : LegalizeContext {
+  let Comments = ["todo: AVX512 bool vector predicate types"];
+  let Bools = [
+    LG_Bool<"Is64Bit", "Subtarget.is64Bit()">,
+    LG_Bool<"HasCMOV", "Subtarget.canUseCMOV()">,
+    LG_Bool<"HasSSE1", "Subtarget.hasSSE1()">,
+    LG_Bool<"HasSSE2", "Subtarget.hasSSE2()">,
+    LG_Bool<"HasSSE41", "Subtarget.hasSSE41()">,
+    LG_Bool<"HasAVX", "Subtarget.hasAVX()">,
+    LG_Bool<"HasAVX2", "Subtarget.hasAVX2()">,
+    LG_Bool<"HasAVX512", "Subtarget.hasAVX512()">,
+    LG_Bool<"HasVLX", "Subtarget.hasVLX()">,
+    LG_Bool<"HasDQI", "Subtarget.hasAVX512() && Subtarget.hasDQI()">,
+    LG_Bool<"HasBWI", "Subtarget.hasAVX512() && Subtarget.hasBWI()">,
+    LG_Bool<"UseX87", "!Subtarget.useSoftFloat() && Subtarget.hasX87()">,
+    LG_Bool<"HasPOPCNT", "Subtarget.hasPOPCNT()">,
+    LG_Bool<"HasLZCNT", "Subtarget.hasLZCNT()">,
+    LG_Bool<"HasBMI", "Subtarget.hasBMI()">,
+  ];
+  let Types = [
+    LG_Type<"p0",
+            "LLT::pointer(0, Subtarget.isTarget64BitLP64() ? 64 : 32)">,
+    LG_Type<"s1", "LLT::scalar(1)">,
+    LG_Type<"s8", "LLT::scalar(8)">,
+    LG_Type<"s16", "LLT::scalar(16)">,
+    LG_Type<"s32", "LLT::scalar(32)">,
+    LG_Type<"s64", "LLT::scalar(64)">,
+    LG_Type<"s80", "LLT::scalar(80)">,
+    LG_Type<"s128", "LLT::scalar(128)">,
+    LG_Type<"sMaxScalar", "Subtarget.is64Bit() ? s64 : s32">,
+
+    LG_Type<"v2s32", "LLT::fixed_vector(2, 32)">,
+    LG_Type<"v4s8", "LLT::fixed_vector(4, 8)">,
+
+    LG_Type<"v16s8", "LLT::fixed_vector(16, 8)">,
+    LG_Type<"v8s16", "LLT::fixed_vector(8, 16)">,
+    LG_Type<"v4s32", "LLT::fixed_vector(4, 32)">,
+    LG_Type<"v2s64", "LLT::fixed_vector(2, 64)">,
+    LG_Type<"v2p0", "LLT::fixed_vector(2, p0)">,
+
+    LG_Type<"v32s8", "LLT::fixed_vector(32, 8)">,
+    LG_Type<"v16s16", "LLT::fixed_vector(16, 16)">,
+    LG_Type<"v8s32", "LLT::fixed_vector(8, 32)">,
+    LG_Type<"v4s64", "LLT::fixed_vector(4, 64)">,
+    LG_Type<"v4p0", "LLT::fixed_vector(4, p0)">,
+
+    LG_Type<"v64s8", "LLT::fixed_vector(64, 8)">,
+    LG_Type<"v32s16", "LLT::fixed_vector(32, 16)">,
+    LG_Type<"v16s32", "LLT::fixed_vector(16, 32)">,
+    LG_Type<"v8s64", "LLT::fixed_vector(8, 64)">,
+
+    LG_Type<"s8MaxVector", "HasAVX512 ? v64s8 : HasAVX ? v32s8 : v16s8">,
+    LG_Type<"s16MaxVector", "HasAVX512 ? v32s16 : HasAVX ? v16s16 : v8s16">,
+    LG_Type<"s32MaxVector", "HasAVX512 ? v16s32 : HasAVX ? v8s32 : v4s32">,
+    LG_Type<"s64MaxVector", "HasAVX512 ? v8s64 : HasAVX ? v4s64 : v2s64">,
+  ];
+  // Types used by individual rule sets.
+  let TypeLists = [
+    LG_TypeList<"IntTypes32", ["s8", "s16", "s32", "p0"]>,
+    LG_TypeList<"IntTypes64", ["s8", "s16", "s32", "s64", "p0"]>,
+    LG_TypeList<"PtrTypes32", ["s1", "s8", "s16", "s32"]>,
+    LG_TypeList<"PtrTypes64", ["s1", "s8", "s16", "s32", "s64"]>,
+  ];
+}
+
 
 def X86_IMPLICIT_DEF : LegalizeRuleSet<[
   "G_IMPLICIT_DEF", "G_PHI", "G_FREEZE", "G_CONSTANT_FOLD_BARRIER"

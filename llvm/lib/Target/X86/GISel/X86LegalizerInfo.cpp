@@ -36,67 +36,10 @@ X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI,
                                    const X86TargetMachine &TM)
     : Subtarget(STI) {
 
-  bool Is64Bit = Subtarget.is64Bit();
-  bool HasCMOV = Subtarget.canUseCMOV();
-  bool HasSSE1 = Subtarget.hasSSE1();
-  bool HasSSE2 = Subtarget.hasSSE2();
-  bool HasSSE41 = Subtarget.hasSSE41();
-  bool HasAVX = Subtarget.hasAVX();
-  bool HasAVX2 = Subtarget.hasAVX2();
-  bool HasAVX512 = Subtarget.hasAVX512();
-  bool HasVLX = Subtarget.hasVLX();
-  bool HasDQI = Subtarget.hasAVX512() && Subtarget.hasDQI();
-  bool HasBWI = Subtarget.hasAVX512() && Subtarget.hasBWI();
-  bool UseX87 = !Subtarget.useSoftFloat() && Subtarget.hasX87();
-  bool HasPOPCNT = Subtarget.hasPOPCNT();
-  bool HasLZCNT = Subtarget.hasLZCNT();
-  bool HasBMI = Subtarget.hasBMI();
-
-  const LLT p0 = LLT::pointer(0, Subtarget.isTarget64BitLP64() ? 64 : 32);
-  const LLT s1 = LLT::scalar(1);
-  const LLT s8 = LLT::scalar(8);
-  const LLT s16 = LLT::scalar(16);
-  const LLT s32 = LLT::scalar(32);
-  const LLT s64 = LLT::scalar(64);
-  const LLT s80 = LLT::scalar(80);
-  const LLT s128 = LLT::scalar(128);
-  const LLT sMaxScalar = Subtarget.is64Bit() ? s64 : s32;
-  const LLT v2s32 = LLT::fixed_vector(2, 32);
-  const LLT v4s8 = LLT::fixed_vector(4, 8);
-
-  const LLT v16s8 = LLT::fixed_vector(16, 8);
-  const LLT v8s16 = LLT::fixed_vector(8, 16);
-  const LLT v4s32 = LLT::fixed_vector(4, 32);
-  const LLT v2s64 = LLT::fixed_vector(2, 64);
-  const LLT v2p0 = LLT::fixed_vector(2, p0);
-
-  const LLT v32s8 = LLT::fixed_vector(32, 8);
-  const LLT v16s16 = LLT::fixed_vector(16, 16);
-  const LLT v8s32 = LLT::fixed_vector(8, 32);
-  const LLT v4s64 = LLT::fixed_vector(4, 64);
-  const LLT v4p0 = LLT::fixed_vector(4, p0);
-
-  const LLT v64s8 = LLT::fixed_vector(64, 8);
-  const LLT v32s16 = LLT::fixed_vector(32, 16);
-  const LLT v16s32 = LLT::fixed_vector(16, 32);
-  const LLT v8s64 = LLT::fixed_vector(8, 64);
-
-  const LLT s8MaxVector = HasAVX512 ? v64s8 : HasAVX ? v32s8 : v16s8;
-  const LLT s16MaxVector = HasAVX512 ? v32s16 : HasAVX ? v16s16 : v8s16;
-  const LLT s32MaxVector = HasAVX512 ? v16s32 : HasAVX ? v8s32 : v4s32;
-  const LLT s64MaxVector = HasAVX512 ? v8s64 : HasAVX ? v4s64 : v2s64;
-
-  // Types used by individual rule sets.
-  const std::initializer_list<LLT> IntTypes32 = {s8, s16, s32, p0};
-  const std::initializer_list<LLT> IntTypes64 = {s8, s16, s32, s64, p0};
-  const std::initializer_list<LLT> PtrTypes32 = {s1, s8, s16, s32};
-  const std::initializer_list<LLT> PtrTypes64 = {s1, s8, s16, s32, s64};
-
-  // todo: AVX512 bool vector predicate types
-
-  // The rule chains are generated from GISel/X86LegalizerInfo.td.  The
-  // generated file is a statement sequence rather than a table, so the LLT
-  // and subtarget-feature locals above stay in scope for it.
+  // The subtarget-feature/LLT vocabulary and the rule chains are both
+  // generated from GISel/X86LegalizerInfo.td.  The generated file is a
+  // statement sequence, so it stays inside the constructor and the member
+  // Subtarget stays in scope.
 #include "X86LegalizerInfo.inc"
 
   verify(*STI.getInstrInfo());

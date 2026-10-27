@@ -39,9 +39,11 @@ class LGTrue : LegalizePredicate {
 }
 
 /// A subtarget feature, or any per-subtarget boolean computed by the target,
-/// e.g. "HasPOPCNT" or "Is64Bit".
-class LGFeature<string Name> : LegalizePredicate {
-  let Text = Name;
+/// e.g. "HasPOPCNT" or "Is64Bit".  The name is kept as a field so that
+/// -gen-legalizer can check it against the target's LegalizeContext.
+class LGFeature<string name> : LegalizePredicate {
+  string Name = name;
+  let Text = name;
 }
 
 /// A C++ expression not (yet) modelled as AST nodes.
@@ -194,6 +196,46 @@ class LG_ClampMinNumElements<string Idx, string EltTy, string Num>
 class LG_ClampMaxNumElements<string Idx, string EltTy, string Num>
     : LG_Rule<"clampMaxNumElements", [Idx, EltTy, Num], "ClampNumElements",
               "any">;
+
+//===----------------------------------------------------------------------===//
+// Target vocabulary
+//
+// The rules below are written in terms of one boolean per subtarget feature
+// and a handful of LLT constants.  Declaring them here as well keeps a
+// target's whole legalizer in one file, and lets -gen-legalizer check that a
+// predicate names something that exists.
+//===----------------------------------------------------------------------===//
+
+/// A subtarget feature cached in the constructor:
+///   bool HasAVX2 = Subtarget.hasAVX2();
+class LG_Bool<string name, string expr> {
+  string Name = name;
+  string Expr = expr;
+}
+
+/// An LLT constant:
+///   const LLT s32 = LLT::scalar(32);
+class LG_Type<string name, string expr> {
+  string Name = name;
+  string Expr = expr;
+}
+
+/// A named type list, for the builders that take an initializer_list:
+///   const std::initializer_list<LLT> PtrTypes32 = {s1, s8, s16, s32};
+class LG_TypeList<string name, list<string> elems> {
+  string Name = name;
+  list<string> Elems = elems;
+}
+
+/// Everything a target's rule sets are written in terms of.  -gen-legalizer
+/// emits these declarations ahead of the rules, in the order given here, so a
+/// derived entry may refer to the ones above it.
+class LegalizeContext {
+  list<string> Comments = [];
+  list<LG_Bool> Bools = [];
+  list<LG_Type> Types = [];
+  list<LG_TypeList> TypeLists = [];
+}
 
 //===----------------------------------------------------------------------===//
 // Rule sets
