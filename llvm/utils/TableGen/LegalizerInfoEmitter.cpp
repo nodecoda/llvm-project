@@ -108,6 +108,11 @@ static bool isBooleanCombination(StringRef Expr,
 void emitOpaqueBody(raw_ostream &OS, StringRef Body) {
   SmallVector<StringRef, 16> Lines;
   Body.split(Lines, '\n');
+  // A .td checked out with core.autocrlf keeps a carriage return at the end of
+  // every line, and a code block is copied verbatim.  The carriage return is
+  // not part of the body.
+  for (StringRef &Line : Lines)
+    Line.consume_back("\r");
 
   unsigned Begin = 0, End = Lines.size();
   while (Begin != End && Lines[Begin].trim().empty())
@@ -149,6 +154,7 @@ class LegalizerInfoEmitter {
   void emitPredicate(const Record &P, raw_ostream &OS);
   void emitTypes(raw_ostream &OS);
   void verifyRule(const Record &Rule);
+  void emitArg(const Record &Arg, raw_ostream &OS);
   void emitArgList(raw_ostream &OS, const Record &Rule);
   void emitRuleSet(raw_ostream &OS, const Record &RuleSet);
 
@@ -244,9 +250,13 @@ void LegalizerInfoEmitter::emitTypes(raw_ostream &OS) {
   std::vector<const Record *> Lists =
       Records.getAllDerivedDefinitions("LegalizeTypeList");
   llvm::sort(Lists, BySourceOrder);
-  for (const Record *L : Lists)
+  for (const Record *L : Lists) {
+    SmallVector<StringRef, 8> Elems;
+    for (const Record *E : L->getValueAsListOfDefs("Elems"))
+      Elems.push_back(E->getName());
     OS << "  const std::initializer_list<LLT> " << L->getName() << " = {"
-       << join(L->getValueAsListOfStrings("Elems"), ", ") << "};\n";
+       << join(Elems, ", ") << "};\n";
+  }
   if (!Lists.empty())
     OS << "\n";
 }
@@ -286,54 +296,97 @@ void LegalizerInfoEmitter::verifyRule(const Record &Rule) {
                                        "rule carries '" +
                                        Mutation + "'");
 
-  StringRef Style = Rule.getValueAsString("ArgStyle");
-  if (Style != "plain" && Style != "braced" && Style != "pairs")
-    PrintFatalError(Rule.getLoc(),
-                    "'" + Style + "' is not a legalizer argument style");
-  if (Style != "plain" && !Rule.getValueAsListOfStrings("ArgNames").empty())
-    PrintFatalError(Rule.getLoc(),
-                    "ArgNames is only meaningful with ArgStyle \"plain\"");
-
-  if (Rule.getValueAsString("OpaqueArgs").empty())
-    for (StringRef Arg : Rule.getValueAsListOfStrings("Args"))
-      if (Arg.empty())
-        PrintFatalError(Rule.getLoc(), "legalizer rule '" + Method +
-                                           "' has an empty argument");
+  // A type is rendered by its record name, so it has to be a named def: an
+  // inline `LegalizeType<...>` would generate an identifier called anonymous_0.
+  auto CheckNamed = [](const Record *T) {
+    if (T->isSubClassOf("LegalizeType") && T->isAnonymous())
+      PrintFatalError(T, "a legalizer type has to be a named def, e.g. "
+                         "`def s32 : LegalizeType<...>`");
+  };
+  for (const Record *Arg : Rule.getValueAsListOfDefs("Args")) {
+    CheckNamed(Arg);
+    if (Arg->isSubClassOf("LegalizeTypePair")) {
+      CheckNamed(Arg->getValueAsDef("Type0"));
+      CheckNamed(Arg->getValueAsDef("Type1"));
+    } else if (Arg->isSubClassOf("LegalizeMemDesc")) {
+      CheckNamed(Arg->getValueAsDef("Type0"));
+      CheckNamed(Arg->getValueAsDef("Type1"));
+      CheckNamed(Arg->getValueAsDef("MemTy"));
+    }
+  }
 }
 
-/// Render one rule's arguments.  The layout is data, not text: a type list is
-/// stored as the list itself and wrapped here, so a .td file has no way to
-/// spell a brace that does not match its builder.
+/// Render one argument.  Shapes that stand for a group of types brace
+/// themselves, so a list of pairs reads {{a, b}, {c, d}}; the brace around the
+/// whole list is added by emitArgList.
+void LegalizerInfoEmitter::emitArg(const Record &Arg, raw_ostream &OS) {
+  if (Arg.isSubClassOf("LegalizeType") ||
+      Arg.isSubClassOf("LegalizeTypeList")) {
+    OS << Arg.getName();
+    return;
+  }
+  if (Arg.isSubClassOf("LegalizeTypeExpr")) {
+    OS << Arg.getValueAsString("Text");
+    return;
+  }
+  if (Arg.isSubClassOf("LegalizeTypePair")) {
+    OS << "{" << Arg.getValueAsDef("Type0")->getName() << ", "
+       << Arg.getValueAsDef("Type1")->getName() << "}";
+    return;
+  }
+  if (Arg.isSubClassOf("LegalizeMemDesc")) {
+    OS << "{" << Arg.getValueAsDef("Type0")->getName() << ", "
+       << Arg.getValueAsDef("Type1")->getName() << ", "
+       << Arg.getValueAsDef("MemTy")->getName() << ", "
+       << Arg.getValueAsInt("Align") << "}";
+    return;
+  }
+  if (Arg.isSubClassOf("LegalizeArgInt")) {
+    StringRef Comment = Arg.getValueAsString("Comment");
+    if (!Comment.empty())
+      OS << "/*" << Comment << "=*/";
+    OS << Arg.getValueAsInt("Value");
+    return;
+  }
+  if (Arg.isSubClassOf("LegalizeRawArg")) {
+    OS << Arg.getValueAsString("Text");
+    return;
+  }
+  PrintFatalError(&Arg, "unknown LegalizeArg record");
+}
+
+/// A list made only of types, type pairs or memdesc tuples is one braced group
+/// in C++ -- legalFor({s8, s16}), legalFor({{s32, s32}, ...}),
+/// legalForTypesWithMemDesc({{s8, p0, s8, 1}, ...}).  Anything else is a plain
+/// argument list in which each argument renders itself, which is what the
+/// builders that take an index and two types need.
+static bool isBracedGroup(ArrayRef<const Record *> Args) {
+  if (Args.empty())
+    return false;
+  return all_of(Args, [](const Record *A) {
+    return A->isSubClassOf("LegalizeType") ||
+           A->isSubClassOf("LegalizeTypeExpr") ||
+           A->isSubClassOf("LegalizeTypePair") ||
+           A->isSubClassOf("LegalizeMemDesc");
+  });
+}
+
+/// Render one rule's arguments.  The layout is derived from the argument
+/// shapes, so a .td has no way to spell a brace that does not match its
+/// builder.
 void LegalizerInfoEmitter::emitArgList(raw_ostream &OS, const Record &Rule) {
-  std::vector<StringRef> Args = Rule.getValueAsListOfStrings("Args");
-  std::vector<StringRef> Names = Rule.getValueAsListOfStrings("ArgNames");
-  StringRef Style = Rule.getValueAsString("ArgStyle");
-
-  if (Style == "plain") {
-    StringRef Sep;
-    for (size_t I = 0, E = Args.size(); I != E; ++I) {
-      OS << Sep;
-      if (I < Names.size() && !Names[I].empty())
-        OS << "/*" << Names[I] << "=*/";
-      OS << Args[I];
-      Sep = ", ";
-    }
-    return;
-  }
-
-  if (Style == "braced") {
-    OS << "{" << join(Args, ", ") << "}";
-    return;
-  }
-
-  assert(Style == "pairs" && "verifyRule() accepts no other style");
-  OS << "{";
+  std::vector<const Record *> Args = Rule.getValueAsListOfDefs("Args");
+  bool Braced = isBracedGroup(Args);
+  if (Braced)
+    OS << "{";
   StringRef Sep;
-  for (StringRef Arg : Args) {
-    OS << Sep << "{" << Arg << "}";
+  for (const Record *A : Args) {
+    OS << Sep;
+    emitArg(*A, OS);
     Sep = ", ";
   }
-  OS << "}";
+  if (Braced)
+    OS << "}";
 }
 
 void LegalizerInfoEmitter::emitRuleSet(raw_ostream &OS, const Record &RuleSet) {

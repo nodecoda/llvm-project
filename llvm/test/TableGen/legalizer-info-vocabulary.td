@@ -7,11 +7,12 @@
 include "llvm/Target/LegalizerInfo.td"
 
 def HasAVX : LegalizeFeature<"Subtarget.hasAVX()">;
+def s32 : LegalizeType<"LLT::scalar(32)">;
 
 def Bad : LegalizePredicateDag<(any_of HasAVX, "HasAVXX")>;
 
 def BadSet : LegalizeRuleSet<["G_ADD"]> {
-  let Rules = [LegalForIf<Bad, ["s32"], 0>];
+  let Rules = [LegalForIf<Bad, [s32]>];
 }
 
 // CHECK: error: predicate dag leaf '"HasAVXX"' is not a LegalizeFeature

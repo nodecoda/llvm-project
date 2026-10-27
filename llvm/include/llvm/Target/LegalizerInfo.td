@@ -73,6 +73,80 @@ class LegalizePredicateDag<dag cond> : LegalizePredicate {
 }
 
 //===----------------------------------------------------------------------===//
+// Rule arguments
+//
+// One class per shape a builder argument can take.  A sugar class declares
+// which shapes it accepts, so the shape is checked when the .td is parsed
+// instead of surfacing as an undeclared identifier in the generated .inc.
+// The record name of a LegalizeType is the C++ identifier:
+//
+//   def s32 : LegalizeType<"LLT::scalar(32)">;
+//
+// and a rule refers to it as plain `s32`.
+//===----------------------------------------------------------------------===//
+
+class LegalizeArg;
+
+/// Anything that fits in a single type position: a named type, or a C++
+/// expression that yields one.
+class LegalizeArgType : LegalizeArg;
+
+/// A named type: `s32`.  The record name is the C++ identifier, and emitTypes()
+/// declares it once ahead of the rules.
+class LegalizeType<string expr> : LegalizeArgType {
+  string Name = NAME;
+  string Expr = expr;
+}
+
+/// A type position that holds a C++ expression, e.g. `HasSSE2 ? s64 : s32`.
+/// Unlike LegalizeType it declares nothing: the text is written straight into
+/// the builder call, so it has to be a single expression.
+class LegalizeTypeExpr<string text> : LegalizeArgType {
+  string Text = text;
+}
+
+/// A named type list, for builders that take an initializer_list:
+///   const std::initializer_list<LLT> PtrTypes32 = {s1, s8, s16, s32};
+class LegalizeTypeList<list<LegalizeType> elems> : LegalizeArg {
+  string Name = NAME;
+  list<LegalizeType> Elems = elems;
+}
+
+/// Two types that must be legal together: rendered `s32, s32` as one entry of
+/// a {{...}, {...}} list.
+class LegalizeTypePair<LegalizeType type0, LegalizeType type1> : LegalizeArg {
+  LegalizeType Type0 = type0;
+  LegalizeType Type1 = type1;
+}
+
+/// One LegalityPredicates::TypePairAndMemDesc entry (LegalizerInfo.h:167):
+/// {Type0, Type1, MemTy, Align}.  Align is in bits and is an integer, which is
+/// why a memdesc tuple is not a list of four types.
+class LegalizeMemDesc<LegalizeType type0, LegalizeType type1,
+                      LegalizeType memTy, int align> : LegalizeArg {
+  LegalizeType Type0 = type0;
+  LegalizeType Type1 = type1;
+  LegalizeType MemTy = memTy;
+  int Align = align;
+}
+
+/// A literal integer: a type index, a bit width, an element count.
+class LegalizeArgInt<int value, string comment = ""> : LegalizeArg {
+  int Value = value;
+
+  /// Rendered as `/*Name=*/` in front of the value, for builders where a bare
+  /// number would not say what it means.
+  string Comment = comment;
+}
+
+/// C++ text that cannot be typed, e.g. an element count computed from features.
+/// An escape hatch that is meant to shrink, not to grow: X86 is down to the
+/// element counts and the cartesian-product type lists.
+class LegalizeRawArg<string text> : LegalizeArg {
+  string Text = text;
+}
+
+//===----------------------------------------------------------------------===//
 // Actions
 //
 // The action a rule implements and the mutation direction that action implies.
@@ -119,17 +193,11 @@ def ActionClampNumElements : LegalizeAction<"ClampNumElements", "any">;
 
 class LegalizeRule {
   string Method = ?;
-  list<string> Args = [];
 
-  /// How Args are laid out in the generated call: "plain" (verbatim),
-  /// "braced" ({a, b}) or "pairs" ({{a, b}, {c, d}}).  A style carries no
-  /// data of its own, so unlike Action it stays a string and is validated by
-  /// -gen-legalizer.
-  string ArgStyle = "plain";
-
-  /// Optional C++ parameter names, rendered as `/*Name=*/` in front of the
-  /// argument at the same index.  Only meaningful for ArgStyle "plain".
-  list<string> ArgNames = [];
+  /// Builder arguments.  A list that is entirely types, type pairs or memdesc
+  /// tuples is emitted inside one `{...}`; anything else is a comma list, with
+  /// each argument rendering itself.
+  list<LegalizeArg> Args = [];
 
   /// Guard, lowered by -gen-legalizer.  Unset for builders that take none.
   LegalizePredicate Pred = ?;
@@ -149,8 +217,8 @@ class LegalizeRule {
 }
 
 /// A rule built from a builder method, its arguments and an action.
-class LegalizeCall<string method, list<string> args, LegalizeAction action,
-                   string mutation = ""> : LegalizeRule {
+class LegalizeCall<string method, list<LegalizeArg> args,
+                   LegalizeAction action, string mutation = ""> : LegalizeRule {
   let Method = method;
   let Args = args;
   let Action = action;
@@ -159,7 +227,7 @@ class LegalizeCall<string method, list<string> args, LegalizeAction action,
 
 /// The same, with a subtarget guard.
 class LegalizeGuardedCall<string method, LegalizePredicate P,
-                          list<string> args, LegalizeAction action,
+                          list<LegalizeArg> args, LegalizeAction action,
                           string mutation = ""> : LegalizeRule {
   let Method = method;
   let Pred = P;
@@ -180,140 +248,123 @@ class LegalizeOpaqueRule<string method, code body, LegalizeAction action,
 
 //===----------------------------------------------------------------------===//
 // Sugar: one class per builder in LegalizerInfo.h used by X86.
+//
+// A class name states the shape it accepts, because the shape is the thing
+// that used to go wrong: `LegalFor` takes single types, `LegalForPairs` takes
+// pairs that must be legal together, and `LegalForMemDesc` takes memdesc
+// tuples.  Pick the wrong one and the .td does not parse.
 //===----------------------------------------------------------------------===//
 
-class LegalFor<list<string> Types, bit Pairs = 1>
-    : LegalizeCall<"legalFor", Types, ActionLegal> {
-  let ArgStyle = !if(Pairs, "pairs", "braced");
-}
+class LegalFor<list<LegalizeArgType> Types>
+    : LegalizeCall<"legalFor", Types, ActionLegal>;
 
-class LegalForIf<LegalizePredicate P, list<string> Types, bit Pairs = 1>
-    : LegalizeGuardedCall<"legalFor", P, Types, ActionLegal> {
-  let ArgStyle = !if(Pairs, "pairs", "braced");
-}
+class LegalForIf<LegalizePredicate P, list<LegalizeArgType> Types>
+    : LegalizeGuardedCall<"legalFor", P, Types, ActionLegal>;
+
+class LegalForPairs<list<LegalizeTypePair> Pairs>
+    : LegalizeCall<"legalFor", Pairs, ActionLegal>;
+
+class LegalForPairsIf<LegalizePredicate P, list<LegalizeTypePair> Pairs>
+    : LegalizeGuardedCall<"legalFor", P, Pairs, ActionLegal>;
 
 class LegalForCartesianProduct<string T0, string T1>
-    : LegalizeCall<"legalForCartesianProduct", [T0, T1], ActionLegal>;
+    : LegalizeCall<"legalForCartesianProduct",
+                   [LegalizeRawArg<T0>, LegalizeRawArg<T1>], ActionLegal>;
 
-class LowerForIf<LegalizePredicate P, list<string> Types, bit Pairs = 1>
-    : LegalizeGuardedCall<"lowerFor", P, Types, ActionLower> {
-  let ArgStyle = !if(Pairs, "pairs", "braced");
-}
+class LowerForPairsIf<LegalizePredicate P, list<LegalizeTypePair> Pairs>
+    : LegalizeGuardedCall<"lowerFor", P, Pairs, ActionLower>;
 
-class LegalForMemDesc<list<string> Types>
-    : LegalizeCall<"legalForTypesWithMemDesc", Types, ActionLegal> {
-  let ArgStyle = "pairs";
-}
+class LegalForMemDesc<list<LegalizeMemDesc> Descs>
+    : LegalizeCall<"legalForTypesWithMemDesc", Descs, ActionLegal>;
 
-class LegalForMemDescIf<LegalizePredicate P, list<string> Types>
-    : LegalizeGuardedCall<"legalForTypesWithMemDesc", P, Types, ActionLegal> {
-  let ArgStyle = "pairs";
-}
+class LegalForMemDescIf<LegalizePredicate P, list<LegalizeMemDesc> Descs>
+    : LegalizeGuardedCall<"legalForTypesWithMemDesc", P, Descs, ActionLegal>;
 
 def Lower : LegalizeCall<"lower", [], ActionLower>;
 
 def Libcall : LegalizeCall<"libcall", [], ActionLibcall>;
 
-class LibcallFor<list<string> Types, bit Pairs = 0>
-    : LegalizeCall<"libcallFor", Types, ActionLibcall> {
-  let ArgStyle = !if(Pairs, "pairs", "braced");
-}
+class LibcallFor<list<LegalizeArgType> Types>
+    : LegalizeCall<"libcallFor", Types, ActionLibcall>;
 
-class CustomFor<list<string> Types, bit Pairs = 0>
-    : LegalizeCall<"customFor", Types, ActionCustom> {
-  let ArgStyle = !if(Pairs, "pairs", "braced");
-}
+class CustomFor<list<LegalizeArgType> Types>
+    : LegalizeCall<"customFor", Types, ActionCustom>;
 
 class CustomForCartesianProductIf<LegalizePredicate P, string T0, string T1>
-    : LegalizeGuardedCall<"customForCartesianProduct", P, [T0, T1],
+    : LegalizeGuardedCall<"customForCartesianProduct", P,
+                          [LegalizeRawArg<T0>, LegalizeRawArg<T1>],
                           ActionCustom>;
 
 def AlwaysLegal : LegalizeCall<"alwaysLegal", [], ActionLegal>;
 
-class ClampScalar<string Idx, string MinTy, string MaxTy>
-    : LegalizeCall<"clampScalar", [Idx, MinTy, MaxTy], ActionClampScalar,
+class ClampScalar<int Idx, LegalizeArgType MinTy, LegalizeArgType MaxTy>
+    : LegalizeCall<"clampScalar",
+                   [LegalizeArgInt<Idx>, MinTy, MaxTy], ActionClampScalar,
                    "any">;
 
-class ClampScalarOrElt<string Idx, string MinTy, string MaxTy>
-    : LegalizeCall<"clampScalarOrElt", [Idx, MinTy, MaxTy], ActionClampScalar,
+class ClampScalarOrElt<int Idx, LegalizeArgType MinTy,
+                       LegalizeArgType MaxTy>
+    : LegalizeCall<"clampScalarOrElt",
+                   [LegalizeArgInt<Idx>, MinTy, MaxTy], ActionClampScalar,
                    "any">;
 
-class WidenScalarToNextPow2<string Idx, string Min = "">
+/// Min = 0 means "no minimum": a zero-bit minimum is not meaningful, so the
+/// sentinel is unambiguous and the argument stays an integer.
+class WidenScalarToNextPow2<int Idx, int Min = 0>
     : LegalizeCall<"widenScalarToNextPow2",
-                   !if(!eq(Min, ""), [Idx], [Idx, Min]),
-                   ActionWidenScalar, "widen"> {
-  let ArgNames = !if(!eq(Min, ""), [], ["", "Min"]);
-}
+                   !if(!eq(Min, 0), [LegalizeArgInt<Idx>],
+                       [LegalizeArgInt<Idx>, LegalizeArgInt<Min, "Min">]),
+                   ActionWidenScalar, "widen">;
 
-class WidenScalarOrEltToNextPow2<string Idx, string Min = "">
+class WidenScalarOrEltToNextPow2<int Idx, int Min = 0>
     : LegalizeCall<"widenScalarOrEltToNextPow2",
-                   !if(!eq(Min, ""), [Idx], [Idx, Min]),
-                   ActionWidenScalar, "widen"> {
-  let ArgNames = !if(!eq(Min, ""), [], ["", "Min"]);
-}
+                   !if(!eq(Min, 0), [LegalizeArgInt<Idx>],
+                       [LegalizeArgInt<Idx>, LegalizeArgInt<Min, "Min">]),
+                   ActionWidenScalar, "widen">;
 
-class MinScalar<string Idx, string Ty>
-    : LegalizeCall<"minScalar", [Idx, Ty], ActionWidenScalar, "widen">;
+class MinScalar<int Idx, LegalizeArgType Ty>
+    : LegalizeCall<"minScalar", [LegalizeArgInt<Idx>, Ty], ActionWidenScalar,
+                   "widen">;
 
-class MaxScalar<string Idx, string Ty>
-    : LegalizeCall<"maxScalar", [Idx, Ty], ActionNarrowScalar, "narrow">;
+class MaxScalar<int Idx, LegalizeArgType Ty>
+    : LegalizeCall<"maxScalar", [LegalizeArgInt<Idx>, Ty], ActionNarrowScalar,
+                   "narrow">;
 
-class ScalarSameSizeAs<string Idx, string OtherIdx>
-    : LegalizeCall<"scalarSameSizeAs", [Idx, OtherIdx], ActionScalarSameSizeAs,
-                   "neutral">;
+class ScalarSameSizeAs<int Idx, int OtherIdx>
+    : LegalizeCall<"scalarSameSizeAs",
+                   [LegalizeArgInt<Idx>, LegalizeArgInt<OtherIdx>],
+                   ActionScalarSameSizeAs, "neutral">;
 
-class Scalarize<string Idx>
-    : LegalizeCall<"scalarize", [Idx], ActionFewerElements, "split">;
+class Scalarize<int Idx>
+    : LegalizeCall<"scalarize", [LegalizeArgInt<Idx>], ActionFewerElements,
+                   "split">;
 
-class ScalarizeIf<LegalizePredicate P, string Idx>
-    : LegalizeGuardedCall<"scalarizeIf", P, [Idx], ActionFewerElements,
-                          "split">;
+class ScalarizeIf<LegalizePredicate P, int Idx>
+    : LegalizeGuardedCall<"scalarizeIf", P, [LegalizeArgInt<Idx>],
+                          ActionFewerElements, "split">;
 
-class MoreElementsToNextPow2<string Idx>
-    : LegalizeCall<"moreElementsToNextPow2", [Idx], ActionMoreElements,
-                   "merge">;
+class MoreElementsToNextPow2<int Idx>
+    : LegalizeCall<"moreElementsToNextPow2", [LegalizeArgInt<Idx>],
+                   ActionMoreElements, "merge">;
 
-class ClampNumElements<string Idx, string EltTy, string MaxTy>
-    : LegalizeCall<"clampNumElements", [Idx, EltTy, MaxTy],
+class ClampNumElements<int Idx, LegalizeArgType EltTy,
+                       LegalizeArgType MaxTy>
+    : LegalizeCall<"clampNumElements",
+                   [LegalizeArgInt<Idx>, EltTy, MaxTy], ActionClampNumElements,
+                   "any">;
+
+/// The element count is a C++ integer expression: targets routinely compute it
+/// from features (`HasAVX2 ? 8 : 4`), so it stays text.  The index and the
+/// element type are still checked.
+class ClampMinNumElements<int Idx, LegalizeArgType EltTy, string Num>
+    : LegalizeCall<"clampMinNumElements",
+                   [LegalizeArgInt<Idx>, EltTy, LegalizeRawArg<Num>],
                    ActionClampNumElements, "any">;
 
-class ClampMinNumElements<string Idx, string EltTy, string Num>
-    : LegalizeCall<"clampMinNumElements", [Idx, EltTy, Num],
+class ClampMaxNumElements<int Idx, LegalizeArgType EltTy, string Num>
+    : LegalizeCall<"clampMaxNumElements",
+                   [LegalizeArgInt<Idx>, EltTy, LegalizeRawArg<Num>],
                    ActionClampNumElements, "any">;
-
-class ClampMaxNumElements<string Idx, string EltTy, string Num>
-    : LegalizeCall<"clampMaxNumElements", [Idx, EltTy, Num],
-                   ActionClampNumElements, "any">;
-
-//===----------------------------------------------------------------------===//
-// Target vocabulary
-//
-// A target writes its rule sets in terms of LegalizeFeature records (see
-// above) and a handful of LLT constants.  Declaring the constants here keeps a
-// target's whole legalizer in one file; -gen-legalizer emits them ahead of the
-// rules, in the order given.
-//===----------------------------------------------------------------------===//
-
-// A target's LLT constants and named type lists are plain records declared at
-// file scope.  Like LegalizeFeature, the record name is the C++ identifier:
-//
-//   def s32 : LegalizeType<"LLT::scalar(32)">;
-//   def PtrTypes32 : LegalizeTypeList<["s1", "s8", "s16", "s32"]>;
-//
-// -gen-legalizer emits them ahead of the rules in .td order, so an entry may
-// refer to the ones above it and nothing else.
-
-/// An LLT constant: `const LLT s32 = LLT::scalar(32);`
-class LegalizeType<string expr> {
-  string Name = NAME;
-  string Expr = expr;
-}
-
-/// A named type list: `const std::initializer_list<LLT> PtrTypes32 = {...};`
-class LegalizeTypeList<list<string> elems> {
-  string Name = NAME;
-  list<string> Elems = elems;
-}
 
 //===----------------------------------------------------------------------===//
 // Rule sets

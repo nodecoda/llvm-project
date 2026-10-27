@@ -19,8 +19,12 @@ def VpopcntdqOrNotNoVLX
 def NeitherVpopcntdqNorVLX
     : LegalizePredicateDag<(none_of HasVPOPCNTDQ, NoVLX)>;
 
+def s16 : LegalizeType<"LLT::scalar(16)">;
 def s32 : LegalizeType<"LLT::scalar(32)">;
-def Tys : LegalizeTypeList<["s32"]>;
+def s64 : LegalizeType<"LLT::scalar(64)">;
+def sMaxScalar : LegalizeType<"Subtarget.is64Bit() ? s64 : s32">;
+def v4s32 : LegalizeType<"LLT::fixed_vector(4, 32)">;
+def Tys : LegalizeTypeList<[s32]>;
 
 // CHECK:      bool Is64Bit = Subtarget.is64Bit();
 // CHECK:      const LLT s32 = LLT::scalar(32);
@@ -28,13 +32,14 @@ def Tys : LegalizeTypeList<["s32"]>;
 
 def Test_CTPOP : LegalizeRuleSet<["G_CTPOP"]> {
   let Rules = [
-    LegalForIf<HasPOPCNT, ["s16, s16", "s32, s32"]>,
-    LegalForIf<PopcntAndIs64Bit, ["s64, s64"]>,
-    LegalForIf<VpopcntdqOrNotNoVLX, ["v4s32"], 0>,
-    WidenScalarToNextPow2<"0">,
-    WidenScalarToNextPow2<"1", "16">,
-    ClampScalar<"1", "s16", "sMaxScalar">,
-    ScalarSameSizeAs<"0", "1">,
+    LegalForPairsIf<HasPOPCNT, [LegalizeTypePair<s16, s16>,
+                                LegalizeTypePair<s32, s32>]>,
+    LegalForPairsIf<PopcntAndIs64Bit, [LegalizeTypePair<s64, s64>]>,
+    LegalForIf<VpopcntdqOrNotNoVLX, [v4s32]>,
+    WidenScalarToNextPow2<0>,
+    WidenScalarToNextPow2<1, 16>,
+    ClampScalar<1, s16, sMaxScalar>,
+    ScalarSameSizeAs<0, 1>,
   ];
 }
 
@@ -51,10 +56,10 @@ def Test_CTPOP : LegalizeRuleSet<["G_CTPOP"]> {
 // generated fragment lines up with the file it was written in.
 def Test_ADD : LegalizeRuleSet<["G_ADD"]> {
   let Rules = [
-    LegalForIf<NeitherVpopcntdqNorVLX, ["s32"], 0>,
+    LegalForIf<NeitherVpopcntdqNorVLX, [s32]>,
     // A call is not a boolean combination, so this one keeps the escape
     // hatch: it is for guards that have no AST form yet.
-    ScalarizeIf<LegalizeOpaquePred<"scalarOrEltWiderThan(0, 64)">, "0">,
+    ScalarizeIf<LegalizeOpaquePred<"scalarOrEltWiderThan(0, 64)">, 0>,
     Lower,
   ];
 }
