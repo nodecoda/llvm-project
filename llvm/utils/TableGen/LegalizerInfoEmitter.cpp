@@ -22,6 +22,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "Basic/PredicateExpanderDag.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
@@ -76,8 +77,9 @@ static bool parseBoolOperand(StringRef S, size_t &I,
 
 /// True if \p Expr is a boolean combination of identifiers and nothing else,
 /// e.g. "HasSSE1 || UseX87".  Anything else - a call, a comparison, a literal -
-/// is what LGExpr exists for.  Precedence is irrelevant here: the only question
-/// is whether the text could have been written with LGAnd / LGOr / LGNot.
+/// is what LegalizeOpaquePred exists for.  Precedence is irrelevant here: the
+/// only question is whether the text could have been written as a
+/// LegalizeCompound with the all_of / any_of / none_of / not operators.
 static bool isBooleanCombination(StringRef Expr,
                                  SmallVectorImpl<StringRef> &Idents) {
   size_t I = 0;
@@ -97,25 +99,6 @@ static bool isBooleanCombination(StringRef Expr,
   }
   skipSpaces(Expr, I);
   return I == Expr.size();
-}
-
-/// A compound predicate renders as "(...)", which is redundant when the text is
-/// a whole function argument - and the hand-written chains do not have it. Drop
-/// one pair so a generated fragment can be diffed against the code it replaced.
-static StringRef stripRedundantParens(StringRef S) {
-  if (S.size() < 2 || S.front() != '(' || S.back() != ')')
-    return S;
-  unsigned Depth = 0;
-  for (size_t I = 0; I != S.size(); ++I) {
-    if (S[I] == '(') {
-      ++Depth;
-    } else if (S[I] == ')' && --Depth == 0 && I + 1 != S.size()) {
-      // The leading '(' closes before the end, so it does not wrap the whole
-      // argument; leave the text alone.
-      return S;
-    }
-  }
-  return S.drop_front().drop_back();
 }
 
 /// Print a verbatim C++ body - the escape hatch for predicates that are still
@@ -165,6 +148,9 @@ class LegalizerInfoEmitter {
         .Default("");
   }
 
+  void emitComments(raw_ostream &OS, const Record &Context);
+  void emitFeatures(raw_ostream &OS);
+  void emitPredicate(const Record &P, raw_ostream &OS);
   void emitContext(raw_ostream &OS, const Record &Context);
   void verifyRule(const Record &Rule);
   void emitRuleSet(raw_ostream &OS, const Record &RuleSet);
@@ -176,17 +162,57 @@ public:
 
 } // namespace
 
-void LegalizerInfoEmitter::emitContext(raw_ostream &OS, const Record &Context) {
+void LegalizerInfoEmitter::emitComments(raw_ostream &OS,
+                                        const Record &Context) {
   for (StringRef Comment : Context.getValueAsListOfStrings("Comments"))
     OS << "  // " << Comment << "\n";
+}
 
-  std::vector<const Record *> Bools = Context.getValueAsListOfDefs("Bools");
-  for (const Record *B : Bools)
-    OS << "  bool " << B->getValueAsString("Name") << " = "
-       << B->getValueAsString("Expr") << ";\n";
-  if (!Bools.empty())
+/// Emit `bool <name> = <expr>;` for every LegalizeFeature record, in .td order.
+/// The record name *is* the C++ identifier, which is why a rule can refer to a
+/// feature by writing the record itself instead of a string.
+void LegalizerInfoEmitter::emitFeatures(raw_ostream &OS) {
+  std::vector<const Record *> Features =
+      Records.getAllDerivedDefinitions("LegalizeFeature");
+  llvm::sort(Features, [](const Record *L, const Record *R) {
+    return L->getID() < R->getID();
+  });
+  for (const Record *F : Features)
+    OS << "  bool " << F->getName() << " = " << F->getValueAsString("Cond")
+       << ";\n";
+  if (!Features.empty())
     OS << "\n";
+}
 
+/// Lower one predicate record to a C++ boolean expression.  A combination is
+/// walked by the shared emitPredicateDag(); a leaf is either a cached bool
+/// (LegalizeFeature) or verbatim text (LegalizeOpaquePred).
+void LegalizerInfoEmitter::emitPredicate(const Record &P, raw_ostream &OS) {
+  if (P.isSubClassOf("LegalizeCompound")) {
+    auto EmitLeaf = [&](const Init &Leaf, raw_ostream &OS) -> bool {
+      const auto *DI = dyn_cast<DefInit>(&Leaf);
+      if (!DI || !DI->getDef()->isSubClassOf("LegalizeFeature"))
+        PrintFatalError(&P, "predicate dag leaf '" + Leaf.getAsString() +
+                                "' is not a LegalizeFeature");
+      OS << DI->getDef()->getName();
+      return false;
+    };
+    emitPredicateDag(&P, *P.getValueAsDag("CondDag"), /*ParenIfBinOp=*/false,
+                     OS, EmitLeaf);
+    return;
+  }
+  if (P.isSubClassOf("LegalizeFeature")) {
+    OS << P.getName();
+    return;
+  }
+  if (P.isSubClassOf("LegalizeOpaquePred")) {
+    OS << P.getValueAsString("Expr");
+    return;
+  }
+  PrintFatalError(&P, "unknown LegalizePredicate record");
+}
+
+void LegalizerInfoEmitter::emitContext(raw_ostream &OS, const Record &Context) {
   std::vector<const Record *> Types = Context.getValueAsListOfDefs("Types");
   for (const Record *T : Types)
     OS << "  const LLT " << T->getValueAsString("Name") << " = "
@@ -251,10 +277,13 @@ void LegalizerInfoEmitter::emitRuleSet(raw_ostream &OS, const Record &RuleSet) {
     StringRef Opaque = Rule.getValueAsString("OpaqueArgs");
     OS << "      ." << Rule.getValueAsString("Method") << "(";
     if (Opaque.empty()) {
-      std::vector<StringRef> Args = Rule.getValueAsListOfStrings("Args");
       StringRef Sep;
-      for (StringRef Arg : Args) {
-        OS << Sep << stripRedundantParens(Arg);
+      if (const Record *Pred = Rule.getValueAsOptionalDef("Pred")) {
+        emitPredicate(*Pred, OS);
+        Sep = ", ";
+      }
+      for (StringRef Arg : Rule.getValueAsListOfStrings("Args")) {
+        OS << Sep << Arg;
         Sep = ", ";
       }
     } else
@@ -272,44 +301,35 @@ void LegalizerInfoEmitter::run(raw_ostream &OS) {
     return L->getID() < R->getID();
   });
 
-  // A predicate naming a feature the context does not declare is a typo.  The
-  // C++ compiler does catch it, but the diagnostic points into the generated
-  // file; this check points at the .td line instead.  Do it before emitting
-  // anything so a bad .td file produces no partial output.
-  if (!Contexts.empty()) {
-    StringSet<> Declared;
-    for (const Record *Context : Contexts)
-      for (const Record *B : Context->getValueAsListOfDefs("Bools"))
-        Declared.insert(B->getValueAsString("Name"));
+  // A feature leaf that names something the .td never defined is rejected by
+  // TableGen itself ("Variable not defined"), which points at the .td line and
+  // runs before this backend.  What is left to check is the escape hatch: an
+  // opaque predicate spelled with nothing but declared features and boolean
+  // operators could have been written with the dag form, and letting it
+  // through would leave text that looks like a predicate but is opaque.
+  StringSet<> Declared;
+  for (const Record *F : Records.getAllDerivedDefinitions("LegalizeFeature"))
+    Declared.insert(F->getName());
 
-    for (const Record *F : Records.getAllDerivedDefinitions("LGFeature"))
-      if (!Declared.contains(F->getValueAsString("Name")))
-        PrintFatalError(F->getLoc(), "feature '" + F->getValueAsString("Name") +
-                                         "' is not declared by a "
-                                         "LegalizeContext");
-
-    // An LGExpr spelled with nothing but declared features and boolean
-    // operators could have been written with the predicate AST.  Letting it
-    // through would leave text that looks like a predicate but is opaque, which
-    // is the situation the AST is meant to end.
-    for (const Record *E : Records.getAllDerivedDefinitions("LGExpr")) {
-      SmallVector<StringRef, 4> Idents;
-      StringRef Expr = E->getValueAsString("Expr");
-      if (!isBooleanCombination(Expr, Idents))
-        continue;
-      if (!all_of(Idents, [&](StringRef Id) {
-            return Id == "true" || Id == "false" || Declared.contains(Id);
-          }))
-        continue;
-      std::string Hint;
-      raw_string_ostream HintOS(Hint);
-      HintOS << "LGExpr '" << Expr
-             << "' is a boolean combination of declared features; write it "
-                "with LGAnd / LGOr / LGNot";
-      PrintFatalError(E->getLoc(), HintOS.str());
-    }
+  for (const Record *E :
+       Records.getAllDerivedDefinitions("LegalizeOpaquePred")) {
+    SmallVector<StringRef, 4> Idents;
+    StringRef Expr = E->getValueAsString("Expr");
+    if (!isBooleanCombination(Expr, Idents))
+      continue;
+    if (!all_of(Idents, [&](StringRef Id) {
+          return Id == "true" || Id == "false" || Declared.contains(Id);
+        }))
+      continue;
+    PrintFatalError(E->getLoc(),
+                    "LegalizeOpaquePred '" + Expr +
+                        "' is a boolean combination of declared features; "
+                        "write it with all_of / any_of / not");
   }
 
+  for (const Record *Context : Contexts)
+    emitComments(OS, *Context);
+  emitFeatures(OS);
   for (const Record *Context : Contexts)
     emitContext(OS, *Context);
 

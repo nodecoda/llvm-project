@@ -5,16 +5,23 @@
 
 include "llvm/Target/LegalizerInfo.td"
 
-// The declared vocabulary is emitted ahead of the rules, in declaration order.
+// A leaf is a record whose name is the C++ identifier; -gen-legalizer emits the
+// declaration ahead of the rules, in .td order.
+def Is64Bit : LegalizeFeature<"Subtarget.is64Bit()">;
+def HasPOPCNT : LegalizeFeature<"Subtarget.hasPOPCNT()">;
+def HasVPOPCNTDQ : LegalizeFeature<"Subtarget.hasVPOPCNTDQ()">;
+def NoVLX : LegalizeFeature<"!Subtarget.hasVLX()">;
+
+// Combinations are named records: a dag argument cannot hold a bare record.
+def PopcntAndIs64Bit : LegalizeCompound<(all_of HasPOPCNT, Is64Bit)>;
+def VpopcntdqOrNotNoVLX
+    : LegalizeCompound<(any_of HasVPOPCNTDQ, (not NoVLX))>;
+def NeitherVpopcntdqNorVLX
+    : LegalizeCompound<(none_of HasVPOPCNTDQ, NoVLX)>;
+
 def Test_Context : LegalizeContext {
-  let Bools = [
-    LG_Bool<"Is64Bit", "Subtarget.is64Bit()">,
-    LG_Bool<"HasPOPCNT", "Subtarget.hasPOPCNT()">,
-    LG_Bool<"HasVPOPCNTDQ", "Subtarget.hasVPOPCNTDQ()">,
-    LG_Bool<"NoVLX", "!Subtarget.hasVLX()">,
-  ];
-  let Types = [LG_Type<"s32", "LLT::scalar(32)">];
-  let TypeLists = [LG_TypeList<"Tys", ["s32"]>];
+  let Types = [LegalizeType<"s32", "LLT::scalar(32)">];
+  let TypeLists = [LegalizeTypeList<"Tys", ["s32"]>];
 }
 
 // CHECK:      bool Is64Bit = Subtarget.is64Bit();
@@ -23,22 +30,20 @@ def Test_Context : LegalizeContext {
 
 def Test_CTPOP : LegalizeRuleSet<["G_CTPOP"]> {
   let Rules = [
-    LG_LegalFor<LGFeature<"HasPOPCNT">, ["s16, s16", "s32, s32"]>,
-    LG_LegalFor<LGAnd<LGFeature<"HasPOPCNT">, LGFeature<"Is64Bit">>,
-                ["s64, s64"]>,
-    LG_LegalFor<LGOr<LGFeature<"HasVPOPCNTDQ">, LGNot<LGFeature<"NoVLX">>>,
-                ["v4s32"], 0>,
-    LG_WidenScalarToNextPow2<"0">,
-    LG_WidenScalarToNextPow2<"1", "16">,
-    LG_ClampScalar<"1", "s16", "sMaxScalar">,
-    LG_ScalarSameSizeAs<"0", "1">,
+    LegalizeLegalFor<HasPOPCNT, ["s16, s16", "s32, s32"]>,
+    LegalizeLegalFor<PopcntAndIs64Bit, ["s64, s64"]>,
+    LegalizeLegalFor<VpopcntdqOrNotNoVLX, ["v4s32"], 0>,
+    LegalizeWidenScalarToNextPow2<"0">,
+    LegalizeWidenScalarToNextPow2<"1", "16">,
+    LegalizeClampScalar<"1", "s16", "sMaxScalar">,
+    LegalizeScalarSameSizeAs<"0", "1">,
   ];
 }
 
 // CHECK:      getActionDefinitionsBuilder(G_CTPOP)
 // CHECK-NEXT: .legalFor(HasPOPCNT, {{[{][{]s16, s16[}], [{]s32, s32[}][}]}})
 // CHECK-NEXT: .legalFor(HasPOPCNT && Is64Bit, {{[{][{]s64, s64[}][}]}})
-// CHECK-NEXT: .legalFor(HasVPOPCNTDQ || !NoVLX, {{[{]v4s32[}]}})
+// CHECK-NEXT: .legalFor(HasVPOPCNTDQ || !(NoVLX), {{[{]v4s32[}]}})
 // CHECK-NEXT: .widenScalarToNextPow2(0)
 // CHECK-NEXT: .widenScalarToNextPow2(1, /*Min=*/16)
 // CHECK-NEXT: .clampScalar(1, s16, sMaxScalar)
@@ -48,13 +53,15 @@ def Test_CTPOP : LegalizeRuleSet<["G_CTPOP"]> {
 // generated fragment lines up with the file it was written in.
 def Test_ADD : LegalizeRuleSet<["G_ADD"]> {
   let Rules = [
-    // A call is not a boolean combination, so this one keeps LGExpr: the
-    // escape hatch is for guards that have no AST form yet.
-    LG_ScalarizeIf<LGExpr<"scalarOrEltWiderThan(0, 64)">, "0">,
-    LG_Lower,
+    LegalizeLegalFor<NeitherVpopcntdqNorVLX, ["s32"], 0>,
+    // A call is not a boolean combination, so this one keeps the escape
+    // hatch: it is for guards that have no AST form yet.
+    LegalizeScalarizeIf<LegalizeOpaquePred<"scalarOrEltWiderThan(0, 64)">, "0">,
+    LegalizeLower,
   ];
 }
 
 // CHECK:      getActionDefinitionsBuilder(G_ADD)
+// CHECK-NEXT: .legalFor(!(HasVPOPCNTDQ || NoVLX), {{[{]s32[}]}})
 // CHECK-NEXT: .scalarizeIf(scalarOrEltWiderThan(0, 64), 0)
 // CHECK-NEXT: .lower();
