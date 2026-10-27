@@ -8,10 +8,10 @@ include "llvm/Target/LegalizerInfo.td"
 
 def HasAVX : LegalizeFeature<"Subtarget.hasAVX()">;
 
-def Bad : LegalizeCompound<(any_of HasAVX, "HasAVXX")>;
+def Bad : LegalizePredicateDag<(any_of HasAVX, "HasAVXX")>;
 
 def BadSet : LegalizeRuleSet<["G_ADD"]> {
-  let Rules = [LegalizeLegalFor<Bad, ["s32"], 0>];
+  let Rules = [LegalForIf<Bad, ["s32"], 0>];
 }
 
 // CHECK: error: predicate dag leaf '"HasAVXX"' is not a LegalizeFeature

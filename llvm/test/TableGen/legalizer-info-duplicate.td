@@ -7,11 +7,11 @@
 include "llvm/Target/LegalizerInfo.td"
 
 def First : LegalizeRuleSet<["G_ADD"]> {
-  let Rules = [LegalizeLower];
+  let Rules = [Lower];
 }
 
 def Second : LegalizeRuleSet<["G_ADD", "G_SUB"]> {
-  let Rules = [LegalizeLibcall];
+  let Rules = [Libcall];
 }
 
 // CHECK: error: opcode 'G_ADD' is described by more than one rule set

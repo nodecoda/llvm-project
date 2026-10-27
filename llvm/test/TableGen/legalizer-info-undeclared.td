@@ -7,6 +7,6 @@ include "llvm/Target/LegalizerInfo.td"
 
 def HasAVX : LegalizeFeature<"Subtarget.hasAVX()">;
 
-def Bad : LegalizeCompound<(any_of HasAVXX, HasAVX)>;
+def Bad : LegalizePredicateDag<(any_of HasAVXX, HasAVX)>;
 
 // CHECK: error: Variable not defined: 'HasAVXX'

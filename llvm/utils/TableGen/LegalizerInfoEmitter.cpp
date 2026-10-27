@@ -79,7 +79,7 @@ static bool parseBoolOperand(StringRef S, size_t &I,
 /// e.g. "HasSSE1 || UseX87".  Anything else - a call, a comparison, a literal -
 /// is what LegalizeOpaquePred exists for.  Precedence is irrelevant here: the
 /// only question is whether the text could have been written as a
-/// LegalizeCompound with the all_of / any_of / none_of / not operators.
+/// LegalizePredicateDag with the all_of / any_of / none_of / not operators.
 static bool isBooleanCombination(StringRef Expr,
                                  SmallVectorImpl<StringRef> &Idents) {
   size_t I = 0;
@@ -188,7 +188,7 @@ void LegalizerInfoEmitter::emitFeatures(raw_ostream &OS) {
 /// walked by the shared emitPredicateDag(); a leaf is either a cached bool
 /// (LegalizeFeature) or verbatim text (LegalizeOpaquePred).
 void LegalizerInfoEmitter::emitPredicate(const Record &P, raw_ostream &OS) {
-  if (P.isSubClassOf("LegalizeCompound")) {
+  if (P.isSubClassOf("LegalizePredicateDag")) {
     auto EmitLeaf = [&](const Init &Leaf, raw_ostream &OS) -> bool {
       const auto *DI = dyn_cast<DefInit>(&Leaf);
       if (!DI || !DI->getDef()->isSubClassOf("LegalizeFeature"))
