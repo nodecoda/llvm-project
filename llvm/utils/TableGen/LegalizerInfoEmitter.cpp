@@ -145,10 +145,9 @@ class LegalizerInfoEmitter {
     return Mutation.empty() || llvm::is_contained(Known, Mutation);
   }
 
-  void emitComments(raw_ostream &OS, const Record &Context);
   void emitFeatures(raw_ostream &OS);
   void emitPredicate(const Record &P, raw_ostream &OS);
-  void emitContext(raw_ostream &OS, const Record &Context);
+  void emitTypes(raw_ostream &OS);
   void verifyRule(const Record &Rule);
   void emitArgList(raw_ostream &OS, const Record &Rule);
   void emitRuleSet(raw_ostream &OS, const Record &RuleSet);
@@ -160,10 +159,24 @@ public:
 
 } // namespace
 
-void LegalizerInfoEmitter::emitComments(raw_ostream &OS,
-                                        const Record &Context) {
-  for (StringRef Comment : Context.getValueAsListOfStrings("Comments"))
-    OS << "  // " << Comment << "\n";
+/// Collapse whitespace runs, including newlines, into single spaces and trim.
+/// A condition may be written across several lines in the .td; the generated
+/// code is one statement per feature.
+static std::string squashSpace(StringRef S) {
+  std::string Out;
+  bool PendingSpace = false;
+  for (char C : S) {
+    if (C == ' ' || C == '\n' || C == '\t' || C == '\r') {
+      PendingSpace = !Out.empty();
+      continue;
+    }
+    if (PendingSpace) {
+      Out += ' ';
+      PendingSpace = false;
+    }
+    Out += C;
+  }
+  return Out;
 }
 
 /// Emit `bool <name> = <expr>;` for every LegalizeFeature record, in .td order.
@@ -176,8 +189,8 @@ void LegalizerInfoEmitter::emitFeatures(raw_ostream &OS) {
     return L->getID() < R->getID();
   });
   for (const Record *F : Features)
-    OS << "  bool " << F->getName() << " = " << F->getValueAsString("Cond")
-       << ";\n";
+    OS << "  bool " << F->getName() << " = "
+       << squashSpace(F->getValueAsString("Cond")) << ";\n";
   if (!Features.empty())
     OS << "\n";
 }
@@ -204,24 +217,36 @@ void LegalizerInfoEmitter::emitPredicate(const Record &P, raw_ostream &OS) {
     return;
   }
   if (P.isSubClassOf("LegalizeOpaquePred")) {
-    OS << P.getValueAsString("Expr");
+    OS << squashSpace(P.getValueAsString("Expr"));
     return;
   }
   PrintFatalError(&P, "unknown LegalizePredicate record");
 }
 
-void LegalizerInfoEmitter::emitContext(raw_ostream &OS, const Record &Context) {
-  std::vector<const Record *> Types = Context.getValueAsListOfDefs("Types");
+/// Emit the LLT constants and named type lists, in .td order.  Like a feature,
+/// the record name is the C++ identifier; a type declared after one that uses
+/// it would generate code that does not compile, which is why the names are
+/// also checked for declaration order (see run()).
+void LegalizerInfoEmitter::emitTypes(raw_ostream &OS) {
+  auto BySourceOrder = [](const Record *L, const Record *R) {
+    return L->getID() < R->getID();
+  };
+
+  std::vector<const Record *> Types =
+      Records.getAllDerivedDefinitions("LegalizeType");
+  llvm::sort(Types, BySourceOrder);
   for (const Record *T : Types)
-    OS << "  const LLT " << T->getValueAsString("Name") << " = "
-       << T->getValueAsString("Expr") << ";\n";
+    OS << "  const LLT " << T->getName() << " = " << T->getValueAsString("Expr")
+       << ";\n";
   if (!Types.empty())
     OS << "\n";
 
-  std::vector<const Record *> Lists = Context.getValueAsListOfDefs("TypeLists");
+  std::vector<const Record *> Lists =
+      Records.getAllDerivedDefinitions("LegalizeTypeList");
+  llvm::sort(Lists, BySourceOrder);
   for (const Record *L : Lists)
-    OS << "  const std::initializer_list<LLT> " << L->getValueAsString("Name")
-       << " = {" << join(L->getValueAsListOfStrings("Elems"), ", ") << "};\n";
+    OS << "  const std::initializer_list<LLT> " << L->getName() << " = {"
+       << join(L->getValueAsListOfStrings("Elems"), ", ") << "};\n";
   if (!Lists.empty())
     OS << "\n";
 }
@@ -254,10 +279,12 @@ void LegalizerInfoEmitter::verifyRule(const Record &Rule) {
   StringRef Required = Action->getValueAsString("Mutation");
   if (!Required.empty() && Required != "any" && Mutation != Required &&
       Mutation != "any")
-    PrintFatalError(Rule.getLoc(),
-                    "action '" + Action->getValueAsString("Name") +
-                        "' requires a '" + Required + "' mutation, but this "
-                        "rule carries '" + Mutation + "'");
+    PrintFatalError(Rule.getLoc(), "action '" +
+                                       Action->getValueAsString("Name") +
+                                       "' requires a '" + Required +
+                                       "' mutation, but this "
+                                       "rule carries '" +
+                                       Mutation + "'");
 
   StringRef Style = Rule.getValueAsString("ArgStyle");
   if (Style != "plain" && Style != "braced" && Style != "pairs")
@@ -347,12 +374,6 @@ void LegalizerInfoEmitter::emitRuleSet(raw_ostream &OS, const Record &RuleSet) {
 void LegalizerInfoEmitter::run(raw_ostream &OS) {
   emitSourceFileHeader("GlobalISel legalizer rule fragments", OS);
 
-  std::vector<const Record *> Contexts =
-      Records.getAllDerivedDefinitions("LegalizeContext");
-  llvm::sort(Contexts, [](const Record *L, const Record *R) {
-    return L->getID() < R->getID();
-  });
-
   // A feature leaf that names something the .td never defined is rejected by
   // TableGen itself ("Variable not defined"), which points at the .td line and
   // runs before this backend.  What is left to check is the escape hatch: an
@@ -379,11 +400,8 @@ void LegalizerInfoEmitter::run(raw_ostream &OS) {
                         "write it with all_of / any_of / not");
   }
 
-  for (const Record *Context : Contexts)
-    emitComments(OS, *Context);
   emitFeatures(OS);
-  for (const Record *Context : Contexts)
-    emitContext(OS, *Context);
+  emitTypes(OS);
 
   std::vector<const Record *> RuleSets =
       Records.getAllDerivedDefinitions("LegalizeRuleSet");

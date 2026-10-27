@@ -54,16 +54,16 @@ class LegalizePredicate;
 ///
 /// declares `bool HasSSE1 = Subtarget.hasSSE1();` and lets rules refer to it as
 /// plain `HasSSE1`.
-class LegalizeFeature<code cond> : LegalizePredicate {
-  code Cond = cond;
+class LegalizeFeature<string cond> : LegalizePredicate {
+  string Cond = cond;
 }
 
 /// A C++ expression that cannot be modelled as AST nodes, e.g.
 /// "scalarOrEltWiderThan(0, 64)".  -gen-legalizer rejects one whose text is
 /// merely a boolean combination of declared features; those must be written
 /// with all_of / any_of / not, so that the escape hatch stays an escape hatch.
-class LegalizeOpaquePred<code expr> : LegalizePredicate {
-  code Expr = expr;
+class LegalizeOpaquePred<string expr> : LegalizePredicate {
+  string Expr = expr;
 }
 
 /// A combination of leaves.  Operators come from TargetSubtarget.td, plus the
@@ -294,28 +294,25 @@ class ClampMaxNumElements<string Idx, string EltTy, string Num>
 // rules, in the order given.
 //===----------------------------------------------------------------------===//
 
-/// An LLT constant:
-///   const LLT s32 = LLT::scalar(32);
-class LegalizeType<string name, string expr> {
-  string Name = name;
+// A target's LLT constants and named type lists are plain records declared at
+// file scope.  Like LegalizeFeature, the record name is the C++ identifier:
+//
+//   def s32 : LegalizeType<"LLT::scalar(32)">;
+//   def PtrTypes32 : LegalizeTypeList<["s1", "s8", "s16", "s32"]>;
+//
+// -gen-legalizer emits them ahead of the rules in .td order, so an entry may
+// refer to the ones above it and nothing else.
+
+/// An LLT constant: `const LLT s32 = LLT::scalar(32);`
+class LegalizeType<string expr> {
+  string Name = NAME;
   string Expr = expr;
 }
 
-/// A named type list, for the builders that take an initializer_list:
-///   const std::initializer_list<LLT> PtrTypes32 = {s1, s8, s16, s32};
-class LegalizeTypeList<string name, list<string> elems> {
-  string Name = name;
+/// A named type list: `const std::initializer_list<LLT> PtrTypes32 = {...};`
+class LegalizeTypeList<list<string> elems> {
+  string Name = NAME;
   list<string> Elems = elems;
-}
-
-/// Everything a target's rule sets are written in terms of, apart from the
-/// features themselves.  -gen-legalizer emits these declarations ahead of the
-/// rules, in the order given here, so a derived entry may refer to the ones
-/// above it.
-class LegalizeContext {
-  list<string> Comments = [];
-  list<LegalizeType> Types = [];
-  list<LegalizeTypeList> TypeLists = [];
 }
 
 //===----------------------------------------------------------------------===//

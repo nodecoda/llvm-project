@@ -19,10 +19,8 @@ def VpopcntdqOrNotNoVLX
 def NeitherVpopcntdqNorVLX
     : LegalizePredicateDag<(none_of HasVPOPCNTDQ, NoVLX)>;
 
-def Test_Context : LegalizeContext {
-  let Types = [LegalizeType<"s32", "LLT::scalar(32)">];
-  let TypeLists = [LegalizeTypeList<"Tys", ["s32"]>];
-}
+def s32 : LegalizeType<"LLT::scalar(32)">;
+def Tys : LegalizeTypeList<["s32"]>;
 
 // CHECK:      bool Is64Bit = Subtarget.is64Bit();
 // CHECK:      const LLT s32 = LLT::scalar(32);

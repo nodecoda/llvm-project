@@ -64,57 +64,54 @@ def SSE1And64Bit : LegalizePredicateDag<(all_of HasSSE1, Is64Bit)>;
 def SSE2And64Bit : LegalizePredicateDag<(all_of HasSSE2, Is64Bit)>;
 def NotCMOV : LegalizePredicateDag<(not HasCMOV)>;
 
-/// The LLT constants the rules are written in terms of, plus a note about
-/// what is still missing.
-def X86_Context : LegalizeContext {
-  let Comments = ["todo: AVX512 bool vector predicate types"];
-  let Types = [
-    LegalizeType<"p0",
-                 "LLT::pointer(0, Subtarget.isTarget64BitLP64() ? 64 : 32)">,
-    LegalizeType<"s1", "LLT::scalar(1)">,
-    LegalizeType<"s8", "LLT::scalar(8)">,
-    LegalizeType<"s16", "LLT::scalar(16)">,
-    LegalizeType<"s32", "LLT::scalar(32)">,
-    LegalizeType<"s64", "LLT::scalar(64)">,
-    LegalizeType<"s80", "LLT::scalar(80)">,
-    LegalizeType<"s128", "LLT::scalar(128)">,
-    LegalizeType<"sMaxScalar", "Subtarget.is64Bit() ? s64 : s32">,
+// The LLT constants the rules are written in terms of.  The def name is the
+// C++ identifier, exactly like the LegalizeFeature records above.
+//
+// TODO: AVX512 bool vector predicate types.
 
-    LegalizeType<"v2s32", "LLT::fixed_vector(2, 32)">,
-    LegalizeType<"v4s8", "LLT::fixed_vector(4, 8)">,
+def p0 : LegalizeType<
+    "LLT::pointer(0, Subtarget.isTarget64BitLP64() ? 64 : 32)">;
+def s1 : LegalizeType<"LLT::scalar(1)">;
+def s8 : LegalizeType<"LLT::scalar(8)">;
+def s16 : LegalizeType<"LLT::scalar(16)">;
+def s32 : LegalizeType<"LLT::scalar(32)">;
+def s64 : LegalizeType<"LLT::scalar(64)">;
+def s80 : LegalizeType<"LLT::scalar(80)">;
+def s128 : LegalizeType<"LLT::scalar(128)">;
+def sMaxScalar : LegalizeType<"Subtarget.is64Bit() ? s64 : s32">;
 
-    LegalizeType<"v16s8", "LLT::fixed_vector(16, 8)">,
-    LegalizeType<"v8s16", "LLT::fixed_vector(8, 16)">,
-    LegalizeType<"v4s32", "LLT::fixed_vector(4, 32)">,
-    LegalizeType<"v2s64", "LLT::fixed_vector(2, 64)">,
-    LegalizeType<"v2p0", "LLT::fixed_vector(2, p0)">,
+def v2s32 : LegalizeType<"LLT::fixed_vector(2, 32)">;
+def v4s8 : LegalizeType<"LLT::fixed_vector(4, 8)">;
 
-    LegalizeType<"v32s8", "LLT::fixed_vector(32, 8)">,
-    LegalizeType<"v16s16", "LLT::fixed_vector(16, 16)">,
-    LegalizeType<"v8s32", "LLT::fixed_vector(8, 32)">,
-    LegalizeType<"v4s64", "LLT::fixed_vector(4, 64)">,
-    LegalizeType<"v4p0", "LLT::fixed_vector(4, p0)">,
+def v16s8 : LegalizeType<"LLT::fixed_vector(16, 8)">;
+def v8s16 : LegalizeType<"LLT::fixed_vector(8, 16)">;
+def v4s32 : LegalizeType<"LLT::fixed_vector(4, 32)">;
+def v2s64 : LegalizeType<"LLT::fixed_vector(2, 64)">;
+def v2p0 : LegalizeType<"LLT::fixed_vector(2, p0)">;
 
-    LegalizeType<"v64s8", "LLT::fixed_vector(64, 8)">,
-    LegalizeType<"v32s16", "LLT::fixed_vector(32, 16)">,
-    LegalizeType<"v16s32", "LLT::fixed_vector(16, 32)">,
-    LegalizeType<"v8s64", "LLT::fixed_vector(8, 64)">,
+def v32s8 : LegalizeType<"LLT::fixed_vector(32, 8)">;
+def v16s16 : LegalizeType<"LLT::fixed_vector(16, 16)">;
+def v8s32 : LegalizeType<"LLT::fixed_vector(8, 32)">;
+def v4s64 : LegalizeType<"LLT::fixed_vector(4, 64)">;
+def v4p0 : LegalizeType<"LLT::fixed_vector(4, p0)">;
 
-    LegalizeType<"s8MaxVector", "HasAVX512 ? v64s8 : HasAVX ? v32s8 : v16s8">,
-    LegalizeType<"s16MaxVector",
-                 "HasAVX512 ? v32s16 : HasAVX ? v16s16 : v8s16">,
-    LegalizeType<"s32MaxVector", "HasAVX512 ? v16s32 : HasAVX ? v8s32 : v4s32">,
-    LegalizeType<"s64MaxVector", "HasAVX512 ? v8s64 : HasAVX ? v4s64 : v2s64">,
-  ];
-  // Types used by individual rule sets.
-  let TypeLists = [
-    LegalizeTypeList<"IntTypes32", ["s8", "s16", "s32", "p0"]>,
-    LegalizeTypeList<"IntTypes64", ["s8", "s16", "s32", "s64", "p0"]>,
-    LegalizeTypeList<"PtrTypes32", ["s1", "s8", "s16", "s32"]>,
-    LegalizeTypeList<"PtrTypes64", ["s1", "s8", "s16", "s32", "s64"]>,
-  ];
-}
+def v64s8 : LegalizeType<"LLT::fixed_vector(64, 8)">;
+def v32s16 : LegalizeType<"LLT::fixed_vector(32, 16)">;
+def v16s32 : LegalizeType<"LLT::fixed_vector(16, 32)">;
+def v8s64 : LegalizeType<"LLT::fixed_vector(8, 64)">;
 
+def s8MaxVector : LegalizeType<"HasAVX512 ? v64s8 : HasAVX ? v32s8 : v16s8">;
+def s16MaxVector : LegalizeType<
+    "HasAVX512 ? v32s16 : HasAVX ? v16s16 : v8s16">;
+def s32MaxVector : LegalizeType<
+    "HasAVX512 ? v16s32 : HasAVX ? v8s32 : v4s32">;
+def s64MaxVector : LegalizeType<"HasAVX512 ? v8s64 : HasAVX ? v4s64 : v2s64">;
+
+// Types used by individual rule sets.
+def IntTypes32 : LegalizeTypeList<["s8", "s16", "s32", "p0"]>;
+def IntTypes64 : LegalizeTypeList<["s8", "s16", "s32", "s64", "p0"]>;
+def PtrTypes32 : LegalizeTypeList<["s1", "s8", "s16", "s32"]>;
+def PtrTypes64 : LegalizeTypeList<["s1", "s8", "s16", "s32", "s64"]>;
 
 def X86_IMPLICIT_DEF : LegalizeRuleSet<[
   "G_IMPLICIT_DEF", "G_PHI", "G_FREEZE", "G_CONSTANT_FOLD_BARRIER"
