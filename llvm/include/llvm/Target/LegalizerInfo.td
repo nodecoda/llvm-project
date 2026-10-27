@@ -68,7 +68,7 @@ class LegalizeOpaquePred<code expr> : LegalizePredicate {
 
 /// A combination of leaves.  Operators come from TargetSubtarget.td, plus the
 /// `not` defined above.
-class LegalizeCompound<dag cond> : LegalizePredicate {
+class LegalizePredicateDag<dag cond> : LegalizePredicate {
   dag CondDag = cond;
 }
 
@@ -134,94 +134,94 @@ class LegalizeTypes<list<string> Types, bit Pairs> {
 // Sugar: one class per builder in LegalizerInfo.h used by X86.
 //===----------------------------------------------------------------------===//
 
-class LegalizeLegalForTypes<list<string> Types, bit Pairs = 1>
+class LegalFor<list<string> Types, bit Pairs = 1>
     : LegalizeSimpleRule<"legalFor", [LegalizeTypes<Types, Pairs>.Text], "Legal",
                          "">;
 
-class LegalizeLegalFor<LegalizePredicate P, list<string> Types, bit Pairs = 1>
+class LegalForIf<LegalizePredicate P, list<string> Types, bit Pairs = 1>
     : LegalizePredRule<"legalFor", P, [LegalizeTypes<Types, Pairs>.Text],
                        "Legal", "">;
 
-class LegalizeLegalForCartesianProduct<string T0, string T1>
+class LegalForCartesianProduct<string T0, string T1>
     : LegalizeSimpleRule<"legalForCartesianProduct", [T0, T1], "Legal", "">;
 
-class LegalizeLowerFor<LegalizePredicate P, list<string> Types, bit Pairs = 1>
+class LowerForIf<LegalizePredicate P, list<string> Types, bit Pairs = 1>
     : LegalizePredRule<"lowerFor", P, [LegalizeTypes<Types, Pairs>.Text],
                        "Lower", "">;
 
-class LegalizeLegalForMemDesc<list<string> Types>
+class LegalForMemDesc<list<string> Types>
     : LegalizeSimpleRule<"legalForTypesWithMemDesc",
                          [LegalizeTypes<Types, 1>.Text], "Legal", "">;
 
-class LegalizeLegalForMemDescIf<LegalizePredicate P, list<string> Types>
+class LegalForMemDescIf<LegalizePredicate P, list<string> Types>
     : LegalizePredRule<"legalForTypesWithMemDesc", P,
                        [LegalizeTypes<Types, 1>.Text], "Legal", "">;
 
-def LegalizeLower : LegalizeSimpleRule<"lower", [], "Lower", "">;
+def Lower : LegalizeSimpleRule<"lower", [], "Lower", "">;
 
-def LegalizeLibcall : LegalizeSimpleRule<"libcall", [], "Libcall", "">;
+def Libcall : LegalizeSimpleRule<"libcall", [], "Libcall", "">;
 
-class LegalizeLibcallFor<list<string> Types, bit Pairs = 0>
+class LibcallFor<list<string> Types, bit Pairs = 0>
     : LegalizeSimpleRule<"libcallFor", [LegalizeTypes<Types, Pairs>.Text],
                          "Libcall", "">;
 
-class LegalizeCustomFor<list<string> Types, bit Pairs = 0>
+class CustomFor<list<string> Types, bit Pairs = 0>
     : LegalizeSimpleRule<"customFor", [LegalizeTypes<Types, Pairs>.Text],
                          "Custom", "">;
 
-class LegalizeCustomForCartesianProduct<LegalizePredicate P, string T0,
+class CustomForCartesianProductIf<LegalizePredicate P, string T0,
                                         string T1>
     : LegalizePredRule<"customForCartesianProduct", P, [T0, T1], "Custom", "">;
 
-def LegalizeAlwaysLegal : LegalizeSimpleRule<"alwaysLegal", [], "Legal", "">;
+def AlwaysLegal : LegalizeSimpleRule<"alwaysLegal", [], "Legal", "">;
 
-class LegalizeClampScalar<string Idx, string MinTy, string MaxTy>
+class ClampScalar<string Idx, string MinTy, string MaxTy>
     : LegalizeSimpleRule<"clampScalar", [Idx, MinTy, MaxTy], "ClampScalar",
                          "any">;
 
-class LegalizeClampScalarOrElt<string Idx, string MinTy, string MaxTy>
+class ClampScalarOrElt<string Idx, string MinTy, string MaxTy>
     : LegalizeSimpleRule<"clampScalarOrElt", [Idx, MinTy, MaxTy], "ClampScalar",
                          "any">;
 
-class LegalizeWidenScalarToNextPow2<string Idx, string Min = "">
+class WidenScalarToNextPow2<string Idx, string Min = "">
     : LegalizeSimpleRule<"widenScalarToNextPow2",
                          !if(!eq(Min, ""), [Idx], [Idx, "/*Min=*/" # Min]),
                          "WidenScalar", "widen">;
 
-class LegalizeWidenScalarOrEltToNextPow2<string Idx, string Min = "">
+class WidenScalarOrEltToNextPow2<string Idx, string Min = "">
     : LegalizeSimpleRule<"widenScalarOrEltToNextPow2",
                          !if(!eq(Min, ""), [Idx], [Idx, "/*Min=*/" # Min]),
                          "WidenScalar", "widen">;
 
-class LegalizeMinScalar<string Idx, string Ty>
+class MinScalar<string Idx, string Ty>
     : LegalizeSimpleRule<"minScalar", [Idx, Ty], "WidenScalar", "widen">;
 
-class LegalizeMaxScalar<string Idx, string Ty>
+class MaxScalar<string Idx, string Ty>
     : LegalizeSimpleRule<"maxScalar", [Idx, Ty], "NarrowScalar", "narrow">;
 
-class LegalizeScalarSameSizeAs<string Idx, string OtherIdx>
+class ScalarSameSizeAs<string Idx, string OtherIdx>
     : LegalizeSimpleRule<"scalarSameSizeAs", [Idx, OtherIdx],
                          "ScalarSameSizeAs", "neutral">;
 
-class LegalizeScalarize<string Idx>
+class Scalarize<string Idx>
     : LegalizeSimpleRule<"scalarize", [Idx], "FewerElements", "split">;
 
-class LegalizeScalarizeIf<LegalizePredicate P, string Idx>
+class ScalarizeIf<LegalizePredicate P, string Idx>
     : LegalizePredRule<"scalarizeIf", P, [Idx], "FewerElements", "split">;
 
-class LegalizeMoreElementsToNextPow2<string Idx>
+class MoreElementsToNextPow2<string Idx>
     : LegalizeSimpleRule<"moreElementsToNextPow2", [Idx], "MoreElements",
                          "merge">;
 
-class LegalizeClampNumElements<string Idx, string EltTy, string MaxTy>
+class ClampNumElements<string Idx, string EltTy, string MaxTy>
     : LegalizeSimpleRule<"clampNumElements", [Idx, EltTy, MaxTy],
                          "ClampNumElements", "any">;
 
-class LegalizeClampMinNumElements<string Idx, string EltTy, string Num>
+class ClampMinNumElements<string Idx, string EltTy, string Num>
     : LegalizeSimpleRule<"clampMinNumElements", [Idx, EltTy, Num],
                          "ClampNumElements", "any">;
 
-class LegalizeClampMaxNumElements<string Idx, string EltTy, string Num>
+class ClampMaxNumElements<string Idx, string EltTy, string Num>
     : LegalizeSimpleRule<"clampMaxNumElements", [Idx, EltTy, Num],
                          "ClampNumElements", "any">;
 

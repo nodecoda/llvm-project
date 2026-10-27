@@ -13,11 +13,11 @@ def HasVPOPCNTDQ : LegalizeFeature<"Subtarget.hasVPOPCNTDQ()">;
 def NoVLX : LegalizeFeature<"!Subtarget.hasVLX()">;
 
 // Combinations are named records: a dag argument cannot hold a bare record.
-def PopcntAndIs64Bit : LegalizeCompound<(all_of HasPOPCNT, Is64Bit)>;
+def PopcntAndIs64Bit : LegalizePredicateDag<(all_of HasPOPCNT, Is64Bit)>;
 def VpopcntdqOrNotNoVLX
-    : LegalizeCompound<(any_of HasVPOPCNTDQ, (not NoVLX))>;
+    : LegalizePredicateDag<(any_of HasVPOPCNTDQ, (not NoVLX))>;
 def NeitherVpopcntdqNorVLX
-    : LegalizeCompound<(none_of HasVPOPCNTDQ, NoVLX)>;
+    : LegalizePredicateDag<(none_of HasVPOPCNTDQ, NoVLX)>;
 
 def Test_Context : LegalizeContext {
   let Types = [LegalizeType<"s32", "LLT::scalar(32)">];
@@ -30,13 +30,13 @@ def Test_Context : LegalizeContext {
 
 def Test_CTPOP : LegalizeRuleSet<["G_CTPOP"]> {
   let Rules = [
-    LegalizeLegalFor<HasPOPCNT, ["s16, s16", "s32, s32"]>,
-    LegalizeLegalFor<PopcntAndIs64Bit, ["s64, s64"]>,
-    LegalizeLegalFor<VpopcntdqOrNotNoVLX, ["v4s32"], 0>,
-    LegalizeWidenScalarToNextPow2<"0">,
-    LegalizeWidenScalarToNextPow2<"1", "16">,
-    LegalizeClampScalar<"1", "s16", "sMaxScalar">,
-    LegalizeScalarSameSizeAs<"0", "1">,
+    LegalForIf<HasPOPCNT, ["s16, s16", "s32, s32"]>,
+    LegalForIf<PopcntAndIs64Bit, ["s64, s64"]>,
+    LegalForIf<VpopcntdqOrNotNoVLX, ["v4s32"], 0>,
+    WidenScalarToNextPow2<"0">,
+    WidenScalarToNextPow2<"1", "16">,
+    ClampScalar<"1", "s16", "sMaxScalar">,
+    ScalarSameSizeAs<"0", "1">,
   ];
 }
 
@@ -53,11 +53,11 @@ def Test_CTPOP : LegalizeRuleSet<["G_CTPOP"]> {
 // generated fragment lines up with the file it was written in.
 def Test_ADD : LegalizeRuleSet<["G_ADD"]> {
   let Rules = [
-    LegalizeLegalFor<NeitherVpopcntdqNorVLX, ["s32"], 0>,
+    LegalForIf<NeitherVpopcntdqNorVLX, ["s32"], 0>,
     // A call is not a boolean combination, so this one keeps the escape
     // hatch: it is for guards that have no AST form yet.
-    LegalizeScalarizeIf<LegalizeOpaquePred<"scalarOrEltWiderThan(0, 64)">, "0">,
-    LegalizeLower,
+    ScalarizeIf<LegalizeOpaquePred<"scalarOrEltWiderThan(0, 64)">, "0">,
+    Lower,
   ];
 }
 

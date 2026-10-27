@@ -12,7 +12,7 @@ def UseX87 : LegalizeFeature<"Subtarget.hasX87()">;
 
 def Bad : LegalizeRuleSet<["G_FSQRT"]> {
   let Rules = [
-    LegalizeLegalFor<LegalizeOpaquePred<"HasSSE1 || UseX87">, ["s32"], 0>,
+    LegalForIf<LegalizeOpaquePred<"HasSSE1 || UseX87">, ["s32"], 0>,
   ];
 }
 
