@@ -312,6 +312,9 @@ void LegalizerInfoEmitter::verifyRule(const Record &Rule) {
       CheckNamed(Arg->getValueAsDef("Type0"));
       CheckNamed(Arg->getValueAsDef("Type1"));
       CheckNamed(Arg->getValueAsDef("MemTy"));
+    } else if (Arg->isSubClassOf("LegalizeInlineTypeList")) {
+      for (const Record *E : Arg->getValueAsListOfDefs("Elems"))
+        CheckNamed(E);
     }
   }
 }
@@ -325,8 +328,19 @@ void LegalizerInfoEmitter::emitArg(const Record &Arg, raw_ostream &OS) {
     OS << Arg.getName();
     return;
   }
-  if (Arg.isSubClassOf("LegalizeTypeExpr")) {
+  if (Arg.isSubClassOf("LegalizeTypeExpr") ||
+      Arg.isSubClassOf("LegalizeTypeListExpr")) {
     OS << Arg.getValueAsString("Text");
+    return;
+  }
+  if (Arg.isSubClassOf("LegalizeInlineTypeList")) {
+    OS << "{";
+    StringRef Sep;
+    for (const Record *E : Arg.getValueAsListOfDefs("Elems")) {
+      OS << Sep << E->getName();
+      Sep = ", ";
+    }
+    OS << "}";
     return;
   }
   if (Arg.isSubClassOf("LegalizeTypePair")) {
