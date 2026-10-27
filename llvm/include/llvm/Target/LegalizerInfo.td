@@ -18,57 +18,58 @@
 //    reject an action/mutation mismatch before any C++ exists.  In the
 //    hand-written API these live in two different places and nothing ties
 //    them together (PR220802 is exactly that bug class).
-//  * Predicates are a closed AST (see LegalizePredicate).  Leaves name
-//    existing C++ predicates; composition is TableGen record composition.  An
-//    LGExpr that is nothing but a boolean combination of declared features is
-//    rejected, so the AST cannot silently degrade into opaque text.
-//  * Rules whose guard cannot be expressed in the AST yet use LG_Opaque,
-//    which carries the C++ text verbatim.  The escape hatch is meant to
-//    shrink over time, not to be the normal path.
+//  * A predicate is a closed set of records: a leaf names the bool the target
+//    caches in its constructor, and a combination is a `dag` of leaves using
+//    the same all_of/any_of/none_of/not operators as AssemblerPredicate and
+//    RuntimeLibcallAvailability.  TableGen itself rejects a leaf that names
+//    something the target never defined, so the AST cannot silently degrade
+//    into opaque text.
+//  * A combination needs a named record: a `dag` template argument cannot
+//    hold a bare record, and wrapping every single-feature guard in
+//    `(all_of X)` would be noise.  Leaves are therefore records and only the
+//    combinations become dags.
+//  * Rules whose guard cannot be expressed in the AST yet use
+//    LegalizeOpaqueRule / LegalizeOpaquePred, which carry C++ text verbatim.
+//    That escape hatch is meant to shrink over time, not to be the normal path.
 //
 //===----------------------------------------------------------------------===//
+
+include "llvm/Target/TargetSubtarget.td"
+
+// `not` is not a generic dag operator: each domain defines the ones it uses.
+// RuntimeLibcallsImpl.td:14 does the same for libcall availability.
+def not;
 
 //===----------------------------------------------------------------------===//
 // Predicate AST
 //===----------------------------------------------------------------------===//
 
-class LegalizePredicate {
-  string Text = ?;
-}
+/// A boolean guard, either a leaf or a combination of leaves.
+class LegalizePredicate;
 
-class LGTrue : LegalizePredicate {
-  let Text = "true";
-}
-
-/// A subtarget feature, or any per-subtarget boolean computed by the target,
-/// e.g. "HasPOPCNT" or "Is64Bit".  The name is kept as a field so that
-/// -gen-legalizer can check it against the target's LegalizeContext.
-class LGFeature<string name> : LegalizePredicate {
-  string Name = name;
-  let Text = name;
+/// A subtarget feature, or any per-subtarget boolean computed once in the
+/// target constructor.  The record name is the C++ identifier, so
+///
+///   def HasSSE1 : LegalizeFeature<"Subtarget.hasSSE1()">;
+///
+/// declares `bool HasSSE1 = Subtarget.hasSSE1();` and lets rules refer to it as
+/// plain `HasSSE1`.
+class LegalizeFeature<code cond> : LegalizePredicate {
+  code Cond = cond;
 }
 
 /// A C++ expression that cannot be modelled as AST nodes, e.g.
 /// "scalarOrEltWiderThan(0, 64)".  -gen-legalizer rejects one whose text is
 /// merely a boolean combination of declared features; those must be written
-/// with LGAnd / LGOr / LGNot, so that the escape hatch stays an escape hatch.
-class LGExpr<string expr> : LegalizePredicate {
-  string Expr = expr;
-  let Text = expr;
+/// with all_of / any_of / not, so that the escape hatch stays an escape hatch.
+class LegalizeOpaquePred<code expr> : LegalizePredicate {
+  code Expr = expr;
 }
 
-class LGAnd<LegalizePredicate A, LegalizePredicate B> : LegalizePredicate {
-  let Text = "(" # A.Text # " && " # B.Text # ")";
-}
-
-class LGOr<LegalizePredicate A, LegalizePredicate B> : LegalizePredicate {
-  let Text = "(" # A.Text # " || " # B.Text # ")";
-}
-
-/// Compound operands parenthesize themselves, so "!" needs no extra pair and
-/// `!HasCMOV` stays readable instead of becoming `!(HasCMOV)`.
-class LGNot<LegalizePredicate A> : LegalizePredicate {
-  let Text = "!" # A.Text;
+/// A combination of leaves.  Operators come from TargetSubtarget.td, plus the
+/// `not` defined above.
+class LegalizeCompound<dag cond> : LegalizePredicate {
+  dag CondDag = cond;
 }
 
 //===----------------------------------------------------------------------===//
@@ -78,6 +79,9 @@ class LGNot<LegalizePredicate A> : LegalizePredicate {
 class LegalizeRule {
   string Method = ?;
   list<string> Args = [];
+
+  /// Guard, lowered by -gen-legalizer.  Unset for builders that take none.
+  LegalizePredicate Pred = ?;
 
   /// When non-empty, the rule body is this C++ text, emitted verbatim.  Used
   /// for guards that are still raw lambdas.
@@ -92,21 +96,28 @@ class LegalizeRule {
   string Mutation = "";
 }
 
-class LG_Rule<string method, list<string> args, string action = "Legal",
-              string mutation = ""> : LegalizeRule {
+class LegalizeSimpleRule<string method, list<string> args,
+                         string action = "Legal", string mutation = "">
+    : LegalizeRule {
   let Method = method;
   let Args = args;
   let Action = action;
   let Mutation = mutation;
 }
 
-class LG_PredRule<string method, LegalizePredicate P, list<string> args,
-                  string action = "Legal", string mutation = "">
-    : LG_Rule<method, !listconcat([P.Text], args), action, mutation>;
+class LegalizePredRule<string method, LegalizePredicate P, list<string> args,
+                       string action = "Legal", string mutation = "">
+    : LegalizeRule {
+  let Method = method;
+  let Pred = P;
+  let Args = args;
+  let Action = action;
+  let Mutation = mutation;
+}
 
 /// A rule whose guard (and possibly mutation) is still raw C++.
-class LG_OpaqueRule<string method, code body, string action = "Legal",
-                    string mutation = ""> : LegalizeRule {
+class LegalizeOpaqueRule<string method, code body, string action = "Legal",
+                         string mutation = ""> : LegalizeRule {
   let Method = method;
   let OpaqueArgs = body;
   let Action = action;
@@ -114,7 +125,7 @@ class LG_OpaqueRule<string method, code body, string action = "Legal",
 }
 
 /// Render a `{...}` / `{{...}}` type argument.
-class LGTypes<list<string> Types, bit Pairs> {
+class LegalizeTypes<list<string> Types, bit Pairs> {
   string Text = !if(Pairs, "{{" # !interleave(Types, "}, {") # "}}",
                            "{" # !interleave(Types, ", ") # "}");
 }
@@ -123,126 +134,128 @@ class LGTypes<list<string> Types, bit Pairs> {
 // Sugar: one class per builder in LegalizerInfo.h used by X86.
 //===----------------------------------------------------------------------===//
 
-class LG_LegalForTypes<list<string> Types, bit Pairs = 1>
-    : LG_Rule<"legalFor", [LGTypes<Types, Pairs>.Text], "Legal", "">;
+class LegalizeLegalForTypes<list<string> Types, bit Pairs = 1>
+    : LegalizeSimpleRule<"legalFor", [LegalizeTypes<Types, Pairs>.Text], "Legal",
+                         "">;
 
-class LG_LegalFor<LegalizePredicate P, list<string> Types, bit Pairs = 1>
-    : LG_PredRule<"legalFor", P, [LGTypes<Types, Pairs>.Text], "Legal", "">;
+class LegalizeLegalFor<LegalizePredicate P, list<string> Types, bit Pairs = 1>
+    : LegalizePredRule<"legalFor", P, [LegalizeTypes<Types, Pairs>.Text],
+                       "Legal", "">;
 
-class LG_LegalForCartesianProduct<string T0, string T1>
-    : LG_Rule<"legalForCartesianProduct", [T0, T1], "Legal", "">;
+class LegalizeLegalForCartesianProduct<string T0, string T1>
+    : LegalizeSimpleRule<"legalForCartesianProduct", [T0, T1], "Legal", "">;
 
-class LG_LowerFor<LegalizePredicate P, list<string> Types, bit Pairs = 1>
-    : LG_PredRule<"lowerFor", P, [LGTypes<Types, Pairs>.Text], "Lower", "">;
+class LegalizeLowerFor<LegalizePredicate P, list<string> Types, bit Pairs = 1>
+    : LegalizePredRule<"lowerFor", P, [LegalizeTypes<Types, Pairs>.Text],
+                       "Lower", "">;
 
-class LG_LegalForMemDesc<list<string> Types>
-    : LG_Rule<"legalForTypesWithMemDesc", [LGTypes<Types, 1>.Text], "Legal",
-              "">;
+class LegalizeLegalForMemDesc<list<string> Types>
+    : LegalizeSimpleRule<"legalForTypesWithMemDesc",
+                         [LegalizeTypes<Types, 1>.Text], "Legal", "">;
 
-class LG_LegalForMemDescIf<LegalizePredicate P, list<string> Types>
-    : LG_PredRule<"legalForTypesWithMemDesc", P, [LGTypes<Types, 1>.Text],
-                  "Legal", "">;
+class LegalizeLegalForMemDescIf<LegalizePredicate P, list<string> Types>
+    : LegalizePredRule<"legalForTypesWithMemDesc", P,
+                       [LegalizeTypes<Types, 1>.Text], "Legal", "">;
 
-def LG_Lower : LG_Rule<"lower", [], "Lower", "">;
+def LegalizeLower : LegalizeSimpleRule<"lower", [], "Lower", "">;
 
-def LG_Libcall : LG_Rule<"libcall", [], "Libcall", "">;
+def LegalizeLibcall : LegalizeSimpleRule<"libcall", [], "Libcall", "">;
 
-class LG_LibcallFor<list<string> Types, bit Pairs = 0>
-    : LG_Rule<"libcallFor", [LGTypes<Types, Pairs>.Text], "Libcall", "">;
+class LegalizeLibcallFor<list<string> Types, bit Pairs = 0>
+    : LegalizeSimpleRule<"libcallFor", [LegalizeTypes<Types, Pairs>.Text],
+                         "Libcall", "">;
 
-class LG_CustomFor<list<string> Types, bit Pairs = 0>
-    : LG_Rule<"customFor", [LGTypes<Types, Pairs>.Text], "Custom", "">;
+class LegalizeCustomFor<list<string> Types, bit Pairs = 0>
+    : LegalizeSimpleRule<"customFor", [LegalizeTypes<Types, Pairs>.Text],
+                         "Custom", "">;
 
-class LG_CustomForCartesianProduct<LegalizePredicate P, string T0, string T1>
-    : LG_PredRule<"customForCartesianProduct", P, [T0, T1], "Custom", "">;
+class LegalizeCustomForCartesianProduct<LegalizePredicate P, string T0,
+                                        string T1>
+    : LegalizePredRule<"customForCartesianProduct", P, [T0, T1], "Custom", "">;
 
-def LG_AlwaysLegal : LG_Rule<"alwaysLegal", [], "Legal", "">;
+def LegalizeAlwaysLegal : LegalizeSimpleRule<"alwaysLegal", [], "Legal", "">;
 
-class LG_ClampScalar<string Idx, string MinTy, string MaxTy>
-    : LG_Rule<"clampScalar", [Idx, MinTy, MaxTy], "ClampScalar", "any">;
+class LegalizeClampScalar<string Idx, string MinTy, string MaxTy>
+    : LegalizeSimpleRule<"clampScalar", [Idx, MinTy, MaxTy], "ClampScalar",
+                         "any">;
 
-class LG_ClampScalarOrElt<string Idx, string MinTy, string MaxTy>
-    : LG_Rule<"clampScalarOrElt", [Idx, MinTy, MaxTy], "ClampScalar", "any">;
+class LegalizeClampScalarOrElt<string Idx, string MinTy, string MaxTy>
+    : LegalizeSimpleRule<"clampScalarOrElt", [Idx, MinTy, MaxTy], "ClampScalar",
+                         "any">;
 
-class LG_WidenScalarToNextPow2<string Idx, string Min = "">
-    : LG_Rule<"widenScalarToNextPow2",
-              !if(!eq(Min, ""), [Idx], [Idx, "/*Min=*/" # Min]), "WidenScalar",
-              "widen">;
+class LegalizeWidenScalarToNextPow2<string Idx, string Min = "">
+    : LegalizeSimpleRule<"widenScalarToNextPow2",
+                         !if(!eq(Min, ""), [Idx], [Idx, "/*Min=*/" # Min]),
+                         "WidenScalar", "widen">;
 
-class LG_WidenScalarOrEltToNextPow2<string Idx, string Min = "">
-    : LG_Rule<"widenScalarOrEltToNextPow2",
-              !if(!eq(Min, ""), [Idx], [Idx, "/*Min=*/" # Min]), "WidenScalar",
-              "widen">;
+class LegalizeWidenScalarOrEltToNextPow2<string Idx, string Min = "">
+    : LegalizeSimpleRule<"widenScalarOrEltToNextPow2",
+                         !if(!eq(Min, ""), [Idx], [Idx, "/*Min=*/" # Min]),
+                         "WidenScalar", "widen">;
 
-class LG_MinScalar<string Idx, string Ty>
-    : LG_Rule<"minScalar", [Idx, Ty], "WidenScalar", "widen">;
+class LegalizeMinScalar<string Idx, string Ty>
+    : LegalizeSimpleRule<"minScalar", [Idx, Ty], "WidenScalar", "widen">;
 
-class LG_MaxScalar<string Idx, string Ty>
-    : LG_Rule<"maxScalar", [Idx, Ty], "NarrowScalar", "narrow">;
+class LegalizeMaxScalar<string Idx, string Ty>
+    : LegalizeSimpleRule<"maxScalar", [Idx, Ty], "NarrowScalar", "narrow">;
 
-class LG_ScalarSameSizeAs<string Idx, string OtherIdx>
-    : LG_Rule<"scalarSameSizeAs", [Idx, OtherIdx], "ScalarSameSizeAs",
-              "neutral">;
+class LegalizeScalarSameSizeAs<string Idx, string OtherIdx>
+    : LegalizeSimpleRule<"scalarSameSizeAs", [Idx, OtherIdx],
+                         "ScalarSameSizeAs", "neutral">;
 
-class LG_Scalarize<string Idx>
-    : LG_Rule<"scalarize", [Idx], "FewerElements", "split">;
+class LegalizeScalarize<string Idx>
+    : LegalizeSimpleRule<"scalarize", [Idx], "FewerElements", "split">;
 
-class LG_ScalarizeIf<LegalizePredicate P, string Idx>
-    : LG_PredRule<"scalarizeIf", P, [Idx], "FewerElements", "split">;
+class LegalizeScalarizeIf<LegalizePredicate P, string Idx>
+    : LegalizePredRule<"scalarizeIf", P, [Idx], "FewerElements", "split">;
 
-class LG_MoreElementsToNextPow2<string Idx>
-    : LG_Rule<"moreElementsToNextPow2", [Idx], "MoreElements", "merge">;
+class LegalizeMoreElementsToNextPow2<string Idx>
+    : LegalizeSimpleRule<"moreElementsToNextPow2", [Idx], "MoreElements",
+                         "merge">;
 
-class LG_ClampNumElements<string Idx, string EltTy, string MaxTy>
-    : LG_Rule<"clampNumElements", [Idx, EltTy, MaxTy], "ClampNumElements",
-              "any">;
+class LegalizeClampNumElements<string Idx, string EltTy, string MaxTy>
+    : LegalizeSimpleRule<"clampNumElements", [Idx, EltTy, MaxTy],
+                         "ClampNumElements", "any">;
 
-class LG_ClampMinNumElements<string Idx, string EltTy, string Num>
-    : LG_Rule<"clampMinNumElements", [Idx, EltTy, Num], "ClampNumElements",
-              "any">;
+class LegalizeClampMinNumElements<string Idx, string EltTy, string Num>
+    : LegalizeSimpleRule<"clampMinNumElements", [Idx, EltTy, Num],
+                         "ClampNumElements", "any">;
 
-class LG_ClampMaxNumElements<string Idx, string EltTy, string Num>
-    : LG_Rule<"clampMaxNumElements", [Idx, EltTy, Num], "ClampNumElements",
-              "any">;
+class LegalizeClampMaxNumElements<string Idx, string EltTy, string Num>
+    : LegalizeSimpleRule<"clampMaxNumElements", [Idx, EltTy, Num],
+                         "ClampNumElements", "any">;
 
 //===----------------------------------------------------------------------===//
 // Target vocabulary
 //
-// The rules below are written in terms of one boolean per subtarget feature
-// and a handful of LLT constants.  Declaring them here as well keeps a
-// target's whole legalizer in one file, and lets -gen-legalizer check that a
-// predicate names something that exists.
+// A target writes its rule sets in terms of LegalizeFeature records (see
+// above) and a handful of LLT constants.  Declaring the constants here keeps a
+// target's whole legalizer in one file; -gen-legalizer emits them ahead of the
+// rules, in the order given.
 //===----------------------------------------------------------------------===//
-
-/// A subtarget feature cached in the constructor:
-///   bool HasAVX2 = Subtarget.hasAVX2();
-class LG_Bool<string name, string expr> {
-  string Name = name;
-  string Expr = expr;
-}
 
 /// An LLT constant:
 ///   const LLT s32 = LLT::scalar(32);
-class LG_Type<string name, string expr> {
+class LegalizeType<string name, string expr> {
   string Name = name;
   string Expr = expr;
 }
 
 /// A named type list, for the builders that take an initializer_list:
 ///   const std::initializer_list<LLT> PtrTypes32 = {s1, s8, s16, s32};
-class LG_TypeList<string name, list<string> elems> {
+class LegalizeTypeList<string name, list<string> elems> {
   string Name = name;
   list<string> Elems = elems;
 }
 
-/// Everything a target's rule sets are written in terms of.  -gen-legalizer
-/// emits these declarations ahead of the rules, in the order given here, so a
-/// derived entry may refer to the ones above it.
+/// Everything a target's rule sets are written in terms of, apart from the
+/// features themselves.  -gen-legalizer emits these declarations ahead of the
+/// rules, in the order given here, so a derived entry may refer to the ones
+/// above it.
 class LegalizeContext {
   list<string> Comments = [];
-  list<LG_Bool> Bools = [];
-  list<LG_Type> Types = [];
-  list<LG_TypeList> TypeLists = [];
+  list<LegalizeType> Types = [];
+  list<LegalizeTypeList> TypeLists = [];
 }
 
 //===----------------------------------------------------------------------===//
