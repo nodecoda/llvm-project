@@ -12,17 +12,27 @@ def Test_CTPOP : LegalizeRuleSet<["G_CTPOP"]> {
                 ["s64, s64"]>,
     LG_LegalFor<LGOr<LGFeature<"HasVPOPCNTDQ">, LGNot<LGFeature<"NoVLX">>>,
                 ["v4s32"], 0>,
+    LG_WidenScalarToNextPow2<"0">,
     LG_WidenScalarToNextPow2<"1", "16">,
     LG_ClampScalar<"1", "s16", "sMaxScalar">,
     LG_ScalarSameSizeAs<"0", "1">,
   ];
 }
 
-// CHECK:      // G_CTPOP
-// CHECK-NEXT: getActionDefinitionsBuilder(G_CTPOP)
+// CHECK:      getActionDefinitionsBuilder(G_CTPOP)
 // CHECK-NEXT: .legalFor(HasPOPCNT, {{[{][{]s16, s16[}], [{]s32, s32[}][}]}})
 // CHECK-NEXT: .legalFor((HasPOPCNT && Is64Bit), {{[{][{]s64, s64[}][}]}})
 // CHECK-NEXT: .legalFor((HasVPOPCNTDQ || !(NoVLX)), {{[{]v4s32[}]}})
+// CHECK-NEXT: .widenScalarToNextPow2(0)
 // CHECK-NEXT: .widenScalarToNextPow2(1, /*Min=*/16)
 // CHECK-NEXT: .clampScalar(1, s16, sMaxScalar)
 // CHECK-NEXT: .scalarSameSizeAs(0, 1);
+
+// Rule sets are emitted in .td order rather than sorted by name, so that a
+// generated fragment lines up with the file it was written in.
+def Test_ADD : LegalizeRuleSet<["G_ADD"]> {
+  let Rules = [LG_Lower];
+}
+
+// CHECK:      getActionDefinitionsBuilder(G_ADD)
+// CHECK-NEXT: .lower();

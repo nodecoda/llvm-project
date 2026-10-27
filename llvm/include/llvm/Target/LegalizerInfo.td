@@ -6,20 +6,23 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// POC schema for describing GlobalISel legalizer rules in TableGen.
+// Schema for describing GlobalISel legalizer rules in TableGen.
 //
 // Design constraints:
 //
 //  * One record maps one-to-one onto one existing builder call in
-//    LegalizerInfo.h.  This keeps the generated C++ textually comparable
-//    with the hand-written code, which is what makes a mechanical
-//    equivalence check possible.
+//    LegalizerInfo.h.  This keeps the generated C++ comparable with the
+//    hand-written code, which is what makes a mechanical equivalence check
+//    possible.
 //  * The mutation direction is an explicit field, so -gen-legalizer can
 //    reject an action/mutation mismatch before any C++ exists.  In the
 //    hand-written API these live in two different places and nothing ties
 //    them together (PR220802 is exactly that bug class).
 //  * Predicates are a closed AST (see LegalizePredicate).  Leaves name
 //    existing C++ predicates; composition is TableGen record composition.
+//  * Rules whose guard cannot be expressed in the AST yet use LG_Opaque,
+//    which carries the C++ text verbatim.  The escape hatch is meant to
+//    shrink over time, not to be the normal path.
 //
 //===----------------------------------------------------------------------===//
 
@@ -39,6 +42,11 @@ class LGTrue : LegalizePredicate {
 /// e.g. "HasPOPCNT" or "Is64Bit".
 class LGFeature<string Name> : LegalizePredicate {
   let Text = Name;
+}
+
+/// A C++ expression not (yet) modelled as AST nodes.
+class LGExpr<string Expr> : LegalizePredicate {
+  let Text = Expr;
 }
 
 class LGAnd<LegalizePredicate A, LegalizePredicate B> : LegalizePredicate {
@@ -61,6 +69,10 @@ class LegalizeRule {
   string Method = ?;
   list<string> Args = [];
 
+  /// When non-empty, the rule body is this C++ text, emitted verbatim.  Used
+  /// for guards that are still raw lambdas.
+  code OpaqueArgs = "";
+
   /// Action this rule implements.  -gen-legalizer checks that the mutation
   /// carried by the rule can actually produce it.
   string Action = "Legal";
@@ -70,36 +82,118 @@ class LegalizeRule {
   string Mutation = "";
 }
 
+class LG_Rule<string method, list<string> args, string action = "Legal",
+              string mutation = ""> : LegalizeRule {
+  let Method = method;
+  let Args = args;
+  let Action = action;
+  let Mutation = mutation;
+}
+
+class LG_PredRule<string method, LegalizePredicate P, list<string> args,
+                  string action = "Legal", string mutation = "">
+    : LG_Rule<method, !listconcat([P.Text], args), action, mutation>;
+
+/// A rule whose guard (and possibly mutation) is still raw C++.
+class LG_OpaqueRule<string method, code body, string action = "Legal",
+                    string mutation = ""> : LegalizeRule {
+  let Method = method;
+  let OpaqueArgs = body;
+  let Action = action;
+  let Mutation = mutation;
+}
+
+/// Render a `{...}` / `{{...}}` type argument.
+class LGTypes<list<string> Types, bit Pairs> {
+  string Text = !if(Pairs, "{{" # !interleave(Types, "}, {") # "}}",
+                           "{" # !interleave(Types, ", ") # "}");
+}
+
+//===----------------------------------------------------------------------===//
+// Sugar: one class per builder in LegalizerInfo.h used by X86.
+//===----------------------------------------------------------------------===//
+
+class LG_LegalForTypes<list<string> Types, bit Pairs = 1>
+    : LG_Rule<"legalFor", [LGTypes<Types, Pairs>.Text], "Legal", "">;
+
 class LG_LegalFor<LegalizePredicate P, list<string> Types, bit Pairs = 1>
-    : LegalizeRule {
-  let Method = "legalFor";
-  let Args = [P.Text,
-              !if(Pairs, "{{" # !interleave(Types, "}, {") # "}}",
-                        "{" # !interleave(Types, ", ") # "}")];
-  let Action = "Legal";
-  let Mutation = "";
-}
+    : LG_PredRule<"legalFor", P, [LGTypes<Types, Pairs>.Text], "Legal", "">;
 
-class LG_WidenScalarToNextPow2<string Idx, string Min> : LegalizeRule {
-  let Method = "widenScalarToNextPow2";
-  let Args = [Idx, "/*Min=*/" # Min];
-  let Action = "WidenScalar";
-  let Mutation = "widen";
-}
+class LG_LegalForCartesianProduct<string T0, string T1>
+    : LG_Rule<"legalForCartesianProduct", [T0, T1], "Legal", "">;
 
-class LG_ClampScalar<string Idx, string MinTy, string MaxTy> : LegalizeRule {
-  let Method = "clampScalar";
-  let Args = [Idx, MinTy, MaxTy];
-  let Action = "ClampScalar";
-  let Mutation = "any";
-}
+class LG_LowerFor<LegalizePredicate P, list<string> Types, bit Pairs = 1>
+    : LG_PredRule<"lowerFor", P, [LGTypes<Types, Pairs>.Text], "Lower", "">;
 
-class LG_ScalarSameSizeAs<string Idx, string OtherIdx> : LegalizeRule {
-  let Method = "scalarSameSizeAs";
-  let Args = [Idx, OtherIdx];
-  let Action = "ScalarSameSizeAs";
-  let Mutation = "neutral";
-}
+class LG_LegalForMemDesc<list<string> Types>
+    : LG_Rule<"legalForTypesWithMemDesc", [LGTypes<Types, 1>.Text], "Legal",
+              "">;
+
+class LG_LegalForMemDescIf<LegalizePredicate P, list<string> Types>
+    : LG_PredRule<"legalForTypesWithMemDesc", P, [LGTypes<Types, 1>.Text],
+                  "Legal", "">;
+
+def LG_Lower : LG_Rule<"lower", [], "Lower", "">;
+
+def LG_Libcall : LG_Rule<"libcall", [], "Libcall", "">;
+
+class LG_LibcallFor<list<string> Types, bit Pairs = 0>
+    : LG_Rule<"libcallFor", [LGTypes<Types, Pairs>.Text], "Libcall", "">;
+
+class LG_CustomFor<list<string> Types, bit Pairs = 0>
+    : LG_Rule<"customFor", [LGTypes<Types, Pairs>.Text], "Custom", "">;
+
+class LG_CustomForCartesianProduct<LegalizePredicate P, string T0, string T1>
+    : LG_PredRule<"customForCartesianProduct", P, [T0, T1], "Custom", "">;
+
+def LG_AlwaysLegal : LG_Rule<"alwaysLegal", [], "Legal", "">;
+
+class LG_ClampScalar<string Idx, string MinTy, string MaxTy>
+    : LG_Rule<"clampScalar", [Idx, MinTy, MaxTy], "ClampScalar", "any">;
+
+class LG_ClampScalarOrElt<string Idx, string MinTy, string MaxTy>
+    : LG_Rule<"clampScalarOrElt", [Idx, MinTy, MaxTy], "ClampScalar", "any">;
+
+class LG_WidenScalarToNextPow2<string Idx, string Min = "">
+    : LG_Rule<"widenScalarToNextPow2",
+              !if(!eq(Min, ""), [Idx], [Idx, "/*Min=*/" # Min]), "WidenScalar",
+              "widen">;
+
+class LG_WidenScalarOrEltToNextPow2<string Idx, string Min = "">
+    : LG_Rule<"widenScalarOrEltToNextPow2",
+              !if(!eq(Min, ""), [Idx], [Idx, "/*Min=*/" # Min]), "WidenScalar",
+              "widen">;
+
+class LG_MinScalar<string Idx, string Ty>
+    : LG_Rule<"minScalar", [Idx, Ty], "WidenScalar", "widen">;
+
+class LG_MaxScalar<string Idx, string Ty>
+    : LG_Rule<"maxScalar", [Idx, Ty], "NarrowScalar", "narrow">;
+
+class LG_ScalarSameSizeAs<string Idx, string OtherIdx>
+    : LG_Rule<"scalarSameSizeAs", [Idx, OtherIdx], "ScalarSameSizeAs",
+              "neutral">;
+
+class LG_Scalarize<string Idx>
+    : LG_Rule<"scalarize", [Idx], "FewerElements", "split">;
+
+class LG_ScalarizeIf<LegalizePredicate P, string Idx>
+    : LG_PredRule<"scalarizeIf", P, [Idx], "FewerElements", "split">;
+
+class LG_MoreElementsToNextPow2<string Idx>
+    : LG_Rule<"moreElementsToNextPow2", [Idx], "MoreElements", "merge">;
+
+class LG_ClampNumElements<string Idx, string EltTy, string MaxTy>
+    : LG_Rule<"clampNumElements", [Idx, EltTy, MaxTy], "ClampNumElements",
+              "any">;
+
+class LG_ClampMinNumElements<string Idx, string EltTy, string Num>
+    : LG_Rule<"clampMinNumElements", [Idx, EltTy, Num], "ClampNumElements",
+              "any">;
+
+class LG_ClampMaxNumElements<string Idx, string EltTy, string Num>
+    : LG_Rule<"clampMaxNumElements", [Idx, EltTy, Num], "ClampNumElements",
+              "any">;
 
 //===----------------------------------------------------------------------===//
 // Rule sets
@@ -108,4 +202,5 @@ class LG_ScalarSameSizeAs<string Idx, string OtherIdx> : LegalizeRule {
 class LegalizeRuleSet<list<string> opcodes> {
   list<string> Opcodes = opcodes;
   list<LegalizeRule> Rules = [];
+  list<string> Comments = [];
 }
