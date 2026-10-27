@@ -9,10 +9,11 @@ include "llvm/Target/LegalizerInfo.td"
 
 def HasSSE1 : LegalizeFeature<"Subtarget.hasSSE1()">;
 def UseX87 : LegalizeFeature<"Subtarget.hasX87()">;
+def s32 : LegalizeType<"LLT::scalar(32)">;
 
 def Bad : LegalizeRuleSet<["G_FSQRT"]> {
   let Rules = [
-    LegalForIf<LegalizeOpaquePred<"HasSSE1 || UseX87">, ["s32"], 0>,
+    LegalForIf<LegalizeOpaquePred<"HasSSE1 || UseX87">, [s32]>,
   ];
 }
 
