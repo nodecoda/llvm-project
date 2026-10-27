@@ -387,8 +387,9 @@ def X86_AND : LegalizeRuleSet<["G_AND", "G_OR", "G_XOR"]> {
 
 def X86_ICMP : LegalizeRuleSet<["G_ICMP"]> {
   let Rules = [
-    LegalForCartesianProduct<"{s8}",
-                                     "Is64Bit ? IntTypes64 : IntTypes32">,
+    LegalForCartesianProduct<
+        LegalizeInlineTypeList<[s8]>,
+        LegalizeTypeListExpr<"Is64Bit ? IntTypes64 : IntTypes32">>,
     ClampScalar<0, s8, s8>,
     WidenScalarToNextPow2<1, 8>,
     ClampScalar<1, s8, sMaxScalar>,
@@ -462,8 +463,9 @@ def X86_BRCOND : LegalizeRuleSet<["G_BRCOND"]> {
 
 def X86_PTRTOINT : LegalizeRuleSet<["G_PTRTOINT"]> {
   let Rules = [
-    LegalForCartesianProduct<"Is64Bit ? PtrTypes64 : PtrTypes32",
-                                     "{p0}">,
+    LegalForCartesianProduct<
+        LegalizeTypeListExpr<"Is64Bit ? PtrTypes64 : PtrTypes32">,
+        LegalizeInlineTypeList<[p0]>>,
     MaxScalar<0, sMaxScalar>,
     WidenScalarToNextPow2<0, 8>,
   ];
@@ -626,8 +628,9 @@ def X86_SEXT : LegalizeRuleSet<["G_SEXT", "G_ZEXT"]> {
 
 def X86_TRUNC : LegalizeRuleSet<["G_TRUNC"]> {
   let Rules = [
-    LegalForCartesianProduct<"{s1, s8, s16, s32, s64}",
-                                     "{s8, s16, s32, s64, s128}">,
+    LegalForCartesianProduct<
+        LegalizeInlineTypeList<[s1, s8, s16, s32, s64]>,
+        LegalizeInlineTypeList<[s8, s16, s32, s64, s128]>>,
   ];
 }
 
@@ -705,8 +708,9 @@ def X86_SITOFP : LegalizeRuleSet<["G_SITOFP"]> {
     LegalForPairsIf<SSE2And64Bit, [LegalizeTypePair<s64, s64>]>,
     ClampScalar<1, LegalizeTypeExpr<"(UseX87 && !HasSSE1) ? s16 : s32">, sMaxScalar>,
     WidenScalarToNextPow2<1>,
-    CustomForCartesianProductIf<UseX87, "{s32, s64, s80}",
-                                      "{s16, s32, s64}">,
+    CustomForCartesianProductIf<UseX87,
+                                LegalizeInlineTypeList<[s32, s64, s80]>,
+                                LegalizeInlineTypeList<[s16, s32, s64]>>,
     ClampScalar<0, s32, LegalizeTypeExpr<"HasSSE2 ? s64 : s32">>,
     WidenScalarToNextPow2<0>,
   ];
@@ -720,8 +724,9 @@ def X86_FPTOSI : LegalizeRuleSet<["G_FPTOSI"]> {
     LegalForPairsIf<SSE2And64Bit, [LegalizeTypePair<s64, s64>]>,
     ClampScalar<0, LegalizeTypeExpr<"(UseX87 && !HasSSE1) ? s16 : s32">, sMaxScalar>,
     WidenScalarToNextPow2<0>,
-    CustomForCartesianProductIf<UseX87, "{s16, s32, s64}",
-                                      "{s32, s64, s80}">,
+    CustomForCartesianProductIf<UseX87,
+                                LegalizeInlineTypeList<[s16, s32, s64]>,
+                                LegalizeInlineTypeList<[s32, s64, s80]>>,
     ClampScalar<1, s32, LegalizeTypeExpr<"HasSSE2 ? s64 : s32">>,
     WidenScalarToNextPow2<1>,
   ];

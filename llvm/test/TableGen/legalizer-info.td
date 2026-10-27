@@ -68,3 +68,16 @@ def Test_ADD : LegalizeRuleSet<["G_ADD"]> {
 // CHECK-NEXT: .legalFor(!(HasVPOPCNTDQ || NoVLX), {{[{]s32[}]}})
 // CHECK-NEXT: .scalarizeIf(scalarOrEltWiderThan(0, 64), 0)
 // CHECK-NEXT: .lower();
+
+// A cartesian product takes two type lists.  The braces around an inline list
+// belong to the emitter; a list picked by an expression cannot carry them,
+// because the choice is made at run time.
+def Test_CARTESIAN : LegalizeRuleSet<["G_PTRTOINT"]> {
+  let Rules = [
+    LegalForCartesianProduct<LegalizeInlineTypeList<[s16, s32]>,
+                             LegalizeTypeListExpr<"Is64Bit ? Tys : Tys">>,
+  ];
+}
+
+// CHECK:      getActionDefinitionsBuilder(G_PTRTOINT)
+// CHECK-NEXT: .legalForCartesianProduct({s16, s32}, Is64Bit ? Tys : Tys);

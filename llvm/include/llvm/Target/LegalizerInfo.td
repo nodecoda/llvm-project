@@ -105,6 +105,22 @@ class LegalizeTypeExpr<string text> : LegalizeArgType {
   string Text = text;
 }
 
+/// A type list in a builder argument position.  Same split as above: an inline
+/// list, whose braces the emitter supplies, and an expression that picks one of
+/// the named lists, which cannot carry braces because the choice is made at
+/// run time.
+class LegalizeArgTypeList : LegalizeArg;
+
+/// `{s8, s16}`, spelled as a list and braced by the emitter.
+class LegalizeInlineTypeList<list<LegalizeType> elems> : LegalizeArgTypeList {
+  list<LegalizeType> Elems = elems;
+}
+
+/// `Is64Bit ? PtrTypes64 : PtrTypes32`.
+class LegalizeTypeListExpr<string text> : LegalizeArgTypeList {
+  string Text = text;
+}
+
 /// A named type list, for builders that take an initializer_list:
 ///   const std::initializer_list<LLT> PtrTypes32 = {s1, s8, s16, s32};
 class LegalizeTypeList<list<LegalizeType> elems> : LegalizeArg {
@@ -267,9 +283,8 @@ class LegalForPairs<list<LegalizeTypePair> Pairs>
 class LegalForPairsIf<LegalizePredicate P, list<LegalizeTypePair> Pairs>
     : LegalizeGuardedCall<"legalFor", P, Pairs, ActionLegal>;
 
-class LegalForCartesianProduct<string T0, string T1>
-    : LegalizeCall<"legalForCartesianProduct",
-                   [LegalizeRawArg<T0>, LegalizeRawArg<T1>], ActionLegal>;
+class LegalForCartesianProduct<LegalizeArgTypeList T0, LegalizeArgTypeList T1>
+    : LegalizeCall<"legalForCartesianProduct", [T0, T1], ActionLegal>;
 
 class LowerForPairsIf<LegalizePredicate P, list<LegalizeTypePair> Pairs>
     : LegalizeGuardedCall<"lowerFor", P, Pairs, ActionLower>;
@@ -290,9 +305,9 @@ class LibcallFor<list<LegalizeArgType> Types>
 class CustomFor<list<LegalizeArgType> Types>
     : LegalizeCall<"customFor", Types, ActionCustom>;
 
-class CustomForCartesianProductIf<LegalizePredicate P, string T0, string T1>
-    : LegalizeGuardedCall<"customForCartesianProduct", P,
-                          [LegalizeRawArg<T0>, LegalizeRawArg<T1>],
+class CustomForCartesianProductIf<LegalizePredicate P, LegalizeArgTypeList T0,
+                                  LegalizeArgTypeList T1>
+    : LegalizeGuardedCall<"customForCartesianProduct", P, [T0, T1],
                           ActionCustom>;
 
 def AlwaysLegal : LegalizeCall<"alwaysLegal", [], ActionLegal>;
