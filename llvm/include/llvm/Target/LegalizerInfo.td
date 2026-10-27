@@ -121,6 +121,16 @@ class LegalizeRule {
   string Method = ?;
   list<string> Args = [];
 
+  /// How Args are laid out in the generated call: "plain" (verbatim),
+  /// "braced" ({a, b}) or "pairs" ({{a, b}, {c, d}}).  A style carries no
+  /// data of its own, so unlike Action it stays a string and is validated by
+  /// -gen-legalizer.
+  string ArgStyle = "plain";
+
+  /// Optional C++ parameter names, rendered as `/*Name=*/` in front of the
+  /// argument at the same index.  Only meaningful for ArgStyle "plain".
+  list<string> ArgNames = [];
+
   /// Guard, lowered by -gen-legalizer.  Unset for builders that take none.
   LegalizePredicate Pred = ?;
 
@@ -167,49 +177,52 @@ class LegalizeOpaqueRule<string method, code body, LegalizeAction action,
   let Mutation = mutation;
 }
 
-/// Render a `{...}` / `{{...}}` type argument.
-class LegalizeTypes<list<string> Types, bit Pairs> {
-  string Text = !if(Pairs, "{{" # !interleave(Types, "}, {") # "}}",
-                           "{" # !interleave(Types, ", ") # "}");
-}
 
 //===----------------------------------------------------------------------===//
 // Sugar: one class per builder in LegalizerInfo.h used by X86.
 //===----------------------------------------------------------------------===//
 
 class LegalFor<list<string> Types, bit Pairs = 1>
-    : LegalizeCall<"legalFor", [LegalizeTypes<Types, Pairs>.Text], ActionLegal>;
+    : LegalizeCall<"legalFor", Types, ActionLegal> {
+  let ArgStyle = !if(Pairs, "pairs", "braced");
+}
 
 class LegalForIf<LegalizePredicate P, list<string> Types, bit Pairs = 1>
-    : LegalizeGuardedCall<"legalFor", P, [LegalizeTypes<Types, Pairs>.Text],
-                          ActionLegal>;
+    : LegalizeGuardedCall<"legalFor", P, Types, ActionLegal> {
+  let ArgStyle = !if(Pairs, "pairs", "braced");
+}
 
 class LegalForCartesianProduct<string T0, string T1>
     : LegalizeCall<"legalForCartesianProduct", [T0, T1], ActionLegal>;
 
 class LowerForIf<LegalizePredicate P, list<string> Types, bit Pairs = 1>
-    : LegalizeGuardedCall<"lowerFor", P, [LegalizeTypes<Types, Pairs>.Text],
-                          ActionLower>;
+    : LegalizeGuardedCall<"lowerFor", P, Types, ActionLower> {
+  let ArgStyle = !if(Pairs, "pairs", "braced");
+}
 
 class LegalForMemDesc<list<string> Types>
-    : LegalizeCall<"legalForTypesWithMemDesc", [LegalizeTypes<Types, 1>.Text],
-                   ActionLegal>;
+    : LegalizeCall<"legalForTypesWithMemDesc", Types, ActionLegal> {
+  let ArgStyle = "pairs";
+}
 
 class LegalForMemDescIf<LegalizePredicate P, list<string> Types>
-    : LegalizeGuardedCall<"legalForTypesWithMemDesc", P,
-                          [LegalizeTypes<Types, 1>.Text], ActionLegal>;
+    : LegalizeGuardedCall<"legalForTypesWithMemDesc", P, Types, ActionLegal> {
+  let ArgStyle = "pairs";
+}
 
 def Lower : LegalizeCall<"lower", [], ActionLower>;
 
 def Libcall : LegalizeCall<"libcall", [], ActionLibcall>;
 
 class LibcallFor<list<string> Types, bit Pairs = 0>
-    : LegalizeCall<"libcallFor", [LegalizeTypes<Types, Pairs>.Text],
-                   ActionLibcall>;
+    : LegalizeCall<"libcallFor", Types, ActionLibcall> {
+  let ArgStyle = !if(Pairs, "pairs", "braced");
+}
 
 class CustomFor<list<string> Types, bit Pairs = 0>
-    : LegalizeCall<"customFor", [LegalizeTypes<Types, Pairs>.Text],
-                   ActionCustom>;
+    : LegalizeCall<"customFor", Types, ActionCustom> {
+  let ArgStyle = !if(Pairs, "pairs", "braced");
+}
 
 class CustomForCartesianProductIf<LegalizePredicate P, string T0, string T1>
     : LegalizeGuardedCall<"customForCartesianProduct", P, [T0, T1],
@@ -227,13 +240,17 @@ class ClampScalarOrElt<string Idx, string MinTy, string MaxTy>
 
 class WidenScalarToNextPow2<string Idx, string Min = "">
     : LegalizeCall<"widenScalarToNextPow2",
-                   !if(!eq(Min, ""), [Idx], [Idx, "/*Min=*/" # Min]),
-                   ActionWidenScalar, "widen">;
+                   !if(!eq(Min, ""), [Idx], [Idx, Min]),
+                   ActionWidenScalar, "widen"> {
+  let ArgNames = !if(!eq(Min, ""), [], ["", "Min"]);
+}
 
 class WidenScalarOrEltToNextPow2<string Idx, string Min = "">
     : LegalizeCall<"widenScalarOrEltToNextPow2",
-                   !if(!eq(Min, ""), [Idx], [Idx, "/*Min=*/" # Min]),
-                   ActionWidenScalar, "widen">;
+                   !if(!eq(Min, ""), [Idx], [Idx, Min]),
+                   ActionWidenScalar, "widen"> {
+  let ArgNames = !if(!eq(Min, ""), [], ["", "Min"]);
+}
 
 class MinScalar<string Idx, string Ty>
     : LegalizeCall<"minScalar", [Idx, Ty], ActionWidenScalar, "widen">;

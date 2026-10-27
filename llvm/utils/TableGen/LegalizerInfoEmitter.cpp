@@ -150,6 +150,7 @@ class LegalizerInfoEmitter {
   void emitPredicate(const Record &P, raw_ostream &OS);
   void emitContext(raw_ostream &OS, const Record &Context);
   void verifyRule(const Record &Rule);
+  void emitArgList(raw_ostream &OS, const Record &Rule);
   void emitRuleSet(raw_ostream &OS, const Record &RuleSet);
 
 public:
@@ -258,11 +259,54 @@ void LegalizerInfoEmitter::verifyRule(const Record &Rule) {
                         "' requires a '" + Required + "' mutation, but this "
                         "rule carries '" + Mutation + "'");
 
+  StringRef Style = Rule.getValueAsString("ArgStyle");
+  if (Style != "plain" && Style != "braced" && Style != "pairs")
+    PrintFatalError(Rule.getLoc(),
+                    "'" + Style + "' is not a legalizer argument style");
+  if (Style != "plain" && !Rule.getValueAsListOfStrings("ArgNames").empty())
+    PrintFatalError(Rule.getLoc(),
+                    "ArgNames is only meaningful with ArgStyle \"plain\"");
+
   if (Rule.getValueAsString("OpaqueArgs").empty())
     for (StringRef Arg : Rule.getValueAsListOfStrings("Args"))
       if (Arg.empty())
         PrintFatalError(Rule.getLoc(), "legalizer rule '" + Method +
                                            "' has an empty argument");
+}
+
+/// Render one rule's arguments.  The layout is data, not text: a type list is
+/// stored as the list itself and wrapped here, so a .td file has no way to
+/// spell a brace that does not match its builder.
+void LegalizerInfoEmitter::emitArgList(raw_ostream &OS, const Record &Rule) {
+  std::vector<StringRef> Args = Rule.getValueAsListOfStrings("Args");
+  std::vector<StringRef> Names = Rule.getValueAsListOfStrings("ArgNames");
+  StringRef Style = Rule.getValueAsString("ArgStyle");
+
+  if (Style == "plain") {
+    StringRef Sep;
+    for (size_t I = 0, E = Args.size(); I != E; ++I) {
+      OS << Sep;
+      if (I < Names.size() && !Names[I].empty())
+        OS << "/*" << Names[I] << "=*/";
+      OS << Args[I];
+      Sep = ", ";
+    }
+    return;
+  }
+
+  if (Style == "braced") {
+    OS << "{" << join(Args, ", ") << "}";
+    return;
+  }
+
+  assert(Style == "pairs" && "verifyRule() accepts no other style");
+  OS << "{";
+  StringRef Sep;
+  for (StringRef Arg : Args) {
+    OS << Sep << "{" << Arg << "}";
+    Sep = ", ";
+  }
+  OS << "}";
 }
 
 void LegalizerInfoEmitter::emitRuleSet(raw_ostream &OS, const Record &RuleSet) {
@@ -289,15 +333,11 @@ void LegalizerInfoEmitter::emitRuleSet(raw_ostream &OS, const Record &RuleSet) {
     StringRef Opaque = Rule.getValueAsString("OpaqueArgs");
     OS << "      ." << Rule.getValueAsString("Method") << "(";
     if (Opaque.empty()) {
-      StringRef Sep;
       if (const Record *Pred = Rule.getValueAsOptionalDef("Pred")) {
         emitPredicate(*Pred, OS);
-        Sep = ", ";
+        OS << ", ";
       }
-      for (StringRef Arg : Rule.getValueAsListOfStrings("Args")) {
-        OS << Sep << Arg;
-        Sep = ", ";
-      }
+      emitArgList(OS, Rule);
     } else
       emitOpaqueBody(OS, Opaque);
     OS << (I + 1 == E ? ");\n" : ")\n");
