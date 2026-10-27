@@ -163,7 +163,7 @@ def X86_LROUND : LegalizeRuleSet<["G_LROUND", "G_LLROUND"]> {
       [=](const LegalityQuery &) {
         return std::pair<unsigned, LLT>(1, s32);
       }
-    }]>,
+    }], ActionWidenScalar, "widen">,
     Libcall,
   ];
 }
@@ -233,7 +233,7 @@ def X86_MERGE_VALUES : LegalizeRuleSet<["G_MERGE_VALUES"]> {
           return false;
         }
       }
-    }]>,
+    }], ActionLegal>,
   ];
 }
 
@@ -269,7 +269,7 @@ def X86_UNMERGE_VALUES : LegalizeRuleSet<["G_UNMERGE_VALUES"]> {
           return false;
         }
       }
-    }]>,
+    }], ActionLegal>,
   ];
 }
 
@@ -561,7 +561,7 @@ def X86_STORE : LegalizeRuleSet<["G_STORE"]> {
       [=](const LegalityQuery &Query) {
         return Query.Types[0] != Query.MMODescrs[0].MemoryTy;
       }
-    }]>,
+    }], ActionCustom>,
     WidenScalarToNextPow2<"0", "8">,
     ClampScalar<"0", "s8", "sMaxScalar">,
     Scalarize<"0">,
@@ -754,7 +754,7 @@ def X86_UITOFP : LegalizeRuleSet<["G_UITOFP"]> {
                       (HasSSE2 && typeIs(0, s64)(Query))) &&
                      scalarNarrowerThan(1, Is64Bit ? 64 : 32)(Query);
             }
-    }]>,
+    }], ActionCustom>,
     LegalizeOpaqueRule<"lowerIf", [{
 
       [=](const LegalityQuery &Query) {
@@ -764,7 +764,7 @@ def X86_UITOFP : LegalizeRuleSet<["G_UITOFP"]> {
                       (HasSSE2 && typeIs(0, s64)(Query))) &&
                      (Is64Bit && typeIs(1, s64)(Query));
             }
-    }]>,
+    }], ActionLower>,
     ClampScalar<"0", "s32", "HasSSE2 ? s64 : s32">,
     WidenScalarToNextPow2<"0">,
     ClampScalar<"1", "s32", "sMaxScalar">,
@@ -790,7 +790,7 @@ def X86_FPTOUI : LegalizeRuleSet<["G_FPTOUI"]> {
                 (HasSSE2 && typeIs(1, s64)(Query))) &&
                scalarNarrowerThan(0, Is64Bit ? 64 : 32)(Query);
       }
-    }]>,
+    }], ActionCustom>,
     LegalizeOpaqueRule<"lowerIf", [{
 
       [=](const LegalityQuery &Query) {
@@ -799,7 +799,7 @@ def X86_FPTOUI : LegalizeRuleSet<["G_FPTOUI"]> {
                 (HasSSE2 && typeIs(1, s64)(Query))) &&
                (Is64Bit && typeIs(0, s64)(Query));
       }
-    }]>,
+    }], ActionLower>,
     ClampScalar<"0", "s32", "sMaxScalar">,
     WidenScalarToNextPow2<"0">,
     ClampScalar<"1", "s32", "HasSSE2 ? s64 : s32">,
@@ -820,7 +820,7 @@ def X86_BUILD_VECTOR : LegalizeRuleSet<["G_BUILD_VECTOR"]> {
                      (HasAVX512 &&
                       typeInSet(0, {v8s64, v16s32, v32s16, v64s8})(Query));
             }
-    }]>,
+    }], ActionCustom>,
     ClampNumElements<"0", "v16s8", "s8MaxVector">,
     ClampNumElements<"0", "v8s16", "s16MaxVector">,
     ClampNumElements<"0", "v4s32", "s32MaxVector">,
@@ -851,7 +851,7 @@ def X86_EXTRACT : LegalizeRuleSet<["G_EXTRACT", "G_INSERT"]> {
                                                   {v2s64, v8s64},
                                                   {v4s64, v8s64}})(Query));
             }
-    }]>,
+    }], ActionLegal>,
   ];
 }
 

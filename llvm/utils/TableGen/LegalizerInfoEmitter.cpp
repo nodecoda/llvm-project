@@ -136,16 +136,13 @@ void emitOpaqueBody(raw_ostream &OS, StringRef Body) {
 class LegalizerInfoEmitter {
   const RecordKeeper &Records;
 
-  /// The mutation direction an action requires, or "" if the action does not
-  /// prescribe one.  "any" means the rule is allowed to choose.
-  static StringRef requiredMutationDirection(StringRef Action) {
-    return StringSwitch<StringRef>(Action)
-        .Case("WidenScalar", "widen")
-        .Case("NarrowScalar", "narrow")
-        .Case("FewerElements", "split")
-        .Case("MoreElements", "merge")
-        .Case("Bitcast", "bitcast")
-        .Default("");
+  /// The mutation directions a rule may carry.  "any" is for actions that
+  /// expand to more than one applied action (clampScalar and friends), where
+  /// the rule legitimately picks a direction at query time.
+  static bool isKnownMutation(StringRef Mutation) {
+    static constexpr StringLiteral Known[] = {
+        "widen", "narrow", "split", "merge", "bitcast", "neutral", "any"};
+    return Mutation.empty() || llvm::is_contained(Known, Mutation);
   }
 
   void emitComments(raw_ostream &OS, const Record &Context);
@@ -233,18 +230,33 @@ void LegalizerInfoEmitter::verifyRule(const Record &Rule) {
   if (Method.empty())
     PrintFatalError(Rule.getLoc(), "legalizer rule is missing its Method");
 
-  StringRef Action = Rule.getValueAsString("Action");
+  const Record *Action = Rule.getValueAsOptionalDef("Action");
+  if (!Action)
+    PrintFatalError(Rule.getLoc(),
+                    "legalizer rule '" + Method + "' does not name an Action");
+  if (!Action->isSubClassOf("LegalizeAction"))
+    PrintFatalError(Rule.getLoc(),
+                    "'" + Action->getName() + "' is not a LegalizeAction");
+
   StringRef Mutation = Rule.getValueAsString("Mutation");
+  if (!isKnownMutation(Mutation))
+    PrintFatalError(Rule.getLoc(), "'" + Mutation +
+                                       "' is not a legalizer mutation "
+                                       "direction");
 
   // This is the check that hand-written C++ cannot do: the action and the
   // mutation live in two different places there, and nothing ties them
   // together (this is exactly the bug class behind
   // https://github.com/llvm/llvm-project/issues/220802).
-  StringRef Required = requiredMutationDirection(Action);
-  if (!Required.empty() && Mutation != Required && Mutation != "any")
+  // "any" on either side means unconstrained: composite actions accept either
+  // direction, and a rule that picks one at query time says so with "any".
+  StringRef Required = Action->getValueAsString("Mutation");
+  if (!Required.empty() && Required != "any" && Mutation != Required &&
+      Mutation != "any")
     PrintFatalError(Rule.getLoc(),
-                    "action '" + Action + "' requires a '" + Required +
-                        "' mutation, but this rule carries '" + Mutation + "'");
+                    "action '" + Action->getValueAsString("Name") +
+                        "' requires a '" + Required + "' mutation, but this "
+                        "rule carries '" + Mutation + "'");
 
   if (Rule.getValueAsString("OpaqueArgs").empty())
     for (StringRef Arg : Rule.getValueAsListOfStrings("Args"))
