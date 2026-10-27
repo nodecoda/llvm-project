@@ -141,6 +141,10 @@ void emitOpaqueBody(raw_ostream &OS, StringRef Body) {
 class LegalizerInfoEmitter {
   const RecordKeeper &Records;
 
+  /// Feature names a rule, an opaque body or a type expression refers to.  A
+  /// feature nothing references is not emitted, and says so.
+  StringSet<> UsedFeatures;
+
   /// The mutation directions a rule may carry.  "any" is for actions that
   /// expand to more than one applied action (clampScalar and friends), where
   /// the rule legitimately picks a direction at query time.
@@ -185,19 +189,74 @@ static std::string squashSpace(StringRef S) {
   return Out;
 }
 
-/// Emit `bool <name> = <expr>;` for every LegalizeFeature record, in .td order.
-/// The record name *is* the C++ identifier, which is why a rule can refer to a
-/// feature by writing the record itself instead of a string.
+/// Collect the identifiers in a C++ expression, skipping the ones that are
+/// followed by '(': those are calls, not references to a record.
+static void collectIdentifiers(StringRef Expr,
+                               SmallVectorImpl<StringRef> &Out) {
+  auto IsBody = [](char C) { return isAlnum(C) || C == '_'; };
+  size_t I = 0, E = Expr.size();
+  while (I != E) {
+    while (I != E && !(isAlpha(Expr[I]) || Expr[I] == '_'))
+      ++I;
+    size_t Begin = I;
+    while (I != E && IsBody(Expr[I]))
+      ++I;
+    if (Begin == I)
+      continue;
+    StringRef Id = Expr.slice(Begin, I);
+    size_t J = I;
+    while (J != E && (Expr[J] == ' ' || Expr[J] == '\t' || Expr[J] == '\n'))
+      ++J;
+    if (J != E && Expr[J] == '(')
+      continue;
+    Out.push_back(Id);
+  }
+}
+
+/// A predicate dag holds its leaves as defs; collect the features among them.
+static void collectFeatureLeaves(const Init *I, StringSet<> &Out) {
+  if (const auto *D = dyn_cast<DagInit>(I)) {
+    for (const Init *Arg : D->getArgs())
+      collectFeatureLeaves(Arg, Out);
+    return;
+  }
+  if (const auto *Def = dyn_cast<DefInit>(I)) {
+    const Record *R = Def->getDef();
+    if (R->isSubClassOf("LegalizeFeature"))
+      Out.insert(R->getName());
+  }
+}
+
+/// Collect the features one predicate record refers to.
+static void collectPredicateFeatures(const Record *P, StringSet<> &Out) {
+  if (P->isSubClassOf("LegalizeFeature")) {
+    Out.insert(P->getName());
+    return;
+  }
+  if (P->isSubClassOf("LegalizePredicateDag"))
+    collectFeatureLeaves(P->getValueAsDag("CondDag"), Out);
+}
+
+/// Emit `bool <name> = <expr>;` for every reachable LegalizeFeature record, in
+/// .td order.  The record name *is* the C++ identifier, which is why a rule can
+/// refer to a feature by writing the record itself instead of a string.  A
+/// feature that nothing references is skipped: it would only become an unused
+/// variable in the generated constructor.
 void LegalizerInfoEmitter::emitFeatures(raw_ostream &OS) {
   std::vector<const Record *> Features =
       Records.getAllDerivedDefinitions("LegalizeFeature");
   llvm::sort(Features, [](const Record *L, const Record *R) {
     return L->getID() < R->getID();
   });
-  for (const Record *F : Features)
+  unsigned Emitted = 0;
+  for (const Record *F : Features) {
+    if (!UsedFeatures.contains(F->getName()))
+      continue;
     OS << "  bool " << F->getName() << " = "
        << squashSpace(F->getValueAsString("Cond")) << ";\n";
-  if (!Features.empty())
+    ++Emitted;
+  }
+  if (Emitted)
     OS << "\n";
 }
 
@@ -295,6 +354,15 @@ void LegalizerInfoEmitter::verifyRule(const Record &Rule) {
                                        "' mutation, but this "
                                        "rule carries '" +
                                        Mutation + "'");
+
+  // The emitter prints an opaque body and never looks at Pred, so a rule that
+  // carries both would silently lose its guard.
+  if (!Rule.getValueAsString("OpaqueArgs").empty() &&
+      Rule.getValueAsOptionalDef("Pred"))
+    PrintFatalError(Rule.getLoc(),
+                    "legalizer rule '" + Method +
+                        "' has both a Pred and an opaque body; the predicate "
+                        "would be dropped");
 
   // A type is rendered by its record name, so it has to be a named def: an
   // inline `LegalizeType<...>` would generate an identifier called anonymous_0.
@@ -466,6 +534,65 @@ void LegalizerInfoEmitter::run(raw_ostream &OS) {
                         "' is a boolean combination of declared features; "
                         "write it with all_of / any_of / not");
   }
+
+  // The fragment is emitted in .td order, so a record that names one declared
+  // further down would be emitted before its declaration and the generated C++
+  // would not compile.  The name sits inside a C++ expression that TableGen
+  // cannot resolve, so only -gen-legalizer can see it.
+  auto CheckDeclarationOrder = [&](StringRef Class, StringRef Field) {
+    std::vector<const Record *> Recs = Records.getAllDerivedDefinitions(Class);
+    StringMap<unsigned> DeclOrder;
+    for (const Record *R : Recs)
+      DeclOrder[R->getName()] = R->getID();
+    for (const Record *R : Recs) {
+      SmallVector<StringRef, 8> Idents;
+      collectIdentifiers(R->getValueAsString(Field), Idents);
+      for (StringRef Id : Idents) {
+        auto It = DeclOrder.find(Id);
+        if (It != DeclOrder.end() && It->second > R->getID())
+          PrintFatalError(R->getLoc(),
+                          "'" + Id + "' is used by '" + R->getName() +
+                              "' but declared below it; the fragment is "
+                              "emitted in .td order");
+      }
+    }
+  };
+  CheckDeclarationOrder("LegalizeType", "Expr");
+  CheckDeclarationOrder("LegalizeFeature", "Cond");
+
+  // Everything a feature name can be written in: a predicate dag's leaves, and
+  // the C++ text the escape hatches carry.
+  auto CollectUsed = [&](StringRef Text) {
+    SmallVector<StringRef, 8> Idents;
+    collectIdentifiers(Text, Idents);
+    for (StringRef Id : Idents)
+      if (Declared.contains(Id))
+        UsedFeatures.insert(Id);
+  };
+  for (const Record *D :
+       Records.getAllDerivedDefinitions("LegalizePredicateDag"))
+    collectPredicateFeatures(D, UsedFeatures);
+  for (const Record *P : Records.getAllDerivedDefinitions("LegalizeRule")) {
+    CollectUsed(P->getValueAsString("OpaqueArgs"));
+    if (const Record *Pred = P->getValueAsOptionalDef("Pred"))
+      collectPredicateFeatures(Pred, UsedFeatures);
+  }
+  for (const Record *E : Records.getAllDerivedDefinitions("LegalizeOpaquePred"))
+    CollectUsed(E->getValueAsString("Expr"));
+  for (const Record *T : Records.getAllDerivedDefinitions("LegalizeType"))
+    CollectUsed(T->getValueAsString("Expr"));
+  for (const Record *X : Records.getAllDerivedDefinitions("LegalizeTypeExpr"))
+    CollectUsed(X->getValueAsString("Text"));
+  for (const Record *X :
+       Records.getAllDerivedDefinitions("LegalizeTypeListExpr"))
+    CollectUsed(X->getValueAsString("Text"));
+  for (const Record *X : Records.getAllDerivedDefinitions("LegalizeRawArg"))
+    CollectUsed(X->getValueAsString("Text"));
+
+  for (const Record *F : Records.getAllDerivedDefinitions("LegalizeFeature"))
+    if (!UsedFeatures.contains(F->getName()))
+      PrintWarning(F->getLoc(), "legalizer feature '" + F->getName() +
+                                    "' is never used and is not emitted");
 
   emitFeatures(OS);
   emitTypes(OS);
