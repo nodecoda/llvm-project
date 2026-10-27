@@ -161,8 +161,10 @@ def X86_FCOS : LegalizeRuleSet<[
 
 def X86_FNEG : LegalizeRuleSet<["G_FNEG"]> {
   let Rules = [
-    LG_LegalFor<LGExpr<"UseX87 && !HasSSE1">, ["s32"], 0>,
-    LG_LegalFor<LGExpr<"UseX87 && !HasSSE2">, ["s64"], 0>,
+    LG_LegalFor<LGAnd<LGFeature<"UseX87">, LGNot<LGFeature<"HasSSE1">>>,
+                ["s32"], 0>,
+    LG_LegalFor<LGAnd<LGFeature<"UseX87">, LGNot<LGFeature<"HasSSE2">>>,
+                ["s64"], 0>,
     LG_LegalFor<LGFeature<"UseX87">, ["s80"], 0>,
     LG_Lower,
   ];
@@ -170,8 +172,10 @@ def X86_FNEG : LegalizeRuleSet<["G_FNEG"]> {
 
 def X86_FSQRT : LegalizeRuleSet<["G_FSQRT"]> {
   let Rules = [
-    LG_LegalFor<LGExpr<"HasSSE1 || UseX87">, ["s32"], 0>,
-    LG_LegalFor<LGExpr<"HasSSE2 || UseX87">, ["s64"], 0>,
+    LG_LegalFor<LGOr<LGFeature<"HasSSE1">, LGFeature<"UseX87">>, ["s32"],
+                0>,
+    LG_LegalFor<LGOr<LGFeature<"HasSSE2">, LGFeature<"UseX87">>, ["s64"],
+                0>,
     LG_LegalFor<LGFeature<"UseX87">, ["s80"], 0>,
   ];
 }
@@ -645,7 +649,8 @@ def X86_FADD : LegalizeRuleSet<["G_FADD", "G_FSUB", "G_FMUL", "G_FDIV"]> {
 def X86_FABS : LegalizeRuleSet<["G_FABS"]> {
   let Rules = [
     LG_LegalFor<LGFeature<"UseX87">, ["s80"], 0>,
-    LG_LegalFor<LGExpr<"UseX87 && !Is64Bit">, ["s64"], 0>,
+    LG_LegalFor<LGAnd<LGFeature<"UseX87">, LGNot<LGFeature<"Is64Bit">>>,
+                ["s64"], 0>,
     LG_Lower,
   ];
 }
@@ -653,8 +658,10 @@ def X86_FABS : LegalizeRuleSet<["G_FABS"]> {
 def X86_FCMP : LegalizeRuleSet<["G_FCMP"]> {
   let Comments = ["fp comparison"];
   let Rules = [
-    LG_LegalFor<LGExpr<"HasSSE1 || UseX87">, ["s8", "s32"], 0>,
-    LG_LegalFor<LGExpr<"HasSSE2 || UseX87">, ["s8", "s64"], 0>,
+    LG_LegalFor<LGOr<LGFeature<"HasSSE1">, LGFeature<"UseX87">>,
+                ["s8", "s32"], 0>,
+    LG_LegalFor<LGOr<LGFeature<"HasSSE2">, LGFeature<"UseX87">>,
+                ["s8", "s64"], 0>,
     LG_LegalFor<LGFeature<"UseX87">, ["s8", "s80"], 0>,
     LG_ClampScalar<"0", "s8", "s8">,
     LG_ClampScalar<"1", "s32", "HasSSE2 ? s64 : s32">,

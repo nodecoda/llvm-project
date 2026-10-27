@@ -37,8 +37,8 @@ def Test_CTPOP : LegalizeRuleSet<["G_CTPOP"]> {
 
 // CHECK:      getActionDefinitionsBuilder(G_CTPOP)
 // CHECK-NEXT: .legalFor(HasPOPCNT, {{[{][{]s16, s16[}], [{]s32, s32[}][}]}})
-// CHECK-NEXT: .legalFor((HasPOPCNT && Is64Bit), {{[{][{]s64, s64[}][}]}})
-// CHECK-NEXT: .legalFor((HasVPOPCNTDQ || !(NoVLX)), {{[{]v4s32[}]}})
+// CHECK-NEXT: .legalFor(HasPOPCNT && Is64Bit, {{[{][{]s64, s64[}][}]}})
+// CHECK-NEXT: .legalFor(HasVPOPCNTDQ || !NoVLX, {{[{]v4s32[}]}})
 // CHECK-NEXT: .widenScalarToNextPow2(0)
 // CHECK-NEXT: .widenScalarToNextPow2(1, /*Min=*/16)
 // CHECK-NEXT: .clampScalar(1, s16, sMaxScalar)
@@ -47,8 +47,14 @@ def Test_CTPOP : LegalizeRuleSet<["G_CTPOP"]> {
 // Rule sets are emitted in .td order rather than sorted by name, so that a
 // generated fragment lines up with the file it was written in.
 def Test_ADD : LegalizeRuleSet<["G_ADD"]> {
-  let Rules = [LG_Lower];
+  let Rules = [
+    // A call is not a boolean combination, so this one keeps LGExpr: the
+    // escape hatch is for guards that have no AST form yet.
+    LG_ScalarizeIf<LGExpr<"scalarOrEltWiderThan(0, 64)">, "0">,
+    LG_Lower,
+  ];
 }
 
 // CHECK:      getActionDefinitionsBuilder(G_ADD)
+// CHECK-NEXT: .scalarizeIf(scalarOrEltWiderThan(0, 64), 0)
 // CHECK-NEXT: .lower();
