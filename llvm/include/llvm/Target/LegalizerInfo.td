@@ -168,7 +168,15 @@ class LegalizeMemDesc<LegalizeNamedType type0, LegalizeNamedType type1,
   int Align = align;
 }
 
-/// A literal integer: a type index, a bit width, an element count.
+/// A literal integer in a builder argument position.
+///
+/// The number alone does not say what it means: `clampScalar(1, ...)` is a type
+/// slot, `widenScalarToNextPow2(0, 16)` is a bit width, and
+/// `clampMinNumElements(0, s8, 8)` is a lane count.  All three used to be one
+/// class, so a lane count could be written where a slot index belongs and the
+/// only symptom was a wrong rule at run time.  The three subclasses below are
+/// what the builder signatures are checked against; the value and its rendering
+/// stay identical.
 class LegalizeArgInt<int value, string comment = ""> : LegalizeArg {
   int Value = value;
 
@@ -176,6 +184,16 @@ class LegalizeArgInt<int value, string comment = ""> : LegalizeArg {
   /// number would not say what it means.
   string Comment = comment;
 }
+
+/// A type slot index: which operand's type the rule looks at.
+class LegalizeArgIndex<int value> : LegalizeArgInt<value>;
+
+/// A bit width, e.g. the `Min` of widenScalarToNextPow2.  Rendered with the
+/// `/*Min=*/` comment every bit-width position in the C++ API carries.
+class LegalizeArgBits<int value> : LegalizeArgInt<value, "Min">;
+
+/// A lane count.
+class LegalizeArgLanes<int value, string comment = ""> : LegalizeArgInt<value, comment>;
 
 /// C++ text that cannot be typed, e.g. an element count computed from features.
 /// An escape hatch that is meant to shrink, not to grow: X86 is down to the
@@ -232,6 +250,30 @@ def ActionUnsupported     : LegalizeAction<"Unsupported", "">;
 //===----------------------------------------------------------------------===//
 // Rules
 //===----------------------------------------------------------------------===//
+/// The shape a builder argument position accepts.
+///
+/// A builder without a signature accepts any argument list, which is how
+/// `.clampScalar({s32})` and `.lower({s32})` used to be emitted from a schema
+/// that knew better: nothing compared the arguments the rule carried against
+/// the arguments the builder declares.  A Formals list is that comparison, one
+/// entry per position.
+class LegalizeArgShape;
+
+/// One type: a named type, an inline type expression, or a named type list.
+def ShapeType : LegalizeArgShape;
+/// A list of type pairs, `{{s32, s32}, ...}`.
+def ShapeTypePairList : LegalizeArgShape;
+/// A list of memdesc tuples, `{{s32, s32, s8, 8}, ...}`.
+def ShapeMemDescList : LegalizeArgShape;
+/// A type slot index.
+def ShapeIndex : LegalizeArgShape;
+/// A bit width.
+def ShapeBits : LegalizeArgShape;
+/// A lane count: a literal, or C++ text when the count depends on features.
+def ShapeLanes : LegalizeArgShape;
+/// A type list, for the cartesian-product builders.
+def ShapeTypeList : LegalizeArgShape;
+
 /// The kind of guard a builder accepts.
 class LegalizeGuardKind;
 /// `bool Pred` computed once in the target constructor.
@@ -269,102 +311,178 @@ class LegalizeBuilder<string name, LegalizeAction action> {
   /// what stops a rule from emitting `.lower(HasSSE1, )`, which no overload
   /// declares but which the emitter happily wrote.
   list<LegalizeGuardKind> Guards = [];
+
+  /// The argument positions this builder declares.
+  ///
+  /// One inner list per overload: an empty inner list means the builder takes
+  /// no arguments, and a builder with two overloads (legalFor takes either a
+  /// type list or a list of pairs) lists both, because the schema models a
+  /// rule rather than a call and either one is a legal rule.
+  list<list<LegalizeArgShape>> Formals = [[]];
 }
 
 def BuilderLegalFor                      : LegalizeBuilder<"legalFor", ActionLegal> {
   let Guards = [GuardBool];
+  let Formals = [[ShapeType], [ShapeTypePairList]];
 }
 
-def BuilderLegalForCartesianProduct      : LegalizeBuilder<"legalForCartesianProduct", ActionLegal>;
+def BuilderLegalForCartesianProduct      : LegalizeBuilder<"legalForCartesianProduct", ActionLegal> {
+  let Guards = [];
+  let Formals = [[ShapeTypeList, ShapeTypeList]];
+}
 def BuilderLegalForTypesWithMemDesc      : LegalizeBuilder<"legalForTypesWithMemDesc", ActionLegal> {
   let Guards = [GuardBool];
+  let Formals = [[ShapeMemDescList]];
 }
 
-def BuilderLower                         : LegalizeBuilder<"lower", ActionLower>;
+def BuilderLower                         : LegalizeBuilder<"lower", ActionLower> {
+  let Guards = [];
+  let Formals = [[]];
+}
 def BuilderLowerFor                      : LegalizeBuilder<"lowerFor", ActionLower> {
   let Guards = [GuardBool];
+  let Formals = [[ShapeTypePairList]];
 }
 
-def BuilderLibcall                       : LegalizeBuilder<"libcall", ActionLibcall>;
+def BuilderLibcall                       : LegalizeBuilder<"libcall", ActionLibcall> {
+  let Guards = [];
+  let Formals = [[]];
+}
 def BuilderLibcallFor                    : LegalizeBuilder<"libcallFor", ActionLibcall> {
   let Guards = [GuardBool];
+  let Formals = [[ShapeType]];
 }
 
 def BuilderCustomFor                     : LegalizeBuilder<"customFor", ActionCustom> {
   let Guards = [GuardBool];
+  let Formals = [[ShapeType]];
 }
 
 def BuilderCustomForCartesianProduct     : LegalizeBuilder<"customForCartesianProduct", ActionCustom> {
   let Guards = [GuardBool];
+  let Formals = [[ShapeTypeList, ShapeTypeList]];
 }
 
-def BuilderAlwaysLegal                   : LegalizeBuilder<"alwaysLegal", ActionLegal>;
+def BuilderAlwaysLegal                   : LegalizeBuilder<"alwaysLegal", ActionLegal> {
+  let Guards = [];
+  let Formals = [[]];
+}
 def BuilderClampScalar                   : LegalizeBuilder<"clampScalar", ActionClampScalar> {
   let Guards = [GuardBool];
+  let Formals = [[ShapeIndex, ShapeType, ShapeType]];
 }
 
-def BuilderClampScalarOrElt              : LegalizeBuilder<"clampScalarOrElt", ActionClampScalar>;
-def BuilderWidenScalarToNextPow2         : LegalizeBuilder<"widenScalarToNextPow2", ActionWidenScalar>;
-def BuilderWidenScalarOrEltToNextPow2    : LegalizeBuilder<"widenScalarOrEltToNextPow2", ActionWidenScalar>;
+def BuilderClampScalarOrElt              : LegalizeBuilder<"clampScalarOrElt", ActionClampScalar> {
+  let Guards = [];
+  let Formals = [[ShapeIndex, ShapeType, ShapeType]];
+}
+def BuilderWidenScalarToNextPow2         : LegalizeBuilder<"widenScalarToNextPow2", ActionWidenScalar> {
+  let Guards = [];
+  let Formals = [[ShapeIndex], [ShapeIndex, ShapeBits]];
+}
+def BuilderWidenScalarOrEltToNextPow2    : LegalizeBuilder<"widenScalarOrEltToNextPow2", ActionWidenScalar> {
+  let Guards = [];
+  let Formals = [[ShapeIndex], [ShapeIndex, ShapeBits]];
+}
 def BuilderMinScalar                     : LegalizeBuilder<"minScalar", ActionWidenScalar> {
   let Guards = [GuardBool];
+  let Formals = [[ShapeIndex, ShapeType]];
 }
 
-def BuilderMaxScalar                     : LegalizeBuilder<"maxScalar", ActionNarrowScalar>;
-def BuilderScalarSameSizeAs              : LegalizeBuilder<"scalarSameSizeAs", ActionScalarSameSizeAs>;
-def BuilderScalarize                     : LegalizeBuilder<"scalarize", ActionFewerElements>;
-def BuilderMoreElementsToNextPow2        : LegalizeBuilder<"moreElementsToNextPow2", ActionMoreElements>;
-def BuilderClampNumElements              : LegalizeBuilder<"clampNumElements", ActionClampNumElements>;
-def BuilderClampMinNumElements           : LegalizeBuilder<"clampMinNumElements", ActionMoreElements>;
-def BuilderClampMaxNumElements           : LegalizeBuilder<"clampMaxNumElements", ActionFewerElements>;
+def BuilderMaxScalar                     : LegalizeBuilder<"maxScalar", ActionNarrowScalar> {
+  let Guards = [];
+  let Formals = [[ShapeIndex, ShapeType]];
+}
+def BuilderScalarSameSizeAs              : LegalizeBuilder<"scalarSameSizeAs", ActionScalarSameSizeAs> {
+  let Guards = [];
+  let Formals = [[ShapeIndex, ShapeIndex]];
+}
+def BuilderScalarize                     : LegalizeBuilder<"scalarize", ActionFewerElements> {
+  let Guards = [];
+  let Formals = [[ShapeIndex]];
+}
+def BuilderMoreElementsToNextPow2        : LegalizeBuilder<"moreElementsToNextPow2", ActionMoreElements> {
+  let Guards = [];
+  let Formals = [[ShapeIndex]];
+}
+def BuilderClampNumElements              : LegalizeBuilder<"clampNumElements", ActionClampNumElements> {
+  let Guards = [];
+  let Formals = [[ShapeIndex, ShapeType, ShapeType]];
+}
+def BuilderClampMinNumElements           : LegalizeBuilder<"clampMinNumElements", ActionMoreElements> {
+  let Guards = [];
+  let Formals = [[ShapeIndex, ShapeType, ShapeLanes]];
+}
+def BuilderClampMaxNumElements           : LegalizeBuilder<"clampMaxNumElements", ActionFewerElements> {
+  let Guards = [];
+  let Formals = [[ShapeIndex, ShapeType, ShapeLanes]];
+}
 def BuilderLegalIf                       : LegalizeBuilder<"legalIf", ActionLegal> {
   let Guards = [GuardQuery];
+  let Formals = [[]];
 }
 
 def BuilderLowerIf                       : LegalizeBuilder<"lowerIf", ActionLower> {
   let Guards = [GuardQuery];
+  let Formals = [[]];
 }
 
 def BuilderCustomIf                      : LegalizeBuilder<"customIf", ActionCustom> {
   let Guards = [GuardQuery];
+  let Formals = [[]];
 }
 
 def BuilderWidenScalarIf                 : LegalizeBuilder<"widenScalarIf", ActionWidenScalar> {
   let Guards = [GuardQuery];
+  let Formals = [[]];
 }
 
 def BuilderNarrowScalarIf                : LegalizeBuilder<"narrowScalarIf", ActionNarrowScalar> {
   let Guards = [GuardQuery];
+  let Formals = [[]];
 }
 
 def BuilderLibcallIf                     : LegalizeBuilder<"libcallIf", ActionLibcall> {
   let Guards = [GuardQuery];
+  let Formals = [[]];
 }
 
 def BuilderFewerElementsIf               : LegalizeBuilder<"fewerElementsIf", ActionFewerElements> {
   let Guards = [GuardQuery];
+  let Formals = [[]];
 }
 
 def BuilderMoreElementsIf                : LegalizeBuilder<"moreElementsIf", ActionMoreElements> {
   let Guards = [GuardQuery];
+  let Formals = [[]];
 }
 
 def BuilderMinScalarIf                   : LegalizeBuilder<"minScalarIf", ActionWidenScalar> {
   let Guards = [GuardQuery];
+  let Formals = [[ShapeIndex, ShapeType]];
 }
 
 def BuilderMaxScalarIf                   : LegalizeBuilder<"maxScalarIf", ActionNarrowScalar> {
   let Guards = [GuardQuery];
+  let Formals = [[ShapeIndex, ShapeType]];
 }
 
 def BuilderScalarizeIf                   : LegalizeBuilder<"scalarizeIf", ActionFewerElements> {
   let Guards = [GuardQuery];
+  let Formals = [[ShapeIndex]];
 }
 
-def BuilderUnsupported                   : LegalizeBuilder<"unsupported", ActionUnsupported>;
-def BuilderUnsupportedFor                : LegalizeBuilder<"unsupportedFor", ActionUnsupported>;
+def BuilderUnsupported                   : LegalizeBuilder<"unsupported", ActionUnsupported> {
+  let Guards = [];
+  let Formals = [[]];
+}
+def BuilderUnsupportedFor                : LegalizeBuilder<"unsupportedFor", ActionUnsupported> {
+  let Guards = [];
+  let Formals = [[ShapeType]];
+}
 def BuilderUnsupportedIf                 : LegalizeBuilder<"unsupportedIf", ActionUnsupported> {
   let Guards = [GuardQuery];
+  let Formals = [[]];
 }
 
 class LegalizeRule {
@@ -501,48 +619,48 @@ def Unsupported : LegalizeCall<BuilderUnsupported, []>;
 
 class ClampScalar<int Idx, LegalizeArgType MinTy, LegalizeArgType MaxTy>
     : LegalizeCall<BuilderClampScalar,
-                   [LegalizeArgInt<Idx>, MinTy, MaxTy]>;
+                   [LegalizeArgIndex<Idx>, MinTy, MaxTy]>;
 
 class ClampScalarOrElt<int Idx, LegalizeArgType MinTy,
                        LegalizeArgType MaxTy>
     : LegalizeCall<BuilderClampScalarOrElt,
-                   [LegalizeArgInt<Idx>, MinTy, MaxTy]>;
+                   [LegalizeArgIndex<Idx>, MinTy, MaxTy]>;
 
 /// Min = 0 means "no minimum": a zero-bit minimum is not meaningful, so the
 /// sentinel is unambiguous and the argument stays an integer.
 class WidenScalarToNextPow2<int Idx, int Min = 0>
     : LegalizeCall<BuilderWidenScalarToNextPow2,
-                   !if(!eq(Min, 0), [LegalizeArgInt<Idx>],
-                       [LegalizeArgInt<Idx>, LegalizeArgInt<Min, "Min">])>;
+                   !if(!eq(Min, 0), [LegalizeArgIndex<Idx>],
+                       [LegalizeArgIndex<Idx>, LegalizeArgBits<Min>])>;
 
 class WidenScalarOrEltToNextPow2<int Idx, int Min = 0>
     : LegalizeCall<BuilderWidenScalarOrEltToNextPow2,
-                   !if(!eq(Min, 0), [LegalizeArgInt<Idx>],
-                       [LegalizeArgInt<Idx>, LegalizeArgInt<Min, "Min">])>;
+                   !if(!eq(Min, 0), [LegalizeArgIndex<Idx>],
+                       [LegalizeArgIndex<Idx>, LegalizeArgBits<Min>])>;
 
 class MinScalar<int Idx, LegalizeArgType Ty>
-    : LegalizeCall<BuilderMinScalar, [LegalizeArgInt<Idx>, Ty]>;
+    : LegalizeCall<BuilderMinScalar, [LegalizeArgIndex<Idx>, Ty]>;
 
 class MaxScalar<int Idx, LegalizeArgType Ty>
-    : LegalizeCall<BuilderMaxScalar, [LegalizeArgInt<Idx>, Ty]>;
+    : LegalizeCall<BuilderMaxScalar, [LegalizeArgIndex<Idx>, Ty]>;
 
 class ScalarSameSizeAs<int Idx, int OtherIdx>
     : LegalizeCall<BuilderScalarSameSizeAs,
-                   [LegalizeArgInt<Idx>, LegalizeArgInt<OtherIdx>]>;
+                   [LegalizeArgIndex<Idx>, LegalizeArgIndex<OtherIdx>]>;
 
 class Scalarize<int Idx>
-    : LegalizeCall<BuilderScalarize, [LegalizeArgInt<Idx>]>;
+    : LegalizeCall<BuilderScalarize, [LegalizeArgIndex<Idx>]>;
 
 class ScalarizeIf<LegalizeQueryPredicate P, int Idx>
-    : LegalizeQueryGuardedCall<BuilderScalarizeIf, P, [LegalizeArgInt<Idx>]>;
+    : LegalizeQueryGuardedCall<BuilderScalarizeIf, P, [LegalizeArgIndex<Idx>]>;
 
 class MoreElementsToNextPow2<int Idx>
-    : LegalizeCall<BuilderMoreElementsToNextPow2, [LegalizeArgInt<Idx>]>;
+    : LegalizeCall<BuilderMoreElementsToNextPow2, [LegalizeArgIndex<Idx>]>;
 
 class ClampNumElements<int Idx, LegalizeArgType EltTy,
                        LegalizeArgType MaxTy>
     : LegalizeCall<BuilderClampNumElements,
-                   [LegalizeArgInt<Idx>, EltTy, MaxTy]>;
+                   [LegalizeArgIndex<Idx>, EltTy, MaxTy]>;
 
 /// The element count is a C++ integer expression: targets routinely compute it
 /// from features (`HasAVX2 ? 8 : 4`), so it stays text.  The index and the
@@ -554,11 +672,11 @@ class ClampNumElements<int Idx, LegalizeArgType EltTy,
 /// picks a direction at query time.
 class ClampMinNumElements<int Idx, LegalizeArgType EltTy, string Num>
     : LegalizeCall<BuilderClampMinNumElements,
-                   [LegalizeArgInt<Idx>, EltTy, LegalizeRawArg<Num>]>;
+                   [LegalizeArgIndex<Idx>, EltTy, LegalizeRawArg<Num>]>;
 
 class ClampMaxNumElements<int Idx, LegalizeArgType EltTy, string Num>
     : LegalizeCall<BuilderClampMaxNumElements,
-                   [LegalizeArgInt<Idx>, EltTy, LegalizeRawArg<Num>]>;
+                   [LegalizeArgIndex<Idx>, EltTy, LegalizeRawArg<Num>]>;
 
 //===----------------------------------------------------------------------===//
 
