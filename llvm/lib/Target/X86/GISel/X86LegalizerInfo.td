@@ -29,8 +29,13 @@
 // from Query.Opcode.  The merge/unmerge width check used to be the fourth; it
 // is now a sizeIs dag, which is the same predicate the C++ wrote by hand.
 //
-// Four `for (Op : {...})` loops in the former C++ were hand-flattened into
-// one record per opcode; the loop variables therefore appear as literals.
+// Four `for (Op : {...})` loops in the former C++ produced one rule set per
+// opcode.  Each loop body existed once, so its members could not disagree;
+// flattening that into a literal list per opcode lost the property, since a
+// type missing from one of two lists does not fail to compile -- it silently
+// legalizes worse on one subtarget.  The shared parts are therefore written
+// once: `defvar` where the members agree completely, `multiclass` where the
+// members differ in a tail (`X86_MemOp` for LOAD/STORE).
 // `if (Cond) Action.foo(...)` became `Legalize...If<Cond, ...>`:
 // the rule is always installed, but its guard is constant for a given
 // subtarget, so a false guard is equivalent to the rule being absent.
@@ -609,40 +614,40 @@ defm X86_STORE : X86_MemOp<"G_STORE", [], [
 ]>;
 
 
+// Both extending loads accept exactly the same (type, memory type) pairs; the
+// hand-written chain built them in one `for (Op : {G_SEXTLOAD, G_ZEXTLOAD})`,
+// so this body existed once.  Sharing it keeps it that way.
+defvar X86_ExtLoadRules = [
+  LegalForMemDesc<[LegalizeMemDesc<X86_s16, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s32, X86_p0, X86_s8, 1>,
+                   LegalizeMemDesc<X86_s32, X86_p0, X86_s16, 1>]>,
+  LegalForMemDescIf<Is64Bit,
+                    [LegalizeMemDesc<X86_s64, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s64, X86_p0, X86_s16, 1>,
+                     LegalizeMemDesc<X86_s64, X86_p0, X86_s32, 1>]>,
+  // TODO - SSE41/AVX2/AVX512F/AVX512BW vector extensions
+];
+
 def X86_SEXTLOAD : LegalizeRuleSet<["G_SEXTLOAD"]> {
-  let Rules = [
-    LegalForMemDesc<[LegalizeMemDesc<X86_s16, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s32, X86_p0, X86_s8, 1>,
-                            LegalizeMemDesc<X86_s32, X86_p0, X86_s16, 1>]>,
-    LegalForMemDescIf<Is64Bit,
-                              [LegalizeMemDesc<X86_s64, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s64, X86_p0, X86_s16, 1>,
-                               LegalizeMemDesc<X86_s64, X86_p0, X86_s32, 1>]>,
-  ];
+  let Rules = X86_ExtLoadRules;
 }
 
 def X86_ZEXTLOAD : LegalizeRuleSet<["G_ZEXTLOAD"]> {
-  let Rules = [
-    LegalForMemDesc<[LegalizeMemDesc<X86_s16, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s32, X86_p0, X86_s8, 1>,
-                            LegalizeMemDesc<X86_s32, X86_p0, X86_s16, 1>]>,
-    LegalForMemDescIf<Is64Bit,
-                              [LegalizeMemDesc<X86_s64, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s64, X86_p0, X86_s16, 1>,
-                               LegalizeMemDesc<X86_s64, X86_p0, X86_s32, 1>]>,
-  ];
+  let Rules = X86_ExtLoadRules;
 }
 
+// The x87 load and store accept the same three (type, memory type) pairs; one
+// `for (Op : {G_FPEXTLOAD, G_FPTRUNCSTORE})` in the former C++.
+defvar X86_X87MemRules = [
+  LegalForMemDescIf<UseX87,
+                    [LegalizeMemDesc<X86_s80, X86_p0, X86_s32, 1>, LegalizeMemDesc<X86_s80, X86_p0, X86_s64, 1>,
+                     LegalizeMemDesc<X86_s64, X86_p0, X86_s32, 1>]>,
+];
+
 def X86_FPEXTLOAD : LegalizeRuleSet<["G_FPEXTLOAD"]> {
-  let Rules = [
-    LegalForMemDescIf<UseX87,
-                              [LegalizeMemDesc<X86_s80, X86_p0, X86_s32, 1>, LegalizeMemDesc<X86_s80, X86_p0, X86_s64, 1>,
-                               LegalizeMemDesc<X86_s64, X86_p0, X86_s32, 1>]>,
-  ];
+  let Rules = X86_X87MemRules;
 }
 
 def X86_FPTRUNCSTORE : LegalizeRuleSet<["G_FPTRUNCSTORE"]> {
-  let Rules = [
-    LegalForMemDescIf<UseX87,
-                              [LegalizeMemDesc<X86_s80, X86_p0, X86_s32, 1>, LegalizeMemDesc<X86_s80, X86_p0, X86_s64, 1>,
-                               LegalizeMemDesc<X86_s64, X86_p0, X86_s32, 1>]>,
-  ];
+  let Rules = X86_X87MemRules;
 }
 
 def X86_ANYEXT : LegalizeRuleSet<["G_ANYEXT"]> {
