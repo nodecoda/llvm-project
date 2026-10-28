@@ -797,6 +797,17 @@ std::string typeIs(unsigned Idx, StringRef Ty) {
          std::to_string(Idx) + ",\"" + Ty.str() + "\"]}";
 }
 
+/// memSize(mem_idx, size_bits, min_align_bits): the MMO at mem_idx has the
+/// given size and at least the given alignment.  This mirrors
+/// LegalityPredicates::typePairAndMemDescInSet, which compares the type pair
+/// exactly, the memory type by size, and the alignment with >= (see
+/// TypePairAndMemDesc::isCompatible).
+std::string memSize(unsigned Idx, unsigned SizeBits, unsigned MinAlignBits) {
+  return "{\"kind\":\"leaf\",\"name\":\"memSize\",\"args\":[" +
+         std::to_string(Idx) + "," + std::to_string(SizeBits) + "," +
+         std::to_string(MinAlignBits) + "]}";
+}
+
 std::string allOf(const std::vector<std::string> &Parts) {
   std::string S = "{\"kind\":\"nary\",\"op\":\"all_of\",\"args\":[";
   for (size_t I = 0; I != Parts.size(); ++I) {
@@ -1106,17 +1117,23 @@ void expandRule(const Record &Rule, std::vector<CoreRule> &Out,
   }
   if (Method == "legalForTypesWithMemDesc") {
     for (const Record *A : Args) {
-      std::string T0 =
-          normalizeLlt(A->getValueAsDef("Type0")->getValueAsString("Expr"));
-      std::string T1 =
-          normalizeLlt(A->getValueAsDef("Type1")->getValueAsString("Expr"));
-      std::string Mem =
-          normalizeLlt(A->getValueAsDef("MemTy")->getValueAsString("Expr"));
+      std::string T0 = normalizeLlt(
+          A->getValueAsDef("Type0")->getValueAsString("Expr"));
+      std::string T1 = normalizeLlt(
+          A->getValueAsDef("Type1")->getValueAsString("Expr"));
+      std::string Mem = normalizeLlt(
+          A->getValueAsDef("MemTy")->getValueAsString("Expr"));
+      unsigned MemBits = lltBits(Mem);
+      if (MemBits == 0)
+        PrintFatalError(A->getLoc(),
+                        "memdesc memory type '" + Mem + "' has no "
+                        "static bit size");
+      // The memory descriptor is its own query axis; the C++ builder passes
+      // MMOIdx 0, not type index 2.
       unsigned Align = A->getValueAsInt("Align");
-      (void)Align;
       Out.push_back({"Legal", 0,
                      WithPred(allOf({typeIs(0, T0), typeIs(1, T1),
-                                     typeIs(2, Mem)})),
+                                     memSize(0, MemBits, Align)})),
                      ""});
     }
     return;
