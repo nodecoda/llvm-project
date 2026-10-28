@@ -227,80 +227,209 @@ def ActionBitcast          : LegalizeAction<"Bitcast", "bitcast">;
 def ActionClampScalar      : LegalizeAction<"ClampScalar", "any">;
 def ActionScalarSameSizeAs : LegalizeAction<"ScalarSameSizeAs", "neutral">;
 def ActionClampNumElements : LegalizeAction<"ClampNumElements", "any">;
+def ActionUnsupported     : LegalizeAction<"Unsupported", "">;
 
 //===----------------------------------------------------------------------===//
 // Rules
 //===----------------------------------------------------------------------===//
+/// The kind of guard a builder accepts.
+class LegalizeGuardKind;
+/// `bool Pred` computed once in the target constructor.
+def GuardBool : LegalizeGuardKind;
+/// `LegalityPredicate`, evaluated per query.
+def GuardQuery : LegalizeGuardKind;
+
+/// The builder a rule stands for.  A record rather than a string: the string
+/// form let a misspelling (legalForr) through TableGen and through
+/// -gen-legalizer, producing C++ that only failed hours later in a full build,
+/// with a diagnostic pointing at LegalizerInfo.h instead of the .td line.  Both
+/// backends also had to agree, separately, on what each spelling meant; that is
+/// how the memdesc expansion came to disagree with the builder it described.
+///
+/// A builder is now something a rule names, so a name that does not exist is a
+/// TableGen error at parse time.
+class LegalizeBuilder<string name, LegalizeAction action> {
+  /// C++ spelling, written verbatim by -gen-legalizer.
+  string Name = name;
+
+  /// The action this builder implements.  It lives here, not on the rule: the
+  /// builder keyword already decides the action, so a rule that also named one
+  /// could only repeat it or contradict it, and the two emitters read different
+  /// fields, so a contradiction produced two different answers for the same
+  /// sentence (`.lower()` in C++, {"action":"Lower"} in the Core IR) while
+  /// both ignored what the rule said.
+  LegalizeAction Action = action;
+
+  /// The guard overloads the C++ builder actually declares.
+  ///
+  /// There are two, and they take different C++ types:
+  ///   legalFor(bool Pred, initializer_list<LLT>)   -- a cached bool
+  ///   legalIf(const LegalityPredicate &)           -- a callable
+  /// A builder may have neither, one, or (legalFor) both.  Saying which is
+  /// what stops a rule from emitting `.lower(HasSSE1, )`, which no overload
+  /// declares but which the emitter happily wrote.
+  list<LegalizeGuardKind> Guards = [];
+}
+
+def BuilderLegalFor                      : LegalizeBuilder<"legalFor", ActionLegal> {
+  let Guards = [GuardBool];
+}
+
+def BuilderLegalForCartesianProduct      : LegalizeBuilder<"legalForCartesianProduct", ActionLegal>;
+def BuilderLegalForTypesWithMemDesc      : LegalizeBuilder<"legalForTypesWithMemDesc", ActionLegal> {
+  let Guards = [GuardBool];
+}
+
+def BuilderLower                         : LegalizeBuilder<"lower", ActionLower>;
+def BuilderLowerFor                      : LegalizeBuilder<"lowerFor", ActionLower> {
+  let Guards = [GuardBool];
+}
+
+def BuilderLibcall                       : LegalizeBuilder<"libcall", ActionLibcall>;
+def BuilderLibcallFor                    : LegalizeBuilder<"libcallFor", ActionLibcall> {
+  let Guards = [GuardBool];
+}
+
+def BuilderCustomFor                     : LegalizeBuilder<"customFor", ActionCustom> {
+  let Guards = [GuardBool];
+}
+
+def BuilderCustomForCartesianProduct     : LegalizeBuilder<"customForCartesianProduct", ActionCustom> {
+  let Guards = [GuardBool];
+}
+
+def BuilderAlwaysLegal                   : LegalizeBuilder<"alwaysLegal", ActionLegal>;
+def BuilderClampScalar                   : LegalizeBuilder<"clampScalar", ActionClampScalar> {
+  let Guards = [GuardBool];
+}
+
+def BuilderClampScalarOrElt              : LegalizeBuilder<"clampScalarOrElt", ActionClampScalar>;
+def BuilderWidenScalarToNextPow2         : LegalizeBuilder<"widenScalarToNextPow2", ActionWidenScalar>;
+def BuilderWidenScalarOrEltToNextPow2    : LegalizeBuilder<"widenScalarOrEltToNextPow2", ActionWidenScalar>;
+def BuilderMinScalar                     : LegalizeBuilder<"minScalar", ActionWidenScalar> {
+  let Guards = [GuardBool];
+}
+
+def BuilderMaxScalar                     : LegalizeBuilder<"maxScalar", ActionNarrowScalar>;
+def BuilderScalarSameSizeAs              : LegalizeBuilder<"scalarSameSizeAs", ActionScalarSameSizeAs>;
+def BuilderScalarize                     : LegalizeBuilder<"scalarize", ActionFewerElements>;
+def BuilderMoreElementsToNextPow2        : LegalizeBuilder<"moreElementsToNextPow2", ActionMoreElements>;
+def BuilderClampNumElements              : LegalizeBuilder<"clampNumElements", ActionClampNumElements>;
+def BuilderClampMinNumElements           : LegalizeBuilder<"clampMinNumElements", ActionMoreElements>;
+def BuilderClampMaxNumElements           : LegalizeBuilder<"clampMaxNumElements", ActionFewerElements>;
+def BuilderLegalIf                       : LegalizeBuilder<"legalIf", ActionLegal> {
+  let Guards = [GuardQuery];
+}
+
+def BuilderLowerIf                       : LegalizeBuilder<"lowerIf", ActionLower> {
+  let Guards = [GuardQuery];
+}
+
+def BuilderCustomIf                      : LegalizeBuilder<"customIf", ActionCustom> {
+  let Guards = [GuardQuery];
+}
+
+def BuilderWidenScalarIf                 : LegalizeBuilder<"widenScalarIf", ActionWidenScalar> {
+  let Guards = [GuardQuery];
+}
+
+def BuilderNarrowScalarIf                : LegalizeBuilder<"narrowScalarIf", ActionNarrowScalar> {
+  let Guards = [GuardQuery];
+}
+
+def BuilderLibcallIf                     : LegalizeBuilder<"libcallIf", ActionLibcall> {
+  let Guards = [GuardQuery];
+}
+
+def BuilderFewerElementsIf               : LegalizeBuilder<"fewerElementsIf", ActionFewerElements> {
+  let Guards = [GuardQuery];
+}
+
+def BuilderMoreElementsIf                : LegalizeBuilder<"moreElementsIf", ActionMoreElements> {
+  let Guards = [GuardQuery];
+}
+
+def BuilderMinScalarIf                   : LegalizeBuilder<"minScalarIf", ActionWidenScalar> {
+  let Guards = [GuardQuery];
+}
+
+def BuilderMaxScalarIf                   : LegalizeBuilder<"maxScalarIf", ActionNarrowScalar> {
+  let Guards = [GuardQuery];
+}
+
+def BuilderScalarizeIf                   : LegalizeBuilder<"scalarizeIf", ActionFewerElements> {
+  let Guards = [GuardQuery];
+}
+
+def BuilderUnsupported                   : LegalizeBuilder<"unsupported", ActionUnsupported>;
+def BuilderUnsupportedFor                : LegalizeBuilder<"unsupportedFor", ActionUnsupported>;
+def BuilderUnsupportedIf                 : LegalizeBuilder<"unsupportedIf", ActionUnsupported> {
+  let Guards = [GuardQuery];
+}
 
 class LegalizeRule {
-  string Method = ?;
+  /// Builder this rule stands for.  Every rule names one: a record cannot be
+  /// misspelled into a different builder the way a string could, and the
+  /// builder decides the action, so a rule cannot contradict it.
+  LegalizeBuilder Builder = ?;
 
   /// Builder arguments.  A list that is entirely types, type pairs or memdesc
   /// tuples is emitted inside one `{...}`; anything else is a comma list, with
   /// each argument rendering itself.
   list<LegalizeArg> Args = [];
 
-  /// Guard, lowered by -gen-legalizer.  Unset for builders that take none.
+  /// Guard, lowered by -gen-legalizer.  Only builders with TakesGuard accept
+  /// one; the rest take no guard at all.
   LegalizePredicate Pred = ?;
 
   /// When non-empty, the rule body is this C++ text, emitted verbatim.  Used
   /// for guards that are still raw lambdas.
   code OpaqueArgs = "";
 
-  /// Action this rule implements.  Every rule states one: -gen-legalizer
-  /// rejects a rule that leaves it out, and rejects a mutation direction that
-  /// the action cannot produce.
-  LegalizeAction Action = ?;
-
-  /// Mutation direction this rule performs: "widen", "narrow", "split",
-  /// "merge", "bitcast", "neutral", "any", or "" for none.
+  /// Mutation direction this rule performs.  Inherited from the builder's
+  /// action; the few builders that pick a direction at query time override it.
   string Mutation = "";
 }
 
-/// A rule built from a builder method, its arguments and an action.
-class LegalizeCall<string method, list<LegalizeArg> args,
-                   LegalizeAction action, string mutation = action.Mutation>
+/// A rule built from a builder and its arguments.  The action comes from the
+/// builder, so nothing here can disagree with it: before this, the rule named
+/// its own action and both emitters ignored it, so a rule could say "Legal"
+/// while emitting .lower() and while the Core IR said Lower.
+class LegalizeCall<LegalizeBuilder builder, list<LegalizeArg> args>
     : LegalizeRule {
-  let Method = method;
+  let Builder = builder;
   let Args = args;
-  let Action = action;
-  let Mutation = mutation;
+  let Mutation = builder.Action.Mutation;
 }
 
-/// The same, with a cached-boolean guard.
-class LegalizeGuardedCall<string method, LegalizeBoolPredicate P,
-                          list<LegalizeArg> args, LegalizeAction action,
-                          string mutation = action.Mutation> : LegalizeRule {
-  let Method = method;
+/// The same, with a cached-boolean guard.  Only builders that take a guard may
+/// be reached this way; the rest have no such overload, and saying otherwise
+/// used to emit `.lower(HasSSE1, )`, which no builder declares.
+class LegalizeGuardedCall<LegalizeBuilder builder, LegalizeBoolPredicate P,
+                          list<LegalizeArg> args> : LegalizeRule {
+  let Builder = builder;
   let Pred = P;
   let Args = args;
-  let Action = action;
-  let Mutation = mutation;
+  let Mutation = builder.Action.Mutation;
 }
 
 /// The same, with a query-time guard.  scalarizeIf() takes a LegalityPredicate,
 /// which is a different C++ type from the cached bool the other guards use, so
 /// it gets its own base class instead of widening LegalizeGuardedCall.
-class LegalizeQueryGuardedCall<string method, LegalizeQueryPredicate P,
-                               list<LegalizeArg> args, LegalizeAction action,
-                               string mutation = action.Mutation>
-    : LegalizeRule {
-  let Method = method;
+class LegalizeQueryGuardedCall<LegalizeBuilder builder, LegalizeQueryPredicate P,
+                               list<LegalizeArg> args> : LegalizeRule {
+  let Builder = builder;
   let Pred = P;
   let Args = args;
-  let Action = action;
-  let Mutation = mutation;
+  let Mutation = builder.Action.Mutation;
 }
 
-/// A rule whose guard (and possibly mutation) is still raw C++.
-class LegalizeOpaqueRule<string method, code body, LegalizeAction action,
-                         string mutation = action.Mutation> : LegalizeRule {
-  let Method = method;
+/// A rule whose guard is still raw C++, for a builder that takes one.
+class LegalizeOpaqueRule<LegalizeBuilder builder, code body> : LegalizeRule {
+  let Builder = builder;
   let OpaqueArgs = body;
-  let Action = action;
-  let Mutation = mutation;
+  let Mutation = builder.Action.Mutation;
 }
-
 
 //===----------------------------------------------------------------------===//
 // Sugar: one class per builder in LegalizerInfo.h used by X86.
@@ -312,96 +441,108 @@ class LegalizeOpaqueRule<string method, code body, LegalizeAction action,
 //===----------------------------------------------------------------------===//
 
 class LegalFor<list<LegalizeArgType> Types>
-    : LegalizeCall<"legalFor", Types, ActionLegal>;
+    : LegalizeCall<BuilderLegalFor, Types>;
 
 class LegalForIf<LegalizeBoolPredicate P, list<LegalizeArgType> Types>
-    : LegalizeGuardedCall<"legalFor", P, Types, ActionLegal>;
+    : LegalizeGuardedCall<BuilderLegalFor, P, Types>;
 
 class LegalForPairs<list<LegalizeTypePair> Pairs>
-    : LegalizeCall<"legalFor", Pairs, ActionLegal>;
+    : LegalizeCall<BuilderLegalFor, Pairs>;
 
 class LegalForPairsIf<LegalizeBoolPredicate P, list<LegalizeTypePair> Pairs>
-    : LegalizeGuardedCall<"legalFor", P, Pairs, ActionLegal>;
+    : LegalizeGuardedCall<BuilderLegalFor, P, Pairs>;
 
 class LegalForCartesianProduct<LegalizeArgTypeList T0, LegalizeArgTypeList T1>
-    : LegalizeCall<"legalForCartesianProduct", [T0, T1], ActionLegal>;
+    : LegalizeCall<BuilderLegalForCartesianProduct, [T0, T1]>;
 
 class LowerForPairsIf<LegalizeBoolPredicate P, list<LegalizeTypePair> Pairs>
-    : LegalizeGuardedCall<"lowerFor", P, Pairs, ActionLower>;
+    : LegalizeGuardedCall<BuilderLowerFor, P, Pairs>;
 
 class LegalForMemDesc<list<LegalizeMemDesc> Descs>
-    : LegalizeCall<"legalForTypesWithMemDesc", Descs, ActionLegal>;
+    : LegalizeCall<BuilderLegalForTypesWithMemDesc, Descs>;
 
 class LegalForMemDescIf<LegalizeBoolPredicate P, list<LegalizeMemDesc> Descs>
-    : LegalizeGuardedCall<"legalForTypesWithMemDesc", P, Descs, ActionLegal>;
+    : LegalizeGuardedCall<BuilderLegalForTypesWithMemDesc, P, Descs>;
 
-def Lower : LegalizeCall<"lower", [], ActionLower>;
+def Lower : LegalizeCall<BuilderLower, []>;
 
-def Libcall : LegalizeCall<"libcall", [], ActionLibcall>;
+def Libcall : LegalizeCall<BuilderLibcall, []>;
 
 class LibcallFor<list<LegalizeArgType> Types>
-    : LegalizeCall<"libcallFor", Types, ActionLibcall>;
+    : LegalizeCall<BuilderLibcallFor, Types>;
 
 class CustomFor<list<LegalizeArgType> Types>
-    : LegalizeCall<"customFor", Types, ActionCustom>;
+    : LegalizeCall<BuilderCustomFor, Types>;
 
 class CustomForCartesianProductIf<LegalizeBoolPredicate P,
                                   LegalizeArgTypeList T0,
                                   LegalizeArgTypeList T1>
-    : LegalizeGuardedCall<"customForCartesianProduct", P, [T0, T1],
-                          ActionCustom>;
+    : LegalizeGuardedCall<BuilderCustomForCartesianProduct, P, [T0, T1]>;
 
-def AlwaysLegal : LegalizeCall<"alwaysLegal", [], ActionLegal>;
+def AlwaysLegal : LegalizeCall<BuilderAlwaysLegal, []>;
+
+/// "This operation cannot be done on this target", stated rather than implied.
+///
+/// Without these the only way to say it was to omit every rule and let the
+/// fallthrough produce Unsupported, which is a different observation: the Core
+/// IR keeps "no rule matched" (result: no_match) apart from "a rule said
+/// Unsupported" (result: rule, action: Unsupported), because the two are
+/// different facts about the target.  The schema and the evaluator already
+/// modelled both; only the .td could not write the second one.
+class UnsupportedFor<list<LegalizeArgType> Types>
+    : LegalizeCall<BuilderUnsupportedFor, Types>;
+
+/// unsupportedIf() takes a LegalityPredicate, not a cached bool: it is the
+/// query-time guard, like scalarizeIf().
+class UnsupportedIf<LegalizeQueryPredicate P>
+    : LegalizeQueryGuardedCall<BuilderUnsupportedIf, P, []>;
+
+def Unsupported : LegalizeCall<BuilderUnsupported, []>;
 
 class ClampScalar<int Idx, LegalizeArgType MinTy, LegalizeArgType MaxTy>
-    : LegalizeCall<"clampScalar",
-                   [LegalizeArgInt<Idx>, MinTy, MaxTy], ActionClampScalar>;
+    : LegalizeCall<BuilderClampScalar,
+                   [LegalizeArgInt<Idx>, MinTy, MaxTy]>;
 
 class ClampScalarOrElt<int Idx, LegalizeArgType MinTy,
                        LegalizeArgType MaxTy>
-    : LegalizeCall<"clampScalarOrElt",
-                   [LegalizeArgInt<Idx>, MinTy, MaxTy], ActionClampScalar>;
+    : LegalizeCall<BuilderClampScalarOrElt,
+                   [LegalizeArgInt<Idx>, MinTy, MaxTy]>;
 
 /// Min = 0 means "no minimum": a zero-bit minimum is not meaningful, so the
 /// sentinel is unambiguous and the argument stays an integer.
 class WidenScalarToNextPow2<int Idx, int Min = 0>
-    : LegalizeCall<"widenScalarToNextPow2",
+    : LegalizeCall<BuilderWidenScalarToNextPow2,
                    !if(!eq(Min, 0), [LegalizeArgInt<Idx>],
-                       [LegalizeArgInt<Idx>, LegalizeArgInt<Min, "Min">]),
-                   ActionWidenScalar>;
+                       [LegalizeArgInt<Idx>, LegalizeArgInt<Min, "Min">])>;
 
 class WidenScalarOrEltToNextPow2<int Idx, int Min = 0>
-    : LegalizeCall<"widenScalarOrEltToNextPow2",
+    : LegalizeCall<BuilderWidenScalarOrEltToNextPow2,
                    !if(!eq(Min, 0), [LegalizeArgInt<Idx>],
-                       [LegalizeArgInt<Idx>, LegalizeArgInt<Min, "Min">]),
-                   ActionWidenScalar>;
+                       [LegalizeArgInt<Idx>, LegalizeArgInt<Min, "Min">])>;
 
 class MinScalar<int Idx, LegalizeArgType Ty>
-    : LegalizeCall<"minScalar", [LegalizeArgInt<Idx>, Ty], ActionWidenScalar>;
+    : LegalizeCall<BuilderMinScalar, [LegalizeArgInt<Idx>, Ty]>;
 
 class MaxScalar<int Idx, LegalizeArgType Ty>
-    : LegalizeCall<"maxScalar", [LegalizeArgInt<Idx>, Ty], ActionNarrowScalar>;
+    : LegalizeCall<BuilderMaxScalar, [LegalizeArgInt<Idx>, Ty]>;
 
 class ScalarSameSizeAs<int Idx, int OtherIdx>
-    : LegalizeCall<"scalarSameSizeAs",
-                   [LegalizeArgInt<Idx>, LegalizeArgInt<OtherIdx>],
-                   ActionScalarSameSizeAs>;
+    : LegalizeCall<BuilderScalarSameSizeAs,
+                   [LegalizeArgInt<Idx>, LegalizeArgInt<OtherIdx>]>;
 
 class Scalarize<int Idx>
-    : LegalizeCall<"scalarize", [LegalizeArgInt<Idx>], ActionFewerElements>;
+    : LegalizeCall<BuilderScalarize, [LegalizeArgInt<Idx>]>;
 
 class ScalarizeIf<LegalizeQueryPredicate P, int Idx>
-    : LegalizeQueryGuardedCall<"scalarizeIf", P, [LegalizeArgInt<Idx>],
-                               ActionFewerElements>;
+    : LegalizeQueryGuardedCall<BuilderScalarizeIf, P, [LegalizeArgInt<Idx>]>;
 
 class MoreElementsToNextPow2<int Idx>
-    : LegalizeCall<"moreElementsToNextPow2", [LegalizeArgInt<Idx>],
-                   ActionMoreElements>;
+    : LegalizeCall<BuilderMoreElementsToNextPow2, [LegalizeArgInt<Idx>]>;
 
 class ClampNumElements<int Idx, LegalizeArgType EltTy,
                        LegalizeArgType MaxTy>
-    : LegalizeCall<"clampNumElements",
-                   [LegalizeArgInt<Idx>, EltTy, MaxTy], ActionClampNumElements>;
+    : LegalizeCall<BuilderClampNumElements,
+                   [LegalizeArgInt<Idx>, EltTy, MaxTy]>;
 
 /// The element count is a C++ integer expression: targets routinely compute it
 /// from features (`HasAVX2 ? 8 : 4`), so it stays text.  The index and the
@@ -412,16 +553,15 @@ class ClampNumElements<int Idx, LegalizeArgType EltTy,
 /// (FewerElements -> split).  Only clampNumElements() is the composite that
 /// picks a direction at query time.
 class ClampMinNumElements<int Idx, LegalizeArgType EltTy, string Num>
-    : LegalizeCall<"clampMinNumElements",
-                   [LegalizeArgInt<Idx>, EltTy, LegalizeRawArg<Num>],
-                   ActionMoreElements>;
+    : LegalizeCall<BuilderClampMinNumElements,
+                   [LegalizeArgInt<Idx>, EltTy, LegalizeRawArg<Num>]>;
 
 class ClampMaxNumElements<int Idx, LegalizeArgType EltTy, string Num>
-    : LegalizeCall<"clampMaxNumElements",
-                   [LegalizeArgInt<Idx>, EltTy, LegalizeRawArg<Num>],
-                   ActionFewerElements>;
+    : LegalizeCall<BuilderClampMaxNumElements,
+                   [LegalizeArgInt<Idx>, EltTy, LegalizeRawArg<Num>]>;
 
 //===----------------------------------------------------------------------===//
+
 // Rule sets
 //===----------------------------------------------------------------------===//
 
