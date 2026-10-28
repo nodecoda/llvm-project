@@ -1047,10 +1047,12 @@ void expandRule(const Record &Rule, std::vector<CoreRule> &Out,
   }
   if (Method == "legalForTypesWithMemDesc") {
     for (const Record *A : Args) {
-      std::string T0 = A->getValueAsDef("Type0")->getValueAsString("Expr").str();
-      std::string T1 = A->getValueAsDef("Type1")->getValueAsString("Expr").str();
+      std::string T0 =
+          normalizeLlt(A->getValueAsDef("Type0")->getValueAsString("Expr"));
+      std::string T1 =
+          normalizeLlt(A->getValueAsDef("Type1")->getValueAsString("Expr"));
       std::string Mem =
-          A->getValueAsDef("MemTy")->getValueAsString("Expr").str();
+          normalizeLlt(A->getValueAsDef("MemTy")->getValueAsString("Expr"));
       unsigned Align = A->getValueAsInt("Align");
       (void)Align;
       Out.push_back({"Legal", 0,
@@ -1070,8 +1072,10 @@ void expandRule(const Record &Rule, std::vector<CoreRule> &Out,
   }
   if (Method == "lowerFor") {
     for (const Record *A : Args) {
-      std::string T0 = A->getValueAsDef("Type0")->getValueAsString("Expr").str();
-      std::string T1 = A->getValueAsDef("Type1")->getValueAsString("Expr").str();
+      std::string T0 =
+          normalizeLlt(A->getValueAsDef("Type0")->getValueAsString("Expr"));
+      std::string T1 =
+          normalizeLlt(A->getValueAsDef("Type1")->getValueAsString("Expr"));
       Out.push_back({"Lower", 0,
                      WithPred(allOf({typeIs(0, T0), typeIs(1, T1)})), ""});
     }
@@ -1213,6 +1217,10 @@ void LegalizerInfoEmitter::runCore(raw_ostream &OS) {
     if (!Norm.empty())
       DomainTypes.push_back(Norm);
   }
+  // The pointer type is decided by the configuration, not by a type record, so
+  // it never shows up above.  A query over a ptype slot still has to be inside
+  // the declared domain.
+  DomainTypes.push_back("p0:" + std::to_string(CorePointerWidth));
   llvm::sort(DomainTypes);
   DomainTypes.erase(std::unique(DomainTypes.begin(), DomainTypes.end()),
                     DomainTypes.end());
