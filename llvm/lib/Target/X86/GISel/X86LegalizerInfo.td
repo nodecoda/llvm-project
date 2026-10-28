@@ -547,66 +547,67 @@ def X86_GLOBAL_VALUE : LegalizeRuleSet<["G_GLOBAL_VALUE"]> {
   ];
 }
 
-def X86_LOAD : LegalizeRuleSet<["G_LOAD"]> {
-  let Comments = ["load/store: add more corner cases"];
-  let Rules = [
-    LegalForMemDesc<[LegalizeMemDesc<X86_s8, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s16, X86_p0, X86_s16, 1>,
-                            LegalizeMemDesc<X86_s32, X86_p0, X86_s32, 1>, LegalizeMemDesc<X86_s80, X86_p0, X86_s80, 1>,
-                            LegalizeMemDesc<X86_p0, X86_p0, X86_p0, 1>, LegalizeMemDesc<X86_v4s8, X86_p0, X86_v4s8, 1>]>,
-    LegalForMemDescIf<Is64Bit,
-                              [LegalizeMemDesc<X86_s64, X86_p0, X86_s64, 1>, LegalizeMemDesc<X86_v2s32, X86_p0, X86_v2s32, 1>]>,
-    LegalForMemDescIf<HasSSE1, [LegalizeMemDesc<X86_v4s32, X86_p0, X86_v4s32, 1>]>,
-    LegalForMemDescIf<HasSSE2,
-                              [LegalizeMemDesc<X86_v16s8, X86_p0, X86_v16s8, 1>, LegalizeMemDesc<X86_v8s16, X86_p0, X86_v8s16, 1>,
-                               LegalizeMemDesc<X86_v2s64, X86_p0, X86_v2s64, 1>, LegalizeMemDesc<X86_v2p0, X86_p0, X86_v2p0, 1>]>,
-    LegalForMemDescIf<HasAVX,
-                              [LegalizeMemDesc<X86_v32s8, X86_p0, X86_v32s8, 1>, LegalizeMemDesc<X86_v16s16, X86_p0, X86_v16s16, 1>,
-                               LegalizeMemDesc<X86_v8s32, X86_p0, X86_v8s32, 1>, LegalizeMemDesc<X86_v4s64, X86_p0, X86_v4s64, 1>,
-                               LegalizeMemDesc<X86_v4p0, X86_p0, X86_v4p0, 1>]>,
-    LegalForMemDescIf<HasAVX512,
-                              [LegalizeMemDesc<X86_v64s8, X86_p0, X86_v64s8, 1>, LegalizeMemDesc<X86_v32s16, X86_p0, X86_v32s16, 1>,
-                               LegalizeMemDesc<X86_v16s32, X86_p0, X86_v16s32, 1>, LegalizeMemDesc<X86_v8s64, X86_p0, X86_v8s64, 1>]>,
-    // X86 supports extending loads but not stores for GPRs.
-    LegalForMemDesc<[LegalizeMemDesc<X86_s8, X86_p0, X86_s1, 1>, LegalizeMemDesc<X86_s16, X86_p0, X86_s8, 1>,
-                            LegalizeMemDesc<X86_s32, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s32, X86_p0, X86_s16, 1>]>,
-    LegalForMemDescIf<Is64Bit,
-                              [LegalizeMemDesc<X86_s64, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s64, X86_p0, X86_s16, 1>,
-                               LegalizeMemDesc<X86_s64, X86_p0, X86_s32, 1>]>,
-    WidenScalarToNextPow2<0, 8>,
-    ClampScalar<0, X86_s8, X86_sMaxScalar>,
-    Scalarize<0>,
-  ];
+// The load/store family is one shape with one disagreement.  Both members
+// accept the type/shape pairs below; what differs is only the tail:
+//
+//   LOAD   additionally legalizes extending loads from a GPR-sized memory type
+//   STORE  rejects a value whose type differs from the memory type
+//
+// Writing the common part once is not tidiness.  As two literal copies the six
+// `LegalForMemDesc*` entries below had to be kept in step by hand, and a type
+// missing from one list does not fail to compile: it silently legalizes worse
+// on one subtarget.  Here the disagreement is the parameter and nothing else
+// can drift.
+multiclass X86_MemOp<string Op, list<string> Note, list<LegalizeRule> Tail> {
+  def NAME : LegalizeRuleSet<[Op]> {
+    let Comments = Note;
+    let Rules = [
+      LegalForMemDesc<[LegalizeMemDesc<X86_s8, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s16, X86_p0, X86_s16, 1>,
+                       LegalizeMemDesc<X86_s32, X86_p0, X86_s32, 1>, LegalizeMemDesc<X86_s80, X86_p0, X86_s80, 1>,
+                       LegalizeMemDesc<X86_p0, X86_p0, X86_p0, 1>, LegalizeMemDesc<X86_v4s8, X86_p0, X86_v4s8, 1>]>,
+      LegalForMemDescIf<Is64Bit,
+                        [LegalizeMemDesc<X86_s64, X86_p0, X86_s64, 1>, LegalizeMemDesc<X86_v2s32, X86_p0, X86_v2s32, 1>]>,
+      LegalForMemDescIf<HasSSE1, [LegalizeMemDesc<X86_v4s32, X86_p0, X86_v4s32, 1>]>,
+      LegalForMemDescIf<HasSSE2,
+                        [LegalizeMemDesc<X86_v16s8, X86_p0, X86_v16s8, 1>, LegalizeMemDesc<X86_v8s16, X86_p0, X86_v8s16, 1>,
+                         LegalizeMemDesc<X86_v2s64, X86_p0, X86_v2s64, 1>, LegalizeMemDesc<X86_v2p0, X86_p0, X86_v2p0, 1>]>,
+      LegalForMemDescIf<HasAVX,
+                        [LegalizeMemDesc<X86_v32s8, X86_p0, X86_v32s8, 1>, LegalizeMemDesc<X86_v16s16, X86_p0, X86_v16s16, 1>,
+                         LegalizeMemDesc<X86_v8s32, X86_p0, X86_v8s32, 1>, LegalizeMemDesc<X86_v4s64, X86_p0, X86_v4s64, 1>,
+                         LegalizeMemDesc<X86_v4p0, X86_p0, X86_v4p0, 1>]>,
+      LegalForMemDescIf<HasAVX512,
+                        [LegalizeMemDesc<X86_v64s8, X86_p0, X86_v64s8, 1>, LegalizeMemDesc<X86_v32s16, X86_p0, X86_v32s16, 1>,
+                         LegalizeMemDesc<X86_v16s32, X86_p0, X86_v16s32, 1>, LegalizeMemDesc<X86_v8s64, X86_p0, X86_v8s64, 1>]>
+    ] # Tail;
+  }
 }
 
-def X86_STORE : LegalizeRuleSet<["G_STORE"]> {
-  let Rules = [
-    LegalForMemDesc<[LegalizeMemDesc<X86_s8, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s16, X86_p0, X86_s16, 1>,
-                            LegalizeMemDesc<X86_s32, X86_p0, X86_s32, 1>, LegalizeMemDesc<X86_s80, X86_p0, X86_s80, 1>,
-                            LegalizeMemDesc<X86_p0, X86_p0, X86_p0, 1>, LegalizeMemDesc<X86_v4s8, X86_p0, X86_v4s8, 1>]>,
-    LegalForMemDescIf<Is64Bit,
-                              [LegalizeMemDesc<X86_s64, X86_p0, X86_s64, 1>, LegalizeMemDesc<X86_v2s32, X86_p0, X86_v2s32, 1>]>,
-    LegalForMemDescIf<HasSSE1, [LegalizeMemDesc<X86_v4s32, X86_p0, X86_v4s32, 1>]>,
-    LegalForMemDescIf<HasSSE2,
-                              [LegalizeMemDesc<X86_v16s8, X86_p0, X86_v16s8, 1>, LegalizeMemDesc<X86_v8s16, X86_p0, X86_v8s16, 1>,
-                               LegalizeMemDesc<X86_v2s64, X86_p0, X86_v2s64, 1>, LegalizeMemDesc<X86_v2p0, X86_p0, X86_v2p0, 1>]>,
-    LegalForMemDescIf<HasAVX,
-                              [LegalizeMemDesc<X86_v32s8, X86_p0, X86_v32s8, 1>, LegalizeMemDesc<X86_v16s16, X86_p0, X86_v16s16, 1>,
-                               LegalizeMemDesc<X86_v8s32, X86_p0, X86_v8s32, 1>, LegalizeMemDesc<X86_v4s64, X86_p0, X86_v4s64, 1>,
-                               LegalizeMemDesc<X86_v4p0, X86_p0, X86_v4p0, 1>]>,
-    LegalForMemDescIf<HasAVX512,
-                              [LegalizeMemDesc<X86_v64s8, X86_p0, X86_v64s8, 1>, LegalizeMemDesc<X86_v32s16, X86_p0, X86_v32s16, 1>,
-                               LegalizeMemDesc<X86_v16s32, X86_p0, X86_v16s32, 1>, LegalizeMemDesc<X86_v8s64, X86_p0, X86_v8s64, 1>]>,
-    LegalizeOpaqueRule<BuilderCustomIf, [{
+defm X86_LOAD : X86_MemOp<"G_LOAD", ["load/store: add more corner cases"], [
+  // X86 supports extending loads but not stores for GPRs.
+  LegalForMemDesc<[LegalizeMemDesc<X86_s8, X86_p0, X86_s1, 1>, LegalizeMemDesc<X86_s16, X86_p0, X86_s8, 1>,
+                   LegalizeMemDesc<X86_s32, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s32, X86_p0, X86_s16, 1>]>,
+  LegalForMemDescIf<Is64Bit,
+                    [LegalizeMemDesc<X86_s64, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s64, X86_p0, X86_s16, 1>,
+                     LegalizeMemDesc<X86_s64, X86_p0, X86_s32, 1>]>,
+  WidenScalarToNextPow2<0, 8>,
+  ClampScalar<0, X86_s8, X86_sMaxScalar>,
+  Scalarize<0>,
+]>;
 
-      [=](const LegalityQuery &Query) {
-        return Query.Types[0] != Query.MMODescrs[0].MemoryTy;
-      }
-    }]>,
-    WidenScalarToNextPow2<0, 8>,
-    ClampScalar<0, X86_s8, X86_sMaxScalar>,
-    Scalarize<0>,
-  ];
-}
+defm X86_STORE : X86_MemOp<"G_STORE", [], [
+  // A store whose value type differs from the memory type is not legalized
+  // here; the type has to match exactly.
+  LegalizeOpaqueRule<BuilderCustomIf, [{
+
+    [=](const LegalityQuery &Query) {
+      return Query.Types[0] != Query.MMODescrs[0].MemoryTy;
+    }
+  }]>,
+  WidenScalarToNextPow2<0, 8>,
+  ClampScalar<0, X86_s8, X86_sMaxScalar>,
+  Scalarize<0>,
+]>;
+
 
 def X86_SEXTLOAD : LegalizeRuleSet<["G_SEXTLOAD"]> {
   let Rules = [
