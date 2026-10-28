@@ -21,7 +21,12 @@ def Set : LegalizeRuleSet<["G_ADD"]> {
 }
 
 // CHECK: bool HasSSE1 = Subtarget.hasSSE1();
-// CHECK: .customIf([=](const LegalityQuery &Query) { return !(HasSSE1) && typeIs(0, s32); })
+// CHECK: .customIf([=](const LegalityQuery &Query) { return !(HasSSE1) && typeIs(0, s32)(Query); })
+//
+// The trailing (Query) is the whole point.  typeIs() returns a
+// LegalityPredicate, i.e. a std::function; writing it bare would let `&&`
+// compare a std::function against bool through explicit operator bool, which
+// is true for any function object, and the type test would silently vanish.
 
 // CORE: "action":"Custom"
 // CORE: "name":"typeIs"
