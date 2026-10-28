@@ -843,8 +843,8 @@ void LegalizerInfoEmitter::run(raw_ostream &OS) {
 // The C++ fragment above is the product of the prototype.  This second output
 // is the product of the specification work: a canonical JSON form that an
 // independent evaluator can consume without reading any C++.  The expansion
-// rules live in llvm-dev/2026-10-28-core-ir-mapping.md; this code implements
-// exactly that table and refuses anything it does not cover.
+// rules are the ones in LegalizerInfo.td; this code implements exactly that
+// table and refuses anything the schema does not cover.
 //===----------------------------------------------------------------------===//
 
 namespace {
@@ -937,7 +937,8 @@ std::string jsonEscaped(StringRef S) {
 
 /// Translate the C++ spelling a type record carries into a literal LLT.
 /// Returns an empty string when the expression depends on the subtarget.
-/// The translation table is normative: llvm-dev/2026-10-28-core-ir-mapping.md.
+/// The translation table is the one documented on LegalizeArg in
+/// LegalizerInfo.td.
 bool isLiteralLlt(StringRef S);
 
 std::string normalizeLlt(StringRef S) {
@@ -1239,7 +1240,7 @@ std::string typePredicateJson(const RecordKeeper &Records,
     return sizeIs(Idx(0), Bits(1));
   PrintFatalError(R.getLoc(),
                   "type predicate '" + Name + "' has no Core IR expansion; "
-                  "add it to llvm-dev/2026-10-28-core-ir-mapping.md first");
+                  "add it to LegalizerInfo.td first");
   return "";
 }
 
@@ -1689,7 +1690,7 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
 
   PrintFatalError(Rule.getLoc(),
                   "no Core IR expansion for builder '" + Method +
-                      "'; add it to llvm-dev/2026-10-28-core-ir-mapping.md "
+                      "'; add it to LegalizerInfo.td "
                       "first");
 }
 
@@ -1706,9 +1707,32 @@ void LegalizerInfoEmitter::runCore(raw_ostream &OS) {
   // checks.  Leaving them to -gen-legalizer meant -gen-legalizer-core accepted
   // a rule that the other output rejected, and the two then disagreed about
   // whether the description was even well formed.
-  for (const Record *RuleSet : RuleSets)
+  //
+  // Those checks live in two places: verifyRule() for a rule, and emitRuleSet()
+  // for the rule set that holds it.  Only the first was applied here, so an
+  // empty rule set was rejected by -gen-legalizer and silently accepted by
+  // -gen-legalizer-core.  Repeat the rule-set half rather than calling
+  // emitRuleSet(), which would write the C++ fragment to this stream.
+  StringSet<> SeenOpcodes;
+  for (const Record *RuleSet : RuleSets) {
+    std::vector<StringRef> Opcodes =
+        RuleSet->getValueAsListOfStrings("Opcodes");
+    if (Opcodes.empty())
+      PrintFatalError(RuleSet->getLoc(), "legalizer rule set has no opcodes");
+    if (RuleSet->getValueAsListOfDefs("Rules").empty())
+      PrintFatalError(RuleSet->getLoc(), "legalizer rule set has no rules");
+    for (StringRef Opcode : Opcodes) {
+      if (!Opcode.starts_with("G_"))
+        PrintFatalError(RuleSet->getLoc(),
+                        "'" + Opcode + "' is not a generic opcode");
+      if (!SeenOpcodes.insert(Opcode).second)
+        PrintFatalError(RuleSet->getLoc(), "opcode '" + Opcode +
+                                               "' is described by more than "
+                                               "one rule set");
+    }
     for (const Record *Rule : RuleSet->getValueAsListOfDefs("Rules"))
       verifyRule(*Rule);
+  }
 
   std::vector<const Record *> Types =
       Records.getAllDerivedDefinitions("LegalizeNamedType");
@@ -1771,17 +1795,9 @@ void LegalizerInfoEmitter::runCore(raw_ostream &OS) {
 
   OS << "  \"rulesets\": [\n";
   bool FirstSet = true;
-  StringSet<> SeenOpcodes;
   for (const Record *RuleSet : RuleSets) {
-    std::vector<StringRef> Opcodes = RuleSet->getValueAsListOfStrings("Opcodes");
-    if (Opcodes.empty())
-      PrintFatalError(RuleSet->getLoc(), "legalizer rule set has no opcodes");
-    for (StringRef Opcode : Opcodes) {
-      if (!SeenOpcodes.insert(Opcode).second)
-        PrintFatalError(RuleSet->getLoc(),
-                        "opcode '" + Opcode +
-                            "' is described by more than one rule set");
-    }
+    std::vector<StringRef> Opcodes =
+        RuleSet->getValueAsListOfStrings("Opcodes");
 
     std::vector<std::string> RulesJson;
     StringRef RuleSetName = RuleSet->getName();
