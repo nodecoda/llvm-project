@@ -343,6 +343,57 @@ StringRef builderName(const Record &Rule) {
   return B->getValueAsString("Name");
 }
 
+
+/// A list made only of types, type pairs or memdesc tuples is one braced group
+/// in C++ -- legalFor({s8, s16}), legalFor({{s32, s32}, ...}),
+/// legalForTypesWithMemDesc({{s8, p0, s8, 1}, ...}).  Anything else is a plain
+/// argument list in which each argument renders itself, which is what the
+/// builders that take an index and two types need.
+static bool isBracedGroup(ArrayRef<const Record *> Args) {
+  if (Args.empty())
+    return false;
+  return all_of(Args, [](const Record *A) {
+    return A->isSubClassOf("LegalizeNamedType") ||
+           A->isSubClassOf("LegalizeInlineType") ||
+           A->isSubClassOf("LegalizeTypePair") ||
+           A->isSubClassOf("LegalizeMemDesc");
+  });
+}
+
+/// The shape an argument record has, or null if the emitter has no name for it.
+///
+/// This is the inverse of the Formals lists in LegalizerInfo.td: the builder
+/// says which shapes it declares per position, and this says what a rule
+/// actually put there.  Comparing the two is what stops `.clampScalar({s32})`
+/// (one argument, three declared) and `.lower({s32})` (three arguments, none
+/// declared) from being written at all -- both used to be emitted and only
+/// failed when the target was compiled.
+static StringRef shapeOf(const Record &Arg) {
+  if (Arg.isSubClassOf("LegalizeArgIndex"))
+    return "ShapeIndex";
+  if (Arg.isSubClassOf("LegalizeArgBits"))
+    return "ShapeBits";
+  if (Arg.isSubClassOf("LegalizeArgLanes") ||
+      Arg.isSubClassOf("LegalizeRawArg"))
+    return "ShapeLanes";
+  if (Arg.isSubClassOf("LegalizeNamedType") ||
+      Arg.isSubClassOf("LegalizeInlineType"))
+    return "ShapeType";
+  if (Arg.isSubClassOf("LegalizeTypePair"))
+    return "ShapeTypePairList";
+  if (Arg.isSubClassOf("LegalizeMemDesc"))
+    return "ShapeMemDescList";
+  if (Arg.isSubClassOf("LegalizeNamedTypeList") ||
+      Arg.isSubClassOf("LegalizeInlineTypeList") ||
+      Arg.isSubClassOf("LegalizeTypeListChoice"))
+    return "ShapeTypeList";
+  // A bare LegalizeArgInt is deliberately not accepted: it is the class whose
+  // three meanings (slot, bit width, lane count) the subclasses exist to tell
+  // apart, so letting it through as any one of them would leave the ambiguity
+  // this check is here to remove.
+  return "";
+}
+
 void LegalizerInfoEmitter::verifyRule(const Record &Rule) {
   StringRef Method = builderName(Rule);
   StringRef Builder = builderRecordName(Rule);
@@ -376,6 +427,79 @@ void LegalizerInfoEmitter::verifyRule(const Record &Rule) {
       PrintFatalError(Rule.getLoc(), "legalizer builder '" + Method +
                                          "' takes " + What);
     }
+  }
+
+  // The arguments have to line up with a signature the builder declares.
+  //
+  // Formals is a list of overloads, so the rule matches if any one of them
+  // lines up.  Args is a flat record list and a run of types becomes one braced
+  // group in C++ (a type list, or a list of pairs/memdesc tuples), so a group
+  // is compared as a whole position rather than element by element.
+  //
+  // This is what stops `.clampScalar({s32})` (one argument, three declared) and
+  // `.lower({s32})` (one argument, none declared) from being written at all:
+  // both used to be emitted and only failed when the target was compiled.
+  if (Rule.getValueAsString("OpaqueArgs").empty()) {
+    std::vector<const Record *> Args = Rule.getValueAsListOfDefs("Args");
+    bool Braced = isBracedGroup(Args);
+
+    // The shape the rule supplies, position by position.
+    std::vector<StringRef> Supplied;
+    if (Braced) {
+      bool AllPairs = llvm::all_of(Args, [](const Record *A) {
+        return A->isSubClassOf("LegalizeTypePair");
+      });
+      bool AllMemDesc = llvm::all_of(Args, [](const Record *A) {
+        return A->isSubClassOf("LegalizeMemDesc");
+      });
+      Supplied.push_back(AllPairs ? "ShapeTypePairList"
+                                  : AllMemDesc ? "ShapeMemDescList"
+                                               : "ShapeType");
+    } else {
+      for (const Record *A : Args) {
+        StringRef Got = shapeOf(*A);
+        if (Got.empty())
+          PrintFatalError(A, "unknown legalizer argument shape");
+        Supplied.push_back(Got);
+      }
+    }
+
+    // Formals is list<list<LegalizeArgShape>>, so each overload is itself a
+    // ListInit; the inner elements are still records.
+    const ListInit *Overloads = B->getValueAsListInit("Formals");
+    bool Matched = false;
+    std::string Want;
+    for (const Init *O : Overloads->getElements()) {
+      const auto *Inner = dyn_cast<ListInit>(O);
+      if (!Inner)
+        continue;
+      if (!Want.empty())
+        Want += " or ";
+      Want += "(";
+
+      std::vector<StringRef> Names;
+      StringRef Sep;
+      for (const Init *E : Inner->getElements()) {
+        const auto *DI = dyn_cast<DefInit>(E);
+        if (!DI)
+          continue;
+        Names.push_back(DI->getDef()->getName());
+        Want += Sep.str();
+        Want += Names.back().str();
+        Sep = ", ";
+      }
+      Want += ")";
+
+      if (Names != Supplied)
+        continue;
+      Matched = true;
+      break;
+    }
+
+    if (!Matched)
+      PrintFatalError(Rule.getLoc(),
+                      "legalizer builder '" + Method + "' does not take these "
+                      "arguments; declared " + Want);
   }
 
   StringRef Mutation = Rule.getValueAsString("Mutation");
@@ -471,22 +595,6 @@ void LegalizerInfoEmitter::emitArg(const Record &Arg, raw_ostream &OS) {
     return;
   }
   PrintFatalError(&Arg, "unknown LegalizeArg record");
-}
-
-/// A list made only of types, type pairs or memdesc tuples is one braced group
-/// in C++ -- legalFor({s8, s16}), legalFor({{s32, s32}, ...}),
-/// legalForTypesWithMemDesc({{s8, p0, s8, 1}, ...}).  Anything else is a plain
-/// argument list in which each argument renders itself, which is what the
-/// builders that take an index and two types need.
-static bool isBracedGroup(ArrayRef<const Record *> Args) {
-  if (Args.empty())
-    return false;
-  return all_of(Args, [](const Record *A) {
-    return A->isSubClassOf("LegalizeNamedType") ||
-           A->isSubClassOf("LegalizeInlineType") ||
-           A->isSubClassOf("LegalizeTypePair") ||
-           A->isSubClassOf("LegalizeMemDesc");
-  });
 }
 
 /// Render one rule's arguments.  The layout is derived from the argument
