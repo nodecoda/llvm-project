@@ -27,12 +27,16 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TableGen/Error.h"
 #include "llvm/TableGen/Record.h"
 #include "llvm/TableGen/TableGenBackend.h"
 
 #include <algorithm>
+#include <functional>
+#include <string>
 
 using namespace llvm;
 
@@ -164,6 +168,7 @@ class LegalizerInfoEmitter {
 public:
   explicit LegalizerInfoEmitter(const RecordKeeper &RK) : Records(RK) {}
   void run(raw_ostream &OS);
+  void runCore(raw_ostream &OS);
 };
 
 } // namespace
@@ -629,5 +634,715 @@ void LegalizerInfoEmitter::run(raw_ostream &OS) {
   }
 }
 
+//===----------------------------------------------------------------------===//
+// Core IR output (-gen-legalizer-core)
+//
+// The C++ fragment above is the product of the prototype.  This second output
+// is the product of the specification work: a canonical JSON form that an
+// independent evaluator can consume without reading any C++.  The expansion
+// rules live in llvm-dev/2026-10-28-core-ir-mapping.md; this code implements
+// exactly that table and refuses anything it does not cover.
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+cl::opt<std::string> CoreTriple("core-triple",
+                                cl::desc("triple recorded in the Core IR"),
+                                cl::init("unspecified"));
+cl::opt<std::string> CoreCPU("core-cpu",
+                             cl::desc("cpu recorded in the Core IR"),
+                             cl::init("unspecified"));
+cl::opt<int> CorePointerWidth("core-pointer-width",
+                              cl::desc("pointer width recorded in the Core IR"),
+                              cl::init(64));
+
+void jsonString(raw_ostream &OS, StringRef S) {
+  OS << '"';
+  for (char C : S) {
+    if (C == '"' || C == '\\') {
+      OS << '\\' << C;
+      continue;
+    }
+    if (C == '\n') {
+      OS << "\\n";
+      continue;
+    }
+    if (static_cast<unsigned char>(C) >= 0x20)
+      OS << C;
+  }
+  OS << '"';
+}
+
+/// Bit width of a literal LLT spelling.  Returns 0 for spellings we cannot
+/// size statically (pointer without a width, inline expression).
+unsigned lltBits(StringRef S) {
+  StringRef T = S;
+  unsigned Lanes = 1;
+  if (T.consume_front("v")) {
+    size_t L = 0;
+    while (L < T.size() && isDigit(T[L]))
+      ++L;
+    if (L == 0)
+      return 0;
+    Lanes = std::stoul(T.substr(0, L).str());
+    T = T.substr(L);
+  }
+  if (T.consume_front("p")) {
+    size_t Colon = T.find(':');
+    if (Colon == StringRef::npos)
+      return 0;
+    return std::stoul(T.substr(Colon + 1).str());
+  }
+  size_t I = 0;
+  while (I < T.size() && !isDigit(T[I]))
+    ++I;
+  if (I == T.size())
+    return 0;
+  return Lanes * std::stoul(T.substr(I).str());
+}
+
+/// A JSON string literal, quotes included.
+std::string jsonEscaped(StringRef S) {
+  std::string Buf;
+  raw_string_ostream OS(Buf);
+  jsonString(OS, S);
+  OS.flush();
+  return Buf;
+}
+
+/// Translate the C++ spelling a type record carries into a literal LLT.
+/// Returns an empty string when the expression depends on the subtarget.
+/// The translation table is normative: llvm-dev/2026-10-28-core-ir-mapping.md.
+bool isLiteralLlt(StringRef S);
+
+std::string normalizeLlt(StringRef S) {
+  StringRef T = S.trim();
+  {
+    StringRef R = T;
+    if (R.consume_front("LLT::scalar(") && R.consume_back(")") && !R.empty() &&
+        llvm::all_of(R, isDigit))
+      return "s" + R.str();
+  }
+  {
+    StringRef R = T;
+    if (R.consume_front("LLT::fixed_vector(") && R.consume_back(")")) {
+      size_t Comma = R.find(',');
+      if (Comma != StringRef::npos) {
+        StringRef L = R.substr(0, Comma).trim();
+        StringRef E = R.substr(Comma + 1).trim();
+        if (!L.empty() && !E.empty() && llvm::all_of(L, isDigit) &&
+            llvm::all_of(E, isDigit))
+          return "v" + L.str() + "s" + E.str();
+      }
+    }
+  }
+  {
+    StringRef R = T;
+    if (R.consume_front("LLT::pointer(") && R.consume_back(")")) {
+      size_t Comma = R.find(',');
+      if (Comma != StringRef::npos) {
+        StringRef AS = R.substr(0, Comma).trim();
+        StringRef Bits = R.substr(Comma + 1).trim();
+        if (!AS.empty() && !Bits.empty() && llvm::all_of(AS, isDigit) &&
+            llvm::all_of(Bits, isDigit))
+          return "p" + AS.str() + ":" + Bits.str();
+      }
+    }
+  }
+  return "";
+}
+/// True when the spelling is a literal LLT.  A type record whose Expr is a
+/// C++ expression (LLT::fixed_vector(...), a feature ternary) is not a domain
+/// element; the domain is generated separately from GenericOpcodes.td.
+bool isLiteralLlt(StringRef S) {
+  if (S.empty() || S.find('?') != StringRef::npos ||
+      S.find(' ') != StringRef::npos || S.find("LLT::") != StringRef::npos)
+    return false;
+  StringRef T = S;
+  if (T.consume_front("p")) {
+    if (T.empty() || !isDigit(T.front()))
+      return false;
+    size_t Colon = T.find(':');
+    if (Colon == StringRef::npos)
+      return true;  // p0, address space only
+    return Colon + 1 < T.size() && isDigit(T[Colon + 1]);
+  }
+  return lltBits(S) != 0;
+}
+
+std::string typeIs(unsigned Idx, StringRef Ty) {
+  return "{\"kind\":\"leaf\",\"name\":\"typeIs\",\"args\":[" +
+         std::to_string(Idx) + ",\"" + Ty.str() + "\"]}";
+}
+
+std::string allOf(const std::vector<std::string> &Parts) {
+  std::string S = "{\"kind\":\"nary\",\"op\":\"all_of\",\"args\":[";
+  for (size_t I = 0; I != Parts.size(); ++I) {
+    if (I)
+      S += ",";
+    S += Parts[I];
+  }
+  return S + "]}";
+}
+
+std::string scalarNarrowerThan(unsigned Idx, unsigned Bits) {
+  return "{\"kind\":\"leaf\",\"name\":\"scalarNarrowerThan\",\"args\":[" +
+         std::to_string(Idx) + "," + std::to_string(Bits) + "]}";
+}
+
+std::string scalarWiderThan(unsigned Idx, unsigned Bits) {
+  return "{\"kind\":\"leaf\",\"name\":\"scalarWiderThan\",\"args\":[" +
+         std::to_string(Idx) + "," + std::to_string(Bits) + "]}";
+}
+
+/// Lower one LegalizePredicate record to a Core IR predicate AST.
+void predicateJson(const Record &P, std::string &Out) {
+  if (P.isSubClassOf("LegalizeFeature")) {
+    Out = "{\"kind\":\"leaf\",\"name\":\"hasFeature\",\"args\":[\"" +
+          P.getValueAsString("Cond").str() + "\"]}";
+    return;
+  }
+  if (P.isSubClassOf("LegalizePredicateDag")) {
+    const DagInit *D = P.getValueAsDag("CondDag");
+    std::function<std::string(const Init &)> Walk =
+        [&](const Init &Node) -> std::string {
+      if (const auto *DI = dyn_cast<DefInit>(&Node)) {
+        const Record *R = DI->getDef();
+        if (!R->isSubClassOf("LegalizeFeature"))
+          PrintFatalError(R->getLoc(), "predicate dag leaf '" + R->getName() +
+                                           "' is not a LegalizeFeature");
+        return "{\"kind\":\"leaf\",\"name\":\"hasFeature\",\"args\":[\"" +
+               R->getValueAsString("Cond").str() + "\"]}";
+      }
+      const auto *N = dyn_cast<DagInit>(&Node);
+      if (!N)
+        PrintFatalError(P.getLoc(), "unsupported predicate dag node");
+      std::string Op = N->getOperator()->getAsString();
+      std::vector<std::string> Kids;
+      for (const Init *Arg : N->getArgs())
+        Kids.push_back(Walk(*Arg));
+      if (Op == "not")
+        return "{\"kind\":\"not\",\"arg\":" + Kids.front() + "}";
+      std::string OpName = Op == "and" ? "all_of" : Op == "or" ? "any_of" : Op;
+      std::string S = "{\"kind\":\"nary\",\"op\":\"" + OpName + "\",\"args\":[";
+      for (size_t I = 0; I != Kids.size(); ++I) {
+        if (I)
+          S += ",";
+        S += Kids[I];
+      }
+      return S + "]}";
+    };
+    Out = Walk(*D);
+    return;
+  }  if (P.isSubClassOf("LegalizeOpaqueBool") ||
+      P.isSubClassOf("LegalizeQueryPredicate")) {
+    // Escape: raw C++.  It has no Core IR form by construction.
+    Out = "{\"kind\":\"leaf\",\"name\":\"opaque\",\"args\":[\"" +
+          P.getName().str() + "\"]}";
+    return;
+  }
+  PrintFatalError(&P, "unknown LegalizePredicate record");
+}
+
+/// Flatten a type argument into literal LLT spellings.  An inline expression
+/// has no literal form, so it is an error rather than a silent loss.
+void collectTypes(const Record &R, std::vector<std::string> &Out) {
+  if (R.isSubClassOf("LegalizeNamedType")) {
+    Out.push_back(normalizeLlt(R.getValueAsString("Expr")));
+    return;
+  }
+  if (R.isSubClassOf("LegalizeNamedTypeList") ||
+      R.isSubClassOf("LegalizeInlineTypeList")) {
+    for (const Record *E : R.getValueAsListOfDefs("Elems"))
+      Out.push_back(normalizeLlt(E->getValueAsString("Expr")));
+    return;
+  }
+  if (R.isSubClassOf("LegalizeInlineType")) {
+    PrintFatalError(R.getLoc(),
+                    "inline type expression '" + R.getValueAsString("Text") +
+                        "' has no literal Core IR form");
+  }
+  PrintFatalError(R.getLoc(), "unexpected type argument '" + R.getName() + "'");
+}
+
+SMLoc firstLoc(const Record &R) {
+  ArrayRef<SMLoc> Locs = R.getLoc();
+  return Locs.empty() ? SMLoc() : Locs.front();
+}
+
+unsigned originLine(const Record &R) {
+  SMLoc L = firstLoc(R);
+  return L.getPointer() ? SrcMgr.getLineAndColumn(L).first : 0;
+}
+
+StringRef originFile(const Record &R) {
+  SMLoc L = firstLoc(R);
+  if (!L.getPointer())
+    return "<unknown>";
+  return SrcMgr.getMemoryBuffer(SrcMgr.FindBufferContainingLoc(L))
+      ->getBufferIdentifier();
+}
+
+struct CoreRule {
+  std::string Action;
+  unsigned TypeIdx = 0;
+  std::string Predicate = "{\"kind\":\"leaf\",\"name\":\"true\",\"args\":[]}";
+  std::string Mutation;  // empty means null
+};
+
+std::string mutationJson(unsigned Target, StringRef Kind, StringRef Value) {
+  return "{\"target\":" + std::to_string(Target) + ",\"kind\":\"" + Kind.str() +
+         "\",\"value\":" + (Value.empty() ? std::string("null")
+                                          : "\"" + Value.str() + "\"") +
+         "}";
+}
+
+std::string mutationJsonInt(unsigned Target, StringRef Kind, int Value) {
+  return "{\"target\":" + std::to_string(Target) + ",\"kind\":\"" + Kind.str() +
+         "\",\"value\":" + std::to_string(Value) + "}";
+}
+
+/// Expand one LegalizeRule record into zero or more core rules.
+void expandRule(const Record &Rule, std::vector<CoreRule> &Out,
+                std::string &Why) {
+  Why.clear();
+  // A rule whose body is raw C++ is a judgment escape.  It produces no core
+  // rule; runCore() records it in escapes[] so the count stays visible.
+  if (!Rule.getValueAsString("OpaqueArgs").empty()) {
+    Why = "opaque_rule";
+    return;
+  }
+
+  StringRef Method = Rule.getValueAsString("Method");
+  std::vector<const Record *> Args = Rule.getValueAsListOfDefs("Args");
+
+  // Arguments whose value only exists at code-generation time cannot be
+  // expanded into a literal Core IR rule.  Naming them here keeps the escape
+  // visible instead of guessing a type.
+  // A type record whose Expr is a C++ expression has no literal Core IR form.
+  // Those rules are escapes, not guesses.
+  for (const Record *A : Args) {
+    if (A->isSubClassOf("LegalizeTypePair")) {
+      if (normalizeLlt(A->getValueAsDef("Type0")->getValueAsString("Expr")).empty() ||
+          normalizeLlt(A->getValueAsDef("Type1")->getValueAsString("Expr")).empty()) {
+        Why = "nonliteral_type";
+        return;
+      }
+      continue;
+    }
+    if (A->isSubClassOf("LegalizeMemDesc")) {
+      if (normalizeLlt(A->getValueAsDef("Type0")->getValueAsString("Expr")).empty() ||
+          normalizeLlt(A->getValueAsDef("Type1")->getValueAsString("Expr")).empty() ||
+          normalizeLlt(A->getValueAsDef("MemTy")->getValueAsString("Expr")).empty()) {
+        Why = "nonliteral_type";
+        return;
+      }
+      continue;
+    }
+    if (A->isSubClassOf("LegalizeNamedType")) {
+      if (normalizeLlt(A->getValueAsString("Expr")).empty()) {
+        Why = "nonliteral_type";
+        return;
+      }
+      continue;
+    }
+    if (A->isSubClassOf("LegalizeNamedTypeList") ||
+        A->isSubClassOf("LegalizeInlineTypeList")) {
+      for (const Record *E : A->getValueAsListOfDefs("Elems"))
+        if (normalizeLlt(E->getValueAsString("Expr")).empty()) {
+          Why = "nonliteral_type";
+          return;
+        }
+      continue;
+    }
+    if (A->isSubClassOf("LegalizeArgInt"))
+      continue;
+    if (A->isSubClassOf("LegalizeTypeListChoice")) {
+      Why = "type_list_choice";
+      return;
+    }
+    if (A->isSubClassOf("LegalizeInlineType")) {
+      Why = "inline_type_expr";
+      return;
+    }
+    if (A->isSubClassOf("LegalizeRawArg")) {
+      Why = "raw_argument";
+      return;
+    }
+  }
+
+  std::string Pred;
+  if (const Record *P = Rule.getValueAsOptionalDef("Pred"))
+    predicateJson(*P, Pred);
+
+  auto WithPred = [&](std::string Cond) -> std::string {
+    if (Pred.empty() && Cond.empty())
+      return "{\"kind\":\"leaf\",\"name\":\"true\",\"args\":[]}";
+    if (Pred.empty())
+      return Cond;
+    if (Cond.empty())
+      return Pred;
+    return allOf({Pred, Cond});
+  };
+
+  auto Int = [&](size_t I) {
+    if (I >= Args.size() || !Args[I]->isSubClassOf("LegalizeArgInt"))
+      PrintFatalError(Rule.getLoc(), "rule '" + Method + "' expects an integer at "
+                                                                  "argument " +
+                                         std::to_string(I));
+    return Args[I]->getValueAsInt("Value");
+  };
+  auto Ty = [&](size_t I) {
+    std::vector<std::string> Ts;
+    if (I >= Args.size())
+      PrintFatalError(Rule.getLoc(), "rule '" + Method + "' is missing argument " +
+                                         std::to_string(I));
+    collectTypes(*Args[I], Ts);
+    if (Ts.size() != 1)
+      PrintFatalError(Rule.getLoc(), "rule '" + Method + "' expects one type at "
+                                                            "argument " +
+                                         std::to_string(I));
+    return Ts.front();
+  };
+
+  if (Method == "legalFor") {
+    for (const Record *A : Args) {
+      if (A->isSubClassOf("LegalizeTypePair")) {
+        std::vector<std::string> T0, T1;
+        collectTypes(*A->getValueAsDef("Type0"), T0);
+        collectTypes(*A->getValueAsDef("Type1"), T1);
+        Out.push_back({"Legal", 0,
+                       WithPred(allOf({typeIs(0, T0.front()),
+                                       typeIs(1, T1.front())})),
+                       ""});
+      } else {
+        std::vector<std::string> Ts;
+        collectTypes(*A, Ts);
+        for (const std::string &T : Ts)
+          Out.push_back({"Legal", 0, WithPred(typeIs(0, T)), ""});
+      }
+    }
+    return;
+  }
+  if (Method == "legalForCartesianProduct") {
+    std::vector<std::string> T0, T1;
+    collectTypes(*Args[0], T0);
+    collectTypes(*Args[1], T1);
+    for (const std::string &A : T0)
+      for (const std::string &B : T1)
+        Out.push_back({"Legal", 0, WithPred(allOf({typeIs(0, A), typeIs(1, B)})),
+                       ""});
+    return;
+  }
+  if (Method == "legalForTypesWithMemDesc") {
+    for (const Record *A : Args) {
+      std::string T0 = A->getValueAsDef("Type0")->getValueAsString("Expr").str();
+      std::string T1 = A->getValueAsDef("Type1")->getValueAsString("Expr").str();
+      std::string Mem =
+          A->getValueAsDef("MemTy")->getValueAsString("Expr").str();
+      unsigned Align = A->getValueAsInt("Align");
+      (void)Align;
+      Out.push_back({"Legal", 0,
+                     WithPred(allOf({typeIs(0, T0), typeIs(1, T1),
+                                     typeIs(2, Mem)})),
+                     ""});
+    }
+    return;
+  }
+  if (Method == "alwaysLegal") {
+    Out.push_back({"Legal", 0, WithPred(""), ""});
+    return;
+  }
+  if (Method == "lower") {
+    Out.push_back({"Lower", 0, WithPred(""), ""});
+    return;
+  }
+  if (Method == "lowerFor") {
+    for (const Record *A : Args) {
+      std::string T0 = A->getValueAsDef("Type0")->getValueAsString("Expr").str();
+      std::string T1 = A->getValueAsDef("Type1")->getValueAsString("Expr").str();
+      Out.push_back({"Lower", 0,
+                     WithPred(allOf({typeIs(0, T0), typeIs(1, T1)})), ""});
+    }
+    return;
+  }
+  if (Method == "libcall") {
+    Out.push_back({"Libcall", 0, WithPred(""), ""});
+    return;
+  }
+  if (Method == "libcallFor" || Method == "customFor") {
+    StringRef Action = Method == "libcallFor" ? "Libcall" : "Custom";
+    for (const Record *A : Args) {
+      std::vector<std::string> Ts;
+      collectTypes(*A, Ts);
+      for (const std::string &T : Ts)
+        Out.push_back({Action.str(), 0, WithPred(typeIs(0, T)), ""});
+    }
+    return;
+  }
+  if (Method == "customForCartesianProduct") {
+    std::vector<std::string> T0, T1;
+    collectTypes(*Args[0], T0);
+    collectTypes(*Args[1], T1);
+    for (const std::string &A : T0)
+      for (const std::string &B : T1)
+        Out.push_back({"Custom", 0,
+                       WithPred(allOf({typeIs(0, A), typeIs(1, B)})), ""});
+    return;
+  }
+  if (Method == "clampScalar" || Method == "clampScalarOrElt") {
+    unsigned Idx = Int(0);
+    std::string MinTy = Ty(1);
+    std::string MaxTy = Ty(2);
+    Out.push_back({"WidenScalar", Idx,
+                   WithPred(scalarNarrowerThan(Idx, lltBits(MinTy))),
+                   mutationJson(Idx, "set_elem_type", MinTy)});
+    Out.push_back({"NarrowScalar", Idx,
+                   WithPred(scalarWiderThan(Idx, lltBits(MaxTy))),
+                   mutationJson(Idx, "set_elem_type", MaxTy)});
+    return;
+  }
+  if (Method == "minScalar") {
+    unsigned Idx = Int(0);
+    std::string Ty0 = Ty(1);
+    Out.push_back({"WidenScalar", Idx,
+                   WithPred(scalarNarrowerThan(Idx, lltBits(Ty0))),
+                   mutationJson(Idx, "set_elem_type", Ty0)});
+    return;
+  }
+  if (Method == "maxScalar") {
+    unsigned Idx = Int(0);
+    std::string Ty0 = Ty(1);
+    Out.push_back({"NarrowScalar", Idx,
+                   WithPred(scalarWiderThan(Idx, lltBits(Ty0))),
+                   mutationJson(Idx, "set_elem_type", Ty0)});
+    return;
+  }
+  if (Method == "widenScalarToNextPow2" ||
+      Method == "widenScalarOrEltToNextPow2") {
+    unsigned Idx = Int(0);
+    bool HasMin = Args.size() > 1;
+    Out.push_back({"WidenScalar", Idx, WithPred(""),
+                   mutationJson(Idx, "set_elem_bits",
+                                HasMin ? "nextPow2OrMin" : "nextPow2")});
+    return;
+  }
+  if (Method == "scalarSameSizeAs") {
+    unsigned Idx = Int(0);
+    unsigned Other = Int(1);
+    std::string Ref = "sameAsSlot" + std::to_string(Other);
+    Out.push_back({"WidenScalar", Idx, WithPred(""),
+                   mutationJson(Idx, "set_elem_bits", Ref)});
+    Out.push_back({"NarrowScalar", Idx, WithPred(""),
+                   mutationJson(Idx, "set_elem_bits", Ref)});
+    return;
+  }
+  if (Method == "scalarize" || Method == "scalarizeIf") {
+    unsigned Idx = Int(0);
+    Out.push_back({"FewerElements", Idx, WithPred(""),
+                   mutationJsonInt(Idx, "set_lanes", 1)});
+    return;
+  }
+  if (Method == "moreElementsToNextPow2") {
+    unsigned Idx = Int(0);
+    Out.push_back({"MoreElements", Idx, WithPred(""),
+                   mutationJson(Idx, "set_lanes", "nextPow2")});
+    return;
+  }
+  if (Method == "clampNumElements") {
+    unsigned Idx = Int(0);
+    Out.push_back({"MoreElements", Idx, WithPred(""),
+                   mutationJson(Idx, "set_lanes", "nextPow2")});
+    Out.push_back({"FewerElements", Idx, WithPred(""),
+                   mutationJson(Idx, "set_lanes", "nextPow2")});
+    return;
+  }
+  if (Method == "clampMinNumElements") {
+    unsigned Idx = Int(0);
+    Out.push_back({"MoreElements", Idx, WithPred(""),
+                   mutationJson(Idx, "set_lanes", "nextPow2")});
+    return;
+  }
+  if (Method == "clampMaxNumElements") {
+    unsigned Idx = Int(0);
+    Out.push_back({"FewerElements", Idx, WithPred(""),
+                   mutationJson(Idx, "set_lanes", "nextPow2")});
+    return;
+  }
+
+  PrintFatalError(Rule.getLoc(),
+                  "no Core IR expansion for builder '" + Method +
+                      "'; add it to llvm-dev/2026-10-28-core-ir-mapping.md "
+                      "first");
+}
+
+} // namespace
+
+void LegalizerInfoEmitter::runCore(raw_ostream &OS) {
+  std::vector<const Record *> RuleSets =
+      Records.getAllDerivedDefinitions("LegalizeRuleSet");
+  if (RuleSets.empty())
+    PrintFatalError("no LegalizeRuleSet records found");
+  llvm::sort(RuleSets, LessRecordByID());
+
+  std::vector<const Record *> Types =
+      Records.getAllDerivedDefinitions("LegalizeNamedType");
+  std::vector<std::string> DomainTypes;
+  for (const Record *T : Types) {
+    std::string Norm = normalizeLlt(T->getValueAsString("Expr"));
+    if (!Norm.empty())
+      DomainTypes.push_back(Norm);
+  }
+  llvm::sort(DomainTypes);
+  DomainTypes.erase(std::unique(DomainTypes.begin(), DomainTypes.end()),
+                    DomainTypes.end());
+
+  std::vector<std::string> Escapes;
+  auto AddEscape = [&](StringRef Layer, StringRef Kind, StringRef Reason,
+                       const Record &Rule, StringRef RuleSetName,
+                       unsigned RuleIndex) {
+    std::string S = "    {\"layer\": ";
+    S += jsonEscaped(Layer);
+    S += ", \"kind\": ";
+    S += jsonEscaped(Kind);
+    S += ", \"reason\": ";
+    S += jsonEscaped(Reason);
+    S += ", \"owner\": \"X86\", \"removal\": \"express it with the Core IR "
+         "vocabulary\", ";
+    S += "\"ruleset\": ";
+    S += jsonEscaped(RuleSetName);
+    S += ", \"rule_index\": " + std::to_string(RuleIndex) + ", ";
+    // The rule record is anonymous, and TableGen reports the source location
+    // of a structurally identical anonymous record from whichever rule set
+    // was parsed first.  The line is a hint, not an identity; attribution is
+    // (ruleset, rule_index).
+    S += "\"origin\": {\"source\": ";
+    S += jsonEscaped(originFile(Rule));
+    S += ", \"line\": ";
+    S += std::to_string(originLine(Rule));
+    S += "}}";
+    Escapes.push_back(S);
+  };
+  OS << "{\n";
+  OS << "  \"schema\": \"legalizer-spec-core\",\n";
+  OS << "  \"version\": \"0.1\",\n";
+  OS << "  \"config\": {\"triple\": ";
+  jsonString(OS, CoreTriple);
+  OS << ", \"cpu\": ";
+  jsonString(OS, CoreCPU);
+  OS << ", \"features\": [], \"pointer_width\": " << CorePointerWidth << "},\n";
+
+  OS << "  \"domain\": {\"types\": [";
+  for (size_t I = 0; I != DomainTypes.size(); ++I) {
+    if (I)
+      OS << ", ";
+    jsonString(OS, DomainTypes[I]);
+  }
+  OS << "], \"imms\": [], \"mems\": [], \"orderings\": [], \"q0\": []},\n";
+
+  OS << "  \"rulesets\": [\n";
+  bool FirstSet = true;
+  StringSet<> SeenOpcodes;
+  for (const Record *RuleSet : RuleSets) {
+    std::vector<StringRef> Opcodes = RuleSet->getValueAsListOfStrings("Opcodes");
+    if (Opcodes.empty())
+      PrintFatalError(RuleSet->getLoc(), "legalizer rule set has no opcodes");
+    for (StringRef Opcode : Opcodes) {
+      if (!SeenOpcodes.insert(Opcode).second)
+        PrintFatalError(RuleSet->getLoc(),
+                        "opcode '" + Opcode +
+                            "' is described by more than one rule set");
+    }
+
+    std::vector<std::string> RulesJson;
+    StringRef RuleSetName = RuleSet->getName();
+    std::vector<const Record *> Rules =
+        RuleSet->getValueAsListOfDefs("Rules");
+    for (size_t RuleIdx = 0; RuleIdx != Rules.size(); ++RuleIdx) {
+      const Record *Rule = Rules[RuleIdx];
+      std::vector<CoreRule> Expanded;
+      std::string Why;
+      expandRule(*Rule, Expanded, Why);
+      if (!Why.empty()) {
+        if (Why == "opaque_rule")
+          AddEscape("judgment", "opaque_rule",
+                    "rule body is raw C++ (" +
+                        Rule->getValueAsString("Method").str() + ")",
+                    *Rule, RuleSetName, RuleIdx);
+        else
+          AddEscape("shape_parameter", Why,
+                    "argument shape has no literal Core IR form (" +
+                        Rule->getValueAsString("Method").str() + ")",
+                    *Rule, RuleSetName, RuleIdx);
+        continue;
+      }
+      unsigned Line = originLine(*Rule);
+      for (const CoreRule &CR : Expanded) {
+        std::string S = "        {\"action\":\"";
+        S += CR.Action + "\", \"type_idx\":" + std::to_string(CR.TypeIdx);
+        S += ", \"predicate\":" + CR.Predicate;
+        if (!CR.Mutation.empty())
+          S += ", \"mutation\":" + CR.Mutation;
+        S += ", \"ruleset\": ";
+        S += jsonEscaped(RuleSetName);
+        S += ", \"rule_index\": " + std::to_string(RuleIdx);
+        S += ", \"origin\": {\"source\": ";
+        S += jsonEscaped(originFile(*Rule));
+        S += ", \"line\": " + std::to_string(Line) + "}}";
+        RulesJson.push_back(S);
+      }
+    }
+
+    // A rule set whose every rule escaped has no executable content.  Emitting
+    // an empty shell would violate the "no empty rule set" rule (schema
+    // minItems) and say nothing that escapes[] does not already say.
+    if (RulesJson.empty())
+      continue;
+
+    if (!FirstSet)
+      OS << ",\n";
+    FirstSet = false;
+    OS << "    {\"def\": ";
+    jsonString(OS, RuleSet->getName());
+    OS << ", \"origin\": {\"source\": ";
+    jsonString(OS, originFile(*RuleSet));
+    OS << ", \"line\": " << originLine(*RuleSet) << "},\n";
+    OS << "     \"opcodes\": [";
+    for (size_t I = 0; I != Opcodes.size(); ++I) {
+      if (I)
+        OS << ", ";
+      jsonString(OS, Opcodes[I]);
+    }
+    OS << "],\n     \"rules\": [\n";
+    for (size_t I = 0; I != RulesJson.size(); ++I)
+      OS << RulesJson[I] << (I + 1 == RulesJson.size() ? "\n" : ",\n");
+    OS << "     ]}";
+  }
+  OS << "\n  ],\n";
+
+  OS << "  \"escapes\": [";
+  for (size_t I = 0; I != Escapes.size(); ++I) {
+    if (I)
+      OS << ",\n";
+    OS << Escapes[I];
+  }
+  if (!Escapes.empty())
+    OS << "\n  ";
+  OS << "]\n}\n";
+}
 static TableGen::Emitter::OptClass<LegalizerInfoEmitter>
     X("gen-legalizer", "Generate GlobalISel legalizer rule fragments");
+
+/// OptClass<T> always calls T::run(), so the Core IR output needs its own
+/// front-end class that forwards to LegalizerInfoEmitter::runCore().
+class LegalizerCoreEmitter {
+  const RecordKeeper &Records;
+
+public:
+  explicit LegalizerCoreEmitter(const RecordKeeper &RK) : Records(RK) {}
+  void run(raw_ostream &OS) { LegalizerInfoEmitter(Records).runCore(OS); }
+};
+
+static TableGen::Emitter::OptClass<LegalizerCoreEmitter>
+    XCore("gen-legalizer-core",
+          "Emit GlobalISel legalizer rules as Core IR JSON");
