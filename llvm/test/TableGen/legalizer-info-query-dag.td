@@ -1,5 +1,7 @@
 // RUN: llvm-tblgen -gen-legalizer -I %p/../../include %s -o - | FileCheck %s
 // RUN: llvm-tblgen -gen-legalizer-core -I %p/../../include %s -o - | FileCheck %s --check-prefix=CORE
+// RUN: llvm-tblgen -gen-legalizer -I %p/../../include %s -o - | FileCheck %s --check-prefix=SIZE
+// RUN: llvm-tblgen -gen-legalizer-core -I %p/../../include %s -o - | FileCheck %s --check-prefix=SIZECORE
 
 // A guard that reads the query is a LegalityPredicate, a different C++ type
 // from the cached bool legalFor(bool, ...) takes.  The two dags are therefore
@@ -31,4 +33,19 @@ def Set : LegalizeRuleSet<["G_ADD"]> {
 // CORE: "action":"Custom"
 // CORE: "name":"typeIs"
 // CORE: "args":[0,"s32"]
+
+// sizeIs is the total width, so it is the one type predicate whose Core IR
+// arguments are a number rather than an LLT.  It renders as a call like the
+// rest -- a bare one would vanish into `explicit operator bool` -- and the
+// number is a width, not a type, which is what lets a v4s32 and an s128 answer
+// the same question.
+def Size128 : LegalizeTypePredicate<"sizeIs(0, 128)">;
+def SizeDag : LegalizeQueryPredicateDag<(all_of Size128)>;
+def SizeSet : LegalizeRuleSet<["G_UNMERGE_VALUES"]> {
+  let Rules = [LegalizeQueryGuardedCall<BuilderLegalIf, SizeDag, []>];
+}
+
+// SIZE: .legalIf([=](const LegalityQuery &Query) { return sizeIs(0, 128)(Query); })
+// SIZECORE: "name":"sizeIs"
+// SIZECORE: "args":[0,"128"]
 
