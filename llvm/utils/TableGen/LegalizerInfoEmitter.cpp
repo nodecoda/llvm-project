@@ -712,6 +712,17 @@ unsigned lltLanes(StringRef S) {
   return L == 0 ? 1 : std::stoul(T.substr(0, L).str());
 }
 
+/// Element spelling of a literal LLT: "v4s32" -> "s32", "s32" -> "s32".
+std::string lltElt(StringRef S) {
+  StringRef T = S;
+  if (!T.consume_front("v"))
+    return T.str();
+  size_t L = 0;
+  while (L < T.size() && isDigit(T[L]))
+    ++L;
+  return T.substr(L).str();
+}
+
 /// A JSON string literal, quotes included.
 std::string jsonEscaped(StringRef S) {
   std::string Buf;
@@ -804,6 +815,54 @@ std::string scalarNarrowerThan(unsigned Idx, unsigned Bits) {
 std::string scalarWiderThan(unsigned Idx, unsigned Bits) {
   return "{\"kind\":\"leaf\",\"name\":\"scalarWiderThan\",\"args\":[" +
          std::to_string(Idx) + "," + std::to_string(Bits) + "]}";
+}
+
+std::string oneArgLeaf(StringRef Name, unsigned A) {
+  return "{\"kind\":\"leaf\",\"name\":\"" + Name.str() +
+         "\",\"args\":[" + std::to_string(A) + "]}";
+}
+
+std::string isVector(unsigned Idx) { return oneArgLeaf("isVector", Idx); }
+
+std::string sizeNotPow2(unsigned Idx) {
+  return oneArgLeaf("sizeNotPow2", Idx);
+}
+
+std::string scalarOrEltSizeNotPow2(unsigned Idx) {
+  return oneArgLeaf("scalarOrEltSizeNotPow2", Idx);
+}
+
+std::string numElementsNotPow2(unsigned Idx) {
+  return oneArgLeaf("numElementsNotPow2", Idx);
+}
+
+std::string fewerElementsThan(unsigned Idx, unsigned Lanes) {
+  return "{\"kind\":\"leaf\",\"name\":\"fewerElementsThan\",\"args\":[" +
+         std::to_string(Idx) + "," + std::to_string(Lanes) + "]}";
+}
+
+std::string moreElementsThan(unsigned Idx, unsigned Lanes) {
+  return "{\"kind\":\"leaf\",\"name\":\"moreElementsThan\",\"args\":[" +
+         std::to_string(Idx) + "," + std::to_string(Lanes) + "]}";
+}
+
+std::string elementTypeIs(unsigned Idx, StringRef Ty) {
+  return "{\"kind\":\"leaf\",\"name\":\"elementTypeIs\",\"args\":[" +
+         std::to_string(Idx) + ",\"" + Ty.str() + "\"]}";
+}
+
+/// Types[Other].getScalarSizeInBits() > Types[Idx].getSizeInBits()
+std::string scalarSizeLargerThanSlot(unsigned Other, unsigned Idx) {
+  return "{\"kind\":\"leaf\",\"name\":\"scalarSizeLargerThanSlot\","
+         "\"args\":[" + std::to_string(Other) + "," + std::to_string(Idx) +
+         "]}";
+}
+
+/// Types[Other].getScalarSizeInBits() < Types[Idx].getSizeInBits()
+std::string scalarSizeSmallerThanSlot(unsigned Other, unsigned Idx) {
+  return "{\"kind\":\"leaf\",\"name\":\"scalarSizeSmallerThanSlot\","
+         "\"args\":[" + std::to_string(Other) + "," + std::to_string(Idx) +
+         "]}";
 }
 
 /// Lower one LegalizePredicate record to a Core IR predicate AST.
@@ -1141,7 +1200,13 @@ void expandRule(const Record &Rule, std::vector<CoreRule> &Out,
     std::string Target =
         Args.size() > 1 ? "nextPow2OrMin" + std::to_string(Int(1))
                         : std::string("nextPow2");
-    Out.push_back({"WidenScalar", Idx, WithPred(""),
+    // The guard is not "true".  The C++ builder fires only when the size is
+    // not a power of two, and the scalar-only builder and the OrElt variant
+    // differ on vectors.
+    std::string Guard = Method == "widenScalarToNextPow2"
+                            ? sizeNotPow2(Idx)
+                            : scalarOrEltSizeNotPow2(Idx);
+    Out.push_back({"WidenScalar", Idx, WithPred(Guard),
                    mutationJson(Idx, "set_elem_bits", Target)});
     return;
   }
@@ -1149,21 +1214,24 @@ void expandRule(const Record &Rule, std::vector<CoreRule> &Out,
     unsigned Idx = Int(0);
     unsigned Other = Int(1);
     std::string Ref = "sameAsSlot" + std::to_string(Other);
-    Out.push_back({"WidenScalar", Idx, WithPred(""),
+    // minScalarSameAs().maxScalarSameAs(): each direction has its own guard.
+    Out.push_back({"WidenScalar", Idx,
+                   WithPred(scalarSizeLargerThanSlot(Other, Idx)),
                    mutationJson(Idx, "set_elem_bits", Ref)});
-    Out.push_back({"NarrowScalar", Idx, WithPred(""),
+    Out.push_back({"NarrowScalar", Idx,
+                   WithPred(scalarSizeSmallerThanSlot(Other, Idx)),
                    mutationJson(Idx, "set_elem_bits", Ref)});
     return;
   }
   if (Method == "scalarize" || Method == "scalarizeIf") {
     unsigned Idx = Int(0);
-    Out.push_back({"FewerElements", Idx, WithPred(""),
+    Out.push_back({"FewerElements", Idx, WithPred(isVector(Idx)),
                    mutationJsonInt(Idx, "set_lanes", 1)});
     return;
   }
   if (Method == "moreElementsToNextPow2") {
     unsigned Idx = Int(0);
-    Out.push_back({"MoreElements", Idx, WithPred(""),
+    Out.push_back({"MoreElements", Idx, WithPred(numElementsNotPow2(Idx)),
                    mutationJson(Idx, "set_lanes", "nextPow2")});
     return;
   }
@@ -1175,24 +1243,21 @@ void expandRule(const Record &Rule, std::vector<CoreRule> &Out,
     // so each direction names its own lane count instead of "nextPow2".
     std::string MinTy = Ty(1);
     std::string MaxTy = Ty(2);
-    Out.push_back({"MoreElements", Idx, WithPred(""),
+    std::string Elt = lltElt(MinTy);
+    std::string Elem = elementTypeIs(Idx, Elt);
+    Out.push_back({"MoreElements", Idx,
+                   WithPred(allOf({Elem, fewerElementsThan(
+                                             Idx, lltLanes(MinTy))})),
                    mutationJsonInt(Idx, "set_lanes", lltLanes(MinTy))});
-    Out.push_back({"FewerElements", Idx, WithPred(""),
+    Out.push_back({"FewerElements", Idx,
+                   WithPred(allOf({Elem, moreElementsThan(
+                                             Idx, lltLanes(MaxTy))})),
                    mutationJsonInt(Idx, "set_lanes", lltLanes(MaxTy))});
     return;
   }
-  if (Method == "clampMinNumElements") {
-    unsigned Idx = Int(0);
-    Out.push_back({"MoreElements", Idx, WithPred(""),
-                   mutationJson(Idx, "set_lanes", "nextPow2")});
-    return;
-  }
-  if (Method == "clampMaxNumElements") {
-    unsigned Idx = Int(0);
-    Out.push_back({"FewerElements", Idx, WithPred(""),
-                   mutationJson(Idx, "set_lanes", "nextPow2")});
-    return;
-  }
+  // clampMinNumElements / clampMaxNumElements take their element count as a
+  // C++ expression (for example "HasBWI ? 64 : 32").  It has no literal Core
+  // IR form, so those rules are escapes, not guessed rules.
 
   PrintFatalError(Rule.getLoc(),
                   "no Core IR expansion for builder '" + Method +
