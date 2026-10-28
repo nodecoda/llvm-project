@@ -434,7 +434,6 @@ static StringRef shapeOf(const Record &Arg) {
 
 void LegalizerInfoEmitter::verifyRule(const Record &Rule) {
   StringRef Method = builderName(Rule);
-  StringRef Builder = builderRecordName(Rule);
   const Record *B = Rule.getValueAsDef("Builder");
 
   // The action belongs to the builder: the keyword already decides it, so a
@@ -935,12 +934,6 @@ std::string jsonEscaped(StringRef S) {
   return Buf;
 }
 
-/// Translate the C++ spelling a type record carries into a literal LLT.
-/// Returns an empty string when the expression depends on the subtarget.
-/// The translation table is the one documented on LegalizeArg in
-/// LegalizerInfo.td.
-bool isLiteralLlt(StringRef S);
-
 std::string normalizeLlt(StringRef S) {
   StringRef T = S.trim();
   {
@@ -977,25 +970,6 @@ std::string normalizeLlt(StringRef S) {
   }
   return "";
 }
-/// True when the spelling is a literal LLT.  A type record whose Expr is a
-/// C++ expression (LLT::fixed_vector(...), a feature ternary) is not a domain
-/// element; the domain is generated separately from GenericOpcodes.td.
-bool isLiteralLlt(StringRef S) {
-  if (S.empty() || S.find('?') != StringRef::npos ||
-      S.find(' ') != StringRef::npos || S.find("LLT::") != StringRef::npos)
-    return false;
-  StringRef T = S;
-  if (T.consume_front("p")) {
-    if (T.empty() || !isDigit(T.front()))
-      return false;
-    size_t Colon = T.find(':');
-    if (Colon == StringRef::npos)
-      return true;  // p0, address space only
-    return Colon + 1 < T.size() && isDigit(T[Colon + 1]);
-  }
-  return lltBits(S) != 0;
-}
-
 std::string typeIs(unsigned Idx, StringRef Ty) {
   return "{\"kind\":\"leaf\",\"name\":\"typeIs\",\"args\":[" +
          std::to_string(Idx) + ",\"" + Ty.str() + "\"]}";
