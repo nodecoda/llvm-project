@@ -22,8 +22,12 @@
 // v4s32, v4s16, v8s16 and v8s8, and this file has to stay includable from a
 // target .td that pulls in llvm/Target/Target.td.
 //
-// LegalizeOpaqueRule is the escape hatch for guards that are still raw C++
-// lambdas: 10 rules out of 239.
+// LegalizeOpaqueRule is the escape hatch for guards that are still raw C++.
+// Five of the 275 rules need it, and each one is a guard the vocabulary cannot
+// spell yet: G_LROUND returns a pair<unsigned, LLT> mutation, G_STORE compares
+// Types[0] against MMODescrs[0].MemoryTy, and G_EXTRACT selects its type slots
+// from Query.Opcode.  The remaining escape is the shared merge/unmerge check on
+// bit widths outside the modelled set.
 //
 // Four `for (Op : {...})` loops in the former C++ were hand-flattened into
 // one record per opcode; the loop variables therefore appear as literals.
@@ -67,6 +71,63 @@ def BMIAnd64Bit : LegalizePredicateDag<(all_of HasBMI, Is64Bit)>;
 def SSE1And64Bit : LegalizePredicateDag<(all_of HasSSE1, Is64Bit)>;
 def SSE2And64Bit : LegalizePredicateDag<(all_of HasSSE2, Is64Bit)>;
 def NotCMOV : LegalizePredicateDag<(not HasCMOV)>;
+
+// Leaves that read the query rather than the subtarget.  They combine with the
+// cached bools above under the same operators, which is why a guard that used
+// to be a raw lambda can now be an AST.
+def IsS32In0 : LegalizeTypePredicate<"typeIs(0, X86_s32)">;
+def IsS64In0 : LegalizeTypePredicate<"typeIs(0, X86_s64)">;
+def NarrowerIn1 : LegalizeTypePredicate<"scalarNarrowerThan(1, Is64Bit ? 64 : 32)">;
+
+// !HasAVX512 && ((HasSSE1 && typeIs(0, s32)) || (HasSSE2 && typeIs(0, s64)))
+//   && scalarNarrowerThan(1, Is64Bit ? 64 : 32)
+def IsS32In1 : LegalizeTypePredicate<"typeIs(1, X86_s32)">;
+def IsS64In1 : LegalizeTypePredicate<"typeIs(1, X86_s64)">;
+def NarrowerIn0 : LegalizeTypePredicate<"scalarNarrowerThan(0, Is64Bit ? 64 : 32)">;
+
+// G_FPTOUI mirrors G_UITOFP with the slots swapped.
+def FPResultGPRNoAVX512
+    : LegalizeQueryPredicateDag<(all_of (not HasAVX512),
+                                        (any_of (all_of HasSSE1, IsS32In1),
+                                                (all_of HasSSE2, IsS64In1)),
+                                        NarrowerIn0)>;
+def FPResultGPRLower64
+    : LegalizeQueryPredicateDag<(all_of (not HasAVX512),
+                                        (any_of (all_of HasSSE1, IsS32In1),
+                                                (all_of HasSSE2, IsS64In1)),
+                                        Is64Bit, IsS64In0)>;
+
+// G_UITOFP has the operand and result the other way round from G_FPTOUI.
+def GPRLower64
+    : LegalizeQueryPredicateDag<(all_of (not HasAVX512),
+                                        (any_of (all_of HasSSE1, IsS32In0),
+                                                (all_of HasSSE2, IsS64In0)),
+                                        Is64Bit, IsS64In1)>;
+
+def V4S32 : LegalizeTypePredicate<"typeInSet(0, {X86_v4s32})">;
+def V2S64V8S16V16S8
+    : LegalizeTypePredicate<"typeInSet(0, {X86_v2s64, X86_v8s16, X86_v16s8})">;
+def V4S64V8S32V16S16V32S8
+    : LegalizeTypePredicate<
+          "typeInSet(0, {X86_v4s64, X86_v8s32, X86_v16s16, X86_v32s8})">;
+def V8S64V16S32V32S16V64S8
+    : LegalizeTypePredicate<
+          "typeInSet(0, {X86_v8s64, X86_v16s32, X86_v32s16, X86_v64s8})">;
+
+// G_BUILD_VECTOR is custom when the destination vector type is one the target
+// can build directly, and which types those are depends on the features.
+def BuildVectorCustom
+    : LegalizeQueryPredicateDag<(any_of (all_of HasSSE1, V4S32),
+                                        (all_of HasSSE2, V2S64V8S16V16S8),
+                                        (all_of HasAVX, V4S64V8S32V16S16V32S8),
+                                        (all_of HasAVX512,
+                                                V8S64V16S32V32S16V64S8))>;
+
+def GPRNarrowNoAVX512
+    : LegalizeQueryPredicateDag<(all_of (not HasAVX512),
+                                    (any_of (all_of HasSSE1, IsS32In0),
+                                            (all_of HasSSE2, IsS64In0)),
+                                    NarrowerIn1)>;
 
 // The LLT constants the rules are written in terms of.  The def name is the
 // C++ identifier, exactly like the LegalizeFeature records above.
@@ -750,25 +811,8 @@ def X86_UITOFP : LegalizeRuleSet<["G_UITOFP"]> {
   let Rules = [
     LegalForPairsIf<HasAVX512,
                      [LegalizeTypePair<X86_s32, X86_s32>, LegalizeTypePair<X86_s32, X86_s64>, LegalizeTypePair<X86_s64, X86_s32>, LegalizeTypePair<X86_s64, X86_s64>]>,
-    LegalizeOpaqueRule<BuilderCustomIf, [{
-
-      [=](const LegalityQuery &Query) {
-              return !HasAVX512 &&
-                     ((HasSSE1 && typeIs(0, X86_s32)(Query)) ||
-                      (HasSSE2 && typeIs(0, X86_s64)(Query))) &&
-                     scalarNarrowerThan(1, Is64Bit ? 64 : 32)(Query);
-            }
-    }]>,
-    LegalizeOpaqueRule<BuilderLowerIf, [{
-
-      [=](const LegalityQuery &Query) {
-              // Lower conversions from X86_s64
-              return !HasAVX512 &&
-                     ((HasSSE1 && typeIs(0, X86_s32)(Query)) ||
-                      (HasSSE2 && typeIs(0, X86_s64)(Query))) &&
-                     (Is64Bit && typeIs(1, X86_s64)(Query));
-            }
-    }]>,
+    LegalizeQueryGuardedCall<BuilderCustomIf, GPRNarrowNoAVX512, []>,
+    LegalizeQueryGuardedCall<BuilderLowerIf, GPRLower64, []>,
     ClampScalar<0, X86_s32, LegalizeInlineType<"HasSSE2 ? X86_s64 : X86_s32">>,
     WidenScalarToNextPow2<0>,
     ClampScalar<1, X86_s32, X86_sMaxScalar>,
@@ -786,24 +830,8 @@ def X86_FPTOUI : LegalizeRuleSet<["G_FPTOUI"]> {
   let Rules = [
     LegalForPairsIf<HasAVX512,
                      [LegalizeTypePair<X86_s32, X86_s32>, LegalizeTypePair<X86_s32, X86_s64>, LegalizeTypePair<X86_s64, X86_s32>, LegalizeTypePair<X86_s64, X86_s64>]>,
-    LegalizeOpaqueRule<BuilderCustomIf, [{
-
-      [=](const LegalityQuery &Query) {
-        return !HasAVX512 &&
-               ((HasSSE1 && typeIs(1, X86_s32)(Query)) ||
-                (HasSSE2 && typeIs(1, X86_s64)(Query))) &&
-               scalarNarrowerThan(0, Is64Bit ? 64 : 32)(Query);
-      }
-    }]>,
-    LegalizeOpaqueRule<BuilderLowerIf, [{
-
-      [=](const LegalityQuery &Query) {
-        return !HasAVX512 &&
-               ((HasSSE1 && typeIs(1, X86_s32)(Query)) ||
-                (HasSSE2 && typeIs(1, X86_s64)(Query))) &&
-               (Is64Bit && typeIs(0, X86_s64)(Query));
-      }
-    }]>,
+    LegalizeQueryGuardedCall<BuilderCustomIf, FPResultGPRNoAVX512, []>,
+    LegalizeQueryGuardedCall<BuilderLowerIf, FPResultGPRLower64, []>,
     ClampScalar<0, X86_s32, X86_sMaxScalar>,
     WidenScalarToNextPow2<0>,
     ClampScalar<1, X86_s32, LegalizeInlineType<"HasSSE2 ? X86_s64 : X86_s32">>,
@@ -814,17 +842,7 @@ def X86_FPTOUI : LegalizeRuleSet<["G_FPTOUI"]> {
 def X86_BUILD_VECTOR : LegalizeRuleSet<["G_BUILD_VECTOR"]> {
   let Comments = ["vector ops"];
   let Rules = [
-    LegalizeOpaqueRule<BuilderCustomIf, [{
-
-      [=](const LegalityQuery &Query) {
-              return (HasSSE1 && typeInSet(0, {X86_v4s32})(Query)) ||
-                     (HasSSE2 && typeInSet(0, {X86_v2s64, X86_v8s16, X86_v16s8})(Query)) ||
-                     (HasAVX &&
-                      typeInSet(0, {X86_v4s64, X86_v8s32, X86_v16s16, X86_v32s8})(Query)) ||
-                     (HasAVX512 &&
-                      typeInSet(0, {X86_v8s64, X86_v16s32, X86_v32s16, X86_v64s8})(Query));
-            }
-    }]>,
+    LegalizeQueryGuardedCall<BuilderCustomIf, BuildVectorCustom, []>,
     ClampNumElements<0, X86_v16s8, X86_s8MaxVector>,
     ClampNumElements<0, X86_v8s16, X86_s16MaxVector>,
     ClampNumElements<0, X86_v4s32, X86_s32MaxVector>,
