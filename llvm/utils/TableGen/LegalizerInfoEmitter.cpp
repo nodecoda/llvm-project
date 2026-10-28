@@ -701,6 +701,17 @@ unsigned lltBits(StringRef S) {
   return Lanes * std::stoul(T.substr(I).str());
 }
 
+/// Number of lanes of a literal LLT spelling.  A scalar has one.
+unsigned lltLanes(StringRef S) {
+  StringRef T = S;
+  if (!T.consume_front("v"))
+    return 1;
+  size_t L = 0;
+  while (L < T.size() && isDigit(T[L]))
+    ++L;
+  return L == 0 ? 1 : std::stoul(T.substr(0, L).str());
+}
+
 /// A JSON string literal, quotes included.
 std::string jsonEscaped(StringRef S) {
   std::string Buf;
@@ -1121,10 +1132,13 @@ void expandRule(const Record &Rule, std::vector<CoreRule> &Out,
   if (Method == "widenScalarToNextPow2" ||
       Method == "widenScalarOrEltToNextPow2") {
     unsigned Idx = Int(0);
-    bool HasMin = Args.size() > 1;
+    // The floor is part of the rule: nextPow2OrMin without its Min cannot be
+    // evaluated, so the value carries it.
+    std::string Target =
+        Args.size() > 1 ? "nextPow2OrMin" + std::to_string(Int(1))
+                        : std::string("nextPow2");
     Out.push_back({"WidenScalar", Idx, WithPred(""),
-                   mutationJson(Idx, "set_elem_bits",
-                                HasMin ? "nextPow2OrMin" : "nextPow2")});
+                   mutationJson(Idx, "set_elem_bits", Target)});
     return;
   }
   if (Method == "scalarSameSizeAs") {
@@ -1151,10 +1165,16 @@ void expandRule(const Record &Rule, std::vector<CoreRule> &Out,
   }
   if (Method == "clampNumElements") {
     unsigned Idx = Int(0);
+    // clampNumElements(Idx, MinTy, MaxTy) is the pair
+    // clampMinNumElements(Idx, MinTy, lanes(MinTy)).
+    //   clampMaxNumElements(Idx, MaxTy, lanes(MaxTy)),
+    // so each direction names its own lane count instead of "nextPow2".
+    std::string MinTy = Ty(1);
+    std::string MaxTy = Ty(2);
     Out.push_back({"MoreElements", Idx, WithPred(""),
-                   mutationJson(Idx, "set_lanes", "nextPow2")});
+                   mutationJsonInt(Idx, "set_lanes", lltLanes(MinTy))});
     Out.push_back({"FewerElements", Idx, WithPred(""),
-                   mutationJson(Idx, "set_lanes", "nextPow2")});
+                   mutationJsonInt(Idx, "set_lanes", lltLanes(MaxTy))});
     return;
   }
   if (Method == "clampMinNumElements") {
