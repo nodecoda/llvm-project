@@ -1021,6 +1021,14 @@ std::string allOf(const std::vector<std::string> &Parts) {
   return S + "]}";
 }
 
+/// sizeIs(idx, bits): the slot's total size, not its scalar size.  A v4s32 and
+/// an s128 are both 128 here, which is the point: the merge/unmerge rules ask
+/// whether the whole value fits a register, and its shape is irrelevant.
+std::string sizeIs(unsigned Idx, StringRef Bits) {
+  return "{\"kind\":\"leaf\",\"name\":\"sizeIs\",\"args\":[" +
+         std::to_string(Idx) + ",\"" + Bits.str() + "\"]}";
+}
+
 std::string scalarNarrowerThan(unsigned Idx, StringRef Bits) {
   return "{\"kind\":\"leaf\",\"name\":\"scalarNarrowerThan\",\"args\":[" +
          std::to_string(Idx) + ",\"" + Bits.str() + "\"]}";
@@ -1227,6 +1235,8 @@ std::string typePredicateJson(const RecordKeeper &Records,
     return scalarNarrowerThan(Idx(0), Bits(1));
   if (Name == "scalarWiderThan")
     return scalarWiderThan(Idx(0), Bits(1));
+  if (Name == "sizeIs")
+    return sizeIs(Idx(0), Bits(1));
   PrintFatalError(R.getLoc(),
                   "type predicate '" + Name + "' has no Core IR expansion; "
                   "add it to llvm-dev/2026-10-28-core-ir-mapping.md first");
@@ -1528,6 +1538,14 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
   // rules that read the query were all escapes.
   if (Builder == "BuilderCustomIf" && Args.empty()) {
     Out.push_back({"Custom", 0, WithPred(""), ""});
+    return;
+  }
+  // legalIf(guard) is the "already legal under this guard" form.  It was
+  // missing here while customIf and lowerIf were present, so a rule written
+  // with it had no Core IR form and the whole rule set escaped -- including
+  // the parts of it the vocabulary could describe.
+  if (Builder == "BuilderLegalIf" && Args.empty()) {
+    Out.push_back({"Legal", 0, WithPred(""), ""});
     return;
   }
   if (Builder == "BuilderLowerIf" && Args.empty()) {

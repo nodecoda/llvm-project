@@ -23,11 +23,11 @@
 // target .td that pulls in llvm/Target/Target.td.
 //
 // LegalizeOpaqueRule is the escape hatch for guards that are still raw C++.
-// Five of the 275 rules need it, and each one is a guard the vocabulary cannot
+// Three of the 309 rules need it, and each one is a guard the vocabulary cannot
 // spell yet: G_LROUND returns a pair<unsigned, LLT> mutation, G_STORE compares
 // Types[0] against MMODescrs[0].MemoryTy, and G_EXTRACT selects its type slots
-// from Query.Opcode.  The remaining escape is the shared merge/unmerge check on
-// bit widths outside the modelled set.
+// from Query.Opcode.  The merge/unmerge width check used to be the fourth; it
+// is now a sizeIs dag, which is the same predicate the C++ wrote by hand.
 //
 // Four `for (Op : {...})` loops in the former C++ were hand-flattened into
 // one record per opcode; the loop variables therefore appear as literals.
@@ -104,6 +104,15 @@ def GPRLower64
                                                 (all_of HasSSE2, IsS64In0)),
                                         Is64Bit, IsS64In1)>;
 
+// The merge/unmerge legality check is "does the total width fit a register",
+// asked of two slots.  LegalityPredicates::sizeIs compares getSizeInBits(), so
+// a v4s32 and an s128 are the same answer here.  Written as a class because
+// each slot needs the same six widths and spelling them out twice invites the
+// two lists to drift.
+class SizeIsIn<int slot, int width>
+    : LegalizeTypePredicate<"sizeIs(" # !cast<string>(slot) # ", " #
+                            !cast<string>(width) # ")">;
+
 def V4S32 : LegalizeTypePredicate<"typeInSet(0, {X86_v4s32})">;
 def V2S64V8S16V16S8
     : LegalizeTypePredicate<"typeInSet(0, {X86_v2s64, X86_v8s16, X86_v16s8})">;
@@ -122,6 +131,27 @@ def BuildVectorCustom
                                         (all_of HasAVX, V4S64V8S32V16S16V32S8),
                                         (all_of HasAVX512,
                                                 V8S64V16S32V32S16V64S8))>;
+
+// G_MERGE_VALUES puts the wide value in slot 0 and the part in slot 1;
+// G_UNMERGE_VALUES is the mirror.  The two switch statements in the former
+// C++ disagreed in exactly one place -- slot 1 of merge allowed 8 but slot 0
+// of unmerge is 16 -- so the two lists are kept separate rather than shared.
+def MergeWidths
+    : LegalizeQueryPredicateDag<
+          (all_of (any_of SizeIsIn<0, 16>, SizeIsIn<0, 32>, SizeIsIn<0, 64>,
+                                   SizeIsIn<0, 128>, SizeIsIn<0, 256>,
+                                   SizeIsIn<0, 512>),
+                  (any_of SizeIsIn<1, 8>, SizeIsIn<1, 16>, SizeIsIn<1, 32>,
+                          SizeIsIn<1, 64>, SizeIsIn<1, 128>,
+                          SizeIsIn<1, 256>))>;
+def UnmergeWidths
+    : LegalizeQueryPredicateDag<
+          (all_of (any_of SizeIsIn<1, 16>, SizeIsIn<1, 32>, SizeIsIn<1, 64>,
+                                   SizeIsIn<1, 128>, SizeIsIn<1, 256>,
+                                   SizeIsIn<1, 512>),
+                  (any_of SizeIsIn<0, 8>, SizeIsIn<0, 16>, SizeIsIn<0, 32>,
+                          SizeIsIn<0, 64>, SizeIsIn<0, 128>,
+                          SizeIsIn<0, 256>))>;
 
 def GPRNarrowNoAVX512
     : LegalizeQueryPredicateDag<(all_of (not HasAVX512),
@@ -268,33 +298,7 @@ def X86_MERGE_VALUES : LegalizeRuleSet<["G_MERGE_VALUES"]> {
     WidenScalarToNextPow2<0, 16>,
     MinScalar<1, X86_s8>,
     MinScalar<0, X86_s32>,
-    LegalizeOpaqueRule<BuilderLegalIf, [{
-
-      [=](const LegalityQuery &Q) {
-        switch (Q.Types[0].getSizeInBits()) {
-        case 16:
-        case 32:
-        case 64:
-        case 128:
-        case 256:
-        case 512:
-          break;
-        default:
-          return false;
-        }
-        switch (Q.Types[1].getSizeInBits()) {
-        case 8:
-        case 16:
-        case 32:
-        case 64:
-        case 128:
-        case 256:
-          return true;
-        default:
-          return false;
-        }
-      }
-    }]>,
+    LegalizeQueryGuardedCall<BuilderLegalIf, MergeWidths, []>,
   ];
 }
 
@@ -304,33 +308,7 @@ def X86_UNMERGE_VALUES : LegalizeRuleSet<["G_UNMERGE_VALUES"]> {
     WidenScalarToNextPow2<1, 16>,
     MinScalar<0, X86_s8>,
     MinScalar<1, X86_s32>,
-    LegalizeOpaqueRule<BuilderLegalIf, [{
-
-      [=](const LegalityQuery &Q) {
-        switch (Q.Types[1].getSizeInBits()) {
-        case 16:
-        case 32:
-        case 64:
-        case 128:
-        case 256:
-        case 512:
-          break;
-        default:
-          return false;
-        }
-        switch (Q.Types[0].getSizeInBits()) {
-        case 8:
-        case 16:
-        case 32:
-        case 64:
-        case 128:
-        case 256:
-          return true;
-        default:
-          return false;
-        }
-      }
-    }]>,
+    LegalizeQueryGuardedCall<BuilderLegalIf, UnmergeWidths, []>,
   ];
 }
 
