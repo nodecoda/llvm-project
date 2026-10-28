@@ -157,13 +157,13 @@ def X86_CONSTANT : LegalizeRuleSet<["G_CONSTANT"]> {
 
 def X86_LROUND : LegalizeRuleSet<["G_LROUND", "G_LLROUND"]> {
   let Rules = [
-    LegalizeOpaqueRule<"widenScalarIf", [{
+    LegalizeOpaqueRule<BuilderWidenScalarIf, [{
 
       typeIs(1, X86_s16),
       [=](const LegalityQuery &) {
         return std::pair<unsigned, LLT>(1, X86_s32);
       }
-    }], ActionWidenScalar>,
+    }]>,
     Libcall,
   ];
 }
@@ -207,7 +207,7 @@ def X86_MERGE_VALUES : LegalizeRuleSet<["G_MERGE_VALUES"]> {
     WidenScalarToNextPow2<0, 16>,
     MinScalar<1, X86_s8>,
     MinScalar<0, X86_s32>,
-    LegalizeOpaqueRule<"legalIf", [{
+    LegalizeOpaqueRule<BuilderLegalIf, [{
 
       [=](const LegalityQuery &Q) {
         switch (Q.Types[0].getSizeInBits()) {
@@ -233,7 +233,7 @@ def X86_MERGE_VALUES : LegalizeRuleSet<["G_MERGE_VALUES"]> {
           return false;
         }
       }
-    }], ActionLegal>,
+    }]>,
   ];
 }
 
@@ -243,7 +243,7 @@ def X86_UNMERGE_VALUES : LegalizeRuleSet<["G_UNMERGE_VALUES"]> {
     WidenScalarToNextPow2<1, 16>,
     MinScalar<0, X86_s8>,
     MinScalar<1, X86_s32>,
-    LegalizeOpaqueRule<"legalIf", [{
+    LegalizeOpaqueRule<BuilderLegalIf, [{
 
       [=](const LegalityQuery &Q) {
         switch (Q.Types[1].getSizeInBits()) {
@@ -269,7 +269,7 @@ def X86_UNMERGE_VALUES : LegalizeRuleSet<["G_UNMERGE_VALUES"]> {
           return false;
         }
       }
-    }], ActionLegal>,
+    }]>,
   ];
 }
 
@@ -557,12 +557,12 @@ def X86_STORE : LegalizeRuleSet<["G_STORE"]> {
     LegalForMemDescIf<HasAVX512,
                               [LegalizeMemDesc<X86_v64s8, X86_p0, X86_v64s8, 1>, LegalizeMemDesc<X86_v32s16, X86_p0, X86_v32s16, 1>,
                                LegalizeMemDesc<X86_v16s32, X86_p0, X86_v16s32, 1>, LegalizeMemDesc<X86_v8s64, X86_p0, X86_v8s64, 1>]>,
-    LegalizeOpaqueRule<"customIf", [{
+    LegalizeOpaqueRule<BuilderCustomIf, [{
 
       [=](const LegalityQuery &Query) {
         return Query.Types[0] != Query.MMODescrs[0].MemoryTy;
       }
-    }], ActionCustom>,
+    }]>,
     WidenScalarToNextPow2<0, 8>,
     ClampScalar<0, X86_s8, X86_sMaxScalar>,
     Scalarize<0>,
@@ -750,7 +750,7 @@ def X86_UITOFP : LegalizeRuleSet<["G_UITOFP"]> {
   let Rules = [
     LegalForPairsIf<HasAVX512,
                      [LegalizeTypePair<X86_s32, X86_s32>, LegalizeTypePair<X86_s32, X86_s64>, LegalizeTypePair<X86_s64, X86_s32>, LegalizeTypePair<X86_s64, X86_s64>]>,
-    LegalizeOpaqueRule<"customIf", [{
+    LegalizeOpaqueRule<BuilderCustomIf, [{
 
       [=](const LegalityQuery &Query) {
               return !HasAVX512 &&
@@ -758,8 +758,8 @@ def X86_UITOFP : LegalizeRuleSet<["G_UITOFP"]> {
                       (HasSSE2 && typeIs(0, X86_s64)(Query))) &&
                      scalarNarrowerThan(1, Is64Bit ? 64 : 32)(Query);
             }
-    }], ActionCustom>,
-    LegalizeOpaqueRule<"lowerIf", [{
+    }]>,
+    LegalizeOpaqueRule<BuilderLowerIf, [{
 
       [=](const LegalityQuery &Query) {
               // Lower conversions from X86_s64
@@ -768,7 +768,7 @@ def X86_UITOFP : LegalizeRuleSet<["G_UITOFP"]> {
                       (HasSSE2 && typeIs(0, X86_s64)(Query))) &&
                      (Is64Bit && typeIs(1, X86_s64)(Query));
             }
-    }], ActionLower>,
+    }]>,
     ClampScalar<0, X86_s32, LegalizeInlineType<"HasSSE2 ? X86_s64 : X86_s32">>,
     WidenScalarToNextPow2<0>,
     ClampScalar<1, X86_s32, X86_sMaxScalar>,
@@ -786,7 +786,7 @@ def X86_FPTOUI : LegalizeRuleSet<["G_FPTOUI"]> {
   let Rules = [
     LegalForPairsIf<HasAVX512,
                      [LegalizeTypePair<X86_s32, X86_s32>, LegalizeTypePair<X86_s32, X86_s64>, LegalizeTypePair<X86_s64, X86_s32>, LegalizeTypePair<X86_s64, X86_s64>]>,
-    LegalizeOpaqueRule<"customIf", [{
+    LegalizeOpaqueRule<BuilderCustomIf, [{
 
       [=](const LegalityQuery &Query) {
         return !HasAVX512 &&
@@ -794,8 +794,8 @@ def X86_FPTOUI : LegalizeRuleSet<["G_FPTOUI"]> {
                 (HasSSE2 && typeIs(1, X86_s64)(Query))) &&
                scalarNarrowerThan(0, Is64Bit ? 64 : 32)(Query);
       }
-    }], ActionCustom>,
-    LegalizeOpaqueRule<"lowerIf", [{
+    }]>,
+    LegalizeOpaqueRule<BuilderLowerIf, [{
 
       [=](const LegalityQuery &Query) {
         return !HasAVX512 &&
@@ -803,7 +803,7 @@ def X86_FPTOUI : LegalizeRuleSet<["G_FPTOUI"]> {
                 (HasSSE2 && typeIs(1, X86_s64)(Query))) &&
                (Is64Bit && typeIs(0, X86_s64)(Query));
       }
-    }], ActionLower>,
+    }]>,
     ClampScalar<0, X86_s32, X86_sMaxScalar>,
     WidenScalarToNextPow2<0>,
     ClampScalar<1, X86_s32, LegalizeInlineType<"HasSSE2 ? X86_s64 : X86_s32">>,
@@ -814,7 +814,7 @@ def X86_FPTOUI : LegalizeRuleSet<["G_FPTOUI"]> {
 def X86_BUILD_VECTOR : LegalizeRuleSet<["G_BUILD_VECTOR"]> {
   let Comments = ["vector ops"];
   let Rules = [
-    LegalizeOpaqueRule<"customIf", [{
+    LegalizeOpaqueRule<BuilderCustomIf, [{
 
       [=](const LegalityQuery &Query) {
               return (HasSSE1 && typeInSet(0, {X86_v4s32})(Query)) ||
@@ -824,7 +824,7 @@ def X86_BUILD_VECTOR : LegalizeRuleSet<["G_BUILD_VECTOR"]> {
                      (HasAVX512 &&
                       typeInSet(0, {X86_v8s64, X86_v16s32, X86_v32s16, X86_v64s8})(Query));
             }
-    }], ActionCustom>,
+    }]>,
     ClampNumElements<0, X86_v16s8, X86_s8MaxVector>,
     ClampNumElements<0, X86_v8s16, X86_s16MaxVector>,
     ClampNumElements<0, X86_v4s32, X86_s32MaxVector>,
@@ -835,7 +835,7 @@ def X86_BUILD_VECTOR : LegalizeRuleSet<["G_BUILD_VECTOR"]> {
 
 def X86_EXTRACT : LegalizeRuleSet<["G_EXTRACT", "G_INSERT"]> {
   let Rules = [
-    LegalizeOpaqueRule<"legalIf", [{
+    LegalizeOpaqueRule<BuilderLegalIf, [{
 
       [=](const LegalityQuery &Query) {
               unsigned SubIdx = Query.Opcode == G_EXTRACT ? 0 : 1;
@@ -855,7 +855,7 @@ def X86_EXTRACT : LegalizeRuleSet<["G_EXTRACT", "G_INSERT"]> {
                                                   {X86_v2s64, X86_v8s64},
                                                   {X86_v4s64, X86_v8s64}})(Query));
             }
-    }], ActionLegal>,
+    }]>,
   ];
 }
 

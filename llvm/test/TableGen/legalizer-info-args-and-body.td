@@ -6,7 +6,7 @@
 
 include "llvm/Target/LegalizerInfo.td"
 
-def BadRule : LegalizeOpaqueRule<"legalIf", [{ typeIs(0, s8) }], ActionLegal> {
+def BadRule : LegalizeOpaqueRule<BuilderLegalIf, [{ typeIs(0, s8) }]> {
   let Args = [LegalizeArgInt<0>];
 }
 

@@ -321,18 +321,62 @@ void LegalizerInfoEmitter::emitTypes(raw_ostream &OS) {
     OS << "\n";
 }
 
-void LegalizerInfoEmitter::verifyRule(const Record &Rule) {
-  StringRef Method = Rule.getValueAsString("Method");
-  if (Method.empty())
-    PrintFatalError(Rule.getLoc(), "legalizer rule is missing its Method");
+/// C++ spelling of the builder a rule names.
+///
+/// The rule points at a LegalizeBuilder record, so this string cannot be
+/// misspelled independently of the record that defines it: a name that does
+/// not exist is a TableGen error before any backend runs.
+StringRef builderRecordName(const Record &Rule) {
+  const Record *B = Rule.getValueAsOptionalDef("Builder");
+  if (!B)
+    PrintFatalError(Rule.getLoc(), "legalizer rule is missing its Builder");
+  return B->getName();
+}
 
-  const Record *Action = Rule.getValueAsOptionalDef("Action");
-  if (!Action)
-    PrintFatalError(Rule.getLoc(),
-                    "legalizer rule '" + Method + "' does not name an Action");
+StringRef builderName(const Record &Rule) {
+  const Record *B = Rule.getValueAsOptionalDef("Builder");
+  if (!B)
+    PrintFatalError(Rule.getLoc(), "legalizer rule is missing its Builder");
+  if (!B->isSubClassOf("LegalizeBuilder"))
+    PrintFatalError(B->getLoc(),
+                    "'" + B->getName() + "' is not a LegalizeBuilder");
+  return B->getValueAsString("Name");
+}
+
+void LegalizerInfoEmitter::verifyRule(const Record &Rule) {
+  StringRef Method = builderName(Rule);
+  StringRef Builder = builderRecordName(Rule);
+  const Record *B = Rule.getValueAsDef("Builder");
+
+  // The action belongs to the builder: the keyword already decides it, so a
+  // rule that named one too could only repeat it or contradict it.  Both
+  // emitters read the builder, so a contradiction used to produce two
+  // different answers for the same sentence.
+  const Record *Action = B->getValueAsDef("Action");
   if (!Action->isSubClassOf("LegalizeAction"))
-    PrintFatalError(Rule.getLoc(),
+    PrintFatalError(B->getLoc(),
                     "'" + Action->getName() + "' is not a LegalizeAction");
+
+  // The builder declares which guard overloads it has, and the guard the rule
+  // carries has to be one of them.  Without this a rule could hand a cached
+  // bool to a builder that takes a callable (or to one with no overload at
+  // all) and the fragment would only fail when the target was compiled.
+  std::vector<const Record *> Guards = B->getValueAsListOfDefs("Guards");
+  bool TakesBoolGuard = llvm::any_of(Guards, [](const Record *G) {
+    return G->getName() == "GuardBool";
+  });
+  bool TakesQueryGuard = llvm::any_of(Guards, [](const Record *G) {
+    return G->getName() == "GuardQuery";
+  });
+  if (const Record *P = Rule.getValueAsOptionalDef("Pred")) {
+    bool IsQuery = P->isSubClassOf("LegalizeQueryPredicate");
+    if (IsQuery ? !TakesQueryGuard : !TakesBoolGuard) {
+      StringRef What = Guards.empty() ? "no guard"
+                                      : "a different kind of guard";
+      PrintFatalError(Rule.getLoc(), "legalizer builder '" + Method +
+                                         "' takes " + What);
+    }
+  }
 
   StringRef Mutation = Rule.getValueAsString("Mutation");
   if (!isKnownMutation(Mutation))
@@ -355,6 +399,13 @@ void LegalizerInfoEmitter::verifyRule(const Record &Rule) {
                                        "' mutation, but this "
                                        "rule carries '" +
                                        Mutation + "'");
+
+  // An opaque body is the guard, so the builder must be one that takes a
+  // guard: `.lower({...})` has no overload.
+  if (!Rule.getValueAsString("OpaqueArgs").empty() && Guards.empty())
+    PrintFatalError(Rule.getLoc(), "legalizer builder '" + Method +
+                                       "' takes no guard; it cannot carry an "
+                                       "opaque body");
 
   // The emitter prints an opaque body and never looks at Pred or Args, so a
   // rule that carries either alongside it would lose them without a word.
@@ -478,7 +529,7 @@ void LegalizerInfoEmitter::emitRuleSet(raw_ostream &OS, const Record &RuleSet) {
     const Record &Rule = *Rules[I];
     verifyRule(Rule);
     StringRef Opaque = Rule.getValueAsString("OpaqueArgs");
-    OS << "      ." << Rule.getValueAsString("Method") << "(";
+    OS << "      ." << builderName(Rule) << "(";
     if (Opaque.empty()) {
       if (const Record *Pred = Rule.getValueAsOptionalDef("Pred")) {
         emitPredicate(*Pred, OS);
@@ -994,7 +1045,8 @@ void expandRule(const Record &Rule, std::vector<CoreRule> &Out,
     return;
   }
 
-  StringRef Method = Rule.getValueAsString("Method");
+  StringRef Method = builderName(Rule);
+  StringRef Builder = builderRecordName(Rule);
   std::vector<const Record *> Args = Rule.getValueAsListOfDefs("Args");
 
   // Arguments whose value only exists at code-generation time cannot be
@@ -1086,7 +1138,7 @@ void expandRule(const Record &Rule, std::vector<CoreRule> &Out,
     return Ts.front();
   };
 
-  if (Method == "legalFor") {
+  if (Builder == "BuilderLegalFor") {
     for (const Record *A : Args) {
       if (A->isSubClassOf("LegalizeTypePair")) {
         std::vector<std::string> T0, T1;
@@ -1105,7 +1157,7 @@ void expandRule(const Record &Rule, std::vector<CoreRule> &Out,
     }
     return;
   }
-  if (Method == "legalForCartesianProduct") {
+  if (Builder == "BuilderLegalForCartesianProduct") {
     std::vector<std::string> T0, T1;
     collectTypes(*Args[0], T0);
     collectTypes(*Args[1], T1);
@@ -1115,7 +1167,7 @@ void expandRule(const Record &Rule, std::vector<CoreRule> &Out,
                        ""});
     return;
   }
-  if (Method == "legalForTypesWithMemDesc") {
+  if (Builder == "BuilderLegalForTypesWithMemDesc") {
     for (const Record *A : Args) {
       std::string T0 = normalizeLlt(
           A->getValueAsDef("Type0")->getValueAsString("Expr"));
@@ -1138,15 +1190,32 @@ void expandRule(const Record &Rule, std::vector<CoreRule> &Out,
     }
     return;
   }
-  if (Method == "alwaysLegal") {
+  if (Builder == "BuilderAlwaysLegal") {
     Out.push_back({"Legal", 0, WithPred(""), ""});
     return;
   }
-  if (Method == "lower") {
+  // "Unsupported" is not the same observation as "no rule matched": the
+  // evaluator reports the first as a rule with action Unsupported and the
+  // second as no_match, and diff_core.py counts them apart.  Omitting the
+  // builder would have made the explicit form unexpressible.
+  if (Builder == "BuilderUnsupported") {
+    Out.push_back({"Unsupported", 0, WithPred(""), ""});
+    return;
+  }
+  if (Builder == "BuilderUnsupportedFor") {
+    for (const Record *A : Args) {
+      std::vector<std::string> Ts;
+      collectTypes(*A, Ts);
+      for (const std::string &T : Ts)
+        Out.push_back({"Unsupported", 0, WithPred(typeIs(0, T)), ""});
+    }
+    return;
+  }
+  if (Builder == "BuilderLower") {
     Out.push_back({"Lower", 0, WithPred(""), ""});
     return;
   }
-  if (Method == "lowerFor") {
+  if (Builder == "BuilderLowerFor") {
     for (const Record *A : Args) {
       std::string T0 =
           normalizeLlt(A->getValueAsDef("Type0")->getValueAsString("Expr"));
@@ -1157,12 +1226,12 @@ void expandRule(const Record &Rule, std::vector<CoreRule> &Out,
     }
     return;
   }
-  if (Method == "libcall") {
+  if (Builder == "BuilderLibcall") {
     Out.push_back({"Libcall", 0, WithPred(""), ""});
     return;
   }
-  if (Method == "libcallFor" || Method == "customFor") {
-    StringRef Action = Method == "libcallFor" ? "Libcall" : "Custom";
+  if (Builder == "BuilderLibcallFor" || Builder == "BuilderCustomFor") {
+    StringRef Action = Builder == "BuilderLibcallFor" ? "Libcall" : "Custom";
     for (const Record *A : Args) {
       std::vector<std::string> Ts;
       collectTypes(*A, Ts);
@@ -1171,7 +1240,7 @@ void expandRule(const Record &Rule, std::vector<CoreRule> &Out,
     }
     return;
   }
-  if (Method == "customForCartesianProduct") {
+  if (Builder == "BuilderCustomForCartesianProduct") {
     std::vector<std::string> T0, T1;
     collectTypes(*Args[0], T0);
     collectTypes(*Args[1], T1);
@@ -1181,7 +1250,7 @@ void expandRule(const Record &Rule, std::vector<CoreRule> &Out,
                        WithPred(allOf({typeIs(0, A), typeIs(1, B)})), ""});
     return;
   }
-  if (Method == "clampScalar" || Method == "clampScalarOrElt") {
+  if (Builder == "BuilderClampScalar" || Builder == "BuilderClampScalarOrElt") {
     unsigned Idx = Int(0);
     std::string MinTy = Ty(1);
     std::string MaxTy = Ty(2);
@@ -1193,7 +1262,7 @@ void expandRule(const Record &Rule, std::vector<CoreRule> &Out,
                    mutationJson(Idx, "set_elem_type", MaxTy)});
     return;
   }
-  if (Method == "minScalar") {
+  if (Builder == "BuilderMinScalar") {
     unsigned Idx = Int(0);
     std::string Ty0 = Ty(1);
     Out.push_back({"WidenScalar", Idx,
@@ -1201,7 +1270,7 @@ void expandRule(const Record &Rule, std::vector<CoreRule> &Out,
                    mutationJson(Idx, "set_elem_type", Ty0)});
     return;
   }
-  if (Method == "maxScalar") {
+  if (Builder == "BuilderMaxScalar") {
     unsigned Idx = Int(0);
     std::string Ty0 = Ty(1);
     Out.push_back({"NarrowScalar", Idx,
@@ -1209,8 +1278,8 @@ void expandRule(const Record &Rule, std::vector<CoreRule> &Out,
                    mutationJson(Idx, "set_elem_type", Ty0)});
     return;
   }
-  if (Method == "widenScalarToNextPow2" ||
-      Method == "widenScalarOrEltToNextPow2") {
+  if (Builder == "BuilderWidenScalarToNextPow2" ||
+      Builder == "BuilderWidenScalarOrEltToNextPow2") {
     unsigned Idx = Int(0);
     // The floor is part of the rule: nextPow2OrMin without its Min cannot be
     // evaluated, so the value carries it.
@@ -1220,14 +1289,14 @@ void expandRule(const Record &Rule, std::vector<CoreRule> &Out,
     // The guard is not "true".  The C++ builder fires only when the size is
     // not a power of two, and the scalar-only builder and the OrElt variant
     // differ on vectors.
-    std::string Guard = Method == "widenScalarToNextPow2"
+    std::string Guard = Builder == "BuilderWidenScalarToNextPow2"
                             ? sizeNotPow2(Idx)
                             : scalarOrEltSizeNotPow2(Idx);
     Out.push_back({"WidenScalar", Idx, WithPred(Guard),
                    mutationJson(Idx, "set_elem_bits", Target)});
     return;
   }
-  if (Method == "scalarSameSizeAs") {
+  if (Builder == "BuilderScalarSameSizeAs") {
     unsigned Idx = Int(0);
     unsigned Other = Int(1);
     std::string Ref = "sameAsSlot" + std::to_string(Other);
@@ -1240,19 +1309,19 @@ void expandRule(const Record &Rule, std::vector<CoreRule> &Out,
                    mutationJson(Idx, "set_elem_bits", Ref)});
     return;
   }
-  if (Method == "scalarize" || Method == "scalarizeIf") {
+  if (Builder == "BuilderScalarize" || Builder == "BuilderScalarizeIf") {
     unsigned Idx = Int(0);
     Out.push_back({"FewerElements", Idx, WithPred(isVector(Idx)),
                    mutationJsonInt(Idx, "set_lanes", 1)});
     return;
   }
-  if (Method == "moreElementsToNextPow2") {
+  if (Builder == "BuilderMoreElementsToNextPow2") {
     unsigned Idx = Int(0);
     Out.push_back({"MoreElements", Idx, WithPred(numElementsNotPow2(Idx)),
                    mutationJson(Idx, "set_lanes", "nextPow2")});
     return;
   }
-  if (Method == "clampNumElements") {
+  if (Builder == "BuilderClampNumElements") {
     unsigned Idx = Int(0);
     // clampNumElements(Idx, MinTy, MaxTy) is the pair
     // clampMinNumElements(Idx, MinTy, lanes(MinTy)).
@@ -1290,6 +1359,14 @@ void LegalizerInfoEmitter::runCore(raw_ostream &OS) {
   if (RuleSets.empty())
     PrintFatalError("no LegalizeRuleSet records found");
   llvm::sort(RuleSets, LessRecordByID());
+
+  // Both emitters read the same records, so both have to apply the same
+  // checks.  Leaving them to -gen-legalizer meant -gen-legalizer-core accepted
+  // a rule that the other output rejected, and the two then disagreed about
+  // whether the description was even well formed.
+  for (const Record *RuleSet : RuleSets)
+    for (const Record *Rule : RuleSet->getValueAsListOfDefs("Rules"))
+      verifyRule(*Rule);
 
   std::vector<const Record *> Types =
       Records.getAllDerivedDefinitions("LegalizeNamedType");
@@ -1377,12 +1454,12 @@ void LegalizerInfoEmitter::runCore(raw_ostream &OS) {
         if (Why == "opaque_rule")
           AddEscape("judgment", "opaque_rule",
                     "rule body is raw C++ (" +
-                        Rule->getValueAsString("Method").str() + ")",
+                        builderName(*Rule).str() + ")",
                     *Rule, RuleSetName, RuleIdx);
         else
           AddEscape("shape_parameter", Why,
                     "argument shape has no literal Core IR form (" +
-                        Rule->getValueAsString("Method").str() + ")",
+                        builderName(*Rule).str() + ")",
                     *Rule, RuleSetName, RuleIdx);
         continue;
       }
