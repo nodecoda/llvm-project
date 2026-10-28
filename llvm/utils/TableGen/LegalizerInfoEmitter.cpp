@@ -297,8 +297,13 @@ void LegalizerInfoEmitter::emitPredicate(const Record &P, raw_ostream &OS) {
                               "' reads the query, so the dag has to be a "
                               "LegalizeQueryPredicateDag");
         // The call text names LLT records; the C++ is inside the target's own
-        // scope, so it is written as it stands.
-        OS << R->getValueAsString("Call");
+        // scope, so it is written as it stands.  It has to be *called* too: a
+        // type predicate yields a LegalityPredicate, i.e. a
+        // std::function<bool(const LegalityQuery &)>, and writing it bare
+        // leaves `&&` comparing a std::function against bool.  That conversion
+        // is explicit operator bool, which is true whenever the function is
+        // non-empty, so the guard silently degenerates into its feature parts.
+        OS << R->getValueAsString("Call") << "(Query)";
         return false;
       }
       PrintFatalError(R->getLoc(), "predicate dag leaf '" + R->getName() +
