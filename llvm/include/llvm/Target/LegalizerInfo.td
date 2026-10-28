@@ -58,6 +58,17 @@ class LegalizePredicate;
 /// A guard that is a `bool` computed once, in the target constructor.
 class LegalizeBoolPredicate : LegalizePredicate;
 
+/// A guard that is a callable evaluated per query, e.g. typeIs(0, s32).
+class LegalizeQueryPredicateBase : LegalizePredicate;
+
+/// A query-time predicate written as C++ text.  A different C++ type from
+/// LegalizeBoolPredicate, so a cached bool here is rejected while the .td is
+/// parsed instead of failing to compile later.
+class LegalizeQueryPredicate<string expr> : LegalizeQueryPredicateBase {
+  string Expr = expr;
+}
+
+
 /// A subtarget feature, or any per-subtarget boolean computed once in the
 /// target constructor.  The record name is the C++ identifier, so
 ///
@@ -69,11 +80,21 @@ class LegalizeFeature<string cond> : LegalizeBoolPredicate {
   string Cond = cond;
 }
 
-/// A combination of leaves.  Operators come from TargetSubtarget.td, plus the
-/// `not` defined above.
-class LegalizePredicateDag<dag cond> : LegalizeBoolPredicate {
+/// A combination of cached bools: features only.  Renders to a plain `&&` /
+/// `||` expression, which is what `legalFor(bool, ...)` takes.
+class LegalizeBoolPredicateDag<dag cond> : LegalizeBoolPredicate {
   dag CondDag = cond;
 }
+
+/// A combination that may read the query.  Renders to a lambda, which is what
+/// `customIf()`, `lowerIf()` and the rest take.
+class LegalizeQueryPredicateDag<dag cond> : LegalizeQueryPredicateBase {
+  dag CondDag = cond;
+}
+
+/// The old name, kept so the existing feature-only dags do not have to be
+/// rewritten in the same change that introduces the split.
+class LegalizePredicateDag<dag cond> : LegalizeBoolPredicateDag<cond>;
 
 /// A cached boolean that cannot be modelled as AST nodes, e.g. a comparison.
 /// -gen-legalizer rejects one whose text is merely a boolean combination of
@@ -83,13 +104,18 @@ class LegalizeOpaqueBool<string expr> : LegalizeBoolPredicate {
   string Expr = expr;
 }
 
-/// A query-time predicate: a C++ expression that yields a callable, e.g.
-/// "scalarOrEltWiderThan(0, 64)".  This is what scalarizeIf() takes, and it is
-/// a different C++ type from LegalizeBoolPredicate, so a cached bool here is
-/// rejected while the .td is parsed instead of failing to compile later.
-class LegalizeQueryPredicate<string expr> : LegalizePredicate {
-  string Expr = expr;
+/// A leaf that is a query on the instruction rather than a subtarget feature:
+/// typeIs(0, s32), scalarNarrowerThan(1, 64), and the rest of the predicates
+/// LegalizerInfo.h exposes.
+///
+/// This is a *query* predicate, not a cached bool, and the difference is not
+/// cosmetic: `typeIs(0, s32)` is a callable, so it cannot appear in
+/// `legalFor(bool Pred, ...)`.  Putting it in a dag makes that dag a query
+/// predicate too -- which is why the four classes below are split in two.
+class LegalizeTypePredicate<string call> : LegalizeQueryPredicateBase {
+  string Call = call;
 }
+
 
 //===----------------------------------------------------------------------===//
 // Rule arguments
@@ -534,7 +560,8 @@ class LegalizeGuardedCall<LegalizeBuilder builder, LegalizeBoolPredicate P,
 /// The same, with a query-time guard.  scalarizeIf() takes a LegalityPredicate,
 /// which is a different C++ type from the cached bool the other guards use, so
 /// it gets its own base class instead of widening LegalizeGuardedCall.
-class LegalizeQueryGuardedCall<LegalizeBuilder builder, LegalizeQueryPredicate P,
+class LegalizeQueryGuardedCall<LegalizeBuilder builder,
+                               LegalizeQueryPredicateBase P,
                                list<LegalizeArg> args> : LegalizeRule {
   let Builder = builder;
   let Pred = P;

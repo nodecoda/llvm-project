@@ -238,7 +238,8 @@ static void collectPredicateFeatures(const Record *P, StringSet<> &Out) {
     Out.insert(P->getName());
     return;
   }
-  if (P->isSubClassOf("LegalizePredicateDag"))
+  if (P->isSubClassOf("LegalizeBoolPredicateDag") ||
+      P->isSubClassOf("LegalizeQueryPredicateDag"))
     collectFeatureLeaves(P->getValueAsDag("CondDag"), Out);
 }
 
@@ -268,17 +269,49 @@ void LegalizerInfoEmitter::emitFeatures(raw_ostream &OS) {
 /// (LegalizeFeature) or verbatim text (LegalizeOpaqueBool and
 /// LegalizeQueryPredicate).
 void LegalizerInfoEmitter::emitPredicate(const Record &P, raw_ostream &OS) {
-  if (P.isSubClassOf("LegalizePredicateDag")) {
+  if (P.isSubClassOf("LegalizeBoolPredicateDag") ||
+      P.isSubClassOf("LegalizeQueryPredicateDag")) {
+    // A query dag renders as the lambda the C++ builders take; a bool dag
+    // renders as the expression `legalFor(bool, ...)` takes.  Same tree,
+    // different C++, which is the whole reason the two classes exist.
+    const bool IsQuery = P.isSubClassOf("LegalizeQueryPredicateDag");
     auto EmitLeaf = [&](const Init &Leaf, raw_ostream &OS) -> bool {
       const auto *DI = dyn_cast<DefInit>(&Leaf);
-      if (!DI || !DI->getDef()->isSubClassOf("LegalizeFeature"))
+      if (!DI)
         PrintFatalError(&P, "predicate dag leaf '" + Leaf.getAsString() +
-                                "' is not a LegalizeFeature");
-      OS << DI->getDef()->getName();
+                                "' is not a record");
+      const Record *R = DI->getDef();
+      if (R->isSubClassOf("LegalizeFeature")) {
+        OS << R->getName();
+        return false;
+      }
+      if (R->isSubClassOf("LegalizeTypePredicate")) {
+        // A type predicate is a LegalityPredicate -- a callable -- so it can
+        // only appear where the builder takes one.  A bool dag renders as a
+        // bare expression, and `legalFor(typeIs(0, s32), {s32})` matches no
+        // overload; catching it here keeps the error on the .td line instead
+        // of on generated code.
+        if (!IsQuery)
+          PrintFatalError(P.getLoc(),
+                          "predicate dag leaf '" + R->getName() +
+                              "' reads the query, so the dag has to be a "
+                              "LegalizeQueryPredicateDag");
+        // The call text names LLT records; the C++ is inside the target's own
+        // scope, so it is written as it stands.
+        OS << R->getValueAsString("Call");
+        return false;
+      }
+      PrintFatalError(R->getLoc(), "predicate dag leaf '" + R->getName() +
+                                       "' is not a LegalizeFeature or a "
+                                       "LegalizeTypePredicate");
       return false;
     };
+    if (IsQuery)
+      OS << "[=](const LegalityQuery &Query) { return ";
     emitPredicateDag(&P, *P.getValueAsDag("CondDag"), /*ParenIfBinOp=*/false,
                      OS, EmitLeaf);
+    if (IsQuery)
+      OS << "; }";
     return;
   }
   if (P.isSubClassOf("LegalizeFeature")) {
@@ -420,7 +453,7 @@ void LegalizerInfoEmitter::verifyRule(const Record &Rule) {
     return G->getName() == "GuardQuery";
   });
   if (const Record *P = Rule.getValueAsOptionalDef("Pred")) {
-    bool IsQuery = P->isSubClassOf("LegalizeQueryPredicate");
+    bool IsQuery = P->isSubClassOf("LegalizeQueryPredicateBase");
     if (IsQuery ? !TakesQueryGuard : !TakesBoolGuard) {
       StringRef What = Guards.empty() ? "no guard"
                                       : "a different kind of guard";
@@ -641,7 +674,10 @@ void LegalizerInfoEmitter::emitRuleSet(raw_ostream &OS, const Record &RuleSet) {
     if (Opaque.empty()) {
       if (const Record *Pred = Rule.getValueAsOptionalDef("Pred")) {
         emitPredicate(*Pred, OS);
-        OS << ", ";
+        // The guard and the arguments share one argument list, so the comma
+        // belongs between them and not after a guard with nothing after it.
+        if (!Rule.getValueAsListOfDefs("Args").empty())
+          OS << ", ";
       }
       emitArgList(OS, Rule);
     } else
@@ -733,7 +769,10 @@ void LegalizerInfoEmitter::run(raw_ostream &OS) {
         UsedFeatures.insert(Id);
   };
   for (const Record *D :
-       Records.getAllDerivedDefinitions("LegalizePredicateDag"))
+       Records.getAllDerivedDefinitions("LegalizeBoolPredicateDag"))
+    collectPredicateFeatures(D, UsedFeatures);
+  for (const Record *D :
+       Records.getAllDerivedDefinitions("LegalizeQueryPredicateDag"))
     collectPredicateFeatures(D, UsedFeatures);
   for (const Record *P : Records.getAllDerivedDefinitions("LegalizeRule")) {
     CollectUsed(P->getValueAsString("OpaqueArgs"));
@@ -977,14 +1016,22 @@ std::string allOf(const std::vector<std::string> &Parts) {
   return S + "]}";
 }
 
-std::string scalarNarrowerThan(unsigned Idx, unsigned Bits) {
+std::string scalarNarrowerThan(unsigned Idx, StringRef Bits) {
   return "{\"kind\":\"leaf\",\"name\":\"scalarNarrowerThan\",\"args\":[" +
-         std::to_string(Idx) + "," + std::to_string(Bits) + "]}";
+         std::to_string(Idx) + ",\"" + Bits.str() + "\"]}";
+}
+
+std::string scalarNarrowerThan(unsigned Idx, unsigned Bits) {
+  return scalarNarrowerThan(Idx, std::to_string(Bits));
+}
+
+std::string scalarWiderThan(unsigned Idx, StringRef Bits) {
+  return "{\"kind\":\"leaf\",\"name\":\"scalarWiderThan\",\"args\":[" +
+         std::to_string(Idx) + ",\"" + Bits.str() + "\"]}";
 }
 
 std::string scalarWiderThan(unsigned Idx, unsigned Bits) {
-  return "{\"kind\":\"leaf\",\"name\":\"scalarWiderThan\",\"args\":[" +
-         std::to_string(Idx) + "," + std::to_string(Bits) + "]}";
+  return scalarWiderThan(Idx, std::to_string(Bits));
 }
 
 std::string oneArgLeaf(StringRef Name, unsigned A) {
@@ -1035,24 +1082,175 @@ std::string scalarSizeSmallerThanSlot(unsigned Other, unsigned Idx) {
          "]}";
 }
 
+/// A LegalizeTypePredicate carries a C++ call such as `typeIs(0, X86_s32)`.
+/// Its Core IR form is the same leaf vocabulary the expansion uses, so the call
+/// has to be translated rather than passed through: the Core IR names types in
+/// the normalized `s32` / `v4s32` form, not by the target's record names.
+///
+/// Only the shapes the evaluator already understands are accepted.  Anything
+/// else is an error rather than an opaque leaf, because a rule that reaches
+/// this point has claimed to be expressible.
+std::string typePredicateJson(const RecordKeeper &Records,
+                              const Record &R) {
+  StringRef Call = R.getValueAsString("Call").trim();
+
+  auto SplitArgs = [&](StringRef Body, SmallVectorImpl<StringRef> &Out) {
+    Body.split(Out, ',');
+    for (StringRef &A : Out)
+      A = A.trim();
+  };
+
+  StringRef Rest = Call;
+  StringRef Name = Rest.take_until([](char C) { return C == '('; });
+  if (!Rest.consume_front(Name) || !Rest.consume_front("(") ||
+      !Rest.consume_back(")"))
+    PrintFatalError(R.getLoc(),
+                    "type predicate '" + Call + "' is not a call");
+
+  // typeInSet's second argument is a braced set, so it cannot go through the
+  // comma split below: the commas inside the braces are element separators.
+  if (Name == "typeInSet") {
+    size_t Comma = Rest.find(',');
+    if (Comma == StringRef::npos)
+      PrintFatalError(R.getLoc(), "typeInSet needs (idx, {types}): " + Call);
+    unsigned Idx0 = 0;
+    if (Rest.substr(0, Comma).trim().getAsInteger(10, Idx0))
+      PrintFatalError(R.getLoc(), "typeInSet index is not a number: " + Call);
+    StringRef Body = Rest.substr(Comma + 1).trim();
+    if (!Body.consume_front("{"))
+      PrintFatalError(R.getLoc(), "typeInSet needs a braced set: " + Call);
+    size_t Close = Body.rfind("}");
+    if (Close == StringRef::npos)
+      PrintFatalError(R.getLoc(),
+                      "typeInSet is missing its closing brace: " + Call);
+    SmallVector<StringRef, 8> Elems;
+    Body.substr(0, Close).split(Elems, ',');
+    std::string Out = "{\"kind\":\"leaf\",\"name\":\"typeIn\","
+                      "\"args\":[" + std::to_string(Idx0) + ",[";
+    StringRef Sep;
+    for (StringRef E : Elems) {
+      E = E.trim();
+      if (E.empty())
+        continue;
+      std::string Norm = normalizeLlt(E);
+      if (Norm.empty()) {
+        const Record *T = Records.getDef(E);
+        if (T && T->isSubClassOf("LegalizeNamedType"))
+          Norm = normalizeLlt(T->getValueAsString("Expr"));
+      }
+      if (Norm.empty())
+        PrintFatalError(R.getLoc(), "typeInSet names a type with no literal "
+                                        "Core IR form: " + E);
+      Out += Sep.str();
+      Out += "\"" + Norm + "\"";
+      Sep = ",";
+    }
+    return Out + "]]}";
+  }
+
+  SmallVector<StringRef, 4> Args;
+  SplitArgs(Rest, Args);
+
+  auto Idx = [&](size_t I) {
+    unsigned V = 0;
+    if (I >= Args.size() || Args[I].getAsInteger(10, V))
+      PrintFatalError(R.getLoc(),
+                      "type predicate '" + Call + "' needs an index at " +
+                          std::to_string(I));
+    return V;
+  };
+  // A type argument is either a normalized LLT or the name of a
+  // LegalizeNamedType record; the Core IR only knows the former, so a record
+  // name is resolved through the record it names.  Resolving rather than
+  // rejecting is what keeps the two spellings from being able to disagree: the
+  // C++ this emits uses the record, and the Core IR has to see the same type.
+  auto Ty = [&](size_t I) {
+    if (I >= Args.size())
+      PrintFatalError(R.getLoc(),
+                      "type predicate '" + Call + "' is missing a type");
+    std::string Norm = normalizeLlt(Args[I]);
+    if (!Norm.empty())
+      return Norm;
+    if (const Record *T = Records.getDef(Args[I])) {
+      if (T->isSubClassOf("LegalizeNamedType")) {
+        std::string FromRecord =
+            normalizeLlt(T->getValueAsString("Expr"));
+        if (!FromRecord.empty())
+          return FromRecord;
+      }
+    }
+    PrintFatalError(R.getLoc(),
+                    "type predicate '" + Call + "' names a type that has no "
+                    "literal Core IR form: " + Args[I]);
+    return std::string();
+  };
+
+  // A bit width may be a compile-time expression (`Is64Bit ? 64 : 32`).  The
+  // Core IR keeps it as text in that case rather than guessing a number: the
+  // evaluator compares it symbolically against the configuration.
+  auto Bits = [&](size_t I) {
+    if (I >= Args.size())
+      PrintFatalError(R.getLoc(),
+                      "type predicate '" + Call + "' is missing a width");
+    unsigned V = 0;
+    if (!Args[I].getAsInteger(10, V))
+      return std::to_string(V);
+    // A width expression may name a feature record (Is64Bit) rather than spell
+    // the condition out.  The Core IR records conditions, not record names, so
+    // the name is resolved here; otherwise the evaluator would see an
+    // identifier it has no configuration entry for.
+    SmallVector<StringRef, 4> Idents;
+    collectIdentifiers(Args[I], Idents);
+    std::string Text = Args[I].str();
+    for (StringRef Id : Idents) {
+      const Record *F = Records.getDef(Id);
+      if (!F || !F->isSubClassOf("LegalizeFeature"))
+        continue;
+      StringRef Cond = F->getValueAsString("Cond");
+      size_t Pos = Text.find(Id.str());
+      if (Pos != std::string::npos)
+        Text = Text.substr(0, Pos) + Cond.str() + Text.substr(Pos + Id.size());
+    }
+    return Text;
+  };
+
+  if (Name == "typeIs")
+    return typeIs(Idx(0), Ty(1));
+  if (Name == "isVector")
+    return isVector(Idx(0));
+  if (Name == "scalarNarrowerThan")
+    return scalarNarrowerThan(Idx(0), Bits(1));
+  if (Name == "scalarWiderThan")
+    return scalarWiderThan(Idx(0), Bits(1));
+  PrintFatalError(R.getLoc(),
+                  "type predicate '" + Name + "' has no Core IR expansion; "
+                  "add it to llvm-dev/2026-10-28-core-ir-mapping.md first");
+  return "";
+}
+
 /// Lower one LegalizePredicate record to a Core IR predicate AST.
-void predicateJson(const Record &P, std::string &Out) {
+void predicateJson(const RecordKeeper &Records, const Record &P,
+                   std::string &Out) {
   if (P.isSubClassOf("LegalizeFeature")) {
     Out = "{\"kind\":\"leaf\",\"name\":\"hasFeature\",\"args\":[\"" +
           P.getValueAsString("Cond").str() + "\"]}";
     return;
   }
-  if (P.isSubClassOf("LegalizePredicateDag")) {
+  if (P.isSubClassOf("LegalizeBoolPredicateDag") ||
+      P.isSubClassOf("LegalizeQueryPredicateDag")) {
     const DagInit *D = P.getValueAsDag("CondDag");
     std::function<std::string(const Init &)> Walk =
         [&](const Init &Node) -> std::string {
       if (const auto *DI = dyn_cast<DefInit>(&Node)) {
         const Record *R = DI->getDef();
-        if (!R->isSubClassOf("LegalizeFeature"))
-          PrintFatalError(R->getLoc(), "predicate dag leaf '" + R->getName() +
-                                           "' is not a LegalizeFeature");
-        return "{\"kind\":\"leaf\",\"name\":\"hasFeature\",\"args\":[\"" +
-               R->getValueAsString("Cond").str() + "\"]}";
+        if (R->isSubClassOf("LegalizeFeature"))
+          return "{\"kind\":\"leaf\",\"name\":\"hasFeature\",\"args\":[\"" +
+                 R->getValueAsString("Cond").str() + "\"]}";
+        if (R->isSubClassOf("LegalizeTypePredicate"))
+          return typePredicateJson(Records, *R);
+        PrintFatalError(R->getLoc(), "predicate dag leaf '" + R->getName() +
+                                         "' is not a LegalizeFeature or a "
+                                         "LegalizeTypePredicate");
       }
       const auto *N = dyn_cast<DagInit>(&Node);
       if (!N)
@@ -1143,8 +1341,8 @@ std::string mutationJsonInt(unsigned Target, StringRef Kind, int Value) {
 }
 
 /// Expand one LegalizeRule record into zero or more core rules.
-void expandRule(const Record &Rule, std::vector<CoreRule> &Out,
-                std::string &Why) {
+void expandRule(const RecordKeeper &Records, const Record &Rule,
+                std::vector<CoreRule> &Out, std::string &Why) {
   Why.clear();
   // A rule whose body is raw C++ is a judgment escape.  It produces no core
   // rule; runCore() records it in escapes[] so the count stays visible.
@@ -1214,7 +1412,7 @@ void expandRule(const Record &Rule, std::vector<CoreRule> &Out,
 
   std::string Pred;
   if (const Record *P = Rule.getValueAsOptionalDef("Pred"))
-    predicateJson(*P, Pred);
+    predicateJson(Records, *P, Pred);
 
   auto WithPred = [&](std::string Cond) -> std::string {
     if (Pred.empty() && Cond.empty())
@@ -1319,6 +1517,19 @@ void expandRule(const Record &Rule, std::vector<CoreRule> &Out,
     }
     return;
   }
+  // customIf(guard): the guard IS the rule, so it becomes the Core IR
+  // predicate and the action is the builder's.  Before the predicate AST
+  // could hold type leaves this had no literal form, which is why the X86
+  // rules that read the query were all escapes.
+  if (Builder == "BuilderCustomIf" && Args.empty()) {
+    Out.push_back({"Custom", 0, WithPred(""), ""});
+    return;
+  }
+  if (Builder == "BuilderLowerIf" && Args.empty()) {
+    Out.push_back({"Lower", 0, WithPred(""), ""});
+    return;
+  }
+
   if (Builder == "BuilderLower") {
     Out.push_back({"Lower", 0, WithPred(""), ""});
     return;
@@ -1557,7 +1768,7 @@ void LegalizerInfoEmitter::runCore(raw_ostream &OS) {
       const Record *Rule = Rules[RuleIdx];
       std::vector<CoreRule> Expanded;
       std::string Why;
-      expandRule(*Rule, Expanded, Why);
+      expandRule(Records, *Rule, Expanded, Why);
       if (!Why.empty()) {
         if (Why == "opaque_rule")
           AddEscape("judgment", "opaque_rule",
