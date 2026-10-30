@@ -57,6 +57,40 @@ x86_add_legalizer_mutant(X86LegalizerInfoMutant2
 x86_add_legalizer_mutant(X86LegalizerInfoMutant3
   "LegalForPairsIf<VPOPCNTAndVLX," "LegalForPairsIf<HasVLX,")
 
+# TC-29/TC-31: the SUT must be the tuple recorded in the corpus JSON.  Two of
+# the pinned inputs, the generated .inc and the Core IR, are build products, so
+# the comparison cannot run at configure time; a build-time script writes a
+# header with the recorded and observed values side by side and the test
+# compares them field by field.
+set(X86_LEGALIZER_INC ${LLVM_BINARY_DIR}/lib/Target/X86/X86LegalizerInfo.inc)
+set(X86_LEGALIZER_CORE
+    ${LLVM_BINARY_DIR}/lib/Target/X86/X86LegalizerInfo.core.json)
+set(X86_LEGALIZER_ORACLE
+    ${CMAKE_CURRENT_SOURCE_DIR}/X86LegalizerInfoReference.cpp)
+set(X86_LEGALIZER_EMITTER
+    ${LLVM_MAIN_SRC_DIR}/utils/TableGen/LegalizerInfoEmitter.cpp)
+set(X86_LEGALIZER_LI_TD ${LLVM_MAIN_SRC_DIR}/include/llvm/Target/LegalizerInfo.td)
+
+add_custom_command(
+  OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/x86-legalizer-pins.h
+  COMMAND ${CMAKE_COMMAND}
+    -DINC=${X86_LEGALIZER_INC}
+    -DCORE=${X86_LEGALIZER_CORE}
+    -DJSON=${X86_CTPOP_ATOMS_JSON}
+    -DORACLE=${X86_LEGALIZER_ORACLE}
+    -DEMITTER=${X86_LEGALIZER_EMITTER}
+    -DLEGALIZERINFO_TD=${X86_LEGALIZER_LI_TD}
+    -DX86_TD=${X86_LEGALIZER_TD}
+    -DSRC_ROOT=${LLVM_MAIN_SRC_DIR}
+    -DOUT=${CMAKE_CURRENT_BINARY_DIR}/x86-legalizer-pins.h
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/generate-legalizer-pins.cmake
+  DEPENDS ${X86_LEGALIZER_INC} ${X86_LEGALIZER_CORE} ${X86_CTPOP_ATOMS_JSON}
+          ${X86_LEGALIZER_TD} ${X86_LEGALIZER_ORACLE} ${X86_LEGALIZER_EMITTER}
+          ${X86_LEGALIZER_LI_TD}
+          ${CMAKE_CURRENT_SOURCE_DIR}/generate-legalizer-pins.cmake
+  COMMENT "Checking GlobalISel legalizer pins"
+  VERBATIM)
+
 set(LLVM_LINK_COMPONENTS
   Analysis
   AsmParser
@@ -79,6 +113,7 @@ set(LLVM_LINK_COMPONENTS
 
 add_llvm_unittest(X86Tests
   ${TABLEGEN_OUTPUT}
+  x86-legalizer-pins.h
   MachineSizeOptsTest.cpp
   TernlogTest.cpp
   X86LegalizerInfoDifferentialTest.cpp

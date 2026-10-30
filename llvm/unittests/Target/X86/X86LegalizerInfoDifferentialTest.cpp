@@ -26,6 +26,7 @@
 #include "X86Subtarget.h"
 #include "X86TargetMachine.h"
 #include "x86-ctpop-atoms.h"
+#include "x86-legalizer-pins.h"
 #include "llvm/CodeGen/GlobalISel/LegalizerInfo.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/IR/Function.h"
@@ -299,44 +300,149 @@ TEST_F(X86LegalizerDifferentialTest, FrozenCorpusMatchesJson) {
       << "atom table drifted from x86-ctpop-atoms.json";
 }
 
-TEST_F(X86LegalizerDifferentialTest, FirstStepDifferential) {
-  unsigned Atoms = 0, LegalBoth = 0, UnsupportedBoth = 0, Diffs = 0;
-  std::string Report;
+//===----------------------------------------------------------------------===//
+// Report
+//===----------------------------------------------------------------------===//
+//
+// One JSON object per atom in corpus order, then a summary object.  Nothing
+// here reads the clock, the filesystem, or a hash table's iteration order, so
+// two runs in one process are byte-identical (TC-27) and the same text is what
+// a `--json` CLI would print (TC-26).
 
+static void renderStepJson(raw_ostream &OS, const LegalizeActionStep &S) {
+  OS << "{\"action\":\"" << S.Action << "\"";
+  if (S.Action != Legal && S.Action != Unsupported && S.Action != Custom)
+    OS << ",\"idx\":" << S.TypeIdx << ",\"to\":\"" << S.NewType << "\"";
+  OS << "}";
+}
+
+struct Report {
+  std::string Text;
+  std::string Diagnostics;
+  unsigned Atoms = 0;
+  unsigned Diffs = 0;
+  unsigned LegalBoth = 0;
+  unsigned UnsupportedBoth = 0;
+  unsigned Customs = 0;
+};
+
+static Report renderReport() {
+  Report R;
+  raw_string_ostream Json(R.Text);
+  raw_string_ostream Diag(R.Diagnostics);
   for (const Config &C : Configs) {
     Sigma S = makeSigma(C);
-    ASSERT_TRUE(S.STI) << C.ID;
-    X86LegalizerInfoReference Oracle(*S.STI, *static_cast<const X86TargetMachine *>(S.TM.get()));
+    EXPECT_TRUE(S.STI) << "no subtarget for " << C.ID;
+    if (!S.STI)
+      continue;
+    X86LegalizerInfoReference Oracle(
+        *S.STI, *static_cast<const X86TargetMachine *>(S.TM.get()));
     GeneratedLegalizerInfoForTest SUT(*S.STI);
-
     for (const TypeClass &T : typeClasses()) {
       LLT Types[] = {T.Dst, T.Src};
       LegalityQuery Q(G_CTPOP, Types);
       LegalizeActionStep A = Oracle.getAction(Q);
       LegalizeActionStep B = SUT.getAction(Q);
-      ++Atoms;
+      ++R.Atoms;
       if (A.Action == Legal && B.Action == Legal)
-        ++LegalBoth;
+        ++R.LegalBoth;
       if (A.Action == Unsupported && B.Action == Unsupported)
-        ++UnsupportedBoth;
-      if (stepsAgree(A, B))
-        continue;
-      ++Diffs;
-      raw_string_ostream OS(Report);
-      OS << "FAIL x86/g_ctpop/" << C.ID << "/" << T.ID << "\n"
-         << "  sigma:    " << C.Triple << " / " << C.FS << "\n"
-         << "  features: avx512=" << C.AVX512
-         << " vpopcntdq=" << C.VPOPCNTDQ << " vlx=" << C.VLX << "\n"
-         << "  query:    G_CTPOP (" << T.Dst << ", " << T.Src << ")\n"
-         << "  expected: " << describe(A) << "\n"
-         << "  actual:   " << describe(B) << "\n";
+        ++R.UnsupportedBoth;
+      const bool IsCustom = A.Action == Custom || B.Action == Custom;
+      if (IsCustom) {
+        ++R.Customs;
+        Diag << "CUSTOM " << C.ID << "/" << T.ID << " oracle=" << A.Action
+             << " sut=" << B.Action << "\n";
+      }
+      const bool Same = stepsAgree(A, B);
+      if (!Same)
+        ++R.Diffs;
+
+      Json << "{\"atom\":\"x86/g_ctpop/" << C.ID << "/" << T.ID << "\",\"sigma\":\""
+           << C.FS << "\",\"opcode\":\"G_CTPOP\",\"types\":[\"" << T.Dst
+           << "\",\"" << T.Src << "\"],\"expected\":";
+      renderStepJson(Json, A);
+      Json << ",\"actual\":";
+      renderStepJson(Json, B);
+      Json << ",\"status\":\"" << (Same ? "ok" : "diff") << "\",\"custom\":"
+           << (IsCustom ? "true" : "false") << "}\n";
+
+      if (!Same)
+        Diag << "FAIL x86/g_ctpop/" << C.ID << "/" << T.ID
+             << "\n  sigma:    " << C.Triple << " / " << C.FS
+             << "\n  query:    G_CTPOP (" << T.Dst << ", " << T.Src
+             << ")\n  expected: " << describe(A)
+             << "\n  actual:   " << describe(B) << "\n";
     }
   }
+  Json << "{\"atoms\":" << R.Atoms << ",\"diffs\":" << R.Diffs
+       << ",\"legal_both\":" << R.LegalBoth << ",\"unsupported_both\":"
+       << R.UnsupportedBoth << ",\"custom\":" << R.Customs << "}\n";
+  return R;
+}
 
-  EXPECT_EQ(Atoms, 126u);
-  EXPECT_GT(LegalBoth, 0u) << "corpus has no jointly-legal atom";
-  EXPECT_GT(UnsupportedBoth, 0u) << "corpus has no jointly-unsupported atom";
-  EXPECT_EQ(Diffs, 0u) << Report;
+TEST_F(X86LegalizerDifferentialTest, FirstStepDifferential) {
+  Report R = renderReport();
+  EXPECT_EQ(R.Atoms, 126u);
+  EXPECT_GT(R.LegalBoth, 0u) << "corpus has no jointly-legal atom";
+  EXPECT_GT(R.UnsupportedBoth, 0u) << "corpus has no jointly-unsupported atom";
+  // FR-8: both fixtures stub legalizeCustom out, so a Custom action would mean
+  // the table asked for a C++ callback and the differential silently stopped
+  // comparing.
+  EXPECT_EQ(R.Customs, 0u) << "the tables answered Custom\n" << R.Diagnostics;
+  EXPECT_EQ(R.Diffs, 0u) << R.Diagnostics;
+}
+
+// TC-27: the report is a pure function of the corpus and the tables, so two
+// independent constructions must produce the same bytes.  This is the cheap
+// half of the determinism evidence; TC-26 (two CLI processes) needs the CLI.
+TEST_F(X86LegalizerDifferentialTest, ReportIsDeterministic) {
+  Report First = renderReport();
+  Report Second = renderReport();
+  EXPECT_EQ(First.Atoms, Second.Atoms);
+  EXPECT_EQ(First.Text.size(), Second.Text.size());
+  EXPECT_EQ(First.Text, Second.Text) << "two runs in one process disagree";
+}
+
+//===----------------------------------------------------------------------===//
+// Pinned tuple (TC-29) and escape accounting (TC-31)
+//===----------------------------------------------------------------------===//
+//
+// The generated header carries the tuple recorded in x86-ctpop-atoms.json next
+// to the values observed in this build.  Comparing them here, rather than
+// hashing a whole report, means a drift names the field that drifted.
+
+TEST_F(X86LegalizerDifferentialTest, PinnedTuple) {
+  // The oracle is a verbatim copy of the hand-written rules.  If it is edited,
+  // the 0-diff result stops meaning "the generated table reproduces the code
+  // that was deleted", so its blob is pinned too.
+  EXPECT_STREQ(X86_PIN_ORACLE_RECORDED, X86_PIN_ORACLE_ACTUAL)
+      << "X86LegalizerInfoReference.cpp (frozen oracle)";
+  EXPECT_STREQ(X86_PIN_EMITTER_RECORDED, X86_PIN_EMITTER_ACTUAL)
+      << "LegalizerInfoEmitter.cpp";
+  EXPECT_STREQ(X86_PIN_LI_TD_RECORDED, X86_PIN_LI_TD_ACTUAL)
+      << "llvm/Target/LegalizerInfo.td";
+  EXPECT_STREQ(X86_PIN_X86_TD_RECORDED, X86_PIN_X86_TD_ACTUAL)
+      << "X86LegalizerInfo.td";
+  EXPECT_STREQ(X86_PIN_INC_RECORDED, X86_PIN_INC_ACTUAL)
+      << "generated X86LegalizerInfo.inc";
+  EXPECT_STREQ(X86_PIN_CORE_RECORDED, X86_PIN_CORE_ACTUAL)
+      << "X86LegalizerInfo.core.json (checkout root folded)";
+}
+
+// TC-31: the escapes are the part of the table that is C++ in disguise.  Pin
+// the count so that turning a rule into generated structure, or losing an
+// escape to a parse error, is visible; and pin the one entry this feature
+// depends on -- X86_CTPOP's ClampScalar takes X86_sMaxScalar, a derived type,
+// so that rule is copied into the .td verbatim rather than generated.
+TEST_F(X86LegalizerDifferentialTest, EscapeAccounting) {
+  EXPECT_EQ(X86_PIN_ESCAPES_ACTUAL, X86_PIN_ESCAPES_RECORDED)
+      << "escape count changed";
+  EXPECT_GT(X86_PIN_ESCAPES_ACTUAL, 0) << "escapes[] is empty";
+  EXPECT_EQ(X86_PIN_CTPOP_ESCAPES_ACTUAL, X86_PIN_CTPOP_ESCAPES_RECORDED)
+      << "X86_CTPOP no longer has exactly one nonliteral_type escape whose "
+         "reason names clampScalar";
+  EXPECT_EQ(X86_PIN_CTPOP_ESCAPES_ACTUAL, 1);
 }
 
 //===----------------------------------------------------------------------===//

@@ -5,6 +5,20 @@
   "opcode": "G_CTPOP",
   "count": 126,
   "canonical_fnv1a64": "1d14c96368102d3f",
+  "pins": {
+    "comment": "FR-14: the SUT of the differential test must be this exact tuple. Source blobs, the generated .inc and the Core IR hash are compared by the X86LegalizerPins gtest; tblgen_binary_sha256 and base_commit are recorded provenance (machine-local / git history) and are not compared in CI. Update the block by pasting the ACTUAL values printed when X86LegalizerPins fails.",
+    "base_commit": "ebac17721d12",
+    "import_commit": "1a174146aa9e",
+    "oracle_sha256": "0465b0483d4c22f78914c5e11bde854cb9520d1f14769a4afaee8547ea31a7d5",
+    "emitter_blob": "e561c0f5fe6f2439f34a0c809c5d335de39326aa901f4a08eecbeead1b922ea2",
+    "legalizerinfo_td_blob": "787e4c0d9745ee8f78862b5a24d9bc8268064a091cd35b4464966038d5eb636c",
+    "x86_td_blob": "fe0ea537be2b490cc18e30cbb43090175217ddb24e269eb6a03fa5b3b12e4d9d",
+    "tblgen_binary_sha256": "d0ee89095edb5cef2405b9711edff286af365938d3324cf66d294d895f8b35a1",
+    "generated_inc_sha256": "59dbb8de6ba3db65a4d9775764fc6fb6a002a8313644af26af878e769a7d5e47",
+    "core_ir_sha256": "dcc6efa9e70ac004667a0c1a9b3572c7be751761a901089cb92befaf8a22acf4",
+    "core_ir_escape_count": 95,
+    "core_ir_ctpop_clamp_escapes": 1
+  },
   "sigmas": [
     {"id": "C0", "triple": "x86_64", "features": "+popcnt", "is64": true,  "avx512": false, "vpopcntdq": false, "vlx": false},
     {"id": "C1", "triple": "x86_64", "features": "+popcnt,+avx512f,+avx512vpopcntdq", "is64": true, "avx512": true, "vpopcntdq": true, "vlx": false},
