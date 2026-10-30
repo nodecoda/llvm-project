@@ -55,7 +55,11 @@ X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI,
 
   verify(*STI.getInstrInfo());
 
-  if (X86GISelTable)
+  // The table's key pins the two subtarget-dependent LLT constants (the pointer
+  // width and the widest scalar) to their 64-bit values, which is what makes a
+  // class list that does not vary with the subtarget possible.  That pin is
+  // only sound where the pin holds, so a 32-bit subtarget keeps the chains.
+  if (X86GISelTable && STI.is64Bit())
     setTable(std::make_unique<X86LegalizerTable>(*this));
 
   if (X86GISelTableCheck) {

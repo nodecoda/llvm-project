@@ -23,6 +23,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Basic/PredicateExpanderDag.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
@@ -161,6 +162,7 @@ class LegalizerInfoEmitter {
   void emitPredicate(const Record &P, raw_ostream &OS);
   void emitTypes(raw_ostream &OS);
   void verifyRule(const Record &Rule);
+  void verifyLattices();
   void emitArg(const Record &Arg, raw_ostream &OS);
   void emitArgList(raw_ostream &OS, const Record &Rule);
   void emitRuleSet(raw_ostream &OS, const Record &RuleSet);
@@ -216,6 +218,20 @@ static void collectIdentifiers(StringRef Expr,
       continue;
     Out.push_back(Id);
   }
+}
+
+/// Parse the bit width out of a literal scalar type, `LLT::scalar(32)`.
+///
+/// Anything else - a vector, a pointer, an expression that picks a type from a
+/// feature - returns false: the width is not a number that can be read, so a
+/// check that wants a width has to say so rather than guess one.
+static bool parseScalarWidth(StringRef Expr, unsigned &Width) {
+  StringRef Rest = Expr.trim();
+  if (!Rest.consume_front("LLT::scalar("))
+    return false;
+  if (!Rest.consume_back(")"))
+    return false;
+  return !Rest.getAsInteger(10, Width);
 }
 
 /// A predicate dag holds its leaves as defs; collect the features among them.
@@ -584,6 +600,123 @@ void LegalizerInfoEmitter::verifyRule(const Record &Rule) {
   }
 }
 
+/// The type lattice is the one thing a rule cannot state: which type is "next
+/// wider".  Hand-written C++ computes that inside widenScalarToNextPow2, and
+/// clampScalar's bound is applied at run time whatever it names, so a bound of
+/// "no wider than s128" on a target that has no s128 is a clamp that never
+/// fires - or fires on the wrong type.  With the order written down, the same
+/// mistake is an error when the .td is read.
+///
+/// Only literal bounds can be decided here.  A bound computed from a feature is
+/// checked by the types its expression names: every alternative has to be in
+/// some chain, which is what makes the bound resolvable at all.
+void LegalizerInfoEmitter::verifyLattices() {
+  std::vector<const Record *> Lattices =
+      Records.getAllDerivedDefinitions("LegalizeTypeLattice");
+  // A target that has not written an order down gets no check: the order is
+  // data the .td supplies, not something the emitter can invent.
+  if (Lattices.empty())
+    return;
+
+  StringSet<> TypeNames;
+  for (const Record *T : Records.getAllDerivedDefinitions("LegalizeNamedType"))
+    TypeNames.insert(T->getName());
+
+  // Every type the chains hold, and every width they go through.
+  StringSet<> Members;
+  SmallDenseSet<unsigned, 8> Widths;
+  for (const Record *L : Lattices) {
+    std::vector<const Record *> Order = L->getValueAsListOfDefs("Order");
+    if (Order.size() < 2)
+      PrintFatalError(L->getLoc(), "type lattice '" + L->getName() +
+                                       "' holds fewer than two types; one type "
+                                       "says only that it is legal, which a "
+                                       "rule already says");
+    unsigned Prev = 0;
+    for (const Record *T : Order) {
+      unsigned Width = 0;
+      if (!parseScalarWidth(T->getValueAsString("Expr"), Width))
+        PrintFatalError(T->getLoc(), "type lattice '" + L->getName() +
+                                         "' holds '" + T->getName() +
+                                         "', which is not LLT::scalar(N); a "
+                                         "widening chain holds scalars");
+      if (Prev && Width != 2 * Prev)
+        PrintFatalError(T->getLoc(),
+                        "type lattice '" + L->getName() + "' steps from " +
+                            std::to_string(Prev) + " to " +
+                            std::to_string(Width) +
+                            " bits; the next power of two doubles, so a step "
+                            "in the chain has to double");
+      Prev = Width;
+      Members.insert(T->getName());
+      Widths.insert(Width);
+    }
+  }
+
+  // A bound is a type position that says "no narrower" or "no wider".
+  for (const Record *Rule : Records.getAllDerivedDefinitions("LegalizeRule")) {
+    StringRef BuilderRec = builderRecordName(*Rule);
+    std::vector<const Record *> Args = Rule->getValueAsListOfDefs("Args");
+
+    SmallVector<unsigned, 2> Bounds;
+    if (BuilderRec == "BuilderClampScalar" ||
+        BuilderRec == "BuilderClampScalarOrElt")
+      Bounds = {1, 2};
+    else if (BuilderRec == "BuilderMinScalar" ||
+             BuilderRec == "BuilderMaxScalar")
+      Bounds = {1};
+    for (unsigned I : Bounds) {
+      // How many arguments a builder takes is verifyRule()'s business.
+      if (I >= Args.size())
+        continue;
+      const Record &A = *Args[I];
+      bool Named = A.isSubClassOf("LegalizeNamedType");
+      StringRef Expr = A.getValueAsString(Named ? "Expr" : "Text");
+
+      // A literal type is checked by name; one computed from a feature has no
+      // single name, so every type its expression names is checked instead.
+      if (Named && !Expr.contains('?')) {
+        if (!Members.contains(A.getName()))
+          PrintFatalError(Rule->getLoc(),
+                          "'" + A.getName() + "' is a " + builderName(*Rule) +
+                              " bound, but is in no LegalizeTypeLattice; a "
+                              "bound has to name a type the target widens "
+                              "through");
+        continue;
+      }
+      if (unsigned Width = 0; parseScalarWidth(Expr, Width)) {
+        if (!Widths.contains(Width))
+          PrintFatalError(Rule->getLoc(), "'" + Expr + "' is a " +
+                                              builderName(*Rule) +
+                                              " bound, but no lattice holds " +
+                                              std::to_string(Width) + " bits");
+        continue;
+      }
+      SmallVector<StringRef, 4> Idents;
+      collectIdentifiers(Expr, Idents);
+      for (StringRef Id : Idents)
+        if (TypeNames.contains(Id) && !Members.contains(Id))
+          PrintFatalError(Rule->getLoc(),
+                          "'" + Id + "' is named by the " + builderName(*Rule) +
+                              " bound '" + Expr +
+                              "', but is in no LegalizeTypeLattice");
+    }
+
+    // widenScalarToNextPow2's explicit minimum is a width, not a type, so it is
+    // checked against the widths the chains hold.  With no minimum the default
+    // is the narrowest width and there is nothing to check.
+    if ((BuilderRec == "BuilderWidenScalarToNextPow2" ||
+         BuilderRec == "BuilderWidenScalarOrEltToNextPow2") &&
+        Args.size() > 1) {
+      unsigned Min = (unsigned)Args[1]->getValueAsInt("Value");
+      if (!Widths.contains(Min))
+        PrintFatalError(Rule->getLoc(),
+                        "widenScalarToNextPow2 minimum " + std::to_string(Min) +
+                            " is not a width any LegalizeTypeLattice holds");
+    }
+  }
+}
+
 /// Render one argument.  Shapes that stand for a group of types brace
 /// themselves, so a list of pairs reads {{a, b}, {c, d}}; the brace around the
 /// whole list is added by emitArgList.
@@ -763,6 +896,8 @@ void LegalizerInfoEmitter::run(raw_ostream &OS) {
   CheckDeclarationOrder("LegalizeNamedType", "Expr");
   CheckDeclarationOrder("LegalizeFeature", "Cond");
 
+  verifyLattices();
+
   // Everything a feature name can be written in: a predicate dag's leaves, and
   // the C++ text the escape hatches carry.
   auto CollectUsed = [&](StringRef Text) {
@@ -893,7 +1028,9 @@ unsigned lltBits(StringRef S) {
     size_t Colon = T.find(':');
     if (Colon == StringRef::npos)
       return 0;
-    return std::stoul(T.substr(Colon + 1).str());
+    // A vector of pointers reaches here as "v2p0:64" with Lanes already read,
+    // so its size is lanes * element bits, not element bits.
+    return Lanes * std::stoul(T.substr(Colon + 1).str());
   }
   size_t I = 0;
   while (I < T.size() && !isDigit(T[I]))
@@ -934,8 +1071,36 @@ std::string jsonEscaped(StringRef S) {
   return Buf;
 }
 
+/// The records expandRule() is walking.  normalizeLlt() needs them only for
+/// the one shape where a type names another type (LLT::fixed_vector(2, X86_p0)).
+const RecordKeeper *CurrentRK = nullptr;
+
+const Record *namedTypeDef(StringRef Name) {
+  if (!CurrentRK || Name.empty() || !isAlpha(Name.front()))
+    return nullptr;
+  if (Name.contains('(') || Name.contains(' ') || Name.contains(':'))
+    return nullptr;
+  const Record *R = CurrentRK->getDef(Name);
+  if (!R || !R->isSubClassOf("LegalizeNamedType"))
+    return nullptr;
+  return R;
+}
+
+/// Two LLT constants in X86LegalizerInfo.td are spelled in terms of the
+/// subtarget.  The corpus is generated for 64-bit X86 and the table only
+/// installs itself there (see the is64Bit() guard in X86LegalizerInfo.cpp), so
+/// pinning them is sound rather than approximate: the other instantiation
+/// never meets this table.
+StringRef pinSubtargetLlt(StringRef S) {
+  if (S == "LLT::pointer(0, Subtarget.isTarget64BitLP64() ? 64 : 32)")
+    return "LLT::pointer(0, 64)";
+  if (S == "Subtarget.is64Bit() ? X86_s64 : X86_s32")
+    return "LLT::scalar(64)";
+  return S;
+}
+
 std::string normalizeLlt(StringRef S) {
-  StringRef T = S.trim();
+  StringRef T = pinSubtargetLlt(S.trim());
   {
     StringRef R = T;
     if (R.consume_front("LLT::scalar(") && R.consume_back(")") && !R.empty() &&
@@ -949,9 +1114,19 @@ std::string normalizeLlt(StringRef S) {
       if (Comma != StringRef::npos) {
         StringRef L = R.substr(0, Comma).trim();
         StringRef E = R.substr(Comma + 1).trim();
-        if (!L.empty() && !E.empty() && llvm::all_of(L, isDigit) &&
-            llvm::all_of(E, isDigit))
-          return "v" + L.str() + "s" + E.str();
+        if (!L.empty() && !E.empty() && llvm::all_of(L, isDigit)) {
+          if (llvm::all_of(E, isDigit))
+            return "v" + L.str() + "s" + E.str();
+          // The element is a named type, e.g. LLT::fixed_vector(2, X86_p0).
+          if (const Record *D = namedTypeDef(E)) {
+            std::string Inner = normalizeLlt(D->getValueAsString("Expr"));
+            if (Inner.size() > 3 && Inner.front() == 'p' &&
+                Inner.find(':') != std::string::npos)
+              return "v" + L.str() + Inner;
+            if (Inner.size() > 1 && Inner.front() == 's')
+              return "v" + L.str() + Inner;
+          }
+        }
       }
     }
   }
@@ -970,6 +1145,128 @@ std::string normalizeLlt(StringRef S) {
   }
   return "";
 }
+/// Index of the first `C` outside any parentheses, or npos.
+size_t topLevelIndex(StringRef S, char C) {
+  int Depth = 0;
+  for (size_t I = 0; I != S.size(); ++I) {
+    if (S[I] == '(')
+      ++Depth;
+    else if (S[I] == ')')
+      --Depth;
+    else if (S[I] == C && Depth == 0)
+      return I;
+  }
+  return StringRef::npos;
+}
+
+/// True if the first character's parenthesis closes on the last character.
+bool wraps(StringRef S) {
+  if (S.size() < 2 || S.front() != '(' || S.back() != ')')
+    return false;
+  int Depth = 0;
+  for (size_t I = 0; I != S.size(); ++I) {
+    if (S[I] == '(')
+      ++Depth;
+    else if (S[I] == ')') {
+      --Depth;
+      if (Depth == 0)
+        return I == S.size() - 1;
+    }
+  }
+  return false;
+}
+
+/// Lanes a normalised type names: "v8s64" -> 8, a scalar or a pointer -> 1.
+bool lanesOfNormalized(StringRef N, unsigned &Lanes) {
+  if (N.empty())
+    return false;
+  if (N.front() != 'v') {
+    if (N.front() != 's' && N.front() != 'p')
+      return false;
+    Lanes = 1;
+    return true;
+  }
+  size_t I = 1;
+  while (I != N.size() && isDigit(N[I]))
+    ++I;
+  if (I == 1 || I == N.size())
+    return false;
+  Lanes = std::stoul(N.substr(1, I - 1).str());
+  return true;
+}
+
+/// Lane count of a type expression, keeping the feature conditionals that pick
+/// the type:  "HasAVX512 ? X86_v8s64 : HasAVX ? X86_v4s64 : X86_v2s64" becomes
+/// "HasAVX512 ? 8 : (HasAVX ? 4 : 2)".  The count is a number; which number is
+/// a subtarget question, and that question survives -- only the target's type
+/// names go, because no consumer outside this file can resolve them.
+bool lanesOfTypeExpr(StringRef E, std::string &Out) {
+  E = E.trim();
+  while (wraps(E))
+    E = E.substr(1, E.size() - 2).trim();
+  if (E.empty())
+    return false;
+  if (size_t Q = topLevelIndex(E, '?'); Q != StringRef::npos) {
+    size_t Rest = topLevelIndex(E.substr(Q + 1), ':');
+    if (Rest == StringRef::npos)
+      return false;
+    std::string Then, Else;
+    if (!lanesOfTypeExpr(E.substr(Q + 1, Rest), Then) ||
+        !lanesOfTypeExpr(E.substr(Q + 2 + Rest), Else))
+      return false;
+    // A conditional nested in the "then" arm needs its own parentheses: the
+    // colon split below walks the text, and an unparenthesised inner colon
+    // would steal the outer one.
+    if (topLevelIndex(Then, '?') != StringRef::npos)
+      Then = "(" + Then + ")";
+    Out = E.substr(0, Q).trim().str() + " ? " + Then + " : (" + Else + ")";
+    return true;
+  }
+  if (const Record *D = namedTypeDef(E)) {
+    StringRef Inner = D->getValueAsString("Expr");
+    if (Inner.trim() == E)
+      return false;
+    return lanesOfTypeExpr(Inner, Out);
+  }
+  unsigned Lanes = 0;
+  if (!lanesOfNormalized(normalizeLlt(E), Lanes))
+    return false;
+  Out = std::to_string(Lanes);
+  return true;
+}
+
+/// Replace every "<Name>.getNumElements()" in a lane bound with the lane count
+/// <Name> denotes.  A lane count is the one argument a builder takes as a number
+/// rather than a type, so a .td that wants "as many lanes as the widest s64
+/// vector" had to spell C++; this resolves that spelling back into the bound
+/// language the consumers of the core IR already know.
+std::string resolveLaneBound(const Record &Rule, StringRef Bound) {
+  static const char Suffix[] = ".getNumElements()";
+  std::string Out = Bound.str();
+  size_t Pos = 0;
+  while ((Pos = Out.find(Suffix, Pos)) != std::string::npos) {
+    size_t Begin = Pos;
+    while (Begin > 0 && (isAlnum(Out[Begin - 1]) || Out[Begin - 1] == '_'))
+      --Begin;
+    std::string Name = Out.substr(Begin, Pos - Begin);
+    std::string Lanes;
+    if (Name.empty() || !lanesOfTypeExpr(Name, Lanes))
+      PrintFatalError(Rule.getLoc(),
+                      "cannot resolve '" + Name +
+                          ".getNumElements()' to a lane count: name a type "
+                          "that has one, or spell the count directly");
+    // The replacement is spliced into whatever expression the .td wrote, so
+    // a conditional inside it needs its own parentheses: the bound is read
+    // left to right and an unparenthesised inner colon would steal the outer
+    // conditional's split.
+    if (Lanes.find('?') != std::string::npos)
+      Lanes = "(" + Lanes + ")";
+    Out.replace(Begin, Pos + strlen(Suffix) - Begin, Lanes);
+    Pos = Begin + Lanes.size();
+  }
+  return Out;
+}
+
 std::string typeIs(unsigned Idx, StringRef Ty) {
   return "{\"kind\":\"leaf\",\"name\":\"typeIs\",\"args\":[" +
          std::to_string(Idx) + ",\"" + Ty.str() + "\"]}";
@@ -1054,6 +1351,24 @@ std::string moreElementsThan(unsigned Idx, unsigned Lanes) {
 std::string elementTypeIs(unsigned Idx, StringRef Ty) {
   return "{\"kind\":\"leaf\",\"name\":\"elementTypeIs\",\"args\":[" +
          std::to_string(Idx) + ",\"" + Ty.str() + "\"]}";
+}
+
+/// The same two relations, with the lane count spelled as a C++ expression.
+///
+/// clampMinNumElements takes its bound as `unsigned`, but X86 writes
+/// "HasBWI ? 64 : (HasAVX2 ? 32 : 16)" because the bound depends on the
+/// subtarget.  That is data, not a type: it travels as a string and is
+/// resolved once per configuration, the contract sizeIs already has.  Guessing
+/// a number here would have put a wrong lane count in the corpus and no check
+/// would have gone red.
+std::string fewerElementsThanExpr(unsigned Idx, StringRef Bound) {
+  return "{\"kind\":\"leaf\",\"name\":\"fewerElementsThan\",\"args\":[" +
+         std::to_string(Idx) + ",\"" + Bound.str() + "\"]}";
+}
+
+std::string moreElementsThanExpr(unsigned Idx, StringRef Bound) {
+  return "{\"kind\":\"leaf\",\"name\":\"moreElementsThan\",\"args\":[" +
+         std::to_string(Idx) + ",\"" + Bound.str() + "\"]}";
 }
 
 /// Types[Other].getScalarSizeInBits() > Types[Idx].getSizeInBits()
@@ -1330,6 +1645,16 @@ std::string mutationJsonInt(unsigned Target, StringRef Kind, int Value) {
          "\",\"value\":" + std::to_string(Value) + "}";
 }
 
+/// A lane-count bound is emitted as an integer when it is one, so the common
+/// case stays readable and diffable; only the configured ones stay strings.
+std::string mutationJsonLanes(unsigned Target, StringRef Bound) {
+  bool Digits =
+      !Bound.empty() && Bound.find_first_not_of("0123456789") == StringRef::npos;
+  if (Digits)
+    return mutationJsonInt(Target, "set_lanes", std::stoi(Bound.str()));
+  return mutationJson(Target, "set_lanes", Bound);
+}
+
 /// Expand one LegalizeRule record into zero or more core rules.
 void expandRule(const RecordKeeper &Records, const Record &Rule,
                 std::vector<CoreRule> &Out, std::string &Why) {
@@ -1395,6 +1720,12 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
       return;
     }
     if (A->isSubClassOf("LegalizeRawArg")) {
+      // clampMin/MaxNumElements carry the lane count, not a type.  A count
+      // that depends on the subtarget is resolvable by the consumer, so it is
+      // not an escape; every other raw argument still is.
+      if (Builder == "BuilderClampMinNumElements" ||
+          Builder == "BuilderClampMaxNumElements")
+        continue;
       Why = "raw_argument";
       return;
     }
@@ -1658,9 +1989,29 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
                    mutationJsonInt(Idx, "set_lanes", lltLanes(MaxTy))});
     return;
   }
-  // clampMinNumElements / clampMaxNumElements take their element count as a
-  // C++ expression (for example "HasBWI ? 64 : 32").  It has no literal Core
-  // IR form, so those rules are escapes, not guessed rules.
+  if (Builder == "BuilderClampMinNumElements" ||
+      Builder == "BuilderClampMaxNumElements") {
+    const bool Min = Builder == "BuilderClampMinNumElements";
+    unsigned Idx = Int(0);
+    std::string Elt = Ty(1);
+    if (Args.size() < 3 || !Args[2]->isSubClassOf("LegalizeRawArg"))
+      PrintFatalError(Rule.getLoc(),
+                      std::string(Method) + " expects its lane count as the "
+                                            "third argument");
+    std::string BoundText = resolveLaneBound(
+        Rule, Args[2]->getValueAsString("Text"));
+    StringRef Bound = BoundText;
+    // The C++ predicates are isFixedVector() && elementType() == EltTy &&
+    // numElements() < / > N.  All three parts travel: dropping isVector would
+    // let a scalar match a rule about vectors, and dropping the element type
+    // would let v8s16 answer for v8s8.
+    Out.push_back({Min ? "MoreElements" : "FewerElements", Idx,
+                   WithPred(allOf({isVector(Idx), elementTypeIs(Idx, Elt),
+                                   Min ? fewerElementsThanExpr(Idx, Bound)
+                                       : moreElementsThanExpr(Idx, Bound)})),
+                   mutationJsonLanes(Idx, Bound)});
+    return;
+  }
 
   PrintFatalError(Rule.getLoc(),
                   "no Core IR expansion for builder '" + Method +
@@ -1671,6 +2022,9 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
 } // namespace
 
 void LegalizerInfoEmitter::runCore(raw_ostream &OS) {
+  CurrentRK = &Records;
+  verifyLattices();
+
   std::vector<const Record *> RuleSets =
       Records.getAllDerivedDefinitions("LegalizeRuleSet");
   if (RuleSets.empty())
@@ -1724,6 +2078,40 @@ void LegalizerInfoEmitter::runCore(raw_ostream &OS) {
   DomainTypes.erase(std::unique(DomainTypes.begin(), DomainTypes.end()),
                     DomainTypes.end());
 
+  // The mem axis is declared for the same reason the type slots are: a query
+  // that names an access size is inside D* only if the domain lists that size.
+  // The sizes come from the rules that read one -- memory rules compare the
+  // MMO size exactly (TypePairAndMemDesc::isCompatible), so "which sizes are
+  // in the domain" is precisely "which sizes a rule names".
+  std::set<std::pair<unsigned, unsigned>> DomainMems; // (size, min align)
+  auto AddMemDesc = [&](const Record &D) {
+    StringRef Expr = D.getValueAsDef("MemTy")->getValueAsString("Expr");
+    // Memory types go through the same normalisation the type slots use: a
+    // MemTy may be a named pointer type (X86_p0) or a vector of one
+    // (LLT::fixed_vector(2, X86_p0)), and neither is a plain scalar spelling.
+    std::string Norm = normalizeLlt(Expr);
+    unsigned Bits = Norm.empty() ? 0 : lltBits(Norm);
+    if (Bits == 0)
+      PrintFatalError(D.getLoc(),
+                      "memory type '" + Expr + "' has no fixed width, so it "
+                      "cannot be a point on the access-size axis");
+    DomainMems.insert({Bits, (unsigned)D.getValueAsInt("Align")});
+  };
+  for (const Record *Rule : Records.getAllDerivedDefinitions("LegalizeRule")) {
+    // One builder serves both the guarded and the unguarded spelling: the
+    // guard is the rule's Pred, not a different method.
+    if (builderRecordName(*Rule) != "BuilderLegalForTypesWithMemDesc")
+      continue;
+    for (const Record *A : Rule->getValueAsListOfDefs("Args")) {
+      if (A->isSubClassOf("LegalizeMemDesc"))
+        AddMemDesc(*A);
+      else if (A->isSubClassOf("LegalizeInlineTypeList"))
+        for (const Record *E : A->getValueAsListOfDefs("Elems"))
+          if (E->isSubClassOf("LegalizeMemDesc"))
+            AddMemDesc(*E);
+    }
+  }
+
   std::vector<std::string> Escapes;
   auto AddEscape = [&](StringRef Layer, StringRef Kind, StringRef Reason,
                        const Record &Rule, StringRef RuleSetName,
@@ -1765,7 +2153,16 @@ void LegalizerInfoEmitter::runCore(raw_ostream &OS) {
       OS << ", ";
     jsonString(OS, DomainTypes[I]);
   }
-  OS << "], \"imms\": [], \"mems\": [], \"orderings\": [], \"q0\": []},\n";
+  OS << "], \"imms\": [], \"mems\": [";
+  bool FirstMem = true;
+  for (const auto &M : DomainMems) {
+    if (!FirstMem)
+      OS << ", ";
+    FirstMem = false;
+    OS << "{\"size_bits\": " << M.first << ", \"align_bits\": " << M.second
+       << "}";
+  }
+  OS << "], \"orderings\": [], \"q0\": []},\n";
 
   OS << "  \"rulesets\": [\n";
   bool FirstSet = true;

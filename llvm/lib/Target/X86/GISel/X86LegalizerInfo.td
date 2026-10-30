@@ -180,6 +180,13 @@ def X86_s80 : LegalizeNamedType<"LLT::scalar(80)">;
 def X86_s128 : LegalizeNamedType<"LLT::scalar(128)">;
 def X86_sMaxScalar : LegalizeNamedType<"Subtarget.is64Bit() ? X86_s64 : X86_s32">;
 
+// The scalar order, narrowest first.  s1 is left out: it is a predicate, not a
+// width that anything legalizes up to.  s80 and s128 are left out too - nothing
+// widens into them, they are legal only where a rule names them.
+def X86_ScalarOrder64 : LegalizeTypeLattice<[X86_s8, X86_s16, X86_s32, X86_s64],
+                                            "Is64Bit">;
+def X86_ScalarOrder   : LegalizeTypeLattice<[X86_s8, X86_s16, X86_s32]>;
+
 def X86_v2s32 : LegalizeNamedType<"LLT::fixed_vector(2, 32)">;
 def X86_v4s8 : LegalizeNamedType<"LLT::fixed_vector(4, 8)">;
 

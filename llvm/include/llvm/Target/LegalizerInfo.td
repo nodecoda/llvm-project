@@ -715,3 +715,17 @@ class LegalizeRuleSet<list<string> opcodes> {
   list<LegalizeRule> Rules = [];
   list<string> Comments = [];
 }
+
+//===----------------------------------------------------------------------===//
+// Type lattice
+//
+// A rule set says which types are legal, but not which type is "next wider"
+// than which.  That relation is computed in C++ today, by
+// widenScalarToNextPow2, and it is bounded at run time by clampScalar's
+// sMaxScalar, so neither can be turned into a table and neither can be checked
+// when the .td is read.  Declaring the order as data makes both a lookup, and
+// makes "this bound is not in the lattice" a generation-time error.
+class LegalizeTypeLattice<list<LegalizeNamedType> order, string condition = ""> {
+  list<LegalizeNamedType> Order = order;
+  string Condition = condition;
+}

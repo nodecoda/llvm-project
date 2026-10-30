@@ -98,6 +98,9 @@ struct X86TablePoint {
   const char *Name;
   uint8_t NumTypes;
   LLT Types[3];
+  // Access size in bits for the memory axis, or 0 when the point asks no
+  // memory question.  A load's type does not say how wide the access is.
+  uint32_t MemBits;
 };
 
 } // namespace
@@ -122,12 +125,26 @@ LLT X86LegalizerTable::representative(unsigned ClassID) {
 }
 
 uint16_t X86LegalizerTable::fill(unsigned Table, const LegalityQuery &Q,
-                                 unsigned L0, unsigned L1) const {
+                                 ArrayRef<unsigned> Local) const {
   const LegalizerTableDesc &D = X86Tables[Table];
   SmallVector<LLT, 4> Types(Q.Types.begin(), Q.Types.end());
-  Types[D.Slots[0]] = representative(localToGlobal(D, 0, L0));
-  if (D.Dims[1] > 1)
-    Types[D.Slots[1]] = representative(localToGlobal(D, 1, L1));
+  SmallVector<LegalityQuery::MemDesc, 1> MemDescs(Q.MMODescrs.begin(),
+                                                  Q.MMODescrs.end());
+  for (unsigned K = 0; K != D.NumSlots; ++K) {
+    const int Slot = D.Slots[K];
+    if (Slot < 0) {
+      // The mem axis stands for one access size, so the representative is a
+      // type of exactly that size.  Alignment is not in the key: every rule
+      // asks for "at least" alignment, so the weakest alignment answers for
+      // all of them, which is also what the key generator asserts.
+      MemDescs.assign(1, LegalityQuery::MemDesc(
+                             LLT::scalar(static_cast<unsigned>(D.Mem[Local[K]])),
+                             /*AlignInBits=*/1, AtomicOrdering::NotAtomic,
+                             AtomicOrdering::NotAtomic));
+      continue;
+    }
+    Types[Slot] = representative(localToGlobal(D, K, Local[K]));
+  }
 
   // Same question, asked with the class representatives instead of the actual
   // types: that is what makes one cell stand for the whole class pair.  The
@@ -135,7 +152,7 @@ uint16_t X86LegalizerTable::fill(unsigned Table, const LegalityQuery &Q,
   // this table and recurse.
   LegalizeActionStep Step =
       LI.getActionDefinitions(Q.Opcode)
-          .apply(LegalityQuery(Q.Opcode, Types, Q.MMODescrs, Q.Immediates));
+          .apply(LegalityQuery(Q.Opcode, Types, MemDescs, Q.Immediates));
   ++Fills;
   Steps.push_back(Step);
   return static_cast<uint16_t>(Steps.size());
@@ -149,15 +166,19 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
     ++Untabulated;
     return R;
   }
-  // The table keys types only.  A query that also carries a memdesc or an
-  // immediate is a different question with the same type key, so the table
-  // must not answer it; those axes arrive later and the count says so.
-  if (!Q.MMODescrs.empty() || !Q.Immediates.empty()) {
+  const LegalizerTableDesc &D = X86Tables[Table];
+  // The keyed axes are the type slots and, where the rule set reads one, the
+  // access size of MMO 0.  A query that carries an axis the key does not
+  // observe -- an immediate anywhere, a second memdesc, or a memdesc on a
+  // types-only table -- is a different question with the same key, so the
+  // table must not answer it.  The count says how often that happens.
+  const bool HasMemAxis = D.Mem != nullptr;
+  if (!Q.Immediates.empty() ||
+      Q.MMODescrs.size() != (HasMemAxis ? 1u : 0u)) {
     ++Declined;
     R.Kind = Answer::Declined;
     return R;
   }
-  const LegalizerTableDesc &D = X86Tables[Table];
 
   const int C0 = Q.Types.size() > D.Slots[0]
                      ? classifyType(Q.Types[D.Slots[0]])
@@ -178,28 +199,50 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
     return R;
   }
 
-  const uint8_t L0 = D.Local[0][C0];
-  if (L0 == 0xFF) {
+  unsigned L[3] = {0, 0, 0};
+  L[0] = D.Local[0][C0];
+  if (L[0] == 0xFF) {
     ++Outsides;
     R.Kind = Answer::Outside;
     return R;
   }
-  uint8_t L1 = 0;
   if (D.Dims[1] > 1) {
-    L1 = D.Local[1][C1];
-    if (L1 == 0xFF) {
+    L[1] = D.Local[1][C1];
+    if (L[1] == 0xFF) {
       ++Outsides;
       R.Kind = Answer::Outside;
       return R;
     }
   }
+  if (HasMemAxis) {
+    // A rule names an access size, not a range (isCompatible compares
+    // getSizeInBits()), so the axis is an exact match.  A size no rule names
+    // is outside the key: the chain answers, and the fallback is counted.
+    const TypeSize MemSize = Q.MMODescrs[0].MemoryTy.getSizeInBits();
+    if (MemSize.isScalable()) {
+      ++Outsides;
+      R.Kind = Answer::Outside;
+      return R;
+    }
+    const uint64_t Bits = MemSize.getFixedValue();
+    unsigned I = 0;
+    while (I != D.Dims[2] && static_cast<uint64_t>(D.Mem[I]) != Bits)
+      ++I;
+    if (I == D.Dims[2]) {
+      ++Outsides;
+      R.Kind = Answer::Outside;
+      return R;
+    }
+    L[2] = I;
+  }
 
   std::vector<uint16_t> &Row = Cells[Table];
   if (Row.empty())
-    Row.assign(static_cast<size_t>(D.Dims[0]) * D.Dims[1], 0);
-  uint16_t &Cell = Row[static_cast<size_t>(L0) * D.Dims[1] + L1];
+    Row.assign(static_cast<size_t>(D.Dims[0]) * D.Dims[1] * D.Dims[2], 0);
+  uint16_t &Cell =
+      Row[(static_cast<size_t>(L[0]) * D.Dims[1] + L[1]) * D.Dims[2] + L[2]];
   if (!Cell)
-    Cell = fill(Table, Q, L0, L1);
+    Cell = fill(Table, Q, L);
 
   if (Cell == kOpaqueCell) {
     ++Escapes;
@@ -244,11 +287,13 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
   unsigned Skipped = 0;
   for (const X86TablePoint &P : Points) {
     ArrayRef<LLT> Types(P.Types, P.NumTypes);
-    // The enumerated domain carries no memdesc; the two rule sets that read
-    // one get a fixed, sized memory type so both paths see the same question.
+    // The point carries the access size it was enumerated for; 0 means the
+    // question has no memory part.  Both paths then see the same query, which
+    // is the only way the comparison means anything.
     SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
-    if (P.Opcode == TargetOpcode::G_LOAD || P.Opcode == TargetOpcode::G_STORE)
-      MemDescs.emplace_back(Types[0], 8, AtomicOrdering::NotAtomic,
+    if (P.MemBits)
+      MemDescs.emplace_back(LLT::scalar(P.MemBits), /*AlignInBits=*/1,
+                            AtomicOrdering::NotAtomic,
                             AtomicOrdering::NotAtomic);
     const LegalityQuery Q(P.Opcode, Types, MemDescs);
 
@@ -264,7 +309,8 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
       continue;
     ++Mismatches;
     if (Mismatches <= 20) {
-      OS << "x86-gisel-table-check: MISMATCH " << P.Name << "(";
+      OS << "x86-gisel-table-check: MISMATCH " << P.Name << "(mem "
+         << P.MemBits << ")(";
       for (unsigned I = 0; I < P.NumTypes; ++I) {
         if (I)
           OS << ", ";

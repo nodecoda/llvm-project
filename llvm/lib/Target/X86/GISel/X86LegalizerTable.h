@@ -81,8 +81,8 @@ public:
   uint64_t fills() const { return Fills; }
 
 private:
-  uint16_t fill(unsigned Table, const LegalityQuery &Q, unsigned L0,
-                unsigned L1) const;
+  uint16_t fill(unsigned Table, const LegalityQuery &Q,
+                ArrayRef<unsigned> Local) const;
   static LLT representative(unsigned ClassID);
 
   const LegalizerInfo &LI;
