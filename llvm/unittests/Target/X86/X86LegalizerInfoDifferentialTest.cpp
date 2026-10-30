@@ -242,14 +242,15 @@ static std::string shortLLT(LLT T) {
   return OS.str();
 }
 
+// Action names, not enum values: a failure that says "1 idx=1 to=s32" makes
+// the reader open the header to find out what 1 means.
 static std::string describe(const LegalizeActionStep &S) {
-  std::string Out = std::to_string(static_cast<unsigned>(S.Action));
-  Out += " idx=" + std::to_string(S.TypeIdx);
-  if (S.Action != Legal && S.Action != Unsupported && S.Action != Custom) {
-    raw_string_ostream OS(Out);
-    OS << " to=" << S.NewType;
-  }
-  return Out;
+  std::string Out;
+  raw_string_ostream OS(Out);
+  OS << S.Action;
+  if (S.Action != Legal && S.Action != Unsupported && S.Action != Custom)
+    OS << " idx=" << S.TypeIdx << " to=" << shortLLT(S.NewType);
+  return OS.str();
 }
 
 TEST_F(X86LegalizerDifferentialTest, FeatureBoolsPerConfig) {
