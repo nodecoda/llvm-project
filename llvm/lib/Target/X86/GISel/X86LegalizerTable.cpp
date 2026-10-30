@@ -23,6 +23,9 @@ enum LegalizerTypeClassKind : uint8_t {
   Kind_Pointer = 0,
   Kind_Scalar = 1,
   Kind_Vector = 2,
+  // A vector of pointers is its own kind: LLT::fixed_vector(2, p0) and
+  // LLT::fixed_vector(2, 64) are different types, so they cannot share a class.
+  Kind_PointerVector = 3,
 };
 
 struct LegalizerTypeClass {
@@ -48,12 +51,15 @@ int classifyType(LLT T) {
   // A vector of pointers is a different LLT from a vector of integers of the
   // same shape, and the class list cannot tell them apart yet.  Refuse rather
   // than merge two types the rules distinguish.
-  if (T.isPointerVector())
-    return kPointerVectorClass;
+  const bool IsPointerVector = T.isPointerVector();
   uint8_t Kind;
   unsigned Bits;
   unsigned Lanes = 1;
-  if (T.isPointer()) {
+  if (IsPointerVector) {
+    Kind = Kind_PointerVector;
+    Bits = T.getScalarSizeInBits();
+    Lanes = T.getNumElements();
+  } else if (T.isPointer()) {
     Kind = Kind_Pointer;
     Bits = T.getSizeInBits().getFixedValue();
   } else if (T.isVector()) {
@@ -72,7 +78,9 @@ int classifyType(LLT T) {
     if (X86TypeClasses[I].Kind == Kind && X86TypeClasses[I].ElemBits == Bits &&
         X86TypeClasses[I].Lanes == Lanes)
       return static_cast<int>(I);
-  return kUnknownClass;
+  // A pointer vector that has no class of its own is a gap, not an unknown:
+  // say so, so the count points at the missing class instead of at the type.
+  return IsPointerVector ? kPointerVectorClass : kUnknownClass;
 }
 
 /// Inverse of a table's global -> local map.  Local classes are a partition of
@@ -106,6 +114,8 @@ LLT X86LegalizerTable::representative(unsigned ClassID) {
     return LLT::pointer(0, C.ElemBits);
   case Kind_Vector:
     return LLT::fixed_vector(C.Lanes, C.ElemBits);
+  case Kind_PointerVector:
+    return LLT::fixed_vector(C.Lanes, LLT::pointer(0, C.ElemBits));
   default:
     return LLT::scalar(C.ElemBits);
   }
