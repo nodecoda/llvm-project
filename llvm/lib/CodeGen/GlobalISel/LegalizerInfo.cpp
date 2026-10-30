@@ -340,6 +340,11 @@ void LegalizerInfo::aliasActionDefinitions(unsigned OpcodeTo,
 
 LegalizeActionStep
 LegalizerInfo::getAction(const LegalityQuery &Query) const {
+  if (Table) {
+    LegalizeActionStep Step(LegalizeAction::Unsupported, 0, LLT{});
+    if (Table->lookup(Query, Step))
+      return Step;
+  }
   return getActionDefinitions(Query.Opcode).apply(Query);
 }
 

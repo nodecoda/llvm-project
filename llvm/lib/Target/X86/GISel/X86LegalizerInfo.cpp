@@ -35,6 +35,10 @@ using namespace TargetOpcode;
 using namespace LegalizeActions;
 using namespace LegalityPredicates;
 
+static cl::opt<bool> X86GISelTable(
+    "x86-gisel-table", cl::Hidden, cl::init(false),
+    cl::desc("Answer X86 legalizer queries from a table instead of the rule chains"));
+
 static cl::opt<bool> X86GISelTableCheck(
     "x86-gisel-table-check", cl::Hidden, cl::init(false),
     cl::desc("Check the X86 legalizer table against the rule chains"));
@@ -50,6 +54,9 @@ X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI,
 #include "X86LegalizerInfo.inc"
 
   verify(*STI.getInstrInfo());
+
+  if (X86GISelTable)
+    setTable(std::make_unique<X86LegalizerTable>(*this));
 
   if (X86GISelTableCheck) {
     X86LegalizerTable Table(*this);
