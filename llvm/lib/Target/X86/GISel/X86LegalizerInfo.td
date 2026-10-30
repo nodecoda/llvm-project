@@ -53,6 +53,7 @@ def HasDQI : LegalizeFeature<"Subtarget.hasAVX512() && Subtarget.hasDQI()">;
 def HasBWI : LegalizeFeature<"Subtarget.hasAVX512() && Subtarget.hasBWI()">;
 def UseX87 : LegalizeFeature<"!Subtarget.useSoftFloat() && Subtarget.hasX87()">;
 def HasPOPCNT : LegalizeFeature<"Subtarget.hasPOPCNT()">;
+def HasVPOPCNTDQ : LegalizeFeature<"Subtarget.hasVPOPCNTDQ()">;
 def HasLZCNT : LegalizeFeature<"Subtarget.hasLZCNT()">;
 def HasBMI : LegalizeFeature<"Subtarget.hasBMI()">;
 
@@ -66,6 +67,7 @@ def SSE1OrX87 : LegalizePredicateDag<(any_of HasSSE1, UseX87)>;
 def SSE2OrX87 : LegalizePredicateDag<(any_of HasSSE2, UseX87)>;
 def DQIAndVLX : LegalizePredicateDag<(all_of HasDQI, HasVLX)>;
 def POPCNTAnd64Bit : LegalizePredicateDag<(all_of HasPOPCNT, Is64Bit)>;
+def VPOPCNTAndVLX : LegalizePredicateDag<(all_of HasVPOPCNTDQ, HasVLX)>;
 def LZCNTAnd64Bit : LegalizePredicateDag<(all_of HasLZCNT, Is64Bit)>;
 def BMIAnd64Bit : LegalizePredicateDag<(all_of HasBMI, Is64Bit)>;
 def SSE1And64Bit : LegalizePredicateDag<(all_of HasSSE1, Is64Bit)>;
@@ -454,6 +456,14 @@ def X86_CTPOP : LegalizeRuleSet<["G_CTPOP"]> {
   let Rules = [
     LegalForPairsIf<HasPOPCNT, [LegalizeTypePair<X86_s16, X86_s16>, LegalizeTypePair<X86_s32, X86_s32>]>,
     LegalForPairsIf<POPCNTAnd64Bit, [LegalizeTypePair<X86_s64, X86_s64>]>,
+    LegalForPairsIf<HasVPOPCNTDQ,
+                    [LegalizeTypePair<X86_v16s32, X86_v16s32>,
+                     LegalizeTypePair<X86_v8s64, X86_v8s64>]>,
+    LegalForPairsIf<VPOPCNTAndVLX,
+                    [LegalizeTypePair<X86_v4s32, X86_v4s32>,
+                     LegalizeTypePair<X86_v8s32, X86_v8s32>,
+                     LegalizeTypePair<X86_v2s64, X86_v2s64>,
+                     LegalizeTypePair<X86_v4s64, X86_v4s64>]>,
     WidenScalarToNextPow2<1, 16>,
     ClampScalar<1, X86_s16, X86_sMaxScalar>,
     ScalarSameSizeAs<0, 1>,
