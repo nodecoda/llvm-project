@@ -91,6 +91,17 @@ add_custom_command(
   COMMENT "Checking GlobalISel legalizer pins"
   VERBATIM)
 
+set(X86_CTPOP_GOLDEN ${CMAKE_CURRENT_SOURCE_DIR}/x86-ctpop-report.json)
+add_custom_command(
+  OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/x86-ctpop-report.h
+  COMMAND ${CMAKE_COMMAND} -DGOLDEN=${X86_CTPOP_GOLDEN}
+    -DOUT=${CMAKE_CURRENT_BINARY_DIR}/x86-ctpop-report.h
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/generate-legalizer-golden.cmake
+  DEPENDS ${X86_CTPOP_GOLDEN}
+          ${CMAKE_CURRENT_SOURCE_DIR}/generate-legalizer-golden.cmake
+  COMMENT "Embedding the G_CTPOP differential golden table"
+  VERBATIM)
+
 set(LLVM_LINK_COMPONENTS
   Analysis
   AsmParser
@@ -114,6 +125,7 @@ set(LLVM_LINK_COMPONENTS
 add_llvm_unittest(X86Tests
   ${TABLEGEN_OUTPUT}
   x86-legalizer-pins.h
+  x86-ctpop-report.h
   MachineSizeOptsTest.cpp
   TernlogTest.cpp
   X86LegalizerInfoDifferentialTest.cpp

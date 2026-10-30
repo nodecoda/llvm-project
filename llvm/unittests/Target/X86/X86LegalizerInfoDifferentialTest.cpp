@@ -27,6 +27,7 @@
 #include "X86TargetMachine.h"
 #include "x86-ctpop-atoms.h"
 #include "x86-legalizer-pins.h"
+#include "x86-ctpop-report.h"
 #include "llvm/CodeGen/GlobalISel/LegalizerInfo.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/IR/Function.h"
@@ -402,6 +403,40 @@ TEST_F(X86LegalizerDifferentialTest, ReportIsDeterministic) {
   EXPECT_EQ(First.Atoms, Second.Atoms);
   EXPECT_EQ(First.Text.size(), Second.Text.size());
   EXPECT_EQ(First.Text, Second.Text) << "two runs in one process disagree";
+}
+
+// Not a test.  Run it to regenerate x86-ctpop-report.json after a change to
+// the table that is meant to be visible in the review:
+//
+//   X86Tests --gtest_also_run_disabled_tests --gtest_filter=*DumpReport \
+//     | grep '^{' > llvm/unittests/Target/X86/x86-ctpop-report.json
+TEST_F(X86LegalizerDifferentialTest, DISABLED_DumpReport) {
+  std::fputs(renderReport().Text.c_str(), stdout);
+}
+
+// The committed table is the review artifact: 126 lines, one per atom, with
+// the oracle's answer next to the generated table's.  A reviewer can read the
+// whole quotient instead of trusting a count, and a later change that moves an
+// atom has to show up as a diff in this file.  It also covers TC-26: the table
+// must be reproduced byte for byte across processes and machines, which a
+// checked-in golden proves more cheaply than a second binary would.
+TEST_F(X86LegalizerDifferentialTest, ReportMatchesCommittedGolden) {
+  std::string Got = renderReport().Text;
+  std::string Want = X86CtpopGoldenReport;
+  if (Got == Want) {
+    EXPECT_EQ(Got.size(), Want.size());
+    return;
+  }
+  // Report the first line that moved rather than two 20 KB strings.
+  size_t Line = 0, Off = 0;
+  while (Off < Got.size() && Off < Want.size() && Got[Off] == Want[Off]) {
+    Line += Got[Off] == '\n';
+    ++Off;
+  }
+  size_t GotEnd = Got.find('\n', Off), WantEnd = Want.find('\n', Off);
+  EXPECT_EQ(Want.substr(Off, WantEnd - Off), Got.substr(Off, GotEnd - Off))
+      << "first difference at line " << Line + 1
+      << " (regenerate with the DISABLED_DumpReport command above)";
 }
 
 //===----------------------------------------------------------------------===//
