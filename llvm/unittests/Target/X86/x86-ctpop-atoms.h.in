@@ -5,4 +5,28 @@
 #define LLVM_UNITTESTS_TARGET_X86_X86_CTPOP_ATOMS_H
 #define X86_CTPOP_ATOM_COUNT @X86_CTPOP_ATOM_COUNT@
 #define X86_CTPOP_ATOMS_FNV1A64 "@X86_CTPOP_ATOMS_FNV1A64@"
+
+// The JSON is the reviewed source of truth for the quotient; these tables are
+// its transcription, so the C++ corpus can be compared against it field by
+// field instead of only by count and hash.
+struct X86AtomSigma {
+  const char *ID;
+  const char *Triple;
+  const char *Features;
+  bool Is64;
+  bool AVX512;
+  bool VPOPCNTDQ;
+  bool VLX;
+  bool POPCNT;
+};
+static const X86AtomSigma X86_CTPOP_SIGMAS[] = {
+@X86_CTPOP_SIGMA_ROWS@};
+
+struct X86AtomType {
+  const char *ID;
+  const char *Dst;
+  const char *Src;
+};
+static const X86AtomType X86_CTPOP_TYPES[] = {
+@X86_CTPOP_TYPE_ROWS@};
 #endif

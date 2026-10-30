@@ -13,6 +13,40 @@ file(READ ${X86_CTPOP_ATOMS_JSON} X86_CTPOP_ATOMS_CONTENT)
 string(JSON X86_CTPOP_ATOM_COUNT GET "${X86_CTPOP_ATOMS_CONTENT}" count)
 string(JSON X86_CTPOP_ATOMS_FNV1A64 GET "${X86_CTPOP_ATOMS_CONTENT}"
        canonical_fnv1a64)
+
+# Transcribe the two tables so the C++ corpus can be checked against the JSON
+# field by field.  The hash above only covers the atom identities, so a sigma
+# whose features drifted would otherwise be invisible.
+set(X86_CTPOP_SIGMA_ROWS "")
+string(JSON _n LENGTH "${X86_CTPOP_ATOMS_CONTENT}" sigmas)
+math(EXPR _last "${_n} - 1")
+foreach(_i RANGE ${_last})
+  foreach(_k id triple features)
+    string(JSON _${_k} GET "${X86_CTPOP_ATOMS_CONTENT}" sigmas ${_i} ${_k})
+  endforeach()
+  # string(JSON) hands booleans back as CMake's ON/OFF; emit C++ literals.
+  foreach(_k is64 avx512 vpopcntdq vlx popcnt)
+    string(JSON _v GET "${X86_CTPOP_ATOMS_CONTENT}" sigmas ${_i} ${_k})
+    if(_v)
+      set(_${_k} true)
+    else()
+      set(_${_k} false)
+    endif()
+  endforeach()
+  string(APPEND X86_CTPOP_SIGMA_ROWS
+    "  {\"${_id}\", \"${_triple}\", \"${_features}\", ${_is64}, ${_avx512}, ${_vpopcntdq}, ${_vlx}, ${_popcnt}},\n")
+endforeach()
+
+set(X86_CTPOP_TYPE_ROWS "")
+string(JSON _n LENGTH "${X86_CTPOP_ATOMS_CONTENT}" types)
+math(EXPR _last "${_n} - 1")
+foreach(_i RANGE ${_last})
+  foreach(_k id dst src)
+    string(JSON _${_k} GET "${X86_CTPOP_ATOMS_CONTENT}" types ${_i} ${_k})
+  endforeach()
+  string(APPEND X86_CTPOP_TYPE_ROWS
+    "  {\"${_id}\", \"${_dst}\", \"${_src}\"},\n")
+endforeach()
 configure_file(x86-ctpop-atoms.h.in
                ${CMAKE_CURRENT_BINARY_DIR}/x86-ctpop-atoms.h @ONLY)
 include_directories(${CMAKE_CURRENT_BINARY_DIR})

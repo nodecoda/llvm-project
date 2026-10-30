@@ -34,6 +34,7 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/MC/TargetRegistry.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
@@ -226,6 +227,21 @@ static bool stepsAgree(const LegalizeActionStep &A, const LegalizeActionStep &B)
   return A.TypeIdx == B.TypeIdx && A.NewType == B.NewType;
 }
 
+// The spelling the corpus JSON uses ("v4s32", "s200"), which is also what a
+// reader of the committed report expects.  LLT's own operator<< prints
+// "<4 x s32>", so the two must not be mixed.
+static std::string shortLLT(LLT T) {
+  std::string S;
+  raw_string_ostream OS(S);
+  if (T.isVector())
+    OS << "v" << T.getNumElements() << "s" << T.getScalarSizeInBits();
+  else if (T.isPointer())
+    OS << "p" << T.getAddressSpace() << ":" << T.getSizeInBits();
+  else
+    OS << "s" << T.getSizeInBits();
+  return OS.str();
+}
+
 static std::string describe(const LegalizeActionStep &S) {
   std::string Out = std::to_string(static_cast<unsigned>(S.Action));
   Out += " idx=" + std::to_string(S.TypeIdx);
@@ -263,7 +279,8 @@ static uint64_t canonicalAtomHash() {
   raw_string_ostream OS(Line);
   for (const Config &C : Configs)
     for (const TypeClass &T : typeClasses()) {
-      OS << C.ID << "|G_CTPOP|" << T.Dst << "|" << T.Src << "|none|unused\n";
+      OS << C.ID << "|G_CTPOP|" << shortLLT(T.Dst) << "|" << shortLLT(T.Src)
+         << "|none|unused\n";
       OS.flush();
       Mix(Line);
       Line.clear();
@@ -292,6 +309,10 @@ TEST_F(X86LegalizerDifferentialTest, ComparatorDetectsEachField) {
       << "NewType comparison must be exact";
 }
 
+// The JSON is the reviewed source of truth; the C++ tables are its hand
+// transcription.  The hash covers the atom identities only, so every field is
+// also compared directly: a sigma whose feature string drifted, or a type whose
+// LLT changed while keeping its ID, would otherwise pass.
 TEST_F(X86LegalizerDifferentialTest, FrozenCorpusMatchesJson) {
   EXPECT_EQ(typeClasses().size() * std::size(Configs),
             (size_t)X86_CTPOP_ATOM_COUNT);
@@ -299,6 +320,30 @@ TEST_F(X86LegalizerDifferentialTest, FrozenCorpusMatchesJson) {
   snprintf(Buf, sizeof(Buf), "%016llx", (unsigned long long)canonicalAtomHash());
   EXPECT_STREQ(X86_CTPOP_ATOMS_FNV1A64, Buf)
       << "atom table drifted from x86-ctpop-atoms.json";
+
+  ASSERT_EQ(std::size(X86_CTPOP_SIGMAS), std::size(Configs));
+  for (size_t I = 0; I != std::size(Configs); ++I) {
+    const X86AtomSigma &J = X86_CTPOP_SIGMAS[I];
+    const Config &C = Configs[I];
+    EXPECT_STREQ(J.ID, C.ID);
+    EXPECT_STREQ(J.Triple, C.Triple) << C.ID;
+    EXPECT_STREQ(J.Features, C.FS) << C.ID;
+    EXPECT_EQ(J.Is64, C.Is64) << C.ID;
+    EXPECT_EQ(J.AVX512, C.AVX512) << C.ID;
+    EXPECT_EQ(J.VPOPCNTDQ, C.VPOPCNTDQ) << C.ID;
+    EXPECT_EQ(J.VLX, C.VLX) << C.ID;
+    EXPECT_EQ(J.POPCNT, C.POPCNT) << C.ID;
+  }
+
+  std::vector<TypeClass> Types = typeClasses();
+  ASSERT_EQ(std::size(X86_CTPOP_TYPES), Types.size());
+  for (size_t I = 0; I != Types.size(); ++I) {
+    const X86AtomType &J = X86_CTPOP_TYPES[I];
+    const TypeClass &T = Types[I];
+    EXPECT_STREQ(J.ID, T.ID);
+    EXPECT_EQ(J.Dst, shortLLT(T.Dst)) << T.ID;
+    EXPECT_EQ(J.Src, shortLLT(T.Src)) << T.ID;
+  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -313,7 +358,8 @@ TEST_F(X86LegalizerDifferentialTest, FrozenCorpusMatchesJson) {
 static void renderStepJson(raw_ostream &OS, const LegalizeActionStep &S) {
   OS << "{\"action\":\"" << S.Action << "\"";
   if (S.Action != Legal && S.Action != Unsupported && S.Action != Custom)
-    OS << ",\"idx\":" << S.TypeIdx << ",\"to\":\"" << S.NewType << "\"";
+    OS << ",\"idx\":" << S.TypeIdx << ",\"to\":\"" << shortLLT(S.NewType)
+       << "\"";
   OS << "}";
 }
 
@@ -360,8 +406,9 @@ static Report renderReport() {
         ++R.Diffs;
 
       Json << "{\"atom\":\"x86/g_ctpop/" << C.ID << "/" << T.ID << "\",\"sigma\":\""
-           << C.FS << "\",\"opcode\":\"G_CTPOP\",\"types\":[\"" << T.Dst
-           << "\",\"" << T.Src << "\"],\"expected\":";
+           << C.FS << "\",\"opcode\":\"G_CTPOP\",\"types\":[\""
+           << shortLLT(T.Dst) << "\",\"" << shortLLT(T.Src)
+           << "\"],\"expected\":";
       renderStepJson(Json, A);
       Json << ",\"actual\":";
       renderStepJson(Json, B);
@@ -478,6 +525,154 @@ TEST_F(X86LegalizerDifferentialTest, EscapeAccounting) {
       << "X86_CTPOP no longer has exactly one nonliteral_type escape whose "
          "reason names clampScalar";
   EXPECT_EQ(X86_PIN_CTPOP_ESCAPES_ACTUAL, 1);
+}
+
+//===----------------------------------------------------------------------===//
+// Corpus health (TC-05, TC-07)
+//===----------------------------------------------------------------------===//
+//
+// These do not check that the two tables agree; they check that the quotient
+// can see anything at all.  A corpus that answered the same way everywhere
+// would make the differential pass no matter what the table said.
+
+// The oracle's answer for every atom, indexed [config][type].
+static std::vector<std::vector<LegalizeActionStep>> oracleSteps() {
+  std::vector<std::vector<LegalizeActionStep>> Out;
+  for (const Config &C : Configs) {
+    Sigma S = makeSigma(C);
+    EXPECT_TRUE(S.STI) << "no subtarget for " << C.ID;
+    Out.emplace_back();
+    if (!S.STI)
+      continue;
+    X86LegalizerInfoReference Oracle(
+        *S.STI, *static_cast<const X86TargetMachine *>(S.TM.get()));
+    for (const TypeClass &T : typeClasses()) {
+      LLT Types[] = {T.Dst, T.Src};
+      Out.back().push_back(Oracle.getAction(LegalityQuery(G_CTPOP, Types)));
+    }
+  }
+  return Out;
+}
+
+static unsigned countStepDiffs(const std::vector<LegalizeActionStep> &A,
+                               const std::vector<LegalizeActionStep> &B) {
+  if (A.size() != B.size())
+    return 0;
+  unsigned N = 0;
+  for (size_t I = 0; I < A.size(); ++I)
+    N += !stepsAgree(A[I], B[I]);
+  return N;
+}
+
+// TC-05: every query is a two-slot, immediate-free, memory-free G_CTPOP.  The
+// builder is three lines long, but the corpus's FNV anchor assumes exactly
+// this shape ("...|none|unused"), so the shape is asserted rather than assumed.
+TEST_F(X86LegalizerDifferentialTest, QueryShape) {
+  unsigned NonDiagonal = 0;
+  for (const Config &C : Configs) {
+    Sigma S = makeSigma(C);
+    ASSERT_TRUE(S.STI) << C.ID;
+    X86LegalizerInfoReference Oracle(
+        *S.STI, *static_cast<const X86TargetMachine *>(S.TM.get()));
+    for (const TypeClass &T : typeClasses()) {
+      LLT Types[] = {T.Dst, T.Src};
+      LegalityQuery Q(G_CTPOP, Types);
+      EXPECT_EQ(Q.Opcode, (unsigned)G_CTPOP) << C.ID << "/" << T.ID;
+      ASSERT_EQ(Q.Types.size(), 2u) << C.ID << "/" << T.ID;
+      EXPECT_EQ(Q.Types[0], T.Dst) << C.ID << "/" << T.ID;
+      EXPECT_EQ(Q.Types[1], T.Src) << C.ID << "/" << T.ID;
+      EXPECT_TRUE(Q.MMODescrs.empty()) << C.ID << "/" << T.ID;
+      EXPECT_TRUE(Q.Immediates.empty()) << C.ID << "/" << T.ID;
+
+      // Slot order is observable, otherwise the non-diagonal entries (N0, N1)
+      // would be the same test twice.
+      if (T.Dst == T.Src)
+        continue;
+      LLT Reversed[] = {T.Src, T.Dst};
+      if (!stepsAgree(Oracle.getAction(Q),
+                      Oracle.getAction(LegalityQuery(G_CTPOP, Reversed))))
+        ++NonDiagonal;
+    }
+  }
+  EXPECT_GT(NonDiagonal, 0u) << "no atom is sensitive to type slot order";
+}
+
+// TC-07: the corpus must discriminate.  The four claims below are counts over
+// the whole quotient; none of them names an atom, so relaxing the corpus shows
+// up as a failed count rather than as a silently smaller test.
+TEST_F(X86LegalizerDifferentialTest, CorpusIsDiscriminating) {
+  auto Steps = oracleSteps();
+  ASSERT_EQ(Steps.size(), std::size(Configs));
+  for (const auto &S : Steps)
+    ASSERT_EQ(S.size(), typeClasses().size());
+
+  // (a) C1 and C2 differ only by VLX, and the corpus must see that.
+  EXPECT_GT(countStepDiffs(Steps[1], Steps[2]), 0u) << "C1 vs C2";
+  // (b) C1 and C5 differ only by VPOPCNTDQ; the 512-bit atoms must see that.
+  EXPECT_GT(countStepDiffs(Steps[1], Steps[5]), 0u) << "C1 vs C5";
+  // (c) C2 and C6 differ only by VPOPCNTDQ; the 128/256-bit atoms must see it.
+  EXPECT_GT(countStepDiffs(Steps[2], Steps[6]), 0u) << "C2 vs C6";
+  // (d) C5 and C6 agree on every legal answer, because the two guards only
+  // differ when VPOPCNTDQ is present and C5/C6 both lack it.  Asserting this
+  // is the reason the mutant tables exist: within the quotient no *legitimate*
+  // configuration can tell HasVLX from VPOPCNTAndVLX, so only a table whose
+  // guard was corrupted can.
+  EXPECT_EQ(countStepDiffs(Steps[5], Steps[6]), 0u)
+      << "C5 and C6 became distinguishable; the mutant tests' premise is stale";
+}
+
+//===----------------------------------------------------------------------===//
+// Report round trip (TC-06)
+//===----------------------------------------------------------------------===//
+//
+// The report is written by hand, so "it is valid JSON" is a claim, not a
+// definition.  Parse every line, re-serialise it, parse that again, and require
+// the two values to be equal: the text is a fixed point of a real parser, and
+// the schema is what the test says it is.  Byte equality after re-serialisation
+// is deliberately not asserted: llvm::json::Object is DenseMap-backed, so the
+// order a re-serialiser picks is an implementation detail.  The report's own
+// byte stability is covered by ReportIsDeterministic (TC-27) and by the
+// committed golden table.
+
+TEST_F(X86LegalizerDifferentialTest, ReportRoundTripsThroughJson) {
+  std::string Text = renderReport().Text;
+  SmallVector<StringRef, 128> Lines;
+  StringRef(Text).split(Lines, '\n', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
+  ASSERT_EQ(Lines.size(), (size_t)X86_CTPOP_ATOM_COUNT + 1);
+
+  for (StringRef Line : Lines) {
+    Expected<json::Value> Parsed = json::parse(Line);
+    if (!Parsed) {
+      ADD_FAILURE() << Line << "\n" << toString(Parsed.takeError());
+      continue;
+    }
+    const json::Object *Obj = Parsed->getAsObject();
+    ASSERT_NE(Obj, nullptr) << Line;
+
+    if (Obj->get("atom")) {
+      EXPECT_EQ(Obj->size(), 8u) << "atom record schema changed: " << Line;
+      EXPECT_EQ(Obj->getString("opcode").value_or(""), "G_CTPOP");
+      std::optional<StringRef> Status = Obj->getString("status");
+      ASSERT_TRUE(Status) << Line;
+      EXPECT_TRUE(*Status == "ok" || *Status == "diff") << Line;
+      const json::Array *Types = Obj->getArray("types");
+      ASSERT_NE(Types, nullptr) << Line;
+      EXPECT_EQ(Types->size(), 2u) << Line;
+      EXPECT_TRUE(Obj->getBoolean("custom")) << "custom must be a bool";
+    } else {
+      EXPECT_EQ(Obj->size(), 5u) << "summary schema changed: " << Line;
+    }
+
+    std::string ReSerialized;
+    raw_string_ostream OS(ReSerialized);
+    OS << *Parsed;
+    Expected<json::Value> Reparsed = json::parse(ReSerialized);
+    if (!Reparsed) {
+      ADD_FAILURE() << ReSerialized << "\n" << toString(Reparsed.takeError());
+      continue;
+    }
+    EXPECT_TRUE(*Parsed == *Reparsed) << "round trip changed the report";
+  }
 }
 
 //===----------------------------------------------------------------------===//

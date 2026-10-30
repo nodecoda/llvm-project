@@ -4,7 +4,7 @@
   "comment": "Frozen quotient for the X86 G_CTPOP legalizer differential test. Hand-derived from the hand-written rule chain, reviewed once. Exhaustive over this vocabulary, not over all LegalityQuery values.",
   "opcode": "G_CTPOP",
   "count": 126,
-  "canonical_fnv1a64": "1d14c96368102d3f",
+  "canonical_fnv1a64": "2523241097635f47",
   "pins": {
     "comment": "FR-14: the SUT of the differential test must be this exact tuple. Source blobs, the generated .inc and the Core IR hash are compared by the X86LegalizerPins gtest; tblgen_binary_sha256 and base_commit are recorded provenance (machine-local / git history) and are not compared in CI. Update the block by pasting the ACTUAL values printed when X86LegalizerPins fails.",
     "base_commit": "ebac17721d12",
@@ -20,13 +20,20 @@
     "core_ir_ctpop_clamp_escapes": 1
   },
   "sigmas": [
-    {"id": "C0", "triple": "x86_64", "features": "+popcnt", "is64": true,  "avx512": false, "vpopcntdq": false, "vlx": false},
-    {"id": "C1", "triple": "x86_64", "features": "+popcnt,+avx512f,+avx512vpopcntdq", "is64": true, "avx512": true, "vpopcntdq": true, "vlx": false},
-    {"id": "C2", "triple": "x86_64", "features": "+popcnt,+avx512f,+avx512vl,+avx512vpopcntdq", "is64": true, "avx512": true, "vpopcntdq": true, "vlx": true},
-    {"id": "C3", "triple": "x86_64", "features": "", "is64": true, "avx512": false, "vpopcntdq": false, "vlx": false},
-    {"id": "C4", "triple": "i386", "features": "+popcnt", "is64": false, "avx512": false, "vpopcntdq": false, "vlx": false},
-    {"id": "C5", "triple": "x86_64", "features": "+popcnt,+avx512f", "is64": true, "avx512": true, "vpopcntdq": false, "vlx": false},
-    {"id": "C6", "triple": "x86_64", "features": "+popcnt,+avx512f,+avx512vl", "is64": true, "avx512": true, "vpopcntdq": false, "vlx": true}
+    {"id": "C0", "triple": "x86_64", "features": "+popcnt", "is64": true,  "avx512": false, "vpopcntdq": false, "vlx": false,
+      "popcnt": true},
+    {"id": "C1", "triple": "x86_64", "features": "+popcnt,+avx512f,+avx512vpopcntdq", "is64": true, "avx512": true, "vpopcntdq": true, "vlx": false,
+      "popcnt": true},
+    {"id": "C2", "triple": "x86_64", "features": "+popcnt,+avx512f,+avx512vl,+avx512vpopcntdq", "is64": true, "avx512": true, "vpopcntdq": true, "vlx": true,
+      "popcnt": true},
+    {"id": "C3", "triple": "x86_64", "features": "", "is64": true, "avx512": false, "vpopcntdq": false, "vlx": false,
+      "popcnt": false},
+    {"id": "C4", "triple": "i386", "features": "+popcnt", "is64": false, "avx512": false, "vpopcntdq": false, "vlx": false,
+      "popcnt": true},
+    {"id": "C5", "triple": "x86_64", "features": "+popcnt,+avx512f", "is64": true, "avx512": true, "vpopcntdq": false, "vlx": false,
+      "popcnt": true},
+    {"id": "C6", "triple": "x86_64", "features": "+popcnt,+avx512f,+avx512vl", "is64": true, "avx512": true, "vpopcntdq": false, "vlx": true,
+      "popcnt": true}
   ],
   "types": [
     {"id": "T0", "dst": "s8", "src": "s8"},
