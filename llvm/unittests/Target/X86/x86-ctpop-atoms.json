@@ -1,0 +1,37 @@
+{
+  "schema": "llvm.gisel.legalizer-atoms",
+  "version": 1,
+  "comment": "Frozen quotient for the X86 G_CTPOP legalizer differential test. Hand-derived from the hand-written rule chain, reviewed once. Exhaustive over this vocabulary, not over all LegalityQuery values.",
+  "opcode": "G_CTPOP",
+  "count": 126,
+  "canonical_fnv1a64": "1d14c96368102d3f",
+  "sigmas": [
+    {"id": "C0", "triple": "x86_64", "features": "+popcnt", "is64": true,  "avx512": false, "vpopcntdq": false, "vlx": false},
+    {"id": "C1", "triple": "x86_64", "features": "+popcnt,+avx512f,+avx512vpopcntdq", "is64": true, "avx512": true, "vpopcntdq": true, "vlx": false},
+    {"id": "C2", "triple": "x86_64", "features": "+popcnt,+avx512f,+avx512vl,+avx512vpopcntdq", "is64": true, "avx512": true, "vpopcntdq": true, "vlx": true},
+    {"id": "C3", "triple": "x86_64", "features": "", "is64": true, "avx512": false, "vpopcntdq": false, "vlx": false},
+    {"id": "C4", "triple": "i386", "features": "+popcnt", "is64": false, "avx512": false, "vpopcntdq": false, "vlx": false},
+    {"id": "C5", "triple": "x86_64", "features": "+popcnt,+avx512f", "is64": true, "avx512": true, "vpopcntdq": false, "vlx": false},
+    {"id": "C6", "triple": "x86_64", "features": "+popcnt,+avx512f,+avx512vl", "is64": true, "avx512": true, "vpopcntdq": false, "vlx": true}
+  ],
+  "types": [
+    {"id": "T0", "dst": "s8", "src": "s8"},
+    {"id": "T1", "dst": "s16", "src": "s16"},
+    {"id": "T2", "dst": "s32", "src": "s32"},
+    {"id": "T3", "dst": "s64", "src": "s64"},
+    {"id": "T4", "dst": "s128", "src": "s128"},
+    {"id": "T5", "dst": "v4s32", "src": "v4s32"},
+    {"id": "T6", "dst": "v8s32", "src": "v8s32"},
+    {"id": "T7", "dst": "v2s64", "src": "v2s64"},
+    {"id": "T8", "dst": "v4s64", "src": "v4s64"},
+    {"id": "T9", "dst": "v16s32", "src": "v16s32"},
+    {"id": "T10", "dst": "v8s64", "src": "v8s64"},
+    {"id": "T11", "dst": "v16s8", "src": "v16s8"},
+    {"id": "T12", "dst": "v2s32", "src": "v2s32"},
+    {"id": "T13", "dst": "s7", "src": "s7"},
+    {"id": "T14", "dst": "s24", "src": "s24"},
+    {"id": "N0", "dst": "s128", "src": "s64"},
+    {"id": "N1", "dst": "s64", "src": "s32"},
+    {"id": "B0", "dst": "s200", "src": "s200"}
+  ]
+}

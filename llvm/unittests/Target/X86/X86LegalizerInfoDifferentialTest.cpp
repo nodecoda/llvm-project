@@ -25,6 +25,7 @@
 #include "X86LegalizerInfoReference.h"
 #include "X86Subtarget.h"
 #include "X86TargetMachine.h"
+#include "x86-ctpop-atoms.h"
 #include "llvm/CodeGen/GlobalISel/LegalizerInfo.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/IR/Function.h"
@@ -157,6 +158,18 @@ static Sigma makeSigma(const Config &C) {
   return S;
 }
 
+// The comparison predicate.  It must be sensitive to all three fields:
+// comparing only the action would miss a table that widens to the wrong type,
+// and comparing only the mutation would miss a table that legalizes where the
+// other widens.
+static bool stepsAgree(const LegalizeActionStep &A, const LegalizeActionStep &B) {
+  if (A.Action != B.Action)
+    return false;
+  if (A.Action == Legal || A.Action == Unsupported || A.Action == Custom)
+    return true;
+  return A.TypeIdx == B.TypeIdx && A.NewType == B.NewType;
+}
+
 static std::string describe(const LegalizeActionStep &S) {
   std::string Out = std::to_string(static_cast<unsigned>(S.Action));
   Out += " idx=" + std::to_string(S.TypeIdx);
@@ -178,8 +191,57 @@ TEST_F(X86LegalizerDifferentialTest, FeatureBoolsPerConfig) {
   }
 }
 
-TEST_F(X86LegalizerDifferentialTest, AtomCount) {
-  EXPECT_EQ(std::size(Configs) * typeClasses().size(), 126u);
+// FNV-1a over the canonical rendering of every atom in table order.  The
+// expected value lives in x86-ctpop-atoms.json; CMake extracts it into the
+// generated header above, so any drift in this table breaks the build's test.
+static uint64_t canonicalAtomHash() {
+  uint64_t H = 1469598103934665603ull;
+  auto Mix = [&](StringRef S) {
+    for (unsigned char C : S) {
+      H ^= C;
+      H *= 1099511628211ull;
+    }
+  };
+  std::string Line;
+  raw_string_ostream OS(Line);
+  for (const Config &C : Configs)
+    for (const TypeClass &T : typeClasses()) {
+      OS << C.ID << "|G_CTPOP|" << T.Dst << "|" << T.Src << "|none|unused\n";
+      OS.flush();
+      Mix(Line);
+      Line.clear();
+    }
+  return H;
+}
+
+// Falsification of the comparator itself.  Each case flips exactly one field
+// and must be reported as a difference; a comparator that ignored any one of
+// them would make the differential silently vacuous.
+TEST_F(X86LegalizerDifferentialTest, ComparatorDetectsEachField) {
+  const LLT S16 = LLT::scalar(16), S32 = LLT::scalar(32), S64 = LLT::scalar(64);
+  LegalizeActionStep Base(WidenScalar, 0, S32);
+  EXPECT_TRUE(stepsAgree(Base, Base));
+
+  LegalizeActionStep OtherAction(Legal, 0, S32);
+  EXPECT_FALSE(stepsAgree(Base, OtherAction)) << "Action flip not detected";
+
+  LegalizeActionStep OtherIdx(WidenScalar, 1, S32);
+  EXPECT_FALSE(stepsAgree(Base, OtherIdx)) << "TypeIdx flip not detected";
+
+  LegalizeActionStep OtherTy(WidenScalar, 0, S64);
+  EXPECT_FALSE(stepsAgree(Base, OtherTy)) << "NewType flip not detected";
+
+  EXPECT_FALSE(stepsAgree(Base, LegalizeActionStep(WidenScalar, 0, S16)))
+      << "NewType comparison must be exact";
+}
+
+TEST_F(X86LegalizerDifferentialTest, FrozenCorpusMatchesJson) {
+  EXPECT_EQ(typeClasses().size() * std::size(Configs),
+            (size_t)X86_CTPOP_ATOM_COUNT);
+  char Buf[32];
+  snprintf(Buf, sizeof(Buf), "%016llx", (unsigned long long)canonicalAtomHash());
+  EXPECT_STREQ(X86_CTPOP_ATOMS_FNV1A64, Buf)
+      << "atom table drifted from x86-ctpop-atoms.json";
 }
 
 TEST_F(X86LegalizerDifferentialTest, FirstStepDifferential) {
@@ -202,9 +264,7 @@ TEST_F(X86LegalizerDifferentialTest, FirstStepDifferential) {
         ++LegalBoth;
       if (A.Action == Unsupported && B.Action == Unsupported)
         ++UnsupportedBoth;
-      if (A.Action == B.Action && A.TypeIdx == B.TypeIdx &&
-          (A.Action == Legal || A.Action == Unsupported ||
-           A.Action == Custom || A.NewType == B.NewType))
+      if (stepsAgree(A, B))
         continue;
       ++Diffs;
       raw_string_ostream OS(Report);

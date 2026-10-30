@@ -1,0 +1,8 @@
+//===-- x86-ctpop-atoms.h.in ------------------------------------*- C++ -*-==//
+// Generated from x86-ctpop-atoms.json at CMake configure time. Do not edit.
+//===----------------------------------------------------------------------===//
+#ifndef LLVM_UNITTESTS_TARGET_X86_X86_CTPOP_ATOMS_H
+#define LLVM_UNITTESTS_TARGET_X86_X86_CTPOP_ATOMS_H
+#define X86_CTPOP_ATOM_COUNT @X86_CTPOP_ATOM_COUNT@
+#define X86_CTPOP_ATOMS_FNV1A64 "@X86_CTPOP_ATOMS_FNV1A64@"
+#endif
