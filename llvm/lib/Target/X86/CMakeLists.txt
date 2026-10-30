@@ -27,6 +27,9 @@ tablegen(LLVM X86GenPostLegalizeGICombiner.inc -gen-global-isel-combiner
 
 set(LLVM_TARGET_DEFINITIONS GISel/X86LegalizerInfo.td)
 tablegen(LLVM X86LegalizerInfo.inc -gen-legalizer)
+# The key partition and the table descriptors come from the same .td, so the
+# table cannot drift from the rules: regenerating one regenerates both.
+tablegen(LLVM X86LegalizerTable.inc -gen-legalizer-table)
 
 set(LLVM_TARGET_DEFINITIONS X86Options.td)
 tablegen(LLVM X86Options.inc -gen-opt-parser-defs)
