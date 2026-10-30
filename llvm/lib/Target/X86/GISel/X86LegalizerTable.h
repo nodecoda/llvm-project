@@ -1,0 +1,88 @@
+//===-- X86LegalizerTable.h -------------------------------------*- C++ -*-===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+/// \file
+/// A table-driven view of the X86 legalizer rules.
+///
+/// The rules stay in X86LegalizerInfo.td.  This class only answers "which rule
+/// wins for this shape" by indexing a table instead of walking the comparison
+/// chain: one classify per keyed slot and one array load per query.
+///
+/// The table is filled lazily, one cell at a time, from whatever the rule
+/// chain answers for that cell's key.  Filling from the chain means the table
+/// cannot invent an answer the chain would not give; what it *can* expose is
+/// a key that merges two types the rules treat differently, which is exactly
+/// what selfCheck() is for.
+//===----------------------------------------------------------------------===//
+
+#ifndef LLVM_LIB_TARGET_X86_GISEL_X86LEGALIZERTABLE_H
+#define LLVM_LIB_TARGET_X86_GISEL_X86LEGALIZERTABLE_H
+
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/CodeGen/GlobalISel/LegalizerInfo.h"
+#include <cstdint>
+#include <vector>
+
+namespace llvm {
+
+class raw_ostream;
+
+class X86LegalizerTable {
+public:
+  /// What the table could say about a query.
+  enum class Answer : uint8_t {
+    /// The cell held an answer; the result carries it.
+    Hit,
+    /// The cell is opaque: the caller must fall back to the rule chain.
+    Escape,
+    /// A keyed type is not one of the classes the table was built for.
+    Outside,
+    /// A keyed type is a vector of pointers, which the class list cannot
+    /// express yet.  Kept apart from Outside so the gap is counted, not hidden.
+    PointerVector,
+    /// The table has no entry for this opcode at all.
+    Untabulated,
+  };
+
+  struct Result {
+    Answer Kind = Answer::Untabulated;
+    LegalizeAction Action = LegalizeAction::Unsupported;
+    unsigned TypeIdx = 0;
+    LLT NewType;
+  };
+
+  explicit X86LegalizerTable(const LegalizerInfo &LI);
+
+  Result query(const LegalityQuery &Q);
+
+  /// Run the enumerated domain through both paths and report.
+  /// Fatal on a mismatch: a table that disagrees with the chain is a bug in
+  /// the key, not a number to look at.
+  void selfCheck(raw_ostream &OS);
+
+  uint64_t hits() const { return Hits; }
+  uint64_t escapes() const { return Escapes; }
+  uint64_t outside() const { return Outsides; }
+  uint64_t pointerVectors() const { return PointerVectors; }
+  uint64_t untabulated() const { return Untabulated; }
+  uint64_t fills() const { return Fills; }
+
+private:
+  uint16_t fill(unsigned Table, const LegalityQuery &Q, unsigned L0,
+                unsigned L1);
+  static LLT representative(unsigned ClassID);
+
+  const LegalizerInfo &LI;
+  std::vector<std::vector<uint16_t>> Cells;
+  std::vector<LegalizeActionStep> Steps;
+  uint64_t Hits = 0, Escapes = 0, Outsides = 0, PointerVectors = 0,
+           Untabulated = 0, Fills = 0;
+};
+
+} // namespace llvm
+
+#endif // LLVM_LIB_TARGET_X86_GISEL_X86LEGALIZERTABLE_H
