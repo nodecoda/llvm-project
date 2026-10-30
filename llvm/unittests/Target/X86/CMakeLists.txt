@@ -9,6 +9,7 @@ set(LLVM_LINK_COMPONENTS
   CodeGen
   CodeGenTypes
   Core
+  GlobalISel
   InstCombine
   MC
   MIRParser
@@ -25,5 +26,7 @@ set(LLVM_LINK_COMPONENTS
 add_llvm_unittest(X86Tests
   MachineSizeOptsTest.cpp
   TernlogTest.cpp
+  X86LegalizerInfoDifferentialTest.cpp
+  X86LegalizerInfoReference.cpp
   X86SelectionDAGTest.cpp
   )

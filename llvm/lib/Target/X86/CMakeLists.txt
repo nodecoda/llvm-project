@@ -25,6 +25,10 @@ tablegen(LLVM X86GenPreLegalizeGICombiner.inc -gen-global-isel-combiner
 tablegen(LLVM X86GenPostLegalizeGICombiner.inc -gen-global-isel-combiner
               -combiners="X86PostLegalizerCombiner")
 
+set(LLVM_TARGET_DEFINITIONS GISel/X86LegalizerInfo.td)
+tablegen(LLVM X86LegalizerInfo.inc -gen-legalizer)
+tablegen(LLVM X86LegalizerInfo.core.json -gen-legalizer-core)
+
 set(LLVM_TARGET_DEFINITIONS X86Options.td)
 tablegen(LLVM X86Options.inc -gen-opt-parser-defs)
 
