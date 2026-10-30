@@ -46,6 +46,9 @@ public:
     PointerVector,
     /// The table has no entry for this opcode at all.
     Untabulated,
+    /// The query carries an input the key does not observe yet (a memdesc or
+    /// an immediate).  Answering it from a types-only cell would be a guess.
+    Declined,
   };
 
   struct Result {
@@ -74,6 +77,7 @@ public:
   uint64_t outside() const { return Outsides; }
   uint64_t pointerVectors() const { return PointerVectors; }
   uint64_t untabulated() const { return Untabulated; }
+  uint64_t declined() const { return Declined; }
   uint64_t fills() const { return Fills; }
 
 private:
@@ -85,7 +89,7 @@ private:
   mutable std::vector<std::vector<uint16_t>> Cells;
   mutable std::vector<LegalizeActionStep> Steps;
   mutable uint64_t Hits = 0, Escapes = 0, Outsides = 0, PointerVectors = 0,
-                   Untabulated = 0, Fills = 0;
+                   Untabulated = 0, Declined = 0, Fills = 0;
 };
 
 } // namespace llvm

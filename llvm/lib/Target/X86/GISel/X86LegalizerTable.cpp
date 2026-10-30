@@ -139,6 +139,14 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
     ++Untabulated;
     return R;
   }
+  // The table keys types only.  A query that also carries a memdesc or an
+  // immediate is a different question with the same type key, so the table
+  // must not answer it; those axes arrive later and the count says so.
+  if (!Q.MMODescrs.empty() || !Q.Immediates.empty()) {
+    ++Declined;
+    R.Kind = Answer::Declined;
+    return R;
+  }
   const LegalizerTableDesc &D = X86Tables[Table];
 
   const int C0 = Q.Types.size() > D.Slots[0]
@@ -212,7 +220,8 @@ X86LegalizerTable::~X86LegalizerTable() {
     return;
   errs() << "x86-gisel-table: hit " << Hits << " escape " << Escapes
          << " outside " << Outsides << " ptrvec " << PointerVectors
-         << " untabulated " << Untabulated << " fills " << Fills << "\n";
+         << " untabulated " << Untabulated << " declined " << Declined
+         << " fills " << Fills << "\n";
 }
 
 void X86LegalizerTable::selfCheck(raw_ostream &OS) {
@@ -265,7 +274,8 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
   OS << "x86-gisel-table-check: points " << Points.size() << " compared "
      << Compared << " mismatches " << Mismatches << " skipped " << Skipped
      << " outside " << Outsides << " ptrvec " << PointerVectors
-     << " untabulated " << Untabulated << " fills " << Fills << "\n";
+     << " untabulated " << Untabulated << " declined " << Declined
+     << " fills " << Fills << "\n";
   if (Mismatches)
     report_fatal_error("x86-gisel-table-check: the table and the chain disagree");
 }
