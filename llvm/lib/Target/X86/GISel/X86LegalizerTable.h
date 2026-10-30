@@ -25,6 +25,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/CodeGen/GlobalISel/LegalizerInfo.h"
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace llvm {
@@ -83,6 +84,8 @@ public:
 private:
   uint16_t fill(unsigned Table, const LegalityQuery &Q,
                 ArrayRef<unsigned> Local) const;
+  /// Record one refused query, with the reason, when asked to.
+  void noteOutside(unsigned Why, unsigned Table, const LegalityQuery &Q) const;
   static LLT representative(unsigned ClassID);
 
   const LegalizerInfo &LI;
@@ -90,6 +93,11 @@ private:
   mutable std::vector<LegalizeActionStep> Steps;
   mutable uint64_t Hits = 0, Escapes = 0, Outsides = 0, PointerVectors = 0,
                    Untabulated = 0, Declined = 0, Fills = 0;
+  // Off unless -x86-gisel-table-outsides.  A count says how often the table
+  // refused; the log says which shapes it refused, which is what turns "41
+  // outside" into "41 of these, and here is the one that is a gap".
+  bool LogOutsides = false;
+  mutable std::vector<std::string> OutsideLog;
 };
 
 } // namespace llvm

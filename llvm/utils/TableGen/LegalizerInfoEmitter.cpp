@@ -2308,9 +2308,18 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
                           " reads more than two type slots; the key has room "
                           "for two and the mem axis");
     }
-    if (T.Slots.empty())
-      T.Slots.push_back(0);
+    // A rule set whose rules read no slot -- AlwaysLegal, Lower, Libcall --
+    // has no type-dependent answer, so its table has no keyed axis at all: one
+    // cell, Dims {1,1,1}.  Defaulting the slot to 0 instead would key such a
+    // table on a type the query may not even have (G_BR carries none), and
+    // every one of those queries would land Outside: measured, 60 of 174
+    // refusals over the MIR corpus were exactly that.
     T.Mem.assign(MemSet.begin(), MemSet.end());
+    if (T.Slots.empty() && !T.Mem.empty())
+      PrintFatalError(RuleSet->getLoc(),
+                      "rule set " + RuleSet->getName() +
+                          " keys only the mem axis; the consumer needs a type "
+                          "slot in front of it");
     if (!T.Mem.empty())
       T.Slots.push_back(-1);
     T.FirstRule = RuleCursor;
@@ -2362,7 +2371,10 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
   OS << "};\n";
   OS << "static constexpr unsigned " << Prefix
      << "NumTypeClasses = sizeof(" << Prefix << "TypeClasses) / sizeof("
-     << Prefix << "TypeClasses[0]);\n\n";
+     << Prefix << "TypeClasses[0]);\n";
+  // A table with no keyed axis still needs three Local pointers, and Dims is 1
+  // for all of them, so only element 0 is ever read.
+  OS << "static constexpr uint8_t " << Prefix << "LocalTrivial[] = {0};\n\n";
 
   for (size_t T = 0; T != Tables.size(); ++T) {
     const TableRec &R = Tables[T];
@@ -2388,7 +2400,7 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
   OS << "\n";
 
   OS << "struct LegalizerTableDesc {\n";
-  OS << "  uint8_t NumSlots;   // 1, 2 or 3: key dimensions actually used\n";
+  OS << "  uint8_t NumSlots;   // 0..3: key dimensions actually used (0 = one cell)\n";
   OS << "  int8_t Slots[3];    // type slots the key reads; -1 is the mem axis\n";
   OS << "  uint8_t Dims[3];    // local class count per slot (1 = unused)\n";
   OS << "  const uint8_t *Local[3];\n";
@@ -2423,9 +2435,13 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
       if (K)
         OS << ", ";
       // Unused dimensions point at the first slot's map rather than at null:
-      // Dims[K] is 1 for them, so only element 0 is ever read.
-      OS << Prefix << "LocalT" << T << "S"
-         << (K < R.Slots.size() ? K : 0);
+      // Dims[K] is 1 for them, so only element 0 is ever read.  A table with
+      // no slots at all has no S0, so it shares the trivial map.
+      if (R.Slots.empty())
+        OS << Prefix << "LocalTrivial";
+      else
+        OS << Prefix << "LocalT" << T << "S"
+           << (K < R.Slots.size() ? K : 0);
     }
     OS << "}, ";
     if (R.Mem.empty())

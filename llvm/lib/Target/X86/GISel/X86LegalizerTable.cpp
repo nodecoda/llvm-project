@@ -17,6 +17,10 @@ static cl::opt<bool> X86GISelTableStats(
     "x86-gisel-table-stats", cl::Hidden, cl::init(false),
     cl::desc("Report how the X86 legalizer table answered"));
 
+static cl::opt<bool> X86GISelTableOutsides(
+    "x86-gisel-table-outsides", cl::Hidden, cl::init(false),
+    cl::desc("List every query the X86 legalizer table refused, with the reason"));
+
 namespace {
 
 enum LegalizerTypeClassKind : uint8_t {
@@ -108,7 +112,7 @@ struct X86TablePoint {
 #include "X86LegalizerTablePoints.inc"
 
 X86LegalizerTable::X86LegalizerTable(const LegalizerInfo &LI)
-    : LI(LI), Cells(X86NumTables) {}
+    : LI(LI), Cells(X86NumTables), LogOutsides(X86GISelTableOutsides) {}
 
 LLT X86LegalizerTable::representative(unsigned ClassID) {
   const LegalizerTypeClass &C = X86TypeClasses[ClassID];
@@ -158,6 +162,25 @@ uint16_t X86LegalizerTable::fill(unsigned Table, const LegalityQuery &Q,
   return static_cast<uint16_t>(Steps.size());
 }
 
+void X86LegalizerTable::noteOutside(unsigned Why, unsigned Table,
+                                      const LegalityQuery &Q) const {
+  if (!LogOutsides || OutsideLog.size() >= 4096)
+    return;
+  std::string S;
+  raw_string_ostream OS(S);
+  OS << "x86-gisel-table: outside why=" << Why << " table=" << Table
+     << " opcode=" << Q.Opcode << " types=(";
+  for (unsigned I = 0; I < Q.Types.size(); ++I) {
+    if (I)
+      OS << ", ";
+    Q.Types[I].print(OS);
+  }
+  OS << ")";
+  if (!Q.MMODescrs.empty())
+    OS << " mem=" << Q.MMODescrs[0].MemoryTy.getSizeInBits().getKnownMinValue();
+  OutsideLog.push_back(OS.str());
+}
+
 X86LegalizerTable::Result
 X86LegalizerTable::query(const LegalityQuery &Q) const {
   Result R;
@@ -180,9 +203,13 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
     return R;
   }
 
-  const int C0 = Q.Types.size() > D.Slots[0]
-                     ? classifyType(Q.Types[D.Slots[0]])
-                     : kUnknownClass;
+  // A table with no keyed axis (NumSlots == 0) answers the same thing for
+  // every type, so it must not read one: G_BR carries no types at all.
+  const int C0 = D.NumSlots == 0
+                     ? 0
+                     : (Q.Types.size() > D.Slots[0]
+                            ? classifyType(Q.Types[D.Slots[0]])
+                            : kUnknownClass);
   int C1 = 0;
   if (D.Dims[1] > 1)
     C1 = Q.Types.size() > D.Slots[1] ? classifyType(Q.Types[D.Slots[1]])
@@ -195,6 +222,7 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
   }
   if (C0 < 0 || C1 < 0) {
     ++Outsides;
+    noteOutside(1, Table, Q);
     R.Kind = Answer::Outside;
     return R;
   }
@@ -203,6 +231,7 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
   L[0] = D.Local[0][C0];
   if (L[0] == 0xFF) {
     ++Outsides;
+    noteOutside(2, Table, Q);
     R.Kind = Answer::Outside;
     return R;
   }
@@ -210,6 +239,7 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
     L[1] = D.Local[1][C1];
     if (L[1] == 0xFF) {
       ++Outsides;
+      noteOutside(3, Table, Q);
       R.Kind = Answer::Outside;
       return R;
     }
@@ -233,6 +263,7 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
     const TypeSize MemSize = Q.MMODescrs[0].MemoryTy.getSizeInBits();
     if (MemSize.isScalable()) {
       ++Outsides;
+      noteOutside(4, Table, Q);
       R.Kind = Answer::Outside;
       return R;
     }
@@ -242,6 +273,7 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
       ++I;
     if (I == D.Dims[2]) {
       ++Outsides;
+      noteOutside(5, Table, Q);
       R.Kind = Answer::Outside;
       return R;
     }
@@ -287,6 +319,8 @@ X86LegalizerTable::~X86LegalizerTable() {
          << " outside " << Outsides << " ptrvec " << PointerVectors
          << " untabulated " << Untabulated << " declined " << Declined
          << " fills " << Fills << "\n";
+  for (const std::string &S : OutsideLog)
+    errs() << S << "\n";
 }
 
 void X86LegalizerTable::selfCheck(raw_ostream &OS) {
