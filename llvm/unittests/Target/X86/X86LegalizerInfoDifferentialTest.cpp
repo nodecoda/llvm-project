@@ -37,6 +37,7 @@
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/TargetParser/Triple.h"
 #include "gtest/gtest.h"
+#include <set>
 #include <string>
 #include <vector>
 
@@ -68,6 +69,57 @@ public:
   }
 };
 
+// Mutation fixtures.  Each one is the committed X86LegalizerInfo.td with
+// exactly one rule corrupted by CMake (see x86_add_legalizer_mutant): the
+// .inc is generated from the .td, so a mutant cannot drift from the table it
+// is supposed to falsify.  The corruption is textual, so the generated
+// fragment is still a well-formed statement sequence and needs the same
+// `Subtarget` in scope as the SUT above.
+namespace mutant1 {
+class Mutant : public LegalizerInfo {
+  const X86Subtarget &Subtarget;
+
+public:
+  explicit Mutant(const X86Subtarget &STI) : Subtarget(STI) {
+#include "X86LegalizerInfoMutant1.inc"
+  }
+  bool legalizeCustom(LegalizerHelper &, MachineInstr &,
+                      LostDebugLocObserver &) const override {
+    return false;
+  }
+};
+} // namespace mutant1
+
+namespace mutant2 {
+class Mutant : public LegalizerInfo {
+  const X86Subtarget &Subtarget;
+
+public:
+  explicit Mutant(const X86Subtarget &STI) : Subtarget(STI) {
+#include "X86LegalizerInfoMutant2.inc"
+  }
+  bool legalizeCustom(LegalizerHelper &, MachineInstr &,
+                      LostDebugLocObserver &) const override {
+    return false;
+  }
+};
+} // namespace mutant2
+
+namespace mutant3 {
+class Mutant : public LegalizerInfo {
+  const X86Subtarget &Subtarget;
+
+public:
+  explicit Mutant(const X86Subtarget &STI) : Subtarget(STI) {
+#include "X86LegalizerInfoMutant3.inc"
+  }
+  bool legalizeCustom(LegalizerHelper &, MachineInstr &,
+                      LostDebugLocObserver &) const override {
+    return false;
+  }
+};
+} // namespace mutant3
+
 struct Config {
   const char *ID;
   const char *Triple;
@@ -76,21 +128,23 @@ struct Config {
   bool AVX512;
   bool VPOPCNTDQ;
   bool VLX;
+  bool POPCNT;
 };
 
 // C5/C6 exist so that (HasAVX512 vs HasVPOPCNTDQ) and (HasVLX vs
 // HasVPOPCNTDQVL) are separable.  Without them a transcription error that
 // swaps either pair is invisible on every atom.
 static const Config Configs[] = {
-    {"C0", "x86_64", "+popcnt", true, false, false, false},
+    {"C0", "x86_64", "+popcnt", true, false, false, false, true},
     {"C1", "x86_64", "+popcnt,+avx512f,+avx512vpopcntdq", true, true, true,
-     false},
+     false, true},
     {"C2", "x86_64", "+popcnt,+avx512f,+avx512vl,+avx512vpopcntdq", true, true,
-     true, true},
-    {"C3", "x86_64", "", true, false, false, false},
-    {"C4", "i386", "+popcnt", false, false, false, false},
-    {"C5", "x86_64", "+popcnt,+avx512f", true, true, false, false},
-    {"C6", "x86_64", "+popcnt,+avx512f,+avx512vl", true, true, false, true},
+     true, true, true},
+    {"C3", "x86_64", "", true, false, false, false, false},
+    {"C4", "i386", "+popcnt", false, false, false, false, true},
+    {"C5", "x86_64", "+popcnt,+avx512f", true, true, false, false, true},
+    {"C6", "x86_64", "+popcnt,+avx512f,+avx512vl", true, true, false, true,
+     true},
 };
 
 struct TypeClass {
@@ -188,6 +242,7 @@ TEST_F(X86LegalizerDifferentialTest, FeatureBoolsPerConfig) {
     EXPECT_EQ(S.STI->hasAVX512(), C.AVX512) << C.ID;
     EXPECT_EQ(S.STI->hasVPOPCNTDQ(), C.VPOPCNTDQ) << C.ID;
     EXPECT_EQ(S.STI->hasVLX(), C.VLX) << C.ID;
+    EXPECT_EQ(S.STI->hasPOPCNT(), C.POPCNT) << C.ID;
   }
 }
 
@@ -282,6 +337,123 @@ TEST_F(X86LegalizerDifferentialTest, FirstStepDifferential) {
   EXPECT_GT(LegalBoth, 0u) << "corpus has no jointly-legal atom";
   EXPECT_GT(UnsupportedBoth, 0u) << "corpus has no jointly-unsupported atom";
   EXPECT_EQ(Diffs, 0u) << Report;
+}
+
+//===----------------------------------------------------------------------===//
+// Mutation tests
+//===----------------------------------------------------------------------===//
+//
+// A differential harness that never fails is indistinguishable from one whose
+// two sides happen to be the same table.  These tests corrupt one rule of the
+// .td at configure time and require the harness to report exactly the atoms the
+// corruption can reach: no atom more (the comparator is not trigger-happy) and
+// no atom less (the vocabulary is wide enough to see the defect at all).
+//
+// The expectation is written as a predicate over (config, type), derived from
+// the rule that was corrupted, not as a list copied out of a run.
+
+using AtomID = std::string;
+
+struct DiffResult {
+  std::set<AtomID> Atoms;
+  std::string Report;
+};
+
+// Every atom where `Mutant` and the frozen oracle disagree on the first step.
+template <typename Mutant> static DiffResult diffAgainstOracle() {
+  DiffResult R;
+  for (const Config &C : Configs) {
+    Sigma S = makeSigma(C);
+    EXPECT_TRUE(S.STI) << "no subtarget for " << C.ID;
+    if (!S.STI)
+      continue;
+    X86LegalizerInfoReference Oracle(
+        *S.STI, *static_cast<const X86TargetMachine *>(S.TM.get()));
+    Mutant M(*S.STI);
+    for (const TypeClass &T : typeClasses()) {
+      LLT Types[] = {T.Dst, T.Src};
+      LegalityQuery Q(G_CTPOP, Types);
+      LegalizeActionStep A = Oracle.getAction(Q);
+      LegalizeActionStep B = M.getAction(Q);
+      if (stepsAgree(A, B))
+        continue;
+      R.Atoms.insert(std::string(C.ID) + "/" + T.ID);
+      raw_string_ostream OS(R.Report);
+      OS << "  " << C.ID << "/" << T.ID << " expected " << describe(A)
+         << " got " << describe(B) << "\n";
+    }
+  }
+  return R;
+}
+
+static std::set<AtomID>
+selectAtoms(bool (*Pred)(const Config &, const TypeClass &)) {
+  std::set<AtomID> S;
+  for (const Config &C : Configs)
+    for (const TypeClass &T : typeClasses())
+      if (Pred(C, T))
+        S.insert(std::string(C.ID) + "/" + T.ID);
+  return S;
+}
+
+static std::string renderSetDifference(const std::set<AtomID> &Got,
+                                       const std::set<AtomID> &Want) {
+  std::string Out;
+  raw_string_ostream OS(Out);
+  for (const AtomID &A : Got)
+    if (!Want.count(A))
+      OS << "  unexpected diff: " << A << "\n";
+  for (const AtomID &A : Want)
+    if (!Got.count(A))
+      OS << "  missed diff:     " << A << "\n";
+  return OS.str();
+}
+
+static void expectDiffIs(const DiffResult &R, const std::set<AtomID> &Want,
+                         const char *What) {
+  EXPECT_EQ(R.Atoms.size(), Want.size()) << What;
+  EXPECT_TRUE(R.Atoms == Want)
+      << What << ": detected set != predicted set\n"
+      << renderSetDifference(R.Atoms, Want) << "actual steps:\n"
+      << R.Report;
+}
+
+// TC-23: the s32 pair is dropped from the HasPOPCNT rule.  s32/s32 (T2) is the
+// only type whose sole legal path was that pair, so exactly the POPCNT targets
+// move, and they move on that type alone.  C3 has no POPCNT and must not move.
+TEST_F(X86LegalizerDifferentialTest, MutantDroppedS32PopcntPair) {
+  std::set<AtomID> Want = selectAtoms([](const Config &C, const TypeClass &T) {
+    return C.POPCNT && StringRef(T.ID) == "T2";
+  });
+  EXPECT_EQ(Want.size(), 6u) << "predicate no longer describes the corpus";
+  expectDiffIs(diffAgainstOracle<mutant1::Mutant>(), Want,
+               "dropped s32 popcnt pair");
+}
+
+// TC-24a: HasVPOPCNTDQ was mistyped as HasAVX512 on the 512-bit rule.  Only a
+// target with AVX512 but without VPOPCNTDQ can tell the two apart, and only on
+// the two types that rule legalizes: C5/C6 x {T9,T10}.
+TEST_F(X86LegalizerDifferentialTest, MutantVpopcntdqWrittenAsAvx512) {
+  std::set<AtomID> Want = selectAtoms([](const Config &C, const TypeClass &T) {
+    StringRef Ty(T.ID);
+    return C.AVX512 && !C.VPOPCNTDQ && (Ty == "T9" || Ty == "T10");
+  });
+  EXPECT_EQ(Want.size(), 4u) << "predicate no longer describes the corpus";
+  expectDiffIs(diffAgainstOracle<mutant2::Mutant>(), Want,
+               "vpopcntdq written as avx512");
+}
+
+// TC-24b: VPOPCNTAndVLX was mistyped as HasVLX on the 128/256-bit rule.  Only
+// C6 (VLX without VPOPCNTDQ) can see it, on the four types that rule legalizes.
+TEST_F(X86LegalizerDifferentialTest, MutantVlxGuardWrittenAsVlxOnly) {
+  std::set<AtomID> Want = selectAtoms([](const Config &C, const TypeClass &T) {
+    StringRef Ty(T.ID);
+    return C.VLX && !C.VPOPCNTDQ &&
+           (Ty == "T5" || Ty == "T6" || Ty == "T7" || Ty == "T8");
+  });
+  EXPECT_EQ(Want.size(), 4u) << "predicate no longer describes the corpus";
+  expectDiffIs(diffAgainstOracle<mutant3::Mutant>(), Want,
+               "vlx guard widened to vlx only");
 }
 
 } // namespace
