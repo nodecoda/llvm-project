@@ -7,10 +7,15 @@
 //===----------------------------------------------------------------------===//
 
 #include "X86LegalizerTable.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
+
+static cl::opt<bool> X86GISelTableStats(
+    "x86-gisel-table-stats", cl::Hidden, cl::init(false),
+    cl::desc("Report how the X86 legalizer table answered"));
 
 namespace {
 
@@ -107,7 +112,7 @@ LLT X86LegalizerTable::representative(unsigned ClassID) {
 }
 
 uint16_t X86LegalizerTable::fill(unsigned Table, const LegalityQuery &Q,
-                                 unsigned L0, unsigned L1) {
+                                 unsigned L0, unsigned L1) const {
   const LegalizerTableDesc &D = X86Tables[Table];
   SmallVector<LLT, 4> Types(Q.Types.begin(), Q.Types.end());
   Types[D.Slots[0]] = representative(localToGlobal(D, 0, L0));
@@ -115,15 +120,19 @@ uint16_t X86LegalizerTable::fill(unsigned Table, const LegalityQuery &Q,
     Types[D.Slots[1]] = representative(localToGlobal(D, 1, L1));
 
   // Same question, asked with the class representatives instead of the actual
-  // types: that is what makes one cell stand for the whole class pair.
-  LegalizeActionStep Step = LI.getAction(
-      LegalityQuery(Q.Opcode, Types, Q.MMODescrs, Q.Immediates));
+  // types: that is what makes one cell stand for the whole class pair.  The
+  // rules are asked directly -- going through LI.getAction() would re-enter
+  // this table and recurse.
+  LegalizeActionStep Step =
+      LI.getActionDefinitions(Q.Opcode)
+          .apply(LegalityQuery(Q.Opcode, Types, Q.MMODescrs, Q.Immediates));
   ++Fills;
   Steps.push_back(Step);
   return static_cast<uint16_t>(Steps.size());
 }
 
-X86LegalizerTable::Result X86LegalizerTable::query(const LegalityQuery &Q) {
+X86LegalizerTable::Result
+X86LegalizerTable::query(const LegalityQuery &Q) const {
   Result R;
   const int Table = x86TableForOpcode(Q.Opcode);
   if (Table < 0) {
@@ -187,6 +196,23 @@ X86LegalizerTable::Result X86LegalizerTable::query(const LegalityQuery &Q) {
   R.TypeIdx = S.TypeIdx;
   R.NewType = S.NewType;
   return R;
+}
+
+bool X86LegalizerTable::lookup(const LegalityQuery &Q,
+                               LegalizeActionStep &Step) const {
+  const Result R = query(Q);
+  if (R.Kind != Answer::Hit)
+    return false;
+  Step = LegalizeActionStep(R.Action, R.TypeIdx, R.NewType);
+  return true;
+}
+
+X86LegalizerTable::~X86LegalizerTable() {
+  if (!X86GISelTableStats)
+    return;
+  errs() << "x86-gisel-table: hit " << Hits << " escape " << Escapes
+         << " outside " << Outsides << " ptrvec " << PointerVectors
+         << " untabulated " << Untabulated << " fills " << Fills << "\n";
 }
 
 void X86LegalizerTable::selfCheck(raw_ostream &OS) {

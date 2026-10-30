@@ -31,7 +31,7 @@ namespace llvm {
 
 class raw_ostream;
 
-class X86LegalizerTable {
+class X86LegalizerTable : public LegalizerInfo::LegalizeTable {
 public:
   /// What the table could say about a query.
   enum class Answer : uint8_t {
@@ -56,8 +56,13 @@ public:
   };
 
   explicit X86LegalizerTable(const LegalizerInfo &LI);
+  ~X86LegalizerTable() override;
 
-  Result query(const LegalityQuery &Q);
+  /// LegalizerInfo::LegalizeTable.  Returns false when the cell is missing,
+  /// opaque, or out of the table's domain; the caller then uses the rules.
+  bool lookup(const LegalityQuery &Query, LegalizeActionStep &Step) const override;
+
+  Result query(const LegalityQuery &Q) const;
 
   /// Run the enumerated domain through both paths and report.
   /// Fatal on a mismatch: a table that disagrees with the chain is a bug in
@@ -73,14 +78,14 @@ public:
 
 private:
   uint16_t fill(unsigned Table, const LegalityQuery &Q, unsigned L0,
-                unsigned L1);
+                unsigned L1) const;
   static LLT representative(unsigned ClassID);
 
   const LegalizerInfo &LI;
-  std::vector<std::vector<uint16_t>> Cells;
-  std::vector<LegalizeActionStep> Steps;
-  uint64_t Hits = 0, Escapes = 0, Outsides = 0, PointerVectors = 0,
-           Untabulated = 0, Fills = 0;
+  mutable std::vector<std::vector<uint16_t>> Cells;
+  mutable std::vector<LegalizeActionStep> Steps;
+  mutable uint64_t Hits = 0, Escapes = 0, Outsides = 0, PointerVectors = 0,
+                   Untabulated = 0, Fills = 0;
 };
 
 } // namespace llvm
