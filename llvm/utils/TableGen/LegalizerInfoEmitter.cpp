@@ -2417,6 +2417,25 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
   }
   OS << "\n";
 
+  // The mem axis used to be searched by the consumer: walk MemT until the
+  // access size matched, or the axis ran out.  It is the same generated list
+  // the cell index comes from, so the search is emitted here as a switch over
+  // the sizes the rules actually name; -1 is exactly what the exhausted scan
+  // meant, and no size outside the list can reach a cell.
+  OS << "static inline int " << LowerPrefix
+     << "MemIndex(unsigned Table, uint64_t Bits) {\n";
+  OS << "  switch (Table) {\n";
+  for (size_t T = 0; T != Tables.size(); ++T) {
+    const TableRec &R = Tables[T];
+    if (R.Mem.empty())
+      continue;
+    OS << "  case " << T << ":   // " << R.Def->getName() << "\n";
+    OS << "    switch (Bits) {\n";
+    for (size_t M = 0; M != R.Mem.size(); ++M)
+      OS << "    case " << R.Mem[M] << ":\n      return " << M << ";\n";
+    OS << "    default:\n      return -1;\n    }\n";
+  }
+  OS << "  default:\n    return -1;\n  }\n}\n\n";
   OS << "struct LegalizerTableDesc {\n";
   OS << "  uint8_t NumSlots;   // 0..3: key dimensions actually used (0 = one cell)\n";
   OS << "  int8_t Slots[3];    // type slots the key reads; -1 is the mem axis\n";

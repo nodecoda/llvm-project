@@ -268,17 +268,17 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
       R.Kind = Answer::Outside;
       return R;
     }
+    // The axis is a generated switch over the sizes the rules name, so this
+    // is one lookup rather than a scan; -1 is a size no rule names.
     const uint64_t Bits = MemSize.getFixedValue();
-    unsigned I = 0;
-    while (I != D.Dims[2] && static_cast<uint64_t>(D.Mem[I]) != Bits)
-      ++I;
-    if (I == D.Dims[2]) {
+    const int MemLocal = x86MemIndex(Table, Bits);
+    if (MemLocal < 0) {
       ++Outsides;
       noteOutside(5, Table, Q);
       R.Kind = Answer::Outside;
       return R;
     }
-    L[2] = I;
+    L[2] = static_cast<unsigned>(MemLocal);
   }
 
   std::vector<uint16_t> &Row = Cells[Table];
