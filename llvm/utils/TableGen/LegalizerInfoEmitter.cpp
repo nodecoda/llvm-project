@@ -23,6 +23,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Basic/PredicateExpanderDag.h"
+#include "LegalizerCoreEval.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -45,6 +46,21 @@
 using namespace llvm;
 
 namespace {
+
+/// A build-time answer for every cell, per theta.  This is not part of the
+/// .inc: it exists so the answer the rule chain gives can be compared with the
+/// answer the rules give when they are evaluated here, without a subtarget.
+static cl::opt<std::string> EvalDump(
+    "legalizer-eval-dump", cl::Hidden, cl::init(""), cl::value_desc("path"),
+    cl::desc("Write each table cell's build-time answer, one row per point "
+             "and theta"));
+
+/// theta, one character per declared feature boolean, most significant first.
+/// The order is the one the .inc's LegalizerFeatureNames lists, so a dump's
+/// "# features" field can be fed straight back in.
+static cl::list<std::string> EvalThetas(
+    "legalizer-eval-theta", cl::Hidden,
+    cl::desc("theta as a string of 0/1 over the declared feature booleans"));
 
 static void skipSpaces(StringRef S, size_t &I) {
   while (I != S.size() && isSpace(S[I]))
@@ -2818,6 +2834,11 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     // Slots.  Empty for the mem axis, whose sizes travel in Mem.
     std::vector<std::vector<unsigned>> SlotDomains;
     unsigned FirstRule = 0, NumRules = 0;
+    // The rules the table answers with, in the order the chain applies them.
+    // Kept per table rather than in one array: a rule set that is not
+    // tabulated contributes no rules, so a global cursor would leave a hole
+    // the slices could not see.
+    std::vector<CoreRule> Rules;
   };
   std::vector<TableRec> Tables;
   // Two different reasons a rule set has no table.  An escape has no Core IR
@@ -2834,6 +2855,7 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     unsigned Count = 0;
     bool HasEscape = false;
     bool MemNeedsClass = false;
+    std::vector<CoreRule> TableRules;
     for (const Record *Rule : RuleSet->getValueAsListOfDefs("Rules")) {
       std::vector<CoreRule> Expanded;
       std::string Why;
@@ -2852,6 +2874,7 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
       for (const CoreRule &CR : Expanded) {
         collectPredLeaves(CR.Predicate, SlotSet, MemSet, &SlotTypes,
                           &MemNeedsClass);
+        TableRules.push_back(CR);
         ++Count;
       }
     }
@@ -2906,6 +2929,7 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
       T.Slots.push_back(-1);
     T.FirstRule = RuleCursor;
     T.NumRules = Count;
+    T.Rules = std::move(TableRules);
     RuleCursor += Count;
     for (StringRef Opcode : T.Opcodes)
       if (!SeenOpcodes.insert(Opcode).second)
@@ -3007,6 +3031,131 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
       if (IDs.empty())
         IDs.insert(0); // no named type and no scalar class
       R.SlotDomains[K].assign(IDs.begin(), IDs.end());
+    }
+  }
+
+  // Answer every cell here, at generation time, by evaluating the rules.
+  //
+  // This is the same domain the runtime self-check walks, answered without a
+  // subtarget: the types are the key's own classes, the memory descriptor is
+  // the cell's size with the minimum alignment, and theta is given on the
+  // command line.  A row whose rule set cannot be evaluated says why instead
+  // of inventing an answer.  Nothing here is emitted into the .inc; the point
+  // is to compare this answer with the chain's.
+  if (!EvalDump.empty()) {
+    std::vector<const Record *> Feats =
+        Records.getAllDerivedDefinitions("LegalizeFeature");
+    llvm::sort(Feats, LessRecordByID());
+
+    std::map<std::string, LLT> NamedTypes;
+    for (const TableClass &C : Classes) {
+      LLT T;
+      switch (C.Kind) {
+      case 0:
+        T = LLT::pointer(0, C.Elem);
+        break;
+      case 1:
+        T = LLT::scalar(C.Elem);
+        break;
+      case 2:
+        T = LLT::fixed_vector(C.Lanes, C.Elem);
+        break;
+      default:
+        T = LLT::fixed_vector(C.Lanes, LLT::pointer(0, C.Elem));
+        break;
+      }
+      NamedTypes.emplace(C.Spell, T);
+    }
+    auto NamedFn = [&NamedTypes](StringRef S) -> const LLT * {
+      auto It = NamedTypes.find(S.str());
+      return It == NamedTypes.end() ? nullptr : &It->second;
+    };
+
+    std::error_code EC;
+    raw_fd_ostream Out(EvalDump.getValue(), EC);
+    if (EC)
+      PrintFatalError("cannot open " + EvalDump.getValue() + ": " +
+                      EC.message());
+    for (const Record *F : Feats)
+      Out << "# feature " << F->getName() << " = "
+          << F->getValueAsString("Cond") << "\n";
+    Out << "# columns table l0 l1 l2 action typeidx why theta\n";
+
+    for (const std::string &Bits : EvalThetas) {
+      if (Bits.size() != Feats.size())
+        PrintFatalError("theta '" + Bits + "' must have one character per "
+                        "declared feature boolean (" +
+                        std::to_string(Feats.size()) + ")");
+      // The string is written the way the dump writes it: the boolean with
+      // the highest bit in LegalizerFeatureMask first, which is the last one
+      // declared.  Reading it left to right as declaration order would flip
+      // every feature and still look like a plausible sweep.
+      legeval::Theta Th;
+      for (size_t I = 0; I != Feats.size(); ++I)
+        Th.add(Feats[I]->getName(), Feats[I]->getValueAsString("Cond"),
+               Bits[Feats.size() - 1 - I] == '1');
+      auto Feature = [&Th](StringRef T, bool &Ok) { return Th.eval(T, Ok); };
+
+      for (size_t T = 0; T != Tables.size(); ++T) {
+        const TableRec &R = Tables[T];
+        auto Dim = [&R](size_t K) -> unsigned {
+          if (K >= R.Slots.size())
+            return 1;
+          return R.Slots[K] < 0
+                     ? static_cast<unsigned>(R.Mem.size())
+                     : static_cast<unsigned>(R.SlotDomains[K].size());
+        };
+
+        std::vector<legeval::Rule> Rules;
+        Rules.reserve(R.NumRules);
+        for (const CoreRule &CR : R.Rules) {
+          legeval::Rule ER;
+          ER.Action = CR.Action;
+          ER.TypeIdx = CR.TypeIdx;
+          std::string Err;
+          size_t Pos = 0;
+          if (!legeval::parseNode(CR.Predicate, Pos, ER.Pred, Err))
+            PrintFatalError("rule predicate does not parse: " + Err);
+          Rules.push_back(std::move(ER));
+        }
+
+        for (unsigned L0 = 0; L0 != Dim(0); ++L0)
+          for (unsigned L1 = 0; L1 != Dim(1); ++L1)
+            for (unsigned L2 = 0; L2 != Dim(2); ++L2) {
+              const unsigned Ls[3] = {L0, L1, L2};
+              std::vector<LLT> Types(3, LLT::scalar(1));
+              bool HasMem = false;
+              LLT MemTy;
+              for (size_t K = 0; K != R.Slots.size(); ++K) {
+                if (R.Slots[K] < 0) {
+                  HasMem = true;
+                  MemTy = LLT::scalar(R.Mem[Ls[K]]);
+                  Types[2] = MemTy;
+                  continue;
+                }
+                Types[R.Slots[K]] =
+                    NamedTypes[Classes[R.SlotDomains[K][Ls[K]]].Spell];
+              }
+
+              legeval::Env E;
+              E.Types = Types;
+              E.HasMem = HasMem;
+              E.MemTy = MemTy;
+              // The key does not observe alignment, and the chain ignores it
+              // for these rule sets (measured: 0 of 2824 points move over the
+              // 21 alignment/ordering variants).  The minimum is therefore the
+              // honest choice: a rule that did read it would show up as a
+              // disagreement instead of being papered over.
+              E.MemAlignInBits = 1;
+              E.NamedType = NamedFn;
+              E.Feature = Feature;
+
+              legeval::Verdict V = legeval::apply(Rules, E);
+              Out << T << '\t' << L0 << '\t' << L1 << '\t' << L2 << '\t'
+                  << (V.Matched ? V.Action : "<none>") << '\t' << V.TypeIdx
+                  << '\t' << V.Why << '\t' << Bits << '\n';
+            }
+      }
     }
   }
 
