@@ -49,3 +49,16 @@ def SizeSet : LegalizeRuleSet<["G_UNMERGE_VALUES"]> {
 // SIZECORE: "name":"sizeIs"
 // SIZECORE: "args":[0,"128"]
 
+// The store predicate compares the value type against the memory type as a
+// whole LLT.  A size comparison is not a substitute: v2s32 and s64 are both 64
+// bits and are still different types.
+def TypeDiffers : LegalizeTypePredicate<"typeDiffersFromMemDesc(0, 0)">;
+def DiffDag : LegalizeQueryPredicateDag<(all_of TypeDiffers)>;
+def DiffSet : LegalizeRuleSet<["G_STORE"]> {
+  let Rules = [LegalizeQueryGuardedCall<BuilderCustomIf, DiffDag, []>];
+}
+
+// CHECK: .customIf([=](const LegalityQuery &Query) { return typeDiffersFromMemDesc(0, 0)(Query); })
+// CORE: "name":"typeDiffersFromMemDesc"
+// CORE: "args":[0,0]
+

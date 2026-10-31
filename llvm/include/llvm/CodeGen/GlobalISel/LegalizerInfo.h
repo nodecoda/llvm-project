@@ -330,6 +330,16 @@ LLVM_ABI LegalityPredicate numElementsNotPow2(unsigned TypeIdx);
 /// stronger.
 LLVM_ABI LegalityPredicate
 atomicOrderingAtLeastOrStrongerThan(unsigned MMOIdx, AtomicOrdering Ordering);
+/// True iff the type at \p TypeIdx differs from the memory type of the MMO at
+/// \p MemDescIdx.  The comparison is the full LLT -- kind, element, lanes,
+/// address space -- not just its size: a v2s32 and an s64 are both 64 bits and
+/// are still different types.  A size comparison cannot answer this question.
+inline LegalityPredicate typeDiffersFromMemDesc(unsigned TypeIdx,
+                                                unsigned MemDescIdx) {
+  return [=](const LegalityQuery &Query) {
+    return Query.Types[TypeIdx] != Query.MMODescrs[MemDescIdx].MemoryTy;
+  };
+}
 
 /// True iff the immediate at the given index has the specified value.
 LLVM_ABI LegalityPredicate immIs(unsigned ImmIdx, int64_t Imm);

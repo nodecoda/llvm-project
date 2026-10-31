@@ -91,6 +91,11 @@ def NarrowerIn1 : LegalizeTypePredicate<"scalarNarrowerThan(1, Is64Bit ? 64 : 32
 def IsS32In1 : LegalizeTypePredicate<"typeIs(1, X86_s32)">;
 def IsS64In1 : LegalizeTypePredicate<"typeIs(1, X86_s64)">;
 def NarrowerIn0 : LegalizeTypePredicate<"scalarNarrowerThan(0, Is64Bit ? 64 : 32)">;
+// The store value and the memory type must be the same LLT, not merely the
+// same size: v2s32 and s64 are both 64 bits.  The predicate compares the whole
+// type, which is why the table's size-keyed memory axis cannot answer it yet.
+def ValueDiffersFromMem0
+    : LegalizeTypePredicate<"typeDiffersFromMemDesc(0, 0)">;
 
 // G_FPTOUI mirrors G_UITOFP with the slots swapped.
 def FPResultGPRNoAVX512
@@ -609,12 +614,7 @@ defm X86_LOAD : X86_MemOp<"G_LOAD", ["load/store: add more corner cases"], [
 defm X86_STORE : X86_MemOp<"G_STORE", [], [
   // A store whose value type differs from the memory type is not legalized
   // here; the type has to match exactly.
-  LegalizeOpaqueRule<BuilderCustomIf, [{
-
-    [=](const LegalityQuery &Query) {
-      return Query.Types[0] != Query.MMODescrs[0].MemoryTy;
-    }
-  }]>,
+  CustomIf<ValueDiffersFromMem0>,
   WidenScalarToNextPow2<0, 8>,
   ClampScalar<0, X86_s8, X86_sMaxScalar>,
   Scalarize<0>,

@@ -46,11 +46,22 @@ def Test_ALLOpaque : LegalizeRuleSet<["G_LOAD"]> {
   ];
 }
 
+// Expressible in the Core IR, but reads the memory type as a whole.  The table
+// key today is an access size, which would merge two different 64-bit types;
+// the rule set is refused until the mem axis is keyed by type class.
+def DiffMem : LegalizeTypePredicate<"typeDiffersFromMemDesc(0, 0)">;
+def Test_NEEDSCLASS : LegalizeRuleSet<["G_EXTRACT"]> {
+  let Rules = [CustomIf<DiffMem>];
+}
+
 // CHECK: // Not tabulated because they contain a rule the Core IR cannot express;
 // CHECK-NEXT: // the chain answers:
 // CHECK-NEXT: //   Test_OPAQUE
 // CHECK-NEXT: //   Test_CHOICE
 // CHECK-NEXT: //   Test_ALLOpaque
+// CHECK: // Not tabulated because the key cannot represent an axis their rules read;
+// CHECK-NEXT: // the chain answers:
+// CHECK-NEXT: //   Test_NEEDSCLASS
 // CHECK: // Test_CORE
 // CHECK-NOT: // Test_OPAQUE
 // CHECK-NOT: // Test_ALLOpaque
@@ -59,3 +70,4 @@ def Test_ALLOpaque : LegalizeRuleSet<["G_LOAD"]> {
 // CHECK-NOT: case TargetOpcode::G_STORE:
 // CHECK-NOT: case TargetOpcode::G_LOAD:
 // CHECK-NOT: case TargetOpcode::G_PTRTOINT:
+// CHECK-NOT: case TargetOpcode::G_EXTRACT:

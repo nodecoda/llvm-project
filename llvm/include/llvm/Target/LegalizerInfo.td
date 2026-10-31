@@ -615,6 +615,11 @@ class LegalForCartesianProduct<LegalizeArgTypeList T0, LegalizeArgTypeList T1>
 
 class LowerForPairsIf<LegalizeBoolPredicate P, list<LegalizeTypePair> Pairs>
     : LegalizeGuardedCall<BuilderLowerFor, P, Pairs>;
+/// A query-time guard whose answer is custom.  The guard reads the query, so
+/// it is a LegalizeQueryPredicateDag leaf, not a cached bool.
+class CustomIf<LegalizeQueryPredicateBase P>
+    : LegalizeQueryGuardedCall<BuilderCustomIf, P, []>;
+
 
 class LegalForMemDesc<list<LegalizeMemDesc> Descs>
     : LegalizeCall<BuilderLegalForTypesWithMemDesc, Descs>;

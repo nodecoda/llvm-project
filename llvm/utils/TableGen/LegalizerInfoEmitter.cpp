@@ -353,6 +353,14 @@ void LegalizerInfoEmitter::emitPredicate(const Record &P, raw_ostream &OS) {
     OS << P.getName();
     return;
   }
+  if (P.isSubClassOf("LegalizeTypePredicate")) {
+    // A single query leaf is a guard by itself; requiring an (all_of leaf)
+    // wrapper would be syntax without meaning.  It still has to render as the
+    // lambda the builder takes, with the call inside it.
+    OS << "[=](const LegalityQuery &Query) { return "
+       << P.getValueAsString("Call") << "(Query); }";
+    return;
+  }
   if (P.isSubClassOf("LegalizeOpaqueBool") ||
       P.isSubClassOf("LegalizeQueryPredicate")) {
     OS << squashSpace(P.getValueAsString("Expr"));
@@ -1906,6 +1914,10 @@ std::string typePredicateJson(const RecordKeeper &Records,
     return scalarWiderThan(Idx(0), Bits(1));
   if (Name == "sizeIs")
     return sizeIs(Idx(0), Bits(1));
+  if (Name == "typeDiffersFromMemDesc")
+    return "{\"kind\":\"leaf\",\"name\":\"typeDiffersFromMemDesc\","
+           "\"args\":[" +
+           std::to_string(Idx(0)) + "," + std::to_string(Idx(1)) + "]}";
   PrintFatalError(R.getLoc(),
                   "type predicate '" + Name + "' has no Core IR expansion; "
                   "add it to LegalizerInfo.td first");
@@ -1915,6 +1927,10 @@ std::string typePredicateJson(const RecordKeeper &Records,
 /// Lower one LegalizePredicate record to a Core IR predicate AST.
 void predicateJson(const RecordKeeper &Records, const Record &P,
                    std::string &Out) {
+  if (P.isSubClassOf("LegalizeTypePredicate")) {
+    Out = typePredicateJson(Records, P);
+    return;
+  }
   if (P.isSubClassOf("LegalizeFeature")) {
     Out = "{\"kind\":\"leaf\",\"name\":\"hasFeature\",\"args\":[\"" +
           P.getValueAsString("Cond").str() + "\"]}";
@@ -2641,7 +2657,8 @@ bool parseTableClass(StringRef S, int &Kind, unsigned &Elem, unsigned &Lanes) {
 /// which is a crash in the chain, not a disagreement about the table.
 void collectPredLeaves(
     StringRef Json, std::set<unsigned> &Slots, std::set<unsigned> &MemSizes,
-    std::map<unsigned, std::set<std::string>> *SlotTypes = nullptr) {
+    std::map<unsigned, std::set<std::string>> *SlotTypes = nullptr,
+    bool *MemNeedsClass = nullptr) {
   // Leaf kinds that read a type slot, and where the slot index sits.
   static const std::set<StringRef> SlotArg0 = {"typeIs",
                                                "typeIn",
@@ -2720,6 +2737,20 @@ void collectPredLeaves(
         Q = E + 1;
       }
     }
+    // A predicate that compares against the memory type as a whole cannot be
+    // keyed by the access size: two 64-bit memory types may still differ, and
+    // the cell must not merge them.  Record that the mem axis needs a class
+    // instead of silently keying it by size; runTable turns this into a
+    // refusal to tabulate, not a guess.
+    if (Name == "typeDiffersFromMemDesc") {
+      if (Leading.size() < 2)
+        PrintFatalError(
+            "typeDiffersFromMemDesc must carry (type_slot, mem_slot)");
+      Slots.insert(Leading[0]);
+      if (MemNeedsClass)
+        *MemNeedsClass = true;
+      continue;
+    }
     if (Name == "memSize") {
       if (Leading.size() < 3)
         PrintFatalError("memSize must carry (slot, size, align)");
@@ -2768,7 +2799,12 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     unsigned FirstRule = 0, NumRules = 0;
   };
   std::vector<TableRec> Tables;
+  // Two different reasons a rule set has no table.  An escape has no Core IR
+  // form at all; an unkeyable rule set is expressible but reads an axis the
+  // current key cannot represent.  Keeping them apart makes the comment in the
+  // generated file say which one happened.
   std::vector<StringRef> EscapeRuleSets;
+  std::vector<StringRef> UnkeyableRuleSets;
   unsigned RuleCursor = 0;
   StringSet<> SeenOpcodes;
   for (const Record *RuleSet : RuleSets) {
@@ -2776,6 +2812,7 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     std::map<unsigned, std::set<std::string>> SlotTypes;
     unsigned Count = 0;
     bool HasEscape = false;
+    bool MemNeedsClass = false;
     for (const Record *Rule : RuleSet->getValueAsListOfDefs("Rules")) {
       std::vector<CoreRule> Expanded;
       std::string Why;
@@ -2792,7 +2829,8 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
         continue;
       }
       for (const CoreRule &CR : Expanded) {
-        collectPredLeaves(CR.Predicate, SlotSet, MemSet, &SlotTypes);
+        collectPredLeaves(CR.Predicate, SlotSet, MemSet, &SlotTypes,
+                          &MemNeedsClass);
         ++Count;
       }
     }
@@ -2803,6 +2841,14 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     // Do not tabulate it; the chain answers every query for the rule set.
     if (HasEscape) {
       EscapeRuleSets.push_back(RuleSet->getName());
+      continue;
+    }
+    // The rule set is expressible, but one of its predicates compares the
+    // memory type as a whole.  A size-keyed mem axis would merge, say, v2s32
+    // and s64; do not build a table that can answer a question the chain
+    // distinguishes.  The class-keyed mem axis removes this reason.
+    if (MemNeedsClass) {
+      UnkeyableRuleSets.push_back(RuleSet->getName());
       continue;
     }
     // Same rule as the dump: a rule set whose every rule escaped has no table,
@@ -2978,6 +3024,14 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
           "express;\n";
     OS << "// the chain answers:\n";
     for (StringRef Name : EscapeRuleSets)
+      OS << "//   " << Name << "\n";
+  }
+  if (!UnkeyableRuleSets.empty()) {
+    OS << "//\n";
+    OS << "// Not tabulated because the key cannot represent an axis their "
+          "rules read;\n";
+    OS << "// the chain answers:\n";
+    for (StringRef Name : UnkeyableRuleSets)
       OS << "//   " << Name << "\n";
   }
   OS << "\n";
@@ -3203,7 +3257,19 @@ void LegalizerInfoEmitter::runCore(raw_ostream &OS) {
   // The sizes come from the rules that read one -- memory rules compare the
   // MMO size exactly (TypePairAndMemDesc::isCompatible), so "which sizes are
   // in the domain" is precisely "which sizes a rule names".
-  std::set<std::pair<unsigned, unsigned>> DomainMems; // (size, min align)
+  //
+  // The entry keeps the type as well as the size.  The size is what the
+  // memdesc rules compare today, but a predicate may compare the memory type
+  // as a whole (typeDiffersFromMemDesc), and the evaluator cannot answer that
+  // from size_bits alone: v2s32 and s64 are both 64 bits.
+  struct DomainMem {
+    std::string Type;
+    unsigned Size, Align;
+    bool operator<(const DomainMem &O) const {
+      return std::tie(Type, Size, Align) < std::tie(O.Type, O.Size, O.Align);
+    }
+  };
+  std::set<DomainMem> DomainMems;
   auto AddMemDesc = [&](const Record &D) {
     StringRef Expr = D.getValueAsDef("MemTy")->getValueAsString("Expr");
     // Memory types go through the same normalisation the type slots use: a
@@ -3215,7 +3281,7 @@ void LegalizerInfoEmitter::runCore(raw_ostream &OS) {
       PrintFatalError(D.getLoc(),
                       "memory type '" + Expr + "' has no fixed width, so it "
                       "cannot be a point on the access-size axis");
-    DomainMems.insert({Bits, (unsigned)D.getValueAsInt("Align")});
+    DomainMems.insert({Norm, Bits, (unsigned)D.getValueAsInt("Align")});
   };
   for (const Record *Rule : Records.getAllDerivedDefinitions("LegalizeRule")) {
     // One builder serves both the guarded and the unguarded spelling: the
@@ -3279,7 +3345,9 @@ void LegalizerInfoEmitter::runCore(raw_ostream &OS) {
     if (!FirstMem)
       OS << ", ";
     FirstMem = false;
-    OS << "{\"size_bits\": " << M.first << ", \"align_bits\": " << M.second
+    OS << "{\"type\": ";
+    jsonString(OS, M.Type);
+    OS << ", \"size_bits\": " << M.Size << ", \"align_bits\": " << M.Align
        << "}";
   }
   OS << "], \"orderings\": [], \"q0\": []},\n";
