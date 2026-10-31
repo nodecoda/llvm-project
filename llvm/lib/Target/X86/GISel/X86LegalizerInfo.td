@@ -23,11 +23,13 @@
 // target .td that pulls in llvm/Target/Target.td.
 //
 // LegalizeOpaqueRule is the escape hatch for guards that are still raw C++.
-// Three of the 309 rules need it, and each one is a guard the vocabulary cannot
-// spell yet: G_LROUND returns a pair<unsigned, LLT> mutation, G_STORE compares
-// Types[0] against MMODescrs[0].MemoryTy, and G_EXTRACT selects its type slots
-// from Query.Opcode.  The merge/unmerge width check used to be the fourth; it
-// is now a sizeIs dag, which is the same predicate the C++ wrote by hand.
+// Two of the 309 rules need it, and each one is a guard the vocabulary cannot
+// spell yet: G_STORE compares Types[0] against MMODescrs[0].MemoryTy, and
+// G_EXTRACT selects its type slots from Query.Opcode.  The merge/unmerge width
+// check and G_LROUND used to need it too; both are now core rules.  The table
+// generator does not tabulate a rule set that contains an opaque rule: it
+// cannot know which key dimensions the raw predicate reads, so the chain
+// answers every query for that rule set.
 //
 // Four `for (Op : {...})` loops in the former C++ produced one rule set per
 // opcode.  Each loop body existed once, so its members could not disagree;

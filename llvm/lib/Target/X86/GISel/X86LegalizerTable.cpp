@@ -262,17 +262,10 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
   }
   if (HasMemAxis) {
     // The axis is cut on the access size, and a cell is filled with a scalar of
-    // that size as its representative.  That is exact for the memdesc rules --
-    // isCompatible compares getSizeInBits() -- but not for X86_STORE's Custom
-    // rule, which compares the whole MemoryTy against the value type.  A
-    // vector-shaped MemoryTy would therefore be answered by a cell filled for a
-    // different LLT, so it is declined instead: the chain answers, and a real
-    // store of a vector does not get a cell's opinion.
-    if (!Q.MMODescrs[0].MemoryTy.isScalar()) {
-      ++Declined;
-      R.Kind = Answer::Declined;
-      return R;
-    }
+    // that size as its representative.  Every tabulated memdesc rule compares
+    // the memory type by size (isCompatible), so the scalar representative is
+    // exact even when the query's MemoryTy is a vector.  A rule set that
+    // compares the whole MemoryTy is opaque and is not tabulated.
     // A rule names an access size, not a range (isCompatible compares
     // getSizeInBits()), so the axis is an exact match.  A size no rule names
     // is outside the key: the chain answers, and the fallback is counted.

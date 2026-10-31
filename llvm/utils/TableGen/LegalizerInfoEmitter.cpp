@@ -2275,21 +2275,35 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     unsigned FirstRule = 0, NumRules = 0;
   };
   std::vector<TableRec> Tables;
+  std::vector<StringRef> OpaqueRuleSets;
   unsigned RuleCursor = 0;
   StringSet<> SeenOpcodes;
   for (const Record *RuleSet : RuleSets) {
     std::set<unsigned> SlotSet, MemSet;
     unsigned Count = 0;
+    bool HasOpaque = false;
     for (const Record *Rule : RuleSet->getValueAsListOfDefs("Rules")) {
       std::vector<CoreRule> Expanded;
       std::string Why;
       expandRule(Records, *Rule, Expanded, Why);
-      if (!Why.empty())
+      if (!Why.empty()) {
+        if (Why == "opaque_rule")
+          HasOpaque = true;
         continue; // an escape has no core rule, so it keys nothing
+      }
       for (const CoreRule &CR : Expanded) {
         collectPredLeaves(CR.Predicate, SlotSet, MemSet);
         ++Count;
       }
+    }
+    // A rule set with an opaque rule has a predicate whose key dependencies
+    // this emitter cannot see.  Filling from the chain would still produce an
+    // answer, but the cell would stand for every query that shares the core
+    // rules' key -- including queries the opaque predicate distinguishes.
+    // Do not tabulate it; the chain answers every query for the rule set.
+    if (HasOpaque) {
+      OpaqueRuleSets.push_back(RuleSet->getName());
+      continue;
     }
     // Same rule as the dump: a rule set whose every rule escaped has no table,
     // because it has nothing to answer with.
@@ -2359,7 +2373,14 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
   OS << "//\n";
   OS << "// A type class is (kind, element bits, lanes).  Every predicate leaf in\n";
   OS << "// a rule set is constant on one class (07 section 2.2), which is what makes\n";
-  OS << "// the key a finite index instead of a comparison chain.\n\n";
+  OS << "// the key a finite index instead of a comparison chain.\n";
+  if (!OpaqueRuleSets.empty()) {
+    OS << "//\n";
+    OS << "// Not tabulated because they contain an opaque rule; the chain answers:\n";
+    for (StringRef Name : OpaqueRuleSets)
+      OS << "//   " << Name << "\n";
+  }
+  OS << "\n";
 
   OS << "static constexpr LegalizerTypeClass " << Prefix << "TypeClasses[] = {\n";
   for (size_t I = 0; I != Classes.size(); ++I) {
@@ -2448,10 +2469,6 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
   OS << "static constexpr LegalizerTableDesc " << Prefix << "Tables[] = {\n";
   for (size_t T = 0; T != Tables.size(); ++T) {
     const TableRec &R = Tables[T];
-    auto Pad = [](size_t N) {
-      std::string S = std::to_string(N);
-      return S;
-    };
     OS << "  /*" << format_decimal(T, 2) << "*/ {" << R.Slots.size() << ", {";
     for (size_t K = 0; K != 3; ++K) {
       if (K)
