@@ -49,7 +49,12 @@ constexpr int kPointerVectorClass = -2;
 // A pointer in an address space the table does not model.  The class list is
 // built from the named LLT constants, and every one of them names p0.
 constexpr int kPointerAddressSpaceClass = -3;
-constexpr uint32_t kOpaqueCell = 0xFFFFFFFF;
+/// Cell indices start at 1, so 0 stays "not filled in".  Keeping the step
+/// count below this reserved value means a real index can never alias the
+/// empty marker.  The table only ever gets here for rule sets the Core IR can
+/// express in full; a rule set with an escape is not tabulated at all, so
+/// there is no opaque cell to represent.
+constexpr uint32_t kCellLimit = 0xFFFFFFFF;
 
 /// Class of a type, or one of the negative class ids above.
 int classifyType(LLT T) {
@@ -157,7 +162,7 @@ uint32_t X86LegalizerTable::fill(unsigned Table, const LegalityQuery &Q,
   LegalizeActionStep Step =
       LI.getActionDefinitions(Q.Opcode)
           .apply(LegalityQuery(Q.Opcode, Types, MemDescs, Q.Immediates));
-  if (Steps.size() >= kOpaqueCell)
+  if (Steps.size() >= kCellLimit)
     report_fatal_error("X86 legalizer table has too many filled cells");
   ++Fills;
   Steps.push_back(Step);
@@ -289,12 +294,6 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
   if (!Cell)
     Cell = fill(Table, Q, L);
 
-  if (Cell == kOpaqueCell) {
-    ++Escapes;
-    R.Kind = Answer::Escape;
-    return R;
-  }
-
   const LegalizeActionStep &S = Steps[Cell - 1];
   ++Hits;
   R.Kind = Answer::Hit;
@@ -316,10 +315,10 @@ bool X86LegalizerTable::lookup(const LegalityQuery &Q,
 X86LegalizerTable::~X86LegalizerTable() {
   if (!X86GISelTableStats)
     return;
-  errs() << "x86-gisel-table: hit " << Hits << " escape " << Escapes
-         << " outside " << Outsides << " ptrvec " << PointerVectors
-         << " addrspace " << AddressSpaces << " untabulated " << Untabulated
-         << " declined " << Declined << " fills " << Fills << "\n";
+  errs() << "x86-gisel-table: hit " << Hits << " outside " << Outsides
+         << " ptrvec " << PointerVectors << " addrspace " << AddressSpaces
+         << " untabulated " << Untabulated << " declined " << Declined
+         << " fills " << Fills << "\n";
   for (const std::string &S : OutsideLog)
     errs() << S << "\n";
 }

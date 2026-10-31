@@ -38,8 +38,6 @@ public:
   enum class Answer : uint8_t {
     /// The cell held an answer; the result carries it.
     Hit,
-    /// The cell is opaque: the caller must fall back to the rule chain.
-    Escape,
     /// A keyed type is not one of the classes the table was built for.
     Outside,
     /// A keyed type is a vector of pointers, which the class list cannot
@@ -68,7 +66,7 @@ public:
   ~X86LegalizerTable() override;
 
   /// LegalizerInfo::LegalizeTable.  Returns false when the cell is missing,
-  /// opaque, or out of the table's domain; the caller then uses the rules.
+  /// declined, or out of the table's domain; the caller then uses the rules.
   bool lookup(const LegalityQuery &Query, LegalizeActionStep &Step) const override;
 
   Result query(const LegalityQuery &Q) const;
@@ -79,7 +77,6 @@ public:
   void selfCheck(raw_ostream &OS);
 
   uint64_t hits() const { return Hits; }
-  uint64_t escapes() const { return Escapes; }
   uint64_t outside() const { return Outsides; }
   uint64_t pointerVectors() const { return PointerVectors; }
   uint64_t addressSpaces() const { return AddressSpaces; }
@@ -98,7 +95,7 @@ private:
   const unsigned PointerBits;
   mutable std::vector<std::vector<uint32_t>> Cells;
   mutable std::vector<LegalizeActionStep> Steps;
-  mutable uint64_t Hits = 0, Escapes = 0, Outsides = 0, PointerVectors = 0,
+  mutable uint64_t Hits = 0, Outsides = 0, PointerVectors = 0,
                    AddressSpaces = 0, Untabulated = 0, Declined = 0, Fills = 0;
   // Off unless -x86-gisel-table-outsides.  A count says how often the table
   // refused; the log says which shapes it refused, which is what turns "41
