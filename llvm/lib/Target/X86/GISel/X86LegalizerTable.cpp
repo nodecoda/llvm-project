@@ -359,7 +359,11 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
                             AtomicOrdering::NotAtomic);
     const LegalityQuery Q(P.Opcode, Types, MemDescs);
 
-    const LegalizeActionStep ChainStep = LI.getAction(Q);
+    // Ask the rules directly.  LI.getAction() consults the installed table
+    // first, which would compare the table against itself when both switches
+    // are on; the point of this check is the chain.
+    const LegalizeActionStep ChainStep =
+        LI.getActionDefinitions(Q.Opcode).apply(Q);
     const Result R = query(Q);
     if (R.Kind != Answer::Hit) {
       ++Skipped;
