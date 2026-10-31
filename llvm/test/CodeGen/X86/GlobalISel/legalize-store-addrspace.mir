@@ -1,0 +1,26 @@
+# RUN: not llc -mtriple=x86_64-linux-gnu -run-pass=legalizer -x86-gisel-table=false %s -o /dev/null 2>&1 | FileCheck %s
+# RUN: not llc -mtriple=x86_64-linux-gnu -run-pass=legalizer -x86-gisel-table=true  %s -o /dev/null 2>&1 | FileCheck %s
+
+# The rules only name p0, so a store through a pointer in another address
+# space has no legal form.  The table must refuse it too: folding p272 into the
+# p0 class would let the table answer a query the chain refuses.  This is the
+# regression test for that shape.
+
+--- |
+  target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+  target triple = "x86_64-unknown-linux-gnu"
+  define void @as272(i64 %v, ptr addrspace(272) %p) {
+    store i64 %v, ptr addrspace(272) %p, align 8
+    ret void
+  }
+...
+---
+name:            as272
+body:             |
+  bb.0:
+    ; CHECK: unable to legalize instruction: G_STORE %{{[0-9]+}}:_(s64), %{{[0-9]+}}:_(p272)
+    %0:_(s64) = IMPLICIT_DEF
+    %1:_(p272) = IMPLICIT_DEF
+    G_STORE %0:_(s64), %1:_(p272) :: (store (s64) into `ptr undef`, addrspace 272)
+    RET 0
+...

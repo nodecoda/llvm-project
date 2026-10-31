@@ -1,0 +1,90 @@
+# RUN: llc -mtriple=x86_64-linux-gnu -run-pass=legalizer -x86-gisel-table=false %s -o - | FileCheck %s
+# RUN: llc -mtriple=x86_64-linux-gnu -run-pass=legalizer -x86-gisel-table=true  %s -o - | FileCheck %s
+# RUN: llc -mtriple=x86_64-linux-gnu -run-pass=legalizer -x86-gisel-table=true  %s -o %t.table
+# RUN: llc -mtriple=x86_64-linux-gnu -run-pass=legalizer -x86-gisel-table=false %s -o %t.chain
+# RUN: diff %t.table %t.chain
+
+# G_STORE is legal iff the value type matches one of the shared memdesc
+# entries; TypePairAndMemDesc::isCompatible compares the memory type by size
+# only (LegalizerInfo.h), so <2 x s32> and s64 memory are both accepted for a
+# <2 x s32> value.  The only rule that reads the memory type as a whole is
+# ValueDiffersFromMem0, which rewrites the MMO to the value type.  That
+# rewrite is what keeps a size-keyed mem axis sound: every member of a cell
+# converges on the same MMO, so the cell has one answer.
+
+--- |
+  target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+  target triple = "x86_64-unknown-linux-gnu"
+
+  define void @mem_matches_value(<2 x i32> %v, ptr %p) {
+    store <2 x i32> %v, ptr %p, align 8
+    ret void
+  }
+
+  define void @mem_scalar_value_vector(<2 x i32> %v, ptr %p) {
+    store <2 x i32> %v, ptr %p, align 8
+    ret void
+  }
+
+  define void @mem_vector_value_scalar(i64 %v, ptr %p) {
+    store i64 %v, ptr %p, align 8
+    ret void
+  }
+
+  define void @mem_narrower_than_value(i64 %v, ptr %p) {
+    store i64 %v, ptr %p, align 8
+    ret void
+  }
+...
+---
+name:            mem_matches_value
+body:             |
+  bb.0:
+    ; CHECK-LABEL: name:            mem_matches_value
+    ; CHECK:         G_STORE %{{[0-9]+}}(<2 x s32>), %{{[0-9]+}}(p0) :: (store (<2 x s32>) into `ptr undef`)
+    ; CHECK-NEXT:    RET 0
+    %0:_(<2 x s32>) = IMPLICIT_DEF
+    %1:_(p0) = IMPLICIT_DEF
+    G_STORE %0:_(<2 x s32>), %1:_(p0) :: (store (<2 x s32>) into `ptr undef`)
+    RET 0
+
+...
+---
+name:            mem_scalar_value_vector
+body:             |
+  bb.0:
+    ; CHECK-LABEL: name:            mem_scalar_value_vector
+    ; CHECK:         G_STORE %{{[0-9]+}}(<2 x s32>), %{{[0-9]+}}(p0) :: (store (s64) into `ptr undef`)
+    ; CHECK-NEXT:    RET 0
+    %0:_(<2 x s32>) = IMPLICIT_DEF
+    %1:_(p0) = IMPLICIT_DEF
+    G_STORE %0:_(<2 x s32>), %1:_(p0) :: (store (s64) into `ptr undef`)
+    RET 0
+
+...
+---
+name:            mem_vector_value_scalar
+body:             |
+  bb.0:
+    ; CHECK-LABEL: name:            mem_vector_value_scalar
+    ; CHECK:         G_STORE %{{[0-9]+}}(s64), %{{[0-9]+}}(p0) :: (store (<2 x s32>) into `ptr undef`)
+    ; CHECK-NEXT:    RET 0
+    %0:_(s64) = IMPLICIT_DEF
+    %1:_(p0) = IMPLICIT_DEF
+    G_STORE %0:_(s64), %1:_(p0) :: (store (<2 x s32>) into `ptr undef`)
+    RET 0
+
+...
+---
+name:            mem_narrower_than_value
+body:             |
+  bb.0:
+    ; CHECK-LABEL: name:            mem_narrower_than_value
+    ; CHECK:         G_STORE %{{[0-9]+}}(s64), %{{[0-9]+}}(p0) :: (store (s64) into `ptr undef`, align 4)
+    ; CHECK-NEXT:    RET 0
+    %0:_(s64) = IMPLICIT_DEF
+    %1:_(p0) = IMPLICIT_DEF
+    G_STORE %0:_(s64), %1:_(p0) :: (store (s32) into `ptr undef`)
+    RET 0
+
+...

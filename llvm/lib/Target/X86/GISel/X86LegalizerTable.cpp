@@ -102,6 +102,30 @@ int classifyType(LLT T) {
   return IsPointerVector ? kPointerVectorClass : kUnknownClass;
 }
 
+/// Every type a size-keyed mem cell stands for.  The fiber of an access size
+/// is all LLTs of that size; lanes and address spaces are unbounded, so this is
+/// the bounded sample the self-check asks about.  Two members of one cell that
+/// disagree are two queries the key merged and the chain did not.
+static void memFiber(unsigned Bits, SmallVectorImpl<LLT> &Out) {
+  Out.push_back(LLT::scalar(Bits));
+  for (unsigned Elem = 1; Elem <= 128; Elem *= 2) {
+    if (Bits % Elem)
+      continue;
+    const unsigned Lanes = Bits / Elem;
+    if (Lanes < 2 || Lanes > 64)
+      continue;
+    Out.push_back(LLT::fixed_vector(Lanes, LLT::scalar(Elem)));
+  }
+  if (Bits != 32 && Bits != 64)
+    return;
+  for (unsigned AS : {0u, 1u, 270u, 271u, 272u}) {
+    const LLT P = LLT::pointer(AS, Bits);
+    Out.push_back(P);
+    for (unsigned Lanes = 2; Lanes <= 4; ++Lanes)
+      Out.push_back(LLT::fixed_vector(Lanes, P));
+  }
+}
+
 /// Inverse of a table's global -> local map.  Local classes are a partition of
 /// the global ones, so the first hit is the only hit.
 unsigned localToGlobal(const LegalizerTableDesc &D, unsigned Slot,
@@ -358,54 +382,69 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
           const unsigned Local[3] = {I0, I1, I2};
           SmallVector<LLT, 3> Types(static_cast<size_t>(MaxSlot + 1),
                                     representative(0));
-          SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
-          uint64_t MemBits = 0;
+          unsigned MemBits = 0;
           for (unsigned K = 0; K != D.NumSlots; ++K) {
-            if (D.Slots[K] < 0) {
-              const unsigned Bits = static_cast<unsigned>(D.Mem[Local[K]]);
-              MemBits = Bits;
-              MemDescs.emplace_back(LLT::scalar(Bits), /*AlignInBits=*/1,
-                                    AtomicOrdering::NotAtomic,
-                                    AtomicOrdering::NotAtomic);
-            } else {
+            if (D.Slots[K] < 0)
+              MemBits = static_cast<unsigned>(D.Mem[Local[K]]);
+            else
               Types[D.Slots[K]] = representative(Domain.Classes[K][Local[K]]);
-            }
           }
 
-          ++Points;
-          const LegalityQuery Q(Entry.Opcode, Types, MemDescs);
-          // Ask the rules directly.  LI.getAction() consults the installed
-          // table first, which would compare the table against itself; the
-          // point of this check is the chain.
-          const LegalizeActionStep ChainStep =
-              LI.getActionDefinitions(Q.Opcode).apply(Q);
-          const Result R = query(Q);
-          if (R.Kind != Answer::Hit) {
-            ++Skipped;
-            continue;
-          }
-          ++Compared;
-          if (R.Action == ChainStep.Action && R.TypeIdx == ChainStep.TypeIdx &&
-              R.NewType == ChainStep.NewType)
-            continue;
-          ++Mismatches;
-          if (Mismatches <= 20) {
-            OS << "x86-gisel-table-check: MISMATCH " << Entry.Name << "(";
-            for (unsigned I = 0; I != Types.size(); ++I) {
-              if (I)
-                OS << ", ";
-              Types[I].print(OS);
+          // A type slot's class is exactly one type, so its representative is
+          // the whole cell.  The mem axis is keyed by access size, so its cell
+          // holds every LLT of that size: asking only the scalar would leave
+          // the half of the cell the key actually merges untested.
+          SmallVector<LLT, 16> MemTypes;
+          if (MemBits)
+            memFiber(MemBits, MemTypes);
+          else
+            MemTypes.push_back(LLT());
+
+          for (LLT MemTy : MemTypes) {
+            SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+            if (MemTy.isValid())
+              MemDescs.emplace_back(MemTy, /*AlignInBits=*/1,
+                                    AtomicOrdering::NotAtomic,
+                                    AtomicOrdering::NotAtomic);
+
+            ++Points;
+            const LegalityQuery Q(Entry.Opcode, Types, MemDescs);
+            // Ask the rules directly.  LI.getAction() consults the installed
+            // table first, which would compare the table against itself; the
+            // point of this check is the chain.
+            const LegalizeActionStep ChainStep =
+                LI.getActionDefinitions(Q.Opcode).apply(Q);
+            const Result R = query(Q);
+            if (R.Kind != Answer::Hit) {
+              ++Skipped;
+              continue;
             }
-            if (MemBits)
-              OS << " mem " << MemBits;
-            OS << "): table ";
-            OS << static_cast<unsigned>(R.Action) << "/" << R.TypeIdx << "/";
-            R.NewType.print(OS);
-            OS << " chain ";
-            OS << static_cast<unsigned>(ChainStep.Action) << "/"
-               << ChainStep.TypeIdx << "/";
-            ChainStep.NewType.print(OS);
-            OS << "\n";
+            ++Compared;
+            if (R.Action == ChainStep.Action &&
+                R.TypeIdx == ChainStep.TypeIdx &&
+                R.NewType == ChainStep.NewType)
+              continue;
+            ++Mismatches;
+            if (Mismatches <= 20) {
+              OS << "x86-gisel-table-check: MISMATCH " << Entry.Name << "(";
+              for (unsigned I = 0; I != Types.size(); ++I) {
+                if (I)
+                  OS << ", ";
+                Types[I].print(OS);
+              }
+              if (MemTy.isValid()) {
+                OS << " mem ";
+                MemTy.print(OS);
+              }
+              OS << "): table ";
+              OS << static_cast<unsigned>(R.Action) << "/" << R.TypeIdx << "/";
+              R.NewType.print(OS);
+              OS << " chain ";
+              OS << static_cast<unsigned>(ChainStep.Action) << "/"
+                 << ChainStep.TypeIdx << "/";
+              ChainStep.NewType.print(OS);
+              OS << "\n";
+            }
           }
         }
       }
