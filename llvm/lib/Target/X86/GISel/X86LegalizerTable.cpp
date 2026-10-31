@@ -223,7 +223,7 @@ void X86LegalizerTable::noteOutside(unsigned Why, unsigned Table,
       OS << ", ";
     Q.Types[I].print(OS);
   }
-  OS << ")";
+  OS << ") imms=" << Q.Immediates.size() << " mems=" << Q.MMODescrs.size();
   if (!Q.MMODescrs.empty())
     OS << " mem=" << Q.MMODescrs[0].MemoryTy.getSizeInBits().getKnownMinValue();
   OutsideLog.push_back(OS.str());
@@ -247,6 +247,10 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
   if (!Q.Immediates.empty() ||
       Q.MMODescrs.size() != (HasMemAxis ? 1u : 0u)) {
     ++Declined;
+    // 7 = an immediate the key cannot see, 8 = a memdesc count this table's
+    // shape does not match.  Both mean "the key would answer a different
+    // question"; the log says which one so the count can be explained.
+    noteOutside(Q.Immediates.empty() ? 8u : 7u, Table, Q);
     R.Kind = Answer::Declined;
     return R;
   }
