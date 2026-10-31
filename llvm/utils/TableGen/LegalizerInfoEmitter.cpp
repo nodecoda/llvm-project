@@ -38,6 +38,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <map>
 #include <set>
 #include <string>
 
@@ -2155,26 +2156,30 @@ bool parseTableClass(StringRef S, int &Kind, unsigned &Elem, unsigned &Lanes) {
   return false;
 }
 
-/// Slots and access sizes a rule's predicate reads.
-///
-/// The index is recovered from the Core IR text this file just produced, whose
-/// leaf shape is fixed here and nowhere else.  A leaf name this function does
-/// not know is fatal: that is what keeps a new predicate kind from silently
-/// falling out of the key, which is the failure mode TF-021 exists to catch on
-/// the simulator side.
-void collectPredLeaves(StringRef Json, std::set<unsigned> &Slots,
-                       std::set<unsigned> &MemSizes) {
+/// \p SlotTypes, when not null, collects the type spellings a typeIs/typeIn
+/// leaf names, per slot.  The table self-check needs a domain that the rule
+/// chain actually accepts: enumerating every class for every slot asks the
+/// chain about queries it never sees (a pointer where a scalar is required),
+/// which is a crash in the chain, not a disagreement about the table.
+void collectPredLeaves(
+    StringRef Json, std::set<unsigned> &Slots, std::set<unsigned> &MemSizes,
+    std::map<unsigned, std::set<std::string>> *SlotTypes = nullptr) {
   // Leaf kinds that read a type slot, and where the slot index sits.
-  static const std::set<StringRef> SlotArg0 = {
-      "typeIs",           "typeIn",
-      "isVector",         "sizeIs",
-      "sizeNotPow2",      "scalarOrEltSizeNotPow2",
-      "numElementsNotPow2", "scalarNarrowerThan",
-      "scalarWiderThan",  "elementTypeIs",
-      "fewerElementsThan", "moreElementsThan"};
+  static const std::set<StringRef> SlotArg0 = {"typeIs",
+                                               "typeIn",
+                                               "isVector",
+                                               "sizeIs",
+                                               "sizeNotPow2",
+                                               "scalarOrEltSizeNotPow2",
+                                               "numElementsNotPow2",
+                                               "scalarNarrowerThan",
+                                               "scalarWiderThan",
+                                               "elementTypeIs",
+                                               "fewerElementsThan",
+                                               "moreElementsThan"};
   // Two leaves take a second slot: the slot they compare against.
-  static const std::set<StringRef> SlotArg1 = {
-      "scalarSizeLargerThanSlot", "scalarSizeSmallerThanSlot"};
+  static const std::set<StringRef> SlotArg1 = {"scalarSizeLargerThanSlot",
+                                               "scalarSizeSmallerThanSlot"};
 
   size_t Pos = 0;
   while ((Pos = Json.find("\"name\":\"", Pos)) != StringRef::npos) {
@@ -2207,6 +2212,36 @@ void collectPredLeaves(StringRef Json, std::set<unsigned> &Slots,
 
     if (Name == "true" || Name == "opaque" || Name == "hasFeature")
       continue;
+    if (SlotTypes && (Name == "typeIs" || Name == "typeIn")) {
+      if (Leading.empty())
+        PrintFatalError("predicate leaf '" + Name + "' has no slot index");
+      // The spellings are the string literals inside the argument list; a
+      // type spelling never contains a quote.  Scan to the matching close
+      // bracket so typeIn's nested list is included.
+      size_t End = ArgsAt + 8; // just past '['
+      unsigned Depth = 1;
+      while (End < Json.size() && Depth) {
+        if (Json[End] == '[')
+          ++Depth;
+        else if (Json[End] == ']')
+          --Depth;
+        ++End;
+      }
+      if (Depth)
+        PrintFatalError("predicate leaf '" + Name +
+                        "' has unbalanced brackets");
+      std::set<std::string> &Out = (*SlotTypes)[Leading[0]];
+      size_t Q = ArgsAt + 8; // skip the "args":[ spelling
+      while ((Q = Json.find('"', Q)) != StringRef::npos && Q < End) {
+        size_t E = Json.find('"', Q + 1);
+        if (E == StringRef::npos || E > End)
+          PrintFatalError("predicate leaf '" + Name +
+                          "' has an unterminated "
+                          "type spelling");
+        Out.insert(Json.substr(Q + 1, E - Q - 1).str());
+        Q = E + 1;
+      }
+    }
     if (Name == "memSize") {
       if (Leading.size() < 3)
         PrintFatalError("memSize must carry (slot, size, align)");
@@ -2240,69 +2275,56 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
   std::vector<const Record *> RuleSets = validatedRuleSets();
   std::vector<std::string> Types = domainTypes();
 
-  struct TableClass {
-    int Kind;
-    unsigned Elem, Lanes;
-    std::string Spell;
-  };
-  std::vector<TableClass> Classes;
-  for (const std::string &S : Types) {
-    int Kind = 0;
-    unsigned Elem = 0, Lanes = 0;
-    if (!parseTableClass(S, Kind, Elem, Lanes))
-      PrintFatalError("type '" + S + "' has no (kind, element, lanes) form");
-    Classes.push_back({Kind, Elem, Lanes, S});
-  }
-  llvm::sort(Classes, [](const TableClass &A, const TableClass &B) {
-    if (A.Kind != B.Kind)
-      return A.Kind < B.Kind;
-    if (A.Elem != B.Elem)
-      return A.Elem < B.Elem;
-    return A.Lanes < B.Lanes;
-  });
-  Classes.erase(std::unique(Classes.begin(), Classes.end(),
-                            [](const TableClass &A, const TableClass &B) {
-                              return A.Kind == B.Kind && A.Elem == B.Elem &&
-                                     A.Lanes == B.Lanes;
-                            }),
-                Classes.end());
-
   struct TableRec {
     const Record *Def = nullptr;
     std::vector<StringRef> Opcodes;
     std::vector<int> Slots;
     std::vector<unsigned> Mem;
+    // Type spellings the rules name per slot.  They seed the slot's share of
+    // the self-check domain; the full class set is too wide to put in a slot
+    // the rules only ever see scalars in.
+    std::map<unsigned, std::set<std::string>> SlotTypes;
+    // Global class ids the self-check enumerates per keyed slot, parallel to
+    // Slots.  Empty for the mem axis, whose sizes travel in Mem.
+    std::vector<std::vector<unsigned>> SlotDomains;
     unsigned FirstRule = 0, NumRules = 0;
   };
   std::vector<TableRec> Tables;
-  std::vector<StringRef> OpaqueRuleSets;
+  std::vector<StringRef> EscapeRuleSets;
   unsigned RuleCursor = 0;
   StringSet<> SeenOpcodes;
   for (const Record *RuleSet : RuleSets) {
     std::set<unsigned> SlotSet, MemSet;
+    std::map<unsigned, std::set<std::string>> SlotTypes;
     unsigned Count = 0;
-    bool HasOpaque = false;
+    bool HasEscape = false;
     for (const Record *Rule : RuleSet->getValueAsListOfDefs("Rules")) {
       std::vector<CoreRule> Expanded;
       std::string Why;
       expandRule(Records, *Rule, Expanded, Why);
       if (!Why.empty()) {
-        if (Why == "opaque_rule")
-          HasOpaque = true;
-        continue; // an escape has no core rule, so it keys nothing
+        // Every escape is opaque as far as the key is concerned: the rule
+        // produced no core rule, so whatever slots and types it reads are
+        // missing from the key.  An opaque rule is the obvious case; a
+        // non-literal argument list is the same problem one level down.
+        // Measured: X86_PTRTOINT's legalForCartesianProduct escapes as
+        // type_list_choice, which left slot 1 out of its key, and the table
+        // then answered a slot-0-only question the chain answers with slot 1.
+        HasEscape = true;
+        continue;
       }
       for (const CoreRule &CR : Expanded) {
-        collectPredLeaves(CR.Predicate, SlotSet, MemSet);
+        collectPredLeaves(CR.Predicate, SlotSet, MemSet, &SlotTypes);
         ++Count;
       }
     }
-    // A rule set with an opaque rule has a predicate whose key dependencies
-    // this emitter cannot see.  Filling from the chain would still produce an
+    // A rule set with an escape has a predicate whose key dependencies this
+    // emitter cannot see.  Filling from the chain would still produce an
     // answer, but the cell would stand for every query that shares the core
-    // rules' key -- including queries the opaque predicate distinguishes.
+    // rules' key -- including queries the escaped rule distinguishes.
     // Do not tabulate it; the chain answers every query for the rule set.
-    if (HasOpaque) {
-      OpaqueRuleSets.push_back(RuleSet->getName());
+    if (HasEscape) {
+      EscapeRuleSets.push_back(RuleSet->getName());
       continue;
     }
     // Same rule as the dump: a rule set whose every rule escaped has no table,
@@ -2313,6 +2335,7 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     TableRec T;
     T.Def = RuleSet;
     T.Opcodes = RuleSet->getValueAsListOfStrings("Opcodes");
+    T.SlotTypes = std::move(SlotTypes);
     T.Slots.assign(SlotSet.begin(), SlotSet.end());
     if (T.Slots.size() > 2) {
       T.Slots.resize(2);
@@ -2347,6 +2370,101 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     Tables.push_back(std::move(T));
   }
 
+  // A type a rule names is a class, whether or not a named type record spells
+  // the same literal.  Adding them here rather than failing keeps the class
+  // set a property of the rules, not of a separate list that could omit one.
+  for (const TableRec &R : Tables)
+    for (const auto &Entry : R.SlotTypes)
+      for (const std::string &S : Entry.second)
+        Types.push_back(S);
+  llvm::sort(Types);
+  Types.erase(std::unique(Types.begin(), Types.end()), Types.end());
+
+  struct TableClass {
+    int Kind;
+    unsigned Elem, Lanes;
+    std::string Spell;
+  };
+  std::vector<TableClass> Classes;
+  for (const std::string &S : Types) {
+    int Kind = 0;
+    unsigned Elem = 0, Lanes = 0;
+    if (!parseTableClass(S, Kind, Elem, Lanes))
+      PrintFatalError("type '" + S + "' has no (kind, element, lanes) form");
+    Classes.push_back({Kind, Elem, Lanes, S});
+  }
+  llvm::sort(Classes, [](const TableClass &A, const TableClass &B) {
+    if (A.Kind != B.Kind)
+      return A.Kind < B.Kind;
+    if (A.Elem != B.Elem)
+      return A.Elem < B.Elem;
+    return A.Lanes < B.Lanes;
+  });
+  Classes.erase(std::unique(Classes.begin(), Classes.end(),
+                            [](const TableClass &A, const TableClass &B) {
+                              return A.Kind == B.Kind && A.Elem == B.Elem &&
+                                     A.Lanes == B.Lanes;
+                            }),
+                Classes.end());
+
+  auto ClassID = [&Classes](StringRef S) -> unsigned {
+    int Kind = 0;
+    unsigned Elem = 0, Lanes = 0;
+    if (!parseTableClass(S, Kind, Elem, Lanes))
+      PrintFatalError("type '" + S + "' has no (kind, element, lanes) form");
+    for (unsigned I = 0; I != Classes.size(); ++I)
+      if (Classes[I].Kind == Kind && Classes[I].Elem == Elem &&
+          Classes[I].Lanes == Lanes)
+        return I;
+    llvm_unreachable("mentioned type has no class");
+  };
+
+  // The self-check domain is per slot, not the product of the whole class set.
+  // Most slots only ever see one kind of type: a load's pointer operand is
+  // never a vector, and a scalar arithmetic source is never a pointer.  Asking
+  // the chain about a combination the IR cannot produce is not a check -- it
+  // asserts inside the chain (LLT::changeElementSize on a pointer), or it
+  // measures a question no rule set is written to answer.
+  for (TableRec &R : Tables) {
+    R.SlotDomains.resize(R.Slots.size());
+    for (size_t K = 0; K != R.Slots.size(); ++K) {
+      const int Slot = R.Slots[K];
+      if (Slot < 0)
+        continue; // the mem axis enumerates R.Mem directly
+      std::set<unsigned> IDs;
+      bool HasPointer = false, HasScalar = false;
+      auto Named = R.SlotTypes.find(static_cast<unsigned>(Slot));
+      if (Named != R.SlotTypes.end())
+        for (const std::string &S : Named->second) {
+          const unsigned ID = ClassID(S);
+          IDs.insert(ID);
+          if (Classes[ID].Kind == 0 || Classes[ID].Kind == 3)
+            HasPointer = true;
+          else if (Classes[ID].Kind == 1)
+            HasScalar = true;
+        }
+      if (HasPointer) {
+        // Pointer slots stay pointers.  A scalar where the rules spell a
+        // pointer is a query the chain does not accept, not a table answer to
+        // compare against.
+        for (auto I = IDs.begin(); I != IDs.end();)
+          if (Classes[*I].Kind == 0 || Classes[*I].Kind == 3)
+            ++I;
+          else
+            I = IDs.erase(I);
+      } else if (IDs.empty() || HasScalar) {
+        // Width boundaries matter even when no rule spells them: a rule that
+        // only says scalarNarrowerThan still reads every width below the bound.
+        for (unsigned I = 0; I != Classes.size(); ++I)
+          if (Classes[I].Kind == 1)
+            IDs.insert(I);
+      }
+      if (IDs.empty())
+        IDs.insert(0); // no named type and no scalar class
+      R.SlotDomains[K].assign(IDs.begin(), IDs.end());
+    }
+  }
+
   // The names in the fragment are prefixed with the target.  A description
   // that includes Target.td says so itself; one that does not (the X86
   // prototype only includes LegalizerInfo.td) spells it in the rule set names,
@@ -2359,8 +2477,8 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
       Prefix = Targets.front()->getName();
   }
   if (Prefix.empty())
-    Prefix = RuleSets.front()->getName().take_until(
-        [](char C) { return C == '_'; });
+    Prefix =
+        RuleSets.front()->getName().take_until([](char C) { return C == '_'; });
   if (Prefix.empty())
     PrintFatalError("cannot tell which target this description belongs to: "
                     "no Target record and no <Target>_<Opcode> rule set name");
@@ -2371,18 +2489,23 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
   OS << "// Generated by -gen-legalizer-table.  Do not edit.\n";
   OS << "// Source of truth: the legalizer rule set description.\n";
   OS << "//\n";
-  OS << "// A type class is (kind, element bits, lanes).  Every predicate leaf in\n";
-  OS << "// a rule set is constant on one class (07 section 2.2), which is what makes\n";
+  OS << "// A type class is (kind, element bits, lanes).  Every predicate leaf "
+        "in\n";
+  OS << "// a rule set is constant on one class (07 section 2.2), which is "
+        "what makes\n";
   OS << "// the key a finite index instead of a comparison chain.\n";
-  if (!OpaqueRuleSets.empty()) {
+  if (!EscapeRuleSets.empty()) {
     OS << "//\n";
-    OS << "// Not tabulated because they contain an opaque rule; the chain answers:\n";
-    for (StringRef Name : OpaqueRuleSets)
+    OS << "// Not tabulated because they contain a rule the Core IR cannot "
+          "express;\n";
+    OS << "// the chain answers:\n";
+    for (StringRef Name : EscapeRuleSets)
       OS << "//   " << Name << "\n";
   }
   OS << "\n";
 
-  OS << "static constexpr LegalizerTypeClass " << Prefix << "TypeClasses[] = {\n";
+  OS << "static constexpr LegalizerTypeClass " << Prefix
+     << "TypeClasses[] = {\n";
   for (size_t I = 0; I != Classes.size(); ++I) {
     const TableClass &C = Classes[I];
     OS << "  /*" << format_decimal(I, 2) << "*/ {" << className(C.Kind) << ","
@@ -2390,9 +2513,8 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
        << "},   // " << C.Spell << "\n";
   }
   OS << "};\n";
-  OS << "static constexpr unsigned " << Prefix
-     << "NumTypeClasses = sizeof(" << Prefix << "TypeClasses) / sizeof("
-     << Prefix << "TypeClasses[0]);\n";
+  OS << "static constexpr unsigned " << Prefix << "NumTypeClasses = sizeof("
+     << Prefix << "TypeClasses) / sizeof(" << Prefix << "TypeClasses[0]);\n";
   // The classifier is generated from the same list.  A hand-written
   // equivalent would be a second copy of the class set, and the two could
   // drift apart without anything failing to build; here a duplicate -- or a
@@ -2428,6 +2550,14 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
       for (size_t C = 0; C != Count; ++C)
         OS << (C ? ", " : "") << C;
       OS << "};\n";
+      if (R.Slots[K] < 0)
+        continue;
+      OS << "static constexpr uint8_t " << Prefix << "DomainT" << T << "S" << K
+         << "[] = {";
+      const std::vector<unsigned> &Domain = R.SlotDomains[K];
+      for (size_t C = 0; C != Domain.size(); ++C)
+        OS << (C ? ", " : "") << Domain[C];
+      OS << "};\n";
     }
     if (!R.Mem.empty()) {
       OS << "static constexpr int32_t " << Prefix << "MemT" << T << "[] = {";
@@ -2457,12 +2587,53 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     OS << "    default:\n      return -1;\n    }\n";
   }
   OS << "  default:\n    return -1;\n  }\n}\n\n";
+  // The self-check domain: what each keyed slot is allowed to be asked about.
+  // A type slot carries the global classes it enumerates; the mem axis carries
+  // a null pointer and takes its local count from Mem (Dims already holds the
+  // same number).  The two arrays are emitted from the same description as the
+  // tables, so they cannot go stale against a rule change.
+  OS << "struct LegalizerTableDomain {\n";
+  OS << "  uint8_t Counts[3];\n";
+  OS << "  const uint8_t *Classes[3];   // type-slot classes; null for "
+        "mem/unused\n";
+  OS << "};\n";
+  OS << "static constexpr LegalizerTableDomain " << Prefix
+     << "TableDomains[] = {\n";
+  for (size_t T = 0; T != Tables.size(); ++T) {
+    const TableRec &R = Tables[T];
+    OS << "  /*" << format_decimal(T, 2) << "*/ {{";
+    for (size_t K = 0; K != 3; ++K) {
+      unsigned Dim = 1;
+      if (K < R.Slots.size())
+        Dim = R.Slots[K] < 0 ? R.Mem.size() : R.SlotDomains[K].size();
+      if (K)
+        OS << ", ";
+      OS << format_decimal(Dim, 3);
+    }
+    OS << "}, {";
+    for (size_t K = 0; K != 3; ++K) {
+      if (K)
+        OS << ", ";
+      if (K < R.Slots.size() && R.Slots[K] >= 0)
+        OS << Prefix << "DomainT" << T << "S" << K;
+      else
+        OS << "nullptr";
+    }
+    OS << "}},   // " << R.Def->getName() << "\n";
+  }
+  OS << "};\n";
+  OS << "static constexpr unsigned " << Prefix << "NumTableDomains = sizeof("
+     << Prefix << "TableDomains) / sizeof(" << Prefix << "TableDomains[0]);\n";
+
   OS << "struct LegalizerTableDesc {\n";
-  OS << "  uint8_t NumSlots;   // 0..3: key dimensions actually used (0 = one cell)\n";
-  OS << "  int8_t Slots[3];    // type slots the key reads; -1 is the mem axis\n";
+  OS << "  uint8_t NumSlots;   // 0..3: key dimensions actually used (0 = one "
+        "cell)\n";
+  OS << "  int8_t Slots[3];    // type slots the key reads; -1 is the mem "
+        "axis\n";
   OS << "  uint8_t Dims[3];    // local class count per slot (1 = unused)\n";
   OS << "  const uint8_t *Local[3];\n";
-  OS << "  const int32_t *Mem; // access sizes (bits) of the mem axis, or null\n";
+  OS << "  const int32_t *Mem; // access sizes (bits) of the mem axis, or "
+        "null\n";
   OS << "  uint16_t FirstRule, NumRules;   // range into the rule table\n";
   OS << "};\n\n";
 
@@ -2494,8 +2665,7 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
       if (R.Slots.empty())
         OS << Prefix << "LocalTrivial";
       else
-        OS << Prefix << "LocalT" << T << "S"
-           << (K < R.Slots.size() ? K : 0);
+        OS << Prefix << "LocalT" << T << "S" << (K < R.Slots.size() ? K : 0);
     }
     OS << "}, ";
     if (R.Mem.empty())
@@ -2507,12 +2677,14 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
        << "\n";
   }
   OS << "};\n";
-  OS << "static constexpr unsigned " << Prefix << "NumTables = sizeof(" << Prefix
-     << "Tables) / sizeof(" << Prefix << "Tables[0]);\n\n";
+  OS << "static constexpr unsigned " << Prefix << "NumTables = sizeof("
+     << Prefix << "Tables) / sizeof(" << Prefix << "Tables[0]);\n\n";
 
-  OS << "// Opcode -> table, resolved at generation time so the consumer does not\n";
+  OS << "// Opcode -> table, resolved at generation time so the consumer does "
+        "not\n";
   OS << "// carry a string table.\n";
-  OS << "static inline int " << LowerPrefix << "TableForOpcode(unsigned Opcode) {\n";
+  OS << "static inline int " << LowerPrefix
+     << "TableForOpcode(unsigned Opcode) {\n";
   OS << "  switch (Opcode) {\n";
   std::vector<std::pair<StringRef, unsigned>> Map;
   for (size_t T = 0; T != Tables.size(); ++T)
@@ -2526,7 +2698,19 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     OS << "  case TargetOpcode::" << Entry.first << ": return " << Entry.second
        << ";\n";
   OS << "  default: return -1;\n";
-  OS << "  }\n}\n";
+  OS << "  }\n}\n\n";
+  OS << "// Every tabulated opcode and its table, for the self-check domain.\n";
+  OS << "static constexpr struct {\n";
+  OS << "  unsigned Opcode;\n";
+  OS << "  const char *Name;\n";
+  OS << "  uint8_t Table;\n";
+  OS << "} " << Prefix << "TableOpcodes[] = {\n";
+  for (const auto &Entry : Map)
+    OS << "  {TargetOpcode::" << Entry.first << ", \"" << Entry.first << "\", "
+       << Entry.second << "},\n";
+  OS << "};\n";
+  OS << "static constexpr unsigned " << Prefix << "NumTableOpcodes = sizeof("
+     << Prefix << "TableOpcodes) / sizeof(" << Prefix << "TableOpcodes[0]);\n";
 }
 
 void LegalizerInfoEmitter::runCore(raw_ostream &OS) {

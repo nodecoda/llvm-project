@@ -107,19 +107,7 @@ unsigned localToGlobal(const LegalizerTableDesc &D, unsigned Slot,
   llvm_unreachable("local class has no global representative");
 }
 
-struct X86TablePoint {
-  unsigned Opcode;
-  const char *Name;
-  uint8_t NumTypes;
-  LLT Types[3];
-  // Access size in bits for the memory axis, or 0 when the point asks no
-  // memory question.  A load's type does not say how wide the access is.
-  uint32_t MemBits;
-};
-
 } // namespace
-
-#include "X86LegalizerTablePoints.inc"
 
 X86LegalizerTable::X86LegalizerTable(const LegalizerInfo &LI)
     : LI(LI), Cells(X86NumTables), LogOutsides(X86GISelTableOutsides) {}
@@ -333,64 +321,100 @@ X86LegalizerTable::~X86LegalizerTable() {
 }
 
 void X86LegalizerTable::selfCheck(raw_ostream &OS) {
-  SmallVector<X86TablePoint, 0> Points;
-  Points.reserve(X86NumTablePoints);
-  x86CollectTablePoints(Points);
-
-  unsigned Compared = 0;
+  // The domain is generated with the tables: each keyed slot lists the classes
+  // its rules name for it, so the check asks the questions the IR can produce.
+  // Iterating the full class set instead would crash the chain on queries it
+  // is not written for (a pointer in a scalar slot, for one), which measures
+  // nothing about the table.
+  uint64_t Points = 0;
+  uint64_t Compared = 0;
+  uint64_t Skipped = 0;
   unsigned Mismatches = 0;
-  unsigned Skipped = 0;
-  for (const X86TablePoint &P : Points) {
-    ArrayRef<LLT> Types(P.Types, P.NumTypes);
-    // The point carries the access size it was enumerated for; 0 means the
-    // question has no memory part.  Both paths then see the same query, which
-    // is the only way the comparison means anything.
-    SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
-    if (P.MemBits)
-      MemDescs.emplace_back(LLT::scalar(P.MemBits), /*AlignInBits=*/1,
-                            AtomicOrdering::NotAtomic,
-                            AtomicOrdering::NotAtomic);
-    const LegalityQuery Q(P.Opcode, Types, MemDescs);
 
-    // Ask the rules directly.  LI.getAction() consults the installed table
-    // first, which would compare the table against itself when both switches
-    // are on; the point of this check is the chain.
-    const LegalizeActionStep ChainStep =
-        LI.getActionDefinitions(Q.Opcode).apply(Q);
-    const Result R = query(Q);
-    if (R.Kind != Answer::Hit) {
-      ++Skipped;
-      continue;
-    }
-    ++Compared;
-    if (R.Action == ChainStep.Action && R.TypeIdx == ChainStep.TypeIdx &&
-        R.NewType == ChainStep.NewType)
-      continue;
-    ++Mismatches;
-    if (Mismatches <= 20) {
-      OS << "x86-gisel-table-check: MISMATCH " << P.Name << "(mem "
-         << P.MemBits << ")(";
-      for (unsigned I = 0; I < P.NumTypes; ++I) {
-        if (I)
-          OS << ", ";
-        P.Types[I].print(OS);
+  static_assert(X86NumTableDomains == X86NumTables,
+                "every table needs a self-check domain");
+
+  for (unsigned EntryIdx = 0; EntryIdx != X86NumTableOpcodes; ++EntryIdx) {
+    const auto &Entry = X86TableOpcodes[EntryIdx];
+    const LegalizerTableDesc &D = X86Tables[Entry.Table];
+    const LegalizerTableDomain &Domain = X86TableDomains[Entry.Table];
+    const unsigned N0 = D.NumSlots > 0 ? Domain.Counts[0] : 1;
+    const unsigned N1 = D.NumSlots > 1 ? Domain.Counts[1] : 1;
+    const unsigned N2 = D.NumSlots > 2 ? Domain.Counts[2] : 1;
+
+    // A tabulated table reads no type slot outside its key, so an unkeyed
+    // slot can use any representative; it is the same one fill() saw.
+    int MaxSlot = -1;
+    for (unsigned K = 0; K != D.NumSlots; ++K)
+      if (D.Slots[K] > MaxSlot)
+        MaxSlot = D.Slots[K];
+
+    for (unsigned I0 = 0; I0 != N0; ++I0) {
+      for (unsigned I1 = 0; I1 != N1; ++I1) {
+        for (unsigned I2 = 0; I2 != N2; ++I2) {
+          const unsigned Local[3] = {I0, I1, I2};
+          SmallVector<LLT, 3> Types(static_cast<size_t>(MaxSlot + 1),
+                                    representative(0));
+          SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+          uint64_t MemBits = 0;
+          for (unsigned K = 0; K != D.NumSlots; ++K) {
+            if (D.Slots[K] < 0) {
+              const unsigned Bits = static_cast<unsigned>(D.Mem[Local[K]]);
+              MemBits = Bits;
+              MemDescs.emplace_back(LLT::scalar(Bits), /*AlignInBits=*/1,
+                                    AtomicOrdering::NotAtomic,
+                                    AtomicOrdering::NotAtomic);
+            } else {
+              Types[D.Slots[K]] = representative(Domain.Classes[K][Local[K]]);
+            }
+          }
+
+          ++Points;
+          const LegalityQuery Q(Entry.Opcode, Types, MemDescs);
+          // Ask the rules directly.  LI.getAction() consults the installed
+          // table first, which would compare the table against itself; the
+          // point of this check is the chain.
+          const LegalizeActionStep ChainStep =
+              LI.getActionDefinitions(Q.Opcode).apply(Q);
+          const Result R = query(Q);
+          if (R.Kind != Answer::Hit) {
+            ++Skipped;
+            continue;
+          }
+          ++Compared;
+          if (R.Action == ChainStep.Action && R.TypeIdx == ChainStep.TypeIdx &&
+              R.NewType == ChainStep.NewType)
+            continue;
+          ++Mismatches;
+          if (Mismatches <= 20) {
+            OS << "x86-gisel-table-check: MISMATCH " << Entry.Name << "(";
+            for (unsigned I = 0; I != Types.size(); ++I) {
+              if (I)
+                OS << ", ";
+              Types[I].print(OS);
+            }
+            if (MemBits)
+              OS << " mem " << MemBits;
+            OS << "): table ";
+            OS << static_cast<unsigned>(R.Action) << "/" << R.TypeIdx << "/";
+            R.NewType.print(OS);
+            OS << " chain ";
+            OS << static_cast<unsigned>(ChainStep.Action) << "/"
+               << ChainStep.TypeIdx << "/";
+            ChainStep.NewType.print(OS);
+            OS << "\n";
+          }
+        }
       }
-      OS << "): table ";
-      OS << static_cast<unsigned>(R.Action) << "/" << R.TypeIdx << "/";
-      R.NewType.print(OS);
-      OS << " chain ";
-      OS << static_cast<unsigned>(ChainStep.Action) << "/" << ChainStep.TypeIdx
-         << "/";
-      ChainStep.NewType.print(OS);
-      OS << "\n";
     }
   }
 
-  OS << "x86-gisel-table-check: points " << Points.size() << " compared "
-     << Compared << " mismatches " << Mismatches << " skipped " << Skipped
-     << " outside " << Outsides << " ptrvec " << PointerVectors << " addrspace "
+  OS << "x86-gisel-table-check: points " << Points << " compared " << Compared
+     << " mismatches " << Mismatches << " skipped " << Skipped << " outside "
+     << Outsides << " ptrvec " << PointerVectors << " addrspace "
      << AddressSpaces << " untabulated " << Untabulated << " declined "
      << Declined << " fills " << Fills << "\n";
   if (Mismatches)
-    report_fatal_error("x86-gisel-table-check: the table and the chain disagree");
+    report_fatal_error(
+        "x86-gisel-table-check: the table and the chain disagree");
 }

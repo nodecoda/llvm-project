@@ -68,7 +68,7 @@ public:
 
   Result query(const LegalityQuery &Q) const;
 
-  /// Run the enumerated domain through both paths and report.
+  /// Run every tabulated table's key domain through both paths and report.
   /// Fatal on a mismatch: a table that disagrees with the chain is a bug in
   /// the key, not a number to look at.
   void selfCheck(raw_ostream &OS);

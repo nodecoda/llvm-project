@@ -1,10 +1,14 @@
 // RUN: llvm-tblgen -gen-legalizer-table -I %p/../../include %s | FileCheck %s
 
-// A rule set with an opaque rule has a predicate whose key dependencies the
-// table generator cannot see.  It must not be tabulated: filling a cell from
-// the chain would still produce an answer, but that cell would stand for every
-// query sharing the core rules' key, including queries the opaque predicate
+// A rule set with an escape has a predicate whose key dependencies the table
+// generator cannot see.  It must not be tabulated: filling a cell from the
+// chain would still produce an answer, but that cell would stand for every
+// query sharing the core rules' key, including queries the escaped rule
 // distinguishes.  The chain answers instead.
+//
+// "Escape" is every rule that expands to no core rule, not just a raw C++
+// body: a non-literal argument list hides the same key dependency one level
+// down.  Test_CHOICE is the negative control for that half.
 
 include "llvm/Target/LegalizerInfo.td"
 
@@ -23,6 +27,14 @@ def Test_OPAQUE : LegalizeRuleSet<["G_STORE"]> {
   ];
 }
 
+def Test_CHOICE : LegalizeRuleSet<["G_PTRTOINT"]> {
+  let Rules = [
+    LegalForCartesianProduct<
+        LegalizeTypeListChoice<"Is64Bit ? PtrTypes64 : PtrTypes32">,
+        LegalizeInlineTypeList<[s32]>>,
+  ];
+}
+
 def Test_ALLOpaque : LegalizeRuleSet<["G_LOAD"]> {
   let Rules = [
     LegalizeOpaqueRule<BuilderCustomIf, [{
@@ -31,12 +43,16 @@ def Test_ALLOpaque : LegalizeRuleSet<["G_LOAD"]> {
   ];
 }
 
-// CHECK: // Not tabulated because they contain an opaque rule; the chain answers:
+// CHECK: // Not tabulated because they contain a rule the Core IR cannot express;
+// CHECK-NEXT: // the chain answers:
 // CHECK-NEXT: //   Test_OPAQUE
+// CHECK-NEXT: //   Test_CHOICE
 // CHECK-NEXT: //   Test_ALLOpaque
 // CHECK: // Test_CORE
 // CHECK-NOT: // Test_OPAQUE
 // CHECK-NOT: // Test_ALLOpaque
+// CHECK-NOT: // Test_CHOICE
 // CHECK: case TargetOpcode::G_ADD: return 0;
 // CHECK-NOT: case TargetOpcode::G_STORE:
 // CHECK-NOT: case TargetOpcode::G_LOAD:
+// CHECK-NOT: case TargetOpcode::G_PTRTOINT:
