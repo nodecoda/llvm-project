@@ -62,6 +62,18 @@ static cl::list<std::string> EvalThetas(
     "legalizer-eval-theta", cl::Hidden,
     cl::desc("theta as a string of 0/1 over the declared feature booleans"));
 
+/// A table covers a fixed domain, and a row of that domain the evaluator cannot
+/// compute makes its cell fall back to the chain.  That is a hole in the table,
+/// not a difference of opinion: the build knows which rows it is, and the
+/// self-check only finds out at run time.  Triaging a rule set that cannot be
+/// fixed in the same change needs the build to go through, so the check can be
+/// turned off -- but a backend that leaves it off ships a table whose coverage
+/// nobody stated.
+static cl::opt<bool> AllowGaps(
+    "gen-legalizer-allow-gaps", cl::Hidden, cl::init(false),
+    cl::desc(
+        "Emit a table even if some rows of its domain cannot be answered"));
+
 static void skipSpaces(StringRef S, size_t &I) {
   while (I != S.size() && isSpace(S[I]))
     ++I;
@@ -1399,6 +1411,12 @@ std::string scalarWiderThan(unsigned Idx, unsigned Bits) {
   return scalarWiderThan(Idx, std::to_string(Bits));
 }
 
+std::string scalarOrEltWiderThan(unsigned Idx, StringRef Bits) {
+  return "{\"kind\":\"leaf\",\"name\":\"scalarOrEltWiderThan\","
+         "\"args\":[" +
+         std::to_string(Idx) + ",\"" + Bits.str() + "\"]}";
+}
+
 std::string oneArgLeaf(StringRef Name, unsigned A) {
   return "{\"kind\":\"leaf\",\"name\":\"" + Name.str() +
          "\",\"args\":[" + std::to_string(A) + "]}";
@@ -1964,6 +1982,8 @@ std::string typePredicateJson(const RecordKeeper &Records,
     return scalarNarrowerThan(Idx(0), Bits(1));
   if (Name == "scalarWiderThan")
     return scalarWiderThan(Idx(0), Bits(1));
+  if (Name == "scalarOrEltWiderThan")
+    return scalarOrEltWiderThan(Idx(0), Bits(1));
   if (Name == "sizeIs")
     return sizeIs(Idx(0), Bits(1));
   if (Name == "typeDiffersFromMemDesc")
@@ -2725,6 +2745,7 @@ void collectPredLeaves(
                                                "numElementsNotPow2",
                                                "scalarNarrowerThan",
                                                "scalarWiderThan",
+                                               "scalarOrEltWiderThan",
                                                "elementTypeIs",
                                                "fewerElementsThan",
                                                "moreElementsThan"};
@@ -3459,6 +3480,42 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
               (static_cast<size_t>(L0) * D1 + L1) * D2 + L2;
           R.Cells[Cell] = static_cast<uint16_t>(PlanId(Row, K, R.Atoms) + 1);
         }
+  }
+
+  // ---- a table must answer its own domain ---------------------------------
+  //
+  // Every row here is a question the key can produce, so a row without an
+  // answer is a cell that silently falls back.  Two ways out, both of them
+  // visible in the .td rather than in a build flag:
+  //
+  //  - teach the Core IR the leaf (one branch in legeval::evalLeaf), or
+  //  - make the rule opaque, which keeps the whole rule set out of the table
+  //    (see the escape list) instead of leaving one row of it behind.
+  //
+  // Left as a warning-shaped comment, the gap is invisible: 96 rows of
+  // X86_IMPLICIT_DEF fell back to the chain for a release and looked like an
+  // answer, because the .inc still named the rule set.
+  if (!AllowGaps) {
+    for (const TableRec &R : Tables) {
+      if (R.NoAnswerWhy.empty())
+        continue;
+      unsigned Rows = 0;
+      std::string Msg = "rule set " + R.Def->getName().str() +
+                        " cannot answer every row of its domain:\n";
+      for (const auto &W : R.NoAnswerWhy) {
+        Rows += W.second;
+        Msg += "  " + std::to_string(W.second) + " row(s): " + W.first + "\n";
+      }
+      Msg += "a table is the whole answer for its key, so these " +
+             std::to_string(Rows) +
+             " row(s) are cells that would fall back to the chain at run "
+             "time.\n"
+
+             "teach legeval::evalLeaf the leaf, or make the rule opaque so the "
+             "rule set stays out of the table.  -gen-legalizer-allow-gaps "
+             "keeps them as cells that fall back.";
+      PrintFatalError(R.Def->getLoc(), Msg);
+    }
   }
 
   // Answer every cell here, at generation time, by evaluating the rules.

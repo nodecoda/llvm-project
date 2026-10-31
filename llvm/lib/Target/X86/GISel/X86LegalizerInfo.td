@@ -91,6 +91,11 @@ def NarrowerIn1 : LegalizeTypePredicate<"scalarNarrowerThan(1, Is64Bit ? 64 : 32
 def IsS32In1 : LegalizeTypePredicate<"typeIs(1, X86_s32)">;
 def IsS64In1 : LegalizeTypePredicate<"typeIs(1, X86_s64)">;
 def NarrowerIn0 : LegalizeTypePredicate<"scalarNarrowerThan(0, Is64Bit ? 64 : 32)">;
+// A scalar or a vector element wider than 64 bits is scalarized.  Spelled as a
+// named record rather than as an inline query predicate: inline text has no
+// Core IR form, so every row that read it stayed out of the table and fell back
+// to the chain at run time.
+def OrEltWiderIn0 : LegalizeTypePredicate<"scalarOrEltWiderThan(0, 64)">;
 // The store value and the memory type must be the same LLT, not merely the
 // same size: v2s32 and s64 are both 64 bits.  The predicate compares the whole
 // type, which is why the table's size-keyed memory axis cannot answer it yet.
@@ -252,7 +257,7 @@ def X86_IMPLICIT_DEF : LegalizeRuleSet<[
     ClampNumElements<0, X86_v2s64, X86_s64MaxVector>,
     ClampMaxNumElements<0, X86_p0,
                                 "Is64Bit ? X86_s64MaxVector.getNumElements() : X86_s32MaxVector.getNumElements()">,
-    ScalarizeIf<LegalizeQueryPredicate<"scalarOrEltWiderThan(0, 64)">, 0>,
+    ScalarizeIf<OrEltWiderIn0, 0>,
   ];
 }
 

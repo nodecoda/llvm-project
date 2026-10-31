@@ -597,6 +597,12 @@ bool evalLeaf(const Node &N, Env &E) {
   if (Name == "scalarWiderThan")
     return TypeAt(0).isScalar() &&
            fixedOf(TypeAt(0).getSizeInBits()) > Bound(1);
+  // "scalar or element": the same comparison without the isScalar() guard, so a
+  // vector whose lanes are wider than the bound holds too.  getScalarSizeInBits
+  // is the element size for a vector and the width for a scalar or a pointer,
+  // which is what LegalityPredicates::scalarOrEltWiderThan compares.
+  if (Name == "scalarOrEltWiderThan")
+    return TypeAt(0).getScalarSizeInBits() > Bound(1);
   if (Name == "elementTypeIs") {
     const LLT *T = named(E, N.Args[1].S);
     if (!T)

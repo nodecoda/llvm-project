@@ -696,7 +696,7 @@ class ScalarSameSizeAs<int Idx, int OtherIdx>
 class Scalarize<int Idx>
     : LegalizeCall<BuilderScalarize, [LegalizeArgIndex<Idx>]>;
 
-class ScalarizeIf<LegalizeQueryPredicate P, int Idx>
+class ScalarizeIf<LegalizeQueryPredicateBase P, int Idx>
     : LegalizeQueryGuardedCall<BuilderScalarizeIf, P, [LegalizeArgIndex<Idx>]>;
 
 class MoreElementsToNextPow2<int Idx>
