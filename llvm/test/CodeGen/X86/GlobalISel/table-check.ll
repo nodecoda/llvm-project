@@ -12,7 +12,16 @@
 ; treat differently, which is the only way this table can be wrong: it cannot
 ; invent an answer the chain would not give.
 ;
-; CHECK: x86-gisel-table-check: points {{[0-9]+}} compared {{[1-9][0-9][0-9]+}} mismatches 0
+; CHECK: x86-gisel-table-check: points [[P:[0-9]+]] compared [[P]] mismatches 0 skipped 0
+
+; Every point the domain enumerates must be compared, not skipped.  On LP64
+; every class representative and every memory-type fiber member is a shape the
+; key can classify, so `skipped` has exactly one meaning here: a generator
+; defect that quietly turned a point into a non-question.  It was 590 before
+; the fiber stopped emitting three-lane vectors of pointers (total size 3x the
+; cell they stood for); those points were then answered from a different cell
+; under this cell's name.  Pinning `compared == points` keeps that from coming
+; back as a number nobody reads.
 
 define void @f() {
   ret void

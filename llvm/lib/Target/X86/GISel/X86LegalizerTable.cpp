@@ -116,13 +116,27 @@ static void memFiber(unsigned Bits, SmallVectorImpl<LLT> &Out) {
       continue;
     Out.push_back(LLT::fixed_vector(Lanes, LLT::scalar(Elem)));
   }
-  if (Bits != 32 && Bits != 64)
-    return;
+  // A vector of pointers has exactly one element type, the pointer, so its
+  // total size is Lanes * PtrBits.  Asking for "size Bits" therefore fixes the
+  // lane count from Bits and the pointer width; it does not let the lane count
+  // pick the size.  Emitting <2..4 x pN:Bits> instead made the members 2..4
+  // times as wide as the cell they stood for, and because a member the table
+  // refuses is counted as `skipped` rather than as a failure, the fiber kept
+  // checking other cells under this cell's name.  The caller now proves every
+  // member is in its cell before asking anything.
   for (unsigned AS : {0u, 1u, 270u, 271u, 272u}) {
-    const LLT P = LLT::pointer(AS, Bits);
-    Out.push_back(P);
-    for (unsigned Lanes = 2; Lanes <= 4; ++Lanes)
-      Out.push_back(LLT::fixed_vector(Lanes, P));
+    for (unsigned PtrBits : {32u, 64u}) {
+      if (Bits == PtrBits) {
+        Out.push_back(LLT::pointer(AS, PtrBits));
+        continue;
+      }
+      if (Bits % PtrBits)
+        continue;
+      const unsigned Lanes = Bits / PtrBits;
+      if (Lanes < 2 || Lanes > 4)
+        continue;
+      Out.push_back(LLT::fixed_vector(Lanes, LLT::pointer(AS, PtrBits)));
+    }
   }
 }
 
@@ -421,6 +435,24 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
             MemTypes.push_back(LLT());
 
           for (LLT MemTy : MemTypes) {
+            // A fiber member is supposed to be another spelling of this
+            // cell's key.  One that is not is a defect in this file, not a
+            // question about the table: `query` would answer it from the cell
+            // its own size names (or refuse it), and the comparison would
+            // then be filed under the wrong cell or dropped into `skipped`.
+            if (MemTy.isValid() && !MemClassTy.isValid()) {
+              const TypeSize MemberSize = MemTy.getSizeInBits();
+              if (MemberSize.isScalable() ||
+                  MemberSize.getFixedValue() != MemBits) {
+                std::string S;
+                raw_string_ostream OS(S);
+                OS << "x86-gisel-table-check: " << Entry.Name
+                   << ": a fiber member for access " << MemBits
+                   << " bits is not that size: ";
+                MemTy.print(OS);
+                report_fatal_error(StringRef(S));
+              }
+            }
             SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
             if (MemTy.isValid())
               MemDescs.emplace_back(MemTy, /*AlignInBits=*/1,
