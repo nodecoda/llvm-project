@@ -49,7 +49,7 @@ constexpr int kPointerVectorClass = -2;
 // A pointer in an address space the table does not model.  The class list is
 // built from the named LLT constants, and every one of them names p0.
 constexpr int kPointerAddressSpaceClass = -3;
-constexpr uint16_t kOpaqueCell = 0xFFFF;
+constexpr uint32_t kOpaqueCell = 0xFFFFFFFF;
 
 /// Class of a type, or one of the negative class ids above.
 int classifyType(LLT T) {
@@ -126,7 +126,7 @@ LLT X86LegalizerTable::representative(unsigned ClassID) {
   }
 }
 
-uint16_t X86LegalizerTable::fill(unsigned Table, const LegalityQuery &Q,
+uint32_t X86LegalizerTable::fill(unsigned Table, const LegalityQuery &Q,
                                  ArrayRef<unsigned> Local) const {
   const LegalizerTableDesc &D = X86Tables[Table];
   SmallVector<LLT, 4> Types(Q.Types.begin(), Q.Types.end());
@@ -155,9 +155,11 @@ uint16_t X86LegalizerTable::fill(unsigned Table, const LegalityQuery &Q,
   LegalizeActionStep Step =
       LI.getActionDefinitions(Q.Opcode)
           .apply(LegalityQuery(Q.Opcode, Types, MemDescs, Q.Immediates));
+  if (Steps.size() >= kOpaqueCell)
+    report_fatal_error("X86 legalizer table has too many filled cells");
   ++Fills;
   Steps.push_back(Step);
-  return static_cast<uint16_t>(Steps.size());
+  return static_cast<uint32_t>(Steps.size());
 }
 
 void X86LegalizerTable::noteOutside(unsigned Why, unsigned Table,
@@ -277,10 +279,10 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
     L[2] = static_cast<unsigned>(MemLocal);
   }
 
-  std::vector<uint16_t> &Row = Cells[Table];
+  std::vector<uint32_t> &Row = Cells[Table];
   if (Row.empty())
     Row.assign(static_cast<size_t>(D.Dims[0]) * D.Dims[1] * D.Dims[2], 0);
-  uint16_t &Cell =
+  uint32_t &Cell =
       Row[(static_cast<size_t>(L[0]) * D.Dims[1] + L[1]) * D.Dims[2] + L[2]];
   if (!Cell)
     Cell = fill(Table, Q, L);

@@ -83,14 +83,14 @@ public:
   uint64_t fills() const { return Fills; }
 
 private:
-  uint16_t fill(unsigned Table, const LegalityQuery &Q,
+  uint32_t fill(unsigned Table, const LegalityQuery &Q,
                 ArrayRef<unsigned> Local) const;
   /// Record one refused query, with the reason, when asked to.
   void noteOutside(unsigned Why, unsigned Table, const LegalityQuery &Q) const;
   static LLT representative(unsigned ClassID);
 
   const LegalizerInfo &LI;
-  mutable std::vector<std::vector<uint16_t>> Cells;
+  mutable std::vector<std::vector<uint32_t>> Cells;
   mutable std::vector<LegalizeActionStep> Steps;
   mutable uint64_t Hits = 0, Escapes = 0, Outsides = 0, PointerVectors = 0,
                    AddressSpaces = 0, Untabulated = 0, Declined = 0, Fills = 0;
