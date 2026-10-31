@@ -61,11 +61,16 @@ X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI,
   // width and the widest scalar) to their 64-bit values, which is what makes a
   // class list that does not vary with the subtarget possible.  That pin is
   // only sound where the pin holds, so a 32-bit subtarget keeps the chains.
+  // LLT::pointer(0) is 64 bits under LP64 and 32 under ILP32; the class list
+  // pins it to 64, so the self-check's representatives follow the same
+  // expression and the points it cannot key are reported as Outside.
+  const unsigned PointerBits = STI.isTarget64BitLP64() ? 64 : 32;
+
   if (X86GISelTable && STI.is64Bit())
-    setTable(std::make_unique<X86LegalizerTable>(*this));
+    setTable(std::make_unique<X86LegalizerTable>(*this, PointerBits));
 
   if (X86GISelTableCheck) {
-    X86LegalizerTable Table(*this);
+    X86LegalizerTable Table(*this, PointerBits);
     Table.selfCheck(errs());
   }
 }

@@ -59,7 +59,12 @@ public:
     LLT NewType;
   };
 
-  explicit X86LegalizerTable(const LegalizerInfo &LI);
+  /// \p PointerBits is the width the current subtarget gives LLT::pointer(0),
+  /// which X86_p0 denotes.  The class list pins it to 64 because the table only
+  /// installs on LP64, but the self-check also runs where the table is not
+  /// installed: there the representatives have to be types the chain knows,
+  /// or the check asks the chain a question it is not written for.
+  explicit X86LegalizerTable(const LegalizerInfo &LI, unsigned PointerBits);
   ~X86LegalizerTable() override;
 
   /// LegalizerInfo::LegalizeTable.  Returns false when the cell is missing,
@@ -87,9 +92,10 @@ private:
                 ArrayRef<unsigned> Local) const;
   /// Record one refused query, with the reason, when asked to.
   void noteOutside(unsigned Why, unsigned Table, const LegalityQuery &Q) const;
-  static LLT representative(unsigned ClassID);
+  LLT representative(unsigned ClassID) const;
 
   const LegalizerInfo &LI;
+  const unsigned PointerBits;
   mutable std::vector<std::vector<uint32_t>> Cells;
   mutable std::vector<LegalizeActionStep> Steps;
   mutable uint64_t Hits = 0, Escapes = 0, Outsides = 0, PointerVectors = 0,

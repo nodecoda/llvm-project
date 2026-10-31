@@ -7,8 +7,11 @@
 // distinguishes.  The chain answers instead.
 //
 // "Escape" is every rule that expands to no core rule, not just a raw C++
-// body: a non-literal argument list hides the same key dependency one level
-// down.  Test_CHOICE is the negative control for that half.
+// body.  A feature-dependent type list is no longer one by itself -- it is
+// residualized into guarded rules, and legalizer-info-param-bounds.td covers
+// that -- but a choice whose arms name no type list still hides the same key
+// dependency one level down.  Test_CHOICE is the negative control for that
+// half: names that cannot be resolved stay escapes, never guesses.
 
 include "llvm/Target/LegalizerInfo.td"
 

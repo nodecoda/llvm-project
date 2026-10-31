@@ -109,18 +109,20 @@ unsigned localToGlobal(const LegalizerTableDesc &D, unsigned Slot,
 
 } // namespace
 
-X86LegalizerTable::X86LegalizerTable(const LegalizerInfo &LI)
-    : LI(LI), Cells(X86NumTables), LogOutsides(X86GISelTableOutsides) {}
+X86LegalizerTable::X86LegalizerTable(const LegalizerInfo &LI,
+                                     unsigned PointerBits)
+    : LI(LI), PointerBits(PointerBits), Cells(X86NumTables),
+      LogOutsides(X86GISelTableOutsides) {}
 
-LLT X86LegalizerTable::representative(unsigned ClassID) {
+LLT X86LegalizerTable::representative(unsigned ClassID) const {
   const LegalizerTypeClass &C = X86TypeClasses[ClassID];
   switch (C.Kind) {
   case Kind_Pointer:
-    return LLT::pointer(0, C.ElemBits);
+    return LLT::pointer(0, PointerBits);
   case Kind_Vector:
     return LLT::fixed_vector(C.Lanes, C.ElemBits);
   case Kind_PointerVector:
-    return LLT::fixed_vector(C.Lanes, LLT::pointer(0, C.ElemBits));
+    return LLT::fixed_vector(C.Lanes, LLT::pointer(0, PointerBits));
   default:
     return LLT::scalar(C.ElemBits);
   }

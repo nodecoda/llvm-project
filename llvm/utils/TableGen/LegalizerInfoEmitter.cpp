@@ -1089,6 +1089,12 @@ std::string jsonEscaped(StringRef S) {
 /// the one shape where a type names another type (LLT::fixed_vector(2, X86_p0)).
 const RecordKeeper *CurrentRK = nullptr;
 
+/// Lower one LegalizePredicate record to a Core IR predicate AST.  Declared
+/// here because the type-expression expansion below needs the same feature
+/// leaf spelling, and predicateJson() is defined further down.
+void predicateJson(const RecordKeeper &Records, const Record &P,
+                   std::string &Out);
+
 const Record *namedTypeDef(StringRef Name) {
   if (!CurrentRK || Name.empty() || !isAlpha(Name.front()))
     return nullptr;
@@ -1365,6 +1371,365 @@ std::string moreElementsThan(unsigned Idx, unsigned Lanes) {
 std::string elementTypeIs(unsigned Idx, StringRef Ty) {
   return "{\"kind\":\"leaf\",\"name\":\"elementTypeIs\",\"args\":[" +
          std::to_string(Idx) + ",\"" + Ty.str() + "\"]}";
+}
+
+/// One literal of a guard: a subtarget condition, possibly negated.  A guard is
+/// a conjunction of literals, so it is kept in that form until it is written
+/// out; spelling it as JSON early would make the disjunction merge below
+/// unable to see that `Cond` and `!Cond` cancel.
+struct GuardLit {
+  std::string Text;
+  bool Neg = false;
+};
+
+using Guard = std::vector<GuardLit>;
+
+/// One branch of a type expression: the literal type and the feature
+/// condition under which that branch is taken.  An empty guard means the
+/// branch is unconditional.
+struct TypeAlt {
+  Guard G;
+  std::string Type; // normalised LLT spelling
+};
+
+/// One branch of a type list, with the same guard convention.
+struct ListAlt {
+  Guard G;
+  std::vector<std::string> Types;
+};
+
+/// Rewrite the C++ spelling of a feature condition into the text the Core IR
+/// carries.  A LegalizeFeature record name (`HasAVX`) becomes its `Cond`
+/// (`Subtarget.hasAVX()`); everything else -- a call, an operator, a
+/// parenthesis -- is copied.  The walk is over whole identifiers, so `HasAVX`
+/// cannot rewrite the prefix of `HasAVX512`.
+std::string conditionText(const RecordKeeper &Records, StringRef Cond) {
+  std::string Out;
+  size_t I = 0;
+  while (I != Cond.size()) {
+    if (!(isAlpha(Cond[I]) || Cond[I] == '_')) {
+      Out += Cond[I++];
+      continue;
+    }
+    size_t Begin = I;
+    while (I != Cond.size() && (isAlnum(Cond[I]) || Cond[I] == '_'))
+      ++I;
+    StringRef Id = Cond.slice(Begin, I);
+    if (const Record *F = Records.getDef(Id))
+      if (F->isSubClassOf("LegalizeFeature")) {
+        Out += F->getValueAsString("Cond").str();
+        continue;
+      }
+    Out += Id.str();
+  }
+  return Out;
+}
+
+std::string featureLeaf(StringRef Text) {
+  return "{\"kind\":\"leaf\",\"name\":\"hasFeature\",\"args\":[" +
+         jsonEscaped(Text) + "]}";
+}
+
+std::string negatePredicate(const std::string &P) {
+  return "{\"kind\":\"not\",\"arg\":" + P + "}";
+}
+
+Guard featureGuard(const RecordKeeper &Records, StringRef Cond) {
+  Guard G;
+  G.push_back({conditionText(Records, Cond.trim()), false});
+  return G;
+}
+
+Guard negatedGuard(Guard G) {
+  for (GuardLit &L : G)
+    L.Neg = !L.Neg;
+  return G;
+}
+
+/// Conjunction.  An identical literal is not repeated; opposite literals are
+/// both kept, which makes the guard unsatisfiable, exactly as it should be.
+Guard conjoin(const Guard &A, const Guard &B) {
+  Guard Out = A;
+  for (const GuardLit &L : B) {
+    bool Seen = llvm::any_of(Out, [&](const GuardLit &E) {
+      return E.Text == L.Text && E.Neg == L.Neg;
+    });
+    if (!Seen)
+      Out.push_back(L);
+  }
+  return Out;
+}
+
+/// The Core IR spelling of a conjunction of literals; empty means "true", so
+/// callers can splice it into a rule predicate without a guard wrapper.
+std::string guardJson(const Guard &G) {
+  std::vector<std::string> Parts;
+  for (const GuardLit &L : G) {
+    std::string Leaf = featureLeaf(L.Text);
+    Parts.push_back(L.Neg ? negatePredicate(Leaf) : Leaf);
+  }
+  if (Parts.empty())
+    return "";
+  if (Parts.size() == 1)
+    return Parts.front();
+  return allOf(Parts);
+}
+
+/// \p Guard AND \p Pred, as a predicate AST.
+std::string guardAnd(const Guard &G, const std::string &Pred) {
+  std::string GJ = guardJson(G);
+  if (GJ.empty())
+    return Pred;
+  return allOf({GJ, Pred});
+}
+
+/// The same conjunction when both sides are already predicate ASTs; an empty
+/// side is "true".
+std::string joinPredicate(const std::string &A, const std::string &B) {
+  if (A.empty())
+    return B;
+  if (B.empty())
+    return A;
+  return allOf({A, B});
+}
+
+/// Split `Cond ? Then : Else` at the top level.  A conditional nested in the
+/// "then" arm has to be parenthesised: this walk cannot tell its colon from
+/// the outer one, so it is refused rather than guessed.  Nesting in the "else"
+/// arm is right-associative and handled by the recursive caller.
+bool splitTypeSelect(StringRef Expr, StringRef &Cond, StringRef &Then,
+                     StringRef &Else) {
+  Expr = Expr.trim();
+  while (wraps(Expr))
+    Expr = Expr.substr(1, Expr.size() - 2).trim();
+  size_t Q = topLevelIndex(Expr, '?');
+  if (Q == StringRef::npos)
+    return false;
+  size_t C = topLevelIndex(Expr.substr(Q + 1), ':');
+  if (C == StringRef::npos)
+    return false;
+  Cond = Expr.substr(0, Q).trim();
+  Then = Expr.substr(Q + 1, C).trim();
+  Else = Expr.substr(Q + 1 + C + 1).trim();
+  if (Cond.empty() || Then.empty() || Else.empty())
+    return false;
+  return topLevelIndex(Then, '?') == StringRef::npos;
+}
+
+/// Expand one type expression into literal alternatives, one per branch of its
+/// feature conditionals.  \p G carries the conditions already taken.
+///
+/// A bound like `HasSSE2 ? X86_s64 : X86_s32` becomes two alternatives; the
+/// residual rule form is `(Cond ? A : B) == (Cond,A) | (!Cond,B)`, and both
+/// branches are literal, which is what the Core IR can carry.
+bool expandTypeExpr(const RecordKeeper &Records, StringRef Expr, const Guard &G,
+                    std::vector<TypeAlt> &Out, std::string &Why) {
+  StringRef E = Expr.trim();
+  while (wraps(E))
+    E = E.substr(1, E.size() - 2).trim();
+  if (E.empty()) {
+    Why = "nonliteral_type";
+    return false;
+  }
+  std::string Norm = normalizeLlt(E);
+  if (!Norm.empty()) {
+    Out.push_back({G, Norm});
+    return true;
+  }
+  if (const Record *D = namedTypeDef(E)) {
+    StringRef Inner = D->getValueAsString("Expr");
+    if (Inner.trim() == E) {
+      Why = "nonliteral_type";
+      return false;
+    }
+    return expandTypeExpr(Records, Inner, G, Out, Why);
+  }
+  StringRef Cond, Then, Else;
+  if (!splitTypeSelect(E, Cond, Then, Else)) {
+    Why = "nonliteral_type";
+    return false;
+  }
+  Guard CG = featureGuard(Records, Cond);
+  if (!expandTypeExpr(Records, Then, conjoin(G, CG), Out, Why))
+    return false;
+  return expandTypeExpr(Records, Else, conjoin(G, negatedGuard(CG)), Out, Why);
+}
+
+/// Alternatives of one type argument: a named type (which may itself be
+/// spelled as a conditional), or an inline expression.
+bool typeAlternatives(const RecordKeeper &Records, const Record &A,
+                      std::vector<TypeAlt> &Out, std::string &Why) {
+  if (A.isSubClassOf("LegalizeNamedType"))
+    return expandTypeExpr(Records, A.getValueAsString("Expr"), {}, Out, Why);
+  if (A.isSubClassOf("LegalizeInlineType"))
+    return expandTypeExpr(Records, A.getValueAsString("Text"), {}, Out, Why);
+  Why = "nonliteral_type";
+  return false;
+}
+
+/// Alternatives of one type-list argument.  A list is the cartesian product of
+/// its elements' alternatives; a choice between two named lists contributes
+/// both arms, each under its condition.
+bool listAlternatives(const RecordKeeper &Records, const Record &L,
+                      std::vector<ListAlt> &Out, std::string &Why) {
+  if (L.isSubClassOf("LegalizeNamedTypeList") ||
+      L.isSubClassOf("LegalizeInlineTypeList")) {
+    std::vector<ListAlt> Acc{{Guard{}, {}}};
+    for (const Record *E : L.getValueAsListOfDefs("Elems")) {
+      std::vector<TypeAlt> Alts;
+      if (!expandTypeExpr(Records, E->getValueAsString("Expr"), {}, Alts, Why))
+        return false;
+      std::vector<ListAlt> Next;
+      for (const ListAlt &Prefix : Acc)
+        for (const TypeAlt &A : Alts) {
+          ListAlt N;
+          N.G = conjoin(Prefix.G, A.G);
+          N.Types = Prefix.Types;
+          N.Types.push_back(A.Type);
+          Next.push_back(std::move(N));
+        }
+      Acc = std::move(Next);
+    }
+    for (ListAlt &A : Acc)
+      Out.push_back(std::move(A));
+    return true;
+  }
+  if (L.isSubClassOf("LegalizeTypeListChoice")) {
+    StringRef Cond, Then, Else;
+    if (!splitTypeSelect(L.getValueAsString("Text"), Cond, Then, Else)) {
+      Why = "type_list_choice";
+      return false;
+    }
+    Guard CG = featureGuard(Records, Cond);
+    auto Arm = [&](StringRef Name, const Guard &G) -> bool {
+      const Record *R = Records.getDef(Name);
+      if (!R || !(R->isSubClassOf("LegalizeNamedTypeList") ||
+                  R->isSubClassOf("LegalizeInlineTypeList"))) {
+        Why = "type_list_choice";
+        return false;
+      }
+      std::vector<ListAlt> Alts;
+      if (!listAlternatives(Records, *R, Alts, Why))
+        return false;
+      for (ListAlt &A : Alts) {
+        A.G = conjoin(G, A.G);
+        Out.push_back(std::move(A));
+      }
+      return true;
+    };
+    return Arm(Then, CG) && Arm(Else, negatedGuard(CG));
+  }
+  Why = "nonliteral_type";
+  return false;
+}
+
+bool sameLiteral(const GuardLit &A, const GuardLit &B) {
+  return A.Text == B.Text && A.Neg == B.Neg;
+}
+
+bool sameClause(const Guard &A, const Guard &B) {
+  if (A.size() != B.size())
+    return false;
+  return llvm::all_of(A, [&](const GuardLit &L) {
+    return llvm::any_of(B,
+                        [&](const GuardLit &E) { return sameLiteral(L, E); });
+  });
+}
+
+/// Disjunction of conjunctions, reduced by resolution.  The case that matters
+/// is a type both arms of a choice name: its guard arrives as
+/// `Cond` and `!Cond`, and the resolvent is the (possibly empty) shared
+/// condition.  Without this the rule would carry `any_of(Cond, !Cond)`, which
+/// is true but not recognisable as unconditional, and would make the Core IR
+/// ask a question the description never asked.
+void simplifyDisjunction(std::vector<Guard> &Clauses) {
+  bool Changed = true;
+  while (Changed) {
+    Changed = false;
+    for (size_t I = 0; I != Clauses.size() && !Changed; ++I)
+      for (size_t J = I + 1; J != Clauses.size() && !Changed; ++J) {
+        if (sameClause(Clauses[I], Clauses[J])) {
+          Clauses.erase(Clauses.begin() + J);
+          Changed = true;
+          break;
+        }
+        Guard OnlyI, OnlyJ;
+        for (const GuardLit &L : Clauses[I])
+          if (!llvm::any_of(Clauses[J], [&](const GuardLit &E) {
+                return sameLiteral(L, E);
+              }))
+            OnlyI.push_back(L);
+        for (const GuardLit &L : Clauses[J])
+          if (!llvm::any_of(Clauses[I], [&](const GuardLit &E) {
+                return sameLiteral(L, E);
+              }))
+            OnlyJ.push_back(L);
+        // I subsumes J: J says no more than I, so it adds nothing.
+        if (OnlyJ.empty()) {
+          Clauses.erase(Clauses.begin() + J);
+          Changed = true;
+          break;
+        }
+        Guard Resolvent;
+        for (const GuardLit &L : Clauses[I])
+          if (!llvm::any_of(
+                  OnlyI, [&](const GuardLit &E) { return sameLiteral(L, E); }))
+            Resolvent.push_back(L);
+        if (OnlyI.size() == 1 && OnlyJ.size() == 1 &&
+            OnlyI[0].Text == OnlyJ[0].Text && OnlyI[0].Neg != OnlyJ[0].Neg) {
+          Clauses[I] = std::move(Resolvent);
+          Clauses.erase(Clauses.begin() + J);
+          Changed = true;
+          break;
+        }
+      }
+  }
+}
+
+/// Collapse list alternatives into one guard per type.  A type both arms name
+/// resolves to unconditional; a type only one arm names keeps that arm's
+/// condition.  First-appearance order is kept so rule order stays stable.
+std::vector<std::pair<std::string, std::string>>
+mergeTypeGuards(const std::vector<ListAlt> &Alts) {
+  std::vector<std::pair<Guard, std::string>> Out;
+  std::vector<std::vector<Guard>> Disj; // one disjunction per output entry
+  for (const ListAlt &L : Alts)
+    for (const std::string &T : L.Types) {
+      size_t Pos = 0;
+      while (Pos != Out.size() && Out[Pos].second != T)
+        ++Pos;
+      if (Pos == Out.size()) {
+        Out.push_back({L.G, T});
+        Disj.push_back({L.G});
+        continue;
+      }
+      bool Seen = llvm::any_of(
+          Disj[Pos], [&](const Guard &C) { return sameClause(C, L.G); });
+      if (!Seen)
+        Disj[Pos].push_back(L.G);
+    }
+  std::vector<std::pair<std::string, std::string>> Rendered;
+  for (size_t I = 0; I != Out.size(); ++I) {
+    simplifyDisjunction(Disj[I]);
+    std::string Json;
+    if (Disj[I].size() == 1) {
+      Json = guardJson(Disj[I].front());
+    } else {
+      // More than one clause survives: the type is legal under any of them.
+      Json = "{\"kind\":\"nary\",\"op\":\"any_of\",\"args\":[";
+      for (size_t K = 0; K != Disj[I].size(); ++K) {
+        if (K)
+          Json += ",";
+        std::string Clause = guardJson(Disj[I][K]);
+        Json += Clause.empty()
+                    ? "{\"kind\":\"leaf\",\"name\":\"true\",\"args\":[]}"
+                    : Clause;
+      }
+      Json += "]}";
+    }
+    Rendered.push_back({std::move(Json), Out[I].second});
+  }
+  return Rendered;
 }
 
 /// The same two relations, with the lane count spelled as a C++ expression.
@@ -1687,12 +2052,46 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
   // Arguments whose value only exists at code-generation time cannot be
   // expanded into a literal Core IR rule.  Naming them here keeps the escape
   // visible instead of guessing a type.
-  // A type record whose Expr is a C++ expression has no literal Core IR form.
-  // Those rules are escapes, not guesses.
+  //
+  // The builders below are the exception: their type arguments are bounds, and
+  // a bound spelled as a feature conditional is residualized into one rule per
+  // branch with a hasFeature guard, so it does have a literal Core IR form.
+  // Every other builder still escapes on a non-literal argument -- guessing
+  // there would put an answer in a cell the key cannot justify.
+  const bool ExprBuilder =
+      Builder == "BuilderClampScalar" || Builder == "BuilderClampScalarOrElt" ||
+      Builder == "BuilderMinScalar" || Builder == "BuilderMaxScalar" ||
+      Builder == "BuilderClampNumElements" || Builder == "BuilderLegalFor" ||
+      Builder == "BuilderLegalForCartesianProduct";
+
+  auto CheckType = [&](const Record &T) -> bool {
+    std::vector<TypeAlt> Alts;
+    std::string Inner;
+    if (typeAlternatives(Records, T, Alts, Inner))
+      return true;
+    Why = Inner;
+    return false;
+  };
+  auto CheckList = [&](const Record &L) -> bool {
+    std::vector<ListAlt> Alts;
+    std::string Inner;
+    if (listAlternatives(Records, L, Alts, Inner))
+      return true;
+    Why = Inner;
+    return false;
+  };
+
   for (const Record *A : Args) {
     if (A->isSubClassOf("LegalizeTypePair")) {
-      if (normalizeLlt(A->getValueAsDef("Type0")->getValueAsString("Expr")).empty() ||
-          normalizeLlt(A->getValueAsDef("Type1")->getValueAsString("Expr")).empty()) {
+      const Record *T0 = A->getValueAsDef("Type0");
+      const Record *T1 = A->getValueAsDef("Type1");
+      if (ExprBuilder && Builder == "BuilderLegalFor") {
+        if (!CheckType(*T0) || !CheckType(*T1))
+          return;
+        continue;
+      }
+      if (normalizeLlt(T0->getValueAsString("Expr")).empty() ||
+          normalizeLlt(T1->getValueAsString("Expr")).empty()) {
         Why = "nonliteral_type";
         return;
       }
@@ -1708,7 +2107,10 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
       continue;
     }
     if (A->isSubClassOf("LegalizeNamedType")) {
-      if (normalizeLlt(A->getValueAsString("Expr")).empty()) {
+      if (ExprBuilder) {
+        if (!CheckType(*A))
+          return;
+      } else if (normalizeLlt(A->getValueAsString("Expr")).empty()) {
         Why = "nonliteral_type";
         return;
       }
@@ -1716,20 +2118,35 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
     }
     if (A->isSubClassOf("LegalizeNamedTypeList") ||
         A->isSubClassOf("LegalizeInlineTypeList")) {
-      for (const Record *E : A->getValueAsListOfDefs("Elems"))
-        if (normalizeLlt(E->getValueAsString("Expr")).empty()) {
-          Why = "nonliteral_type";
+      if (ExprBuilder) {
+        if (!CheckList(*A))
           return;
-        }
+      } else {
+        for (const Record *E : A->getValueAsListOfDefs("Elems"))
+          if (normalizeLlt(E->getValueAsString("Expr")).empty()) {
+            Why = "nonliteral_type";
+            return;
+          }
+      }
       continue;
     }
     if (A->isSubClassOf("LegalizeArgInt"))
       continue;
     if (A->isSubClassOf("LegalizeTypeListChoice")) {
+      if (ExprBuilder) {
+        if (!CheckList(*A))
+          return;
+        continue;
+      }
       Why = "type_list_choice";
       return;
     }
     if (A->isSubClassOf("LegalizeInlineType")) {
+      if (ExprBuilder) {
+        if (!CheckType(*A))
+          return;
+        continue;
+      }
       Why = "inline_type_expr";
       return;
     }
@@ -1782,29 +2199,50 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
   if (Builder == "BuilderLegalFor") {
     for (const Record *A : Args) {
       if (A->isSubClassOf("LegalizeTypePair")) {
-        std::vector<std::string> T0, T1;
-        collectTypes(*A->getValueAsDef("Type0"), T0);
-        collectTypes(*A->getValueAsDef("Type1"), T1);
-        Out.push_back({"Legal", 0,
-                       WithPred(allOf({typeIs(0, T0.front()),
-                                       typeIs(1, T1.front())})),
-                       ""});
+        std::vector<TypeAlt> T0, T1;
+        std::string Why0, Why1;
+        if (!typeAlternatives(Records, *A->getValueAsDef("Type0"), T0, Why0) ||
+            !typeAlternatives(Records, *A->getValueAsDef("Type1"), T1, Why1))
+          PrintFatalError(Rule.getLoc(),
+                          "legalFor pair names a type with no literal Core IR "
+                          "form");
+        for (const TypeAlt &X : T0)
+          for (const TypeAlt &Y : T1)
+            Out.push_back({"Legal", 0,
+                           WithPred(guardAnd(
+                               conjoin(X.G, Y.G),
+                               allOf({typeIs(0, X.Type), typeIs(1, Y.Type)}))),
+                           ""});
       } else {
-        std::vector<std::string> Ts;
-        collectTypes(*A, Ts);
-        for (const std::string &T : Ts)
-          Out.push_back({"Legal", 0, WithPred(typeIs(0, T)), ""});
+        std::vector<TypeAlt> Ts;
+        std::string Why1;
+        if (!typeAlternatives(Records, *A, Ts, Why1))
+          PrintFatalError(Rule.getLoc(),
+                          "legalFor names a type with no literal Core IR "
+                          "form");
+        for (const TypeAlt &T : Ts)
+          Out.push_back(
+              {"Legal", 0, WithPred(guardAnd(T.G, typeIs(0, T.Type))), ""});
       }
     }
     return;
   }
   if (Builder == "BuilderLegalForCartesianProduct") {
-    std::vector<std::string> T0, T1;
-    collectTypes(*Args[0], T0);
-    collectTypes(*Args[1], T1);
-    for (const std::string &A : T0)
-      for (const std::string &B : T1)
-        Out.push_back({"Legal", 0, WithPred(allOf({typeIs(0, A), typeIs(1, B)})),
+    std::vector<ListAlt> L0, L1;
+    std::string Why0, Why1;
+    if (!listAlternatives(Records, *Args[0], L0, Why0) ||
+        !listAlternatives(Records, *Args[1], L1, Why1))
+      PrintFatalError(Rule.getLoc(),
+                      "legalForCartesianProduct names a list with no literal "
+                      "Core IR form");
+    // A type both arms of a choice name is legal under either condition, so
+    // it is emitted once with no guard; only the arm-specific types keep one.
+    for (const auto &A : mergeTypeGuards(L0))
+      for (const auto &B : mergeTypeGuards(L1))
+        Out.push_back({"Legal", 0,
+                       WithPred(joinPredicate(
+                           joinPredicate(A.first, B.first),
+                           allOf({typeIs(0, A.second), typeIs(1, B.second)}))),
                        ""});
     return;
   }
@@ -1914,30 +2352,55 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
   }
   if (Builder == "BuilderClampScalar" || Builder == "BuilderClampScalarOrElt") {
     unsigned Idx = Int(0);
-    std::string MinTy = Ty(1);
-    std::string MaxTy = Ty(2);
-    Out.push_back({"WidenScalar", Idx,
-                   WithPred(scalarNarrowerThan(Idx, lltBits(MinTy))),
-                   mutationJson(Idx, "set_elem_type", MinTy)});
-    Out.push_back({"NarrowScalar", Idx,
-                   WithPred(scalarWiderThan(Idx, lltBits(MaxTy))),
-                   mutationJson(Idx, "set_elem_type", MaxTy)});
+    std::vector<TypeAlt> Min, Max;
+    std::string Why0, Why1;
+    if (!typeAlternatives(Records, *Args[1], Min, Why0) ||
+        !typeAlternatives(Records, *Args[2], Max, Why1))
+      PrintFatalError(Rule.getLoc(),
+                      "clampScalar bound names a type with no literal Core IR "
+                      "form");
+    // minScalar().maxScalar(): every widening branch first, then every
+    // narrowing branch, which is the order the C++ builder produces.
+    for (const TypeAlt &T : Min)
+      Out.push_back(
+          {"WidenScalar", Idx,
+           WithPred(guardAnd(T.G, scalarNarrowerThan(Idx, lltBits(T.Type)))),
+           mutationJson(Idx, "set_elem_type", T.Type)});
+    for (const TypeAlt &T : Max)
+      Out.push_back(
+          {"NarrowScalar", Idx,
+           WithPred(guardAnd(T.G, scalarWiderThan(Idx, lltBits(T.Type)))),
+           mutationJson(Idx, "set_elem_type", T.Type)});
     return;
   }
   if (Builder == "BuilderMinScalar") {
     unsigned Idx = Int(0);
-    std::string Ty0 = Ty(1);
-    Out.push_back({"WidenScalar", Idx,
-                   WithPred(scalarNarrowerThan(Idx, lltBits(Ty0))),
-                   mutationJson(Idx, "set_elem_type", Ty0)});
+    std::vector<TypeAlt> Bounds;
+    std::string Why1;
+    if (!typeAlternatives(Records, *Args[1], Bounds, Why1))
+      PrintFatalError(Rule.getLoc(),
+                      "minScalar bound names a type with no literal Core IR "
+                      "form");
+    for (const TypeAlt &T : Bounds)
+      Out.push_back(
+          {"WidenScalar", Idx,
+           WithPred(guardAnd(T.G, scalarNarrowerThan(Idx, lltBits(T.Type)))),
+           mutationJson(Idx, "set_elem_type", T.Type)});
     return;
   }
   if (Builder == "BuilderMaxScalar") {
     unsigned Idx = Int(0);
-    std::string Ty0 = Ty(1);
-    Out.push_back({"NarrowScalar", Idx,
-                   WithPred(scalarWiderThan(Idx, lltBits(Ty0))),
-                   mutationJson(Idx, "set_elem_type", Ty0)});
+    std::vector<TypeAlt> Bounds;
+    std::string Why1;
+    if (!typeAlternatives(Records, *Args[1], Bounds, Why1))
+      PrintFatalError(Rule.getLoc(),
+                      "maxScalar bound names a type with no literal Core IR "
+                      "form");
+    for (const TypeAlt &T : Bounds)
+      Out.push_back(
+          {"NarrowScalar", Idx,
+           WithPred(guardAnd(T.G, scalarWiderThan(Idx, lltBits(T.Type)))),
+           mutationJson(Idx, "set_elem_type", T.Type)});
     return;
   }
   if (Builder == "BuilderWidenScalarToNextPow2" ||
@@ -1989,18 +2452,29 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
     // clampMinNumElements(Idx, MinTy, lanes(MinTy)).
     //   clampMaxNumElements(Idx, MaxTy, lanes(MaxTy)),
     // so each direction names its own lane count instead of "nextPow2".
-    std::string MinTy = Ty(1);
-    std::string MaxTy = Ty(2);
-    std::string Elt = lltElt(MinTy);
-    std::string Elem = elementTypeIs(Idx, Elt);
-    Out.push_back({"MoreElements", Idx,
-                   WithPred(allOf({Elem, fewerElementsThan(
-                                             Idx, lltLanes(MinTy))})),
-                   mutationJsonInt(Idx, "set_lanes", lltLanes(MinTy))});
-    Out.push_back({"FewerElements", Idx,
-                   WithPred(allOf({Elem, moreElementsThan(
-                                             Idx, lltLanes(MaxTy))})),
-                   mutationJsonInt(Idx, "set_lanes", lltLanes(MaxTy))});
+    // A bound that is a feature conditional contributes one rule per branch,
+    // each with its own element type and lane count.
+    std::vector<TypeAlt> Min, Max;
+    std::string Why0, Why1;
+    if (!typeAlternatives(Records, *Args[1], Min, Why0) ||
+        !typeAlternatives(Records, *Args[2], Max, Why1))
+      PrintFatalError(Rule.getLoc(),
+                      "clampNumElements bound names a type with no literal "
+                      "Core IR form");
+    for (const TypeAlt &T : Min)
+      Out.push_back(
+          {"MoreElements", Idx,
+           WithPred(guardAnd(
+               T.G, allOf({elementTypeIs(Idx, lltElt(T.Type)),
+                           fewerElementsThan(Idx, lltLanes(T.Type))}))),
+           mutationJsonInt(Idx, "set_lanes", lltLanes(T.Type))});
+    for (const TypeAlt &T : Max)
+      Out.push_back(
+          {"FewerElements", Idx,
+           WithPred(
+               guardAnd(T.G, allOf({elementTypeIs(Idx, lltElt(T.Type)),
+                                    moreElementsThan(Idx, lltLanes(T.Type))}))),
+           mutationJsonInt(Idx, "set_lanes", lltLanes(T.Type))});
     return;
   }
   if (Builder == "BuilderClampMinNumElements" ||
