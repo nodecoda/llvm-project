@@ -260,13 +260,11 @@ def X86_CONSTANT : LegalizeRuleSet<["G_CONSTANT"]> {
 
 def X86_LROUND : LegalizeRuleSet<["G_LROUND", "G_LLROUND"]> {
   let Rules = [
-    LegalizeOpaqueRule<BuilderWidenScalarIf, [{
-
-      typeIs(1, X86_s16),
-      [=](const LegalityQuery &) {
-        return std::pair<unsigned, LLT>(1, X86_s32);
-      }
-    }]>,
+    // f16 has no lround libcall, so promote sub-32-bit scalars to f32.
+    // Keep this a core rule: it puts slot 1 in the table key.  An opaque
+    // typeIs(1, s16) rule left the table keyless, so one cached answer was
+    // reused for every source type.
+    MinScalar<1, X86_s32>,
     Libcall,
   ];
 }
