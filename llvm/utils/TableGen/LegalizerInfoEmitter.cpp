@@ -2372,6 +2372,24 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
   OS << "static constexpr unsigned " << Prefix
      << "NumTypeClasses = sizeof(" << Prefix << "TypeClasses) / sizeof("
      << Prefix << "TypeClasses[0]);\n";
+  // The classifier is generated from the same list.  A hand-written
+  // equivalent would be a second copy of the class set, and the two could
+  // drift apart without anything failing to build; here a duplicate -- or a
+  // missing -- class is a compile error in the generated switch.
+  OS << "constexpr uint64_t " << Prefix
+     << "ClassKey(unsigned Kind, unsigned ElemBits, unsigned Lanes) {\n";
+  OS << "  return (static_cast<uint64_t>(Kind) << 32) |\n"
+     << "         (static_cast<uint64_t>(ElemBits) << 16) | Lanes;\n";
+  OS << "}\n";
+  OS << "static inline int " << Prefix
+     << "ClassifyType(unsigned Kind, unsigned ElemBits, unsigned Lanes) {\n";
+  OS << "  switch (" << Prefix << "ClassKey(Kind, ElemBits, Lanes)) {\n";
+  for (size_t I = 0; I != Classes.size(); ++I) {
+    const TableClass &C = Classes[I];
+    OS << "  case " << Prefix << "ClassKey(" << className(C.Kind) << ", "
+       << C.Elem << ", " << C.Lanes << "):\n    return " << I << ";\n";
+  }
+  OS << "  default:\n    return -1;\n  }\n}\n\n";
   // A table with no keyed axis still needs three Local pointers, and Dims is 1
   // for all of them, so only element 0 is ever read.
   OS << "static constexpr uint8_t " << Prefix << "LocalTrivial[] = {0};\n\n";

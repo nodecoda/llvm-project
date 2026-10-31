@@ -78,10 +78,11 @@ int classifyType(LLT T) {
   } else {
     return kUnknownClass;
   }
-  for (unsigned I = 0; I < X86NumTypeClasses; ++I)
-    if (X86TypeClasses[I].Kind == Kind && X86TypeClasses[I].ElemBits == Bits &&
-        X86TypeClasses[I].Lanes == Lanes)
-      return static_cast<int>(I);
+  // The class set and the mapping onto it are one generated fact, so this is a
+  // single switch rather than a scan over the class list.
+  const int Class = X86ClassifyType(Kind, Bits, Lanes);
+  if (Class >= 0)
+    return Class;
   // A pointer vector that has no class of its own is a gap, not an unknown:
   // say so, so the count points at the missing class instead of at the type.
   return IsPointerVector ? kPointerVectorClass : kUnknownClass;
