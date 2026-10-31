@@ -408,6 +408,32 @@ TEST(LegalizerInfoTest, ScalarSameSizeAsVector) {
                 LegalityQuery(TargetOpcode::G_ANYEXT, {v4s32, v4s32}));
 }
 
+// A pointer has no element size to change.  changeElementSizeTo() reaches
+// LLT::changeElementSize(), which asserts on pointers, so both halves have to
+// decline the query instead of matching it.
+TEST(LegalizerInfoTest, ScalarSameSizeAsPointer) {
+  const LLT p0 = LLT::pointer(0, 64);
+  const LLT v2p0 = LLT::fixed_vector(2, p0);
+  const LLT s16 = LLT::scalar(16);
+  const LLT s128 = LLT::scalar(128);
+
+  LegalizerInfo LI;
+  LI.getActionDefinitionsBuilder(TargetOpcode::G_ANYEXT).scalarSameSizeAs(0, 1);
+
+  // maxScalarSameAs() used to match {p0, s16}: 16 < 64 asked for a
+  // NarrowScalar mutation on a pointer.
+  EXPECT_ACTION(Unsupported, 0, LLT(),
+                LegalityQuery(TargetOpcode::G_ANYEXT, {p0, s16}));
+  EXPECT_ACTION(Unsupported, 0, LLT(),
+                LegalityQuery(TargetOpcode::G_ANYEXT, {v2p0, s16}));
+
+  // The widen half has the same problem in the other direction.
+  EXPECT_ACTION(Unsupported, 0, LLT(),
+                LegalityQuery(TargetOpcode::G_ANYEXT, {p0, s128}));
+  EXPECT_ACTION(Unsupported, 0, LLT(),
+                LegalityQuery(TargetOpcode::G_ANYEXT, {v2p0, s128}));
+}
+
 // AArch64GISemMITest instead of LegalizerInfoTest
 // as we need a target machine for MRI.
 //

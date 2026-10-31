@@ -2315,6 +2315,22 @@ void MachineVerifier::verifyPreISelGenericInstruction(const MachineInstr *MI) {
       report("addr operand must be a pointer", &AddrOp, 1);
     break;
   }
+  case TargetOpcode::G_CTPOP:
+  case TargetOpcode::G_CTLZ:
+  case TargetOpcode::G_CTTZ:
+  case TargetOpcode::G_CTTZ_ZERO_POISON: {
+    const LLT DstTy = MRI->getType(MI->getOperand(0).getReg());
+    if (DstTy.isPointerOrPointerVector()) {
+      report("Generic bit-count opcode does not support a pointer result", MI);
+      break;
+    }
+    const MachineOperand &SrcOp = MI->getOperand(1);
+    if (SrcOp.isReg() &&
+        MRI->getType(SrcOp.getReg()).isPointerOrPointerVector())
+      report("Generic bit-count opcode does not support a pointer operand",
+             &SrcOp, 1);
+    break;
+  }
   case TargetOpcode::G_SMIN:
   case TargetOpcode::G_SMAX:
   case TargetOpcode::G_UMIN:

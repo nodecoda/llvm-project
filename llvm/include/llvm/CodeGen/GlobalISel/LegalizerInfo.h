@@ -1164,6 +1164,11 @@ public:
     return actionIf(
         LegalizeAction::WidenScalar,
         [=](const LegalityQuery &Query) {
+          // changeElementSizeTo() has no meaning for pointers, and
+          // LLT::changeElementSize() asserts on them.  A pointer has no
+          // element size to change, so decline instead of mutating.
+          if (Query.Types[TypeIdx].isPointerOrPointerVector())
+            return false;
           return Query.Types[LargeTypeIdx].getScalarSizeInBits() >
                  Query.Types[TypeIdx].getScalarSizeInBits();
         },
@@ -1176,6 +1181,8 @@ public:
     return actionIf(
         LegalizeAction::NarrowScalar,
         [=](const LegalityQuery &Query) {
+          if (Query.Types[TypeIdx].isPointerOrPointerVector())
+            return false;
           return Query.Types[NarrowTypeIdx].getScalarSizeInBits() <
                  Query.Types[TypeIdx].getScalarSizeInBits();
         },

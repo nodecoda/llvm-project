@@ -1,0 +1,26 @@
+# RUN: not --crash llc -mtriple=arm64 -run-pass=none -filetype=null %s 2>&1 | FileCheck %s
+# REQUIRES: aarch64-registered-target
+
+---
+name: test_bitcount
+body: |
+  bb.0:
+    ; A pointer has no element size that a bit-count result could have, and
+    ; the legalizer's scalarSameSizeAs() must never be asked to mutate one.
+    %0:_(p0) = G_CONSTANT i64 0
+    ; CHECK: Bad machine code: Generic bit-count opcode does not support a pointer result
+    %1:_(p0) = G_CTPOP %0
+    ; CHECK: Bad machine code: Generic bit-count opcode does not support a pointer result
+    %2:_(p0) = G_CTLZ %0
+    ; CHECK: Bad machine code: Generic bit-count opcode does not support a pointer result
+    %3:_(p0) = G_CTTZ %0
+    ; CHECK: Bad machine code: Generic bit-count opcode does not support a pointer result
+    %4:_(p0) = G_CTTZ_ZERO_POISON %0
+
+    ; CHECK: Bad machine code: Generic bit-count opcode does not support a pointer operand
+    %5:_(s64) = G_CTPOP %0
+
+    ; CHECK: Bad machine code: Generic bit-count opcode does not support a pointer result
+    %6:_(<2 x p0>) = G_IMPLICIT_DEF
+    %7:_(<2 x p0>) = G_CTTZ %6
+...
