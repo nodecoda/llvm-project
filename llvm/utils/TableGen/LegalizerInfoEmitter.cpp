@@ -1347,6 +1347,11 @@ std::string scalarWiderThan(unsigned Idx, unsigned Bits) {
   return scalarWiderThan(Idx, std::to_string(Bits));
 }
 
+std::string scalarOrEltWiderThan(unsigned Idx, StringRef Bits) {
+  return "{\"kind\":\"leaf\",\"name\":\"scalarOrEltWiderThan\","
+         "\"args\":[" + std::to_string(Idx) + ",\"" + Bits.str() + "\"]}";
+}
+
 std::string oneArgLeaf(StringRef Name, unsigned A) {
   return "{\"kind\":\"leaf\",\"name\":\"" + Name.str() +
          "\",\"args\":[" + std::to_string(A) + "]}";
@@ -1912,6 +1917,8 @@ std::string typePredicateJson(const RecordKeeper &Records,
     return scalarNarrowerThan(Idx(0), Bits(1));
   if (Name == "scalarWiderThan")
     return scalarWiderThan(Idx(0), Bits(1));
+  if (Name == "scalarOrEltWiderThan")
+    return scalarOrEltWiderThan(Idx(0), Bits(1));
   if (Name == "sizeIs")
     return sizeIs(Idx(0), Bits(1));
   if (Name == "typeDiffersFromMemDesc")
@@ -2658,7 +2665,7 @@ bool parseTableClass(StringRef S, int &Kind, unsigned &Elem, unsigned &Lanes) {
 void collectPredLeaves(
     StringRef Json, std::set<unsigned> &Slots, std::set<unsigned> &MemSizes,
     std::map<unsigned, std::set<std::string>> *SlotTypes = nullptr,
-    bool *MemNeedsClass = nullptr) {
+    bool *MemNeedsClass = nullptr, bool *OpaquePredicate = nullptr) {
   // Leaf kinds that read a type slot, and where the slot index sits.
   static const std::set<StringRef> SlotArg0 = {"typeIs",
                                                "typeIn",
@@ -2669,6 +2676,7 @@ void collectPredLeaves(
                                                "numElementsNotPow2",
                                                "scalarNarrowerThan",
                                                "scalarWiderThan",
+                                               "scalarOrEltWiderThan",
                                                "elementTypeIs",
                                                "fewerElementsThan",
                                                "moreElementsThan"};
@@ -2705,7 +2713,18 @@ void collectPredLeaves(
       Leading.push_back(std::stoul(Json.substr(Start, I - Start).str()));
     }
 
-    if (Name == "true" || Name == "opaque" || Name == "hasFeature")
+    if (Name == "opaque") {
+      // A raw C++ predicate is opaque to this function: its text is not
+      // parsed, so the slots it reads are unknown.  Treating it as reading
+      // none is how a rule can depend on a slot the key does not have, which
+      // is the address-space bug on the slot axis -- the table still answers,
+      // just first-cell-wins.  The rule set is not tabulated; the chain
+      // answers, exactly as it does for an escape.
+      if (OpaquePredicate)
+        *OpaquePredicate = true;
+      continue;
+    }
+    if (Name == "true" || Name == "hasFeature")
       continue;
     if (SlotTypes && (Name == "typeIs" || Name == "typeIn")) {
       if (Leading.empty())
@@ -2814,6 +2833,9 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
   // Expressible, but the mem axis has no finite key: a rule compares the whole
   // memory type while no rule names one, so nothing can stand for a cell.
   std::vector<StringRef> UnkeyableRuleSets;
+  // The rule is expressible, its predicate is not: raw C++ is opaque to the
+  // key collector, so the slots it reads cannot be inferred.  Not tabulated.
+  std::vector<StringRef> OpaquePredicateRuleSets;
   unsigned RuleCursor = 0;
   StringSet<> SeenOpcodes;
   for (const Record *RuleSet : RuleSets) {
@@ -2822,6 +2844,7 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     unsigned Count = 0;
     bool HasEscape = false;
     bool MemNeedsClass = false;
+    bool HasOpaquePredicate = false;
     // The memory types the rules write down.  A class-keyed axis needs them as
     // classes, and the memdesc expansion keeps only their size.
     std::set<std::string> MemTypes;
@@ -2855,7 +2878,7 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
         }
       for (const CoreRule &CR : Expanded) {
         collectPredLeaves(CR.Predicate, SlotSet, MemSet, &SlotTypes,
-                          &MemNeedsClass);
+                          &MemNeedsClass, &HasOpaquePredicate);
         ++Count;
       }
     }
@@ -2870,6 +2893,12 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     // Do not tabulate it; the chain answers every query for the rule set.
     if (HasEscape) {
       EscapeRuleSets.push_back(RuleSet->getName());
+      continue;
+    }
+    // Same reason one level down: the rule is in the dump, but its predicate
+    // is raw C++, so the key cannot know what it reads.  Not tabulated.
+    if (HasOpaquePredicate) {
+      OpaquePredicateRuleSets.push_back(RuleSet->getName());
       continue;
     }
     // Same rule as the dump: a rule set whose every rule escaped has no table,
@@ -3081,6 +3110,15 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
           "whole\n";
     OS << "// and no rule names one to key it by; the chain answers:\n";
     for (StringRef Name : UnkeyableRuleSets)
+      OS << "//   " << Name << "\n";
+  }
+  if (!OpaquePredicateRuleSets.empty()) {
+    OS << "//\n";
+    OS << "// Not tabulated because they contain a predicate written as raw "
+          "C++,\n";
+    OS << "// so the slots it reads are unknown to the key; the chain "
+          "answers:\n";
+    for (StringRef Name : OpaquePredicateRuleSets)
       OS << "//   " << Name << "\n";
   }
   if (!EscapeRuleSets.empty()) {

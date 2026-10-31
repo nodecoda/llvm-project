@@ -91,6 +91,9 @@ def NarrowerIn1 : LegalizeTypePredicate<"scalarNarrowerThan(1, Is64Bit ? 64 : 32
 def IsS32In1 : LegalizeTypePredicate<"typeIs(1, X86_s32)">;
 def IsS64In1 : LegalizeTypePredicate<"typeIs(1, X86_s64)">;
 def NarrowerIn0 : LegalizeTypePredicate<"scalarNarrowerThan(0, Is64Bit ? 64 : 32)">;
+// Wider than a register in the *element* sense, so a v4s32 answers by its
+// element (32) and not by its width (128).  G_IMPLICIT_DEF scalarizes those.
+def WiderIn0 : LegalizeTypePredicate<"scalarOrEltWiderThan(0, 64)">;
 // The store value and the memory type must be the same LLT, not merely the
 // same size: v2s32 and s64 are both 64 bits.  The predicate compares the whole
 // type, which is why the table's size-keyed memory axis cannot answer it yet.
@@ -252,7 +255,7 @@ def X86_IMPLICIT_DEF : LegalizeRuleSet<[
     ClampNumElements<0, X86_v2s64, X86_s64MaxVector>,
     ClampMaxNumElements<0, X86_p0,
                                 "Is64Bit ? X86_s64MaxVector.getNumElements() : X86_s32MaxVector.getNumElements()">,
-    ScalarizeIf<LegalizeQueryPredicate<"scalarOrEltWiderThan(0, 64)">, 0>,
+    ScalarizeIf<WiderIn0, 0>,
   ];
 }
 
