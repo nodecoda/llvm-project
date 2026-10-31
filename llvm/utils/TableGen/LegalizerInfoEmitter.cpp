@@ -2738,10 +2738,12 @@ void collectPredLeaves(
       }
     }
     // A predicate that compares against the memory type as a whole cannot be
-    // keyed by the access size: two 64-bit memory types may still differ, and
-    // the cell must not merge them.  Record that the mem axis needs a class
-    // instead of silently keying it by size; runTable turns this into a
-    // refusal to tabulate, not a guess.
+    // keyed by the access size: two memory types of the same size are still
+    // different types, and G_STORE's ValueDiffersFromMem0 asks exactly that.
+    // Record it so the axis is cut on the type class instead.  Measured: with
+    // the size key, <4 x p0> stored through <4 x p0> memory and the same value
+    // stored through <32 x s8> memory share a cell on a CPU without AVX, and
+    // the chain answers Custom for one and FewerElements for the other.
     if (Name == "typeDiffersFromMemDesc") {
       if (Leading.size() < 2)
         PrintFatalError(
@@ -2788,7 +2790,13 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     const Record *Def = nullptr;
     std::vector<StringRef> Opcodes;
     std::vector<int> Slots;
+    // The mem axis is cut on the access size by default, because that is what
+    // a memdesc rule compares (isCompatible).  A rule that compares the whole
+    // memory type needs the type instead, so the axis carries class ids and
+    // MemIsClass says which of the two the numbers are.
     std::vector<unsigned> Mem;
+    bool MemIsClass = false;
+    std::set<std::string> MemTypes;
     // Type spellings the rules name per slot.  They seed the slot's share of
     // the self-check domain; the full class set is too wide to put in a slot
     // the rules only ever see scalars in.
@@ -2799,11 +2807,12 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     unsigned FirstRule = 0, NumRules = 0;
   };
   std::vector<TableRec> Tables;
-  // Two different reasons a rule set has no table.  An escape has no Core IR
-  // form at all; an unkeyable rule set is expressible but reads an axis the
-  // current key cannot represent.  Keeping them apart makes the comment in the
-  // generated file say which one happened.
+  // A rule set whose predicate the Core IR cannot express has no table: the
+  // emitter cannot see which slots that rule reads, so it cannot build a key
+  // for it.  The chain answers every query for the rule set.
   std::vector<StringRef> EscapeRuleSets;
+  // Expressible, but the mem axis has no finite key: a rule compares the whole
+  // memory type while no rule names one, so nothing can stand for a cell.
   std::vector<StringRef> UnkeyableRuleSets;
   unsigned RuleCursor = 0;
   StringSet<> SeenOpcodes;
@@ -2813,6 +2822,13 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     unsigned Count = 0;
     bool HasEscape = false;
     bool MemNeedsClass = false;
+    // The memory types the rules write down.  A class-keyed axis needs them as
+    // classes, and the memdesc expansion keeps only their size.
+    std::set<std::string> MemTypes;
+    auto AddMemType = [&](const Record &D) {
+      MemTypes.insert(
+          normalizeLlt(D.getValueAsDef("MemTy")->getValueAsString("Expr")));
+    };
     for (const Record *Rule : RuleSet->getValueAsListOfDefs("Rules")) {
       std::vector<CoreRule> Expanded;
       std::string Why;
@@ -2828,11 +2844,24 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
         HasEscape = true;
         continue;
       }
+      if (builderRecordName(*Rule) == "BuilderLegalForTypesWithMemDesc")
+        for (const Record *A : Rule->getValueAsListOfDefs("Args")) {
+          if (A->isSubClassOf("LegalizeMemDesc"))
+            AddMemType(*A);
+          else if (A->isSubClassOf("LegalizeInlineTypeList"))
+            for (const Record *E : A->getValueAsListOfDefs("Elems"))
+              if (E->isSubClassOf("LegalizeMemDesc"))
+                AddMemType(*E);
+        }
       for (const CoreRule &CR : Expanded) {
         collectPredLeaves(CR.Predicate, SlotSet, MemSet, &SlotTypes,
                           &MemNeedsClass);
         ++Count;
       }
+    }
+    if (MemNeedsClass && MemTypes.empty()) {
+      UnkeyableRuleSets.push_back(RuleSet->getName());
+      continue;
     }
     // A rule set with an escape has a predicate whose key dependencies this
     // emitter cannot see.  Filling from the chain would still produce an
@@ -2841,14 +2870,6 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     // Do not tabulate it; the chain answers every query for the rule set.
     if (HasEscape) {
       EscapeRuleSets.push_back(RuleSet->getName());
-      continue;
-    }
-    // The rule set is expressible, but one of its predicates compares the
-    // memory type as a whole.  A size-keyed mem axis would merge, say, v2s32
-    // and s64; do not build a table that can answer a question the chain
-    // distinguishes.  The class-keyed mem axis removes this reason.
-    if (MemNeedsClass) {
-      UnkeyableRuleSets.push_back(RuleSet->getName());
       continue;
     }
     // Same rule as the dump: a rule set whose every rule escaped has no table,
@@ -2876,12 +2897,22 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     // every one of those queries would land Outside: measured, 60 of 174
     // refusals over the MIR corpus were exactly that.
     T.Mem.assign(MemSet.begin(), MemSet.end());
-    if (T.Slots.empty() && !T.Mem.empty())
+    // Whether there is a mem axis at all is decided before the key mode: a
+    // class-keyed axis carries no sizes, so testing T.Mem afterwards would
+    // drop the axis and leave the rules reading a memdesc the key ignores.
+    const bool HasMemAxis = !T.Mem.empty() || MemNeedsClass;
+    if (MemNeedsClass) {
+      // Class ids, not sizes; converted once the class set exists.
+      T.MemIsClass = true;
+      T.MemTypes = std::move(MemTypes);
+      T.Mem.clear();
+    }
+    if (T.Slots.empty() && HasMemAxis)
       PrintFatalError(RuleSet->getLoc(),
                       "rule set " + RuleSet->getName() +
                           " keys only the mem axis; the consumer needs a type "
                           "slot in front of it");
-    if (!T.Mem.empty())
+    if (HasMemAxis)
       T.Slots.push_back(-1);
     T.FirstRule = RuleCursor;
     T.NumRules = Count;
@@ -2897,10 +2928,14 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
   // A type a rule names is a class, whether or not a named type record spells
   // the same literal.  Adding them here rather than failing keeps the class
   // set a property of the rules, not of a separate list that could omit one.
-  for (const TableRec &R : Tables)
+  for (const TableRec &R : Tables) {
     for (const auto &Entry : R.SlotTypes)
       for (const std::string &S : Entry.second)
         Types.push_back(S);
+    if (R.MemIsClass)
+      for (const std::string &S : R.MemTypes)
+        Types.push_back(S);
+  }
   llvm::sort(Types);
   Types.erase(std::unique(Types.begin(), Types.end()), Types.end());
 
@@ -2943,6 +2978,22 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     llvm_unreachable("mentioned type has no class");
   };
 
+  // A class-keyed mem axis is a type axis over the memory types the rules
+  // name.  Doing it here, after the class set exists, keeps one definition of
+  // what a class is: the same parsing and the same ids the type slots use.
+  for (TableRec &R : Tables) {
+    if (!R.MemIsClass)
+      continue;
+    std::set<unsigned> IDs;
+    for (const std::string &S : R.MemTypes)
+      IDs.insert(ClassID(S));
+    if (IDs.empty())
+      PrintFatalError(R.Def->getLoc(),
+                      "mem axis is class-keyed but the rule set names no "
+                      "memory type");
+    R.Mem.assign(IDs.begin(), IDs.end());
+  }
+
   // The self-check domain is per slot, not the product of the whole class set.
   // Most slots only ever see one kind of type: a load's pointer operand is
   // never a vector, and a scalar arithmetic source is never a pointer.  Asking
@@ -2953,8 +3004,14 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     R.SlotDomains.resize(R.Slots.size());
     for (size_t K = 0; K != R.Slots.size(); ++K) {
       const int Slot = R.Slots[K];
-      if (Slot < 0)
-        continue; // the mem axis enumerates R.Mem directly
+      if (Slot < 0) {
+        // A size-keyed mem axis enumerates its sizes through R.Mem; a
+        // class-keyed one enumerates types, so it carries a class list like
+        // any other type slot.
+        if (R.MemIsClass)
+          R.SlotDomains[K].assign(R.Mem.begin(), R.Mem.end());
+        continue;
+      }
       std::set<unsigned> IDs;
       bool HasPointer = false, HasScalar = false;
       auto Named = R.SlotTypes.find(static_cast<unsigned>(Slot));
@@ -3018,20 +3075,20 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
   OS << "// a rule set is constant on one class (07 section 2.2), which is "
         "what makes\n";
   OS << "// the key a finite index instead of a comparison chain.\n";
+  if (!UnkeyableRuleSets.empty()) {
+    OS << "//\n";
+    OS << "// Not tabulated because the mem axis compares the memory type as a "
+          "whole\n";
+    OS << "// and no rule names one to key it by; the chain answers:\n";
+    for (StringRef Name : UnkeyableRuleSets)
+      OS << "//   " << Name << "\n";
+  }
   if (!EscapeRuleSets.empty()) {
     OS << "//\n";
     OS << "// Not tabulated because they contain a rule the Core IR cannot "
           "express;\n";
     OS << "// the chain answers:\n";
     for (StringRef Name : EscapeRuleSets)
-      OS << "//   " << Name << "\n";
-  }
-  if (!UnkeyableRuleSets.empty()) {
-    OS << "//\n";
-    OS << "// Not tabulated because the key cannot represent an axis their "
-          "rules read;\n";
-    OS << "// the chain answers:\n";
-    for (StringRef Name : UnkeyableRuleSets)
       OS << "//   " << Name << "\n";
   }
   OS << "\n";
@@ -3082,7 +3139,9 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
       for (size_t C = 0; C != Count; ++C)
         OS << (C ? ", " : "") << C;
       OS << "};\n";
-      if (R.Slots[K] < 0)
+      // A class-keyed mem axis enumerates types, so it needs the same domain
+      // array a type slot gets; only a size-keyed one is covered by MemT.
+      if (R.Slots[K] < 0 && !R.MemIsClass)
         continue;
       OS << "static constexpr uint8_t " << Prefix << "DomainT" << T << "S" << K
          << "[] = {";
@@ -3106,14 +3165,14 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
   // the sizes the rules actually name; -1 is exactly what the exhausted scan
   // meant, and no size outside the list can reach a cell.
   OS << "static inline int " << LowerPrefix
-     << "MemIndex(unsigned Table, uint64_t Bits) {\n";
+     << "MemIndex(unsigned Table, int Value) {\n";
   OS << "  switch (Table) {\n";
   for (size_t T = 0; T != Tables.size(); ++T) {
     const TableRec &R = Tables[T];
     if (R.Mem.empty())
       continue;
     OS << "  case " << T << ":   // " << R.Def->getName() << "\n";
-    OS << "    switch (Bits) {\n";
+    OS << "    switch (Value) {\n";
     for (size_t M = 0; M != R.Mem.size(); ++M)
       OS << "    case " << R.Mem[M] << ":\n      return " << M << ";\n";
     OS << "    default:\n      return -1;\n    }\n";
@@ -3146,7 +3205,7 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     for (size_t K = 0; K != 3; ++K) {
       if (K)
         OS << ", ";
-      if (K < R.Slots.size() && R.Slots[K] >= 0)
+      if (K < R.Slots.size() && (R.Slots[K] >= 0 || R.MemIsClass))
         OS << Prefix << "DomainT" << T << "S" << K;
       else
         OS << "nullptr";
@@ -3164,8 +3223,9 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
         "axis\n";
   OS << "  uint8_t Dims[3];    // local class count per slot (1 = unused)\n";
   OS << "  const uint8_t *Local[3];\n";
-  OS << "  const int32_t *Mem; // access sizes (bits) of the mem axis, or "
-        "null\n";
+  OS << "  const int32_t *Mem; // access sizes (bits), or class ids when\n";
+  OS << "                      // MemIsClass\n";
+  OS << "  bool MemIsClass;    // the mem axis keys a type class, not a size\n";
   OS << "  uint16_t FirstRule, NumRules;   // range into the rule table\n";
   OS << "};\n\n";
 
@@ -3204,6 +3264,7 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
       OS << "nullptr";
     else
       OS << Prefix << "MemT" << T;
+    OS << ", " << (R.MemIsClass ? "true" : "false");
     OS << ", " << format_decimal(R.FirstRule, 4) << ","
        << format_decimal(R.NumRules, 3) << "},   // " << R.Def->getName()
        << "\n";

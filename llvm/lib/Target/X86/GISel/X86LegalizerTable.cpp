@@ -166,14 +166,17 @@ uint32_t X86LegalizerTable::fill(unsigned Table, const LegalityQuery &Q,
   for (unsigned K = 0; K != D.NumSlots; ++K) {
     const int Slot = D.Slots[K];
     if (Slot < 0) {
-      // The mem axis stands for one access size, so the representative is a
-      // type of exactly that size.  Alignment is not in the key: every rule
-      // asks for "at least" alignment, so the weakest alignment answers for
-      // all of them, which is also what the key generator asserts.
-      MemDescs.assign(1, LegalityQuery::MemDesc(
-                             LLT::scalar(static_cast<unsigned>(D.Mem[Local[K]])),
-                             /*AlignInBits=*/1, AtomicOrdering::NotAtomic,
-                             AtomicOrdering::NotAtomic));
+      // A size-keyed axis stands for one access size, so a scalar of exactly
+      // that size answers for the cell.  A class-keyed axis stands for one
+      // type, and the class's own representative is the type the rules wrote
+      // down.  Alignment is not in the key: every rule asks for "at least"
+      // alignment, so the weakest alignment answers for all of them, which is
+      // also what the key generator asserts.
+      const unsigned Key = static_cast<unsigned>(D.Mem[Local[K]]);
+      const LLT MemTy = D.MemIsClass ? representative(Key) : LLT::scalar(Key);
+      MemDescs.assign(1, LegalityQuery::MemDesc(MemTy, /*AlignInBits=*/1,
+                                                AtomicOrdering::NotAtomic,
+                                                AtomicOrdering::NotAtomic));
       continue;
     }
     Types[Slot] = representative(localToGlobal(D, K, Local[K]));
@@ -282,25 +285,33 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
     }
   }
   if (HasMemAxis) {
-    // The axis is cut on the access size, and a cell is filled with a scalar of
-    // that size as its representative.  Every tabulated memdesc rule compares
-    // the memory type by size (isCompatible), so the scalar representative is
-    // exact even when the query's MemoryTy is a vector.  A rule set that
-    // compares the whole MemoryTy is opaque and is not tabulated.
-    // A rule names an access size, not a range (isCompatible compares
-    // getSizeInBits()), so the axis is an exact match.  A size no rule names
-    // is outside the key: the chain answers, and the fallback is counted.
-    const TypeSize MemSize = Q.MMODescrs[0].MemoryTy.getSizeInBits();
-    if (MemSize.isScalable()) {
-      ++Outsides;
-      noteOutside(4, Table, Q);
-      R.Kind = Answer::Outside;
-      return R;
+    // Two ways to cut the axis, and the rule set says which one it needs.  A
+    // rule that only compares getSizeInBits() (isCompatible) is answered
+    // exactly by the access size.  A rule that compares the whole memory type
+    // needs the type, because two memory types of the same size can still
+    // differ: G_STORE's ValueDiffersFromMem0 is the one that does.
+    int MemKey = -1;
+    if (D.MemIsClass) {
+      MemKey = classifyType(Q.MMODescrs[0].MemoryTy);
+      if (MemKey < 0) {
+        ++Outsides;
+        noteOutside(4, Table, Q);
+        R.Kind = Answer::Outside;
+        return R;
+      }
+    } else {
+      const TypeSize MemSize = Q.MMODescrs[0].MemoryTy.getSizeInBits();
+      if (MemSize.isScalable()) {
+        ++Outsides;
+        noteOutside(4, Table, Q);
+        R.Kind = Answer::Outside;
+        return R;
+      }
+      MemKey = static_cast<int>(MemSize.getFixedValue());
     }
-    // The axis is a generated switch over the sizes the rules name, so this
-    // is one lookup rather than a scan; -1 is a size no rule names.
-    const uint64_t Bits = MemSize.getFixedValue();
-    const int MemLocal = x86MemIndex(Table, Bits);
+    // The axis is a generated switch over the values the rules name, so this
+    // is one lookup rather than a scan; -1 is a value no rule names.
+    const int MemLocal = x86MemIndex(Table, MemKey);
     if (MemLocal < 0) {
       ++Outsides;
       noteOutside(5, Table, Q);
@@ -383,11 +394,18 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
           SmallVector<LLT, 3> Types(static_cast<size_t>(MaxSlot + 1),
                                     representative(0));
           unsigned MemBits = 0;
+          LLT MemClassTy;
           for (unsigned K = 0; K != D.NumSlots; ++K) {
-            if (D.Slots[K] < 0)
-              MemBits = static_cast<unsigned>(D.Mem[Local[K]]);
-            else
+            if (D.Slots[K] < 0) {
+              // A class-keyed cell is exactly one type, so it needs no fiber.
+              const unsigned Key = static_cast<unsigned>(D.Mem[Local[K]]);
+              if (D.MemIsClass)
+                MemClassTy = representative(Key);
+              else
+                MemBits = Key;
+            } else {
               Types[D.Slots[K]] = representative(Domain.Classes[K][Local[K]]);
+            }
           }
 
           // A type slot's class is exactly one type, so its representative is
@@ -395,7 +413,9 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
           // holds every LLT of that size: asking only the scalar would leave
           // the half of the cell the key actually merges untested.
           SmallVector<LLT, 16> MemTypes;
-          if (MemBits)
+          if (MemClassTy.isValid())
+            MemTypes.push_back(MemClassTy);
+          else if (MemBits)
             memFiber(MemBits, MemTypes);
           else
             MemTypes.push_back(LLT());

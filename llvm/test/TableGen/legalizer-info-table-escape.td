@@ -46,22 +46,24 @@ def Test_ALLOpaque : LegalizeRuleSet<["G_LOAD"]> {
   ];
 }
 
-// Expressible in the Core IR, but reads the memory type as a whole.  The table
-// key today is an access size, which would merge two different 64-bit types;
-// the rule set is refused until the mem axis is keyed by type class.
+// Expressible in the Core IR, but reads the memory type as a whole while
+// naming none.  A size-keyed axis would merge two different types of the same
+// size, and a class-keyed one has nothing to enumerate, so there is no finite
+// key for it: refused, not guessed.  A rule set that does name memory types is
+// keyed by class instead; legalizer-info-memclass.td covers that.
 def DiffMem : LegalizeTypePredicate<"typeDiffersFromMemDesc(0, 0)">;
 def Test_NEEDSCLASS : LegalizeRuleSet<["G_EXTRACT"]> {
   let Rules = [CustomIf<DiffMem>];
 }
 
+// CHECK: // Not tabulated because the mem axis compares the memory type as a whole
+// CHECK-NEXT: // and no rule names one to key it by; the chain answers:
+// CHECK-NEXT: //   Test_NEEDSCLASS
 // CHECK: // Not tabulated because they contain a rule the Core IR cannot express;
 // CHECK-NEXT: // the chain answers:
 // CHECK-NEXT: //   Test_OPAQUE
 // CHECK-NEXT: //   Test_CHOICE
 // CHECK-NEXT: //   Test_ALLOpaque
-// CHECK: // Not tabulated because the key cannot represent an axis their rules read;
-// CHECK-NEXT: // the chain answers:
-// CHECK-NEXT: //   Test_NEEDSCLASS
 // CHECK: // Test_CORE
 // CHECK-NOT: // Test_OPAQUE
 // CHECK-NOT: // Test_ALLOpaque
