@@ -36,8 +36,10 @@ using namespace LegalizeActions;
 using namespace LegalityPredicates;
 
 static cl::opt<bool> X86GISelTable(
-    "x86-gisel-table", cl::Hidden, cl::init(false),
-    cl::desc("Answer X86 legalizer queries from a table instead of the rule chains"));
+    "x86-gisel-table", cl::Hidden, cl::init(true),
+    cl::desc(
+        "Answer X86 legalizer queries from a table instead of the rule chains "
+        "(-x86-gisel-table=false goes back to the chains)"));
 
 static cl::opt<bool> X86GISelTableCheck(
     "x86-gisel-table-check", cl::Hidden, cl::init(false),
