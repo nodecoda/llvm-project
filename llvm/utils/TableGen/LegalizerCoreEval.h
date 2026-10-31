@@ -104,11 +104,39 @@ struct Env {
   std::string *Err = nullptr;
 };
 
+/// The mutation a matched rule applies to one type slot.
+///
+/// The spellings are the ones the C++ builders produce: "set_elem_type"
+/// names a type whose scalar size is the new element size
+/// (changeElementSizeTo); "set_elem_bits" names a bound (nextPow2,
+/// nextPow2OrMinN, sameAsSlotN); "set_lanes" names a lane count or a
+/// feature-conditional expression (changeElementCount).
+///
+/// Scalarize<Idx> arrives as set_lanes 1, and that spelling is exact rather
+/// than a shorthand: ElementCount::isScalar() is true exactly for one element,
+/// so changeElementCount(getFixed(1)) returns getScalarType() -- the element
+/// type for a vector -- which is what LegalizeMutations::scalarize returns.
+/// A one-lane LLT vector cannot be built at all.
+struct Mutation {
+  enum Kind { None, ElemType, ElemBits, Lanes } K = None;
+  unsigned Target = 0;
+  /// Type spelling, bit bound, or lane bound, depending on K.
+  std::string Text;
+  /// A lane count written as an integer in the Core IR.
+  bool IsLiteral = false;
+  uint64_t Literal = 0;
+};
+
+/// Parse one serialized mutation.  On failure \p Err says what was expected,
+/// and the mutation must not be treated as computable.
+bool parseMutation(StringRef S, size_t &I, Mutation &M, std::string &Err);
+
 /// One Core IR rule, in the order the chain applies them.
 struct Rule {
   std::string Action;
   unsigned TypeIdx = 0;
   Node Pred;
+  Mutation Mut;
 };
 
 /// What a rule set answers for one point.
@@ -116,6 +144,14 @@ struct Verdict {
   bool Matched = false; // false: no rule held, which is not "Unsupported"
   std::string Action;
   unsigned TypeIdx = 0;
+  /// The new type, when the matched rule carries a mutation that could be
+  /// computed.  Stays false for a rule with no mutation (Legal, Lower, ...)
+  /// and when the mutation is a hole in the description.
+  bool HasNewType = false;
+  LLT NewType;
+  /// The kind of the matched rule's mutation, so a caller can say which
+  /// spellings its domain actually exercised.
+  Mutation::Kind MutKind = Mutation::None;
   std::string Why; // why the answer could not be computed, if it could not
 };
 
@@ -124,7 +160,7 @@ struct Verdict {
 bool evalBound(const std::string &Text, const Env &E, uint64_t &Out);
 
 /// The first rule whose predicate holds.  \p Why is empty only when every
-/// predicate on the way was evaluable.
+/// predicate on the way, and the matched rule's mutation, were evaluable.
 Verdict apply(ArrayRef<Rule> Rules, const Env &E);
 
 } // namespace legeval

@@ -2493,6 +2493,10 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
   }
   if (Builder == "BuilderScalarize" || Builder == "BuilderScalarizeIf") {
     unsigned Idx = Int(0);
+    // set_lanes 1, and that is exactly what LegalizeMutations::scalarize
+    // means: ElementCount::isScalar() is true for one element, so
+    // changeElementCount(getFixed(1)) returns getScalarType() -- the element
+    // type for a vector.  LLT has no one-lane vector to confuse it with.
     Out.push_back({"FewerElements", Idx, WithPred(isVector(Idx)),
                    mutationJsonInt(Idx, "set_lanes", 1)});
     return;
@@ -3079,7 +3083,7 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     for (const Record *F : Feats)
       Out << "# feature " << F->getName() << " = "
           << F->getValueAsString("Cond") << "\n";
-    Out << "# columns table l0 l1 l2 action typeidx why theta\n";
+    Out << "# columns table l0 l1 l2 action typeidx newtype why theta\n";
 
     for (const std::string &Bits : EvalThetas) {
       if (Bits.size() != Feats.size())
@@ -3096,6 +3100,10 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
                Bits[Feats.size() - 1 - I] == '1');
       auto Feature = [&Th](StringRef T, bool &Ok) { return Th.eval(T, Ok); };
 
+      // Which mutation spellings this theta's cells actually reach.  A kind
+      // with no cell is not tested by this domain, and saying so is cheaper
+      // than inferring coverage from the rule list.
+      uint64_t MutCounts[4] = {0, 0, 0, 0};
       for (size_t T = 0; T != Tables.size(); ++T) {
         const TableRec &R = Tables[T];
         auto Dim = [&R](size_t K) -> unsigned {
@@ -3116,6 +3124,11 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
           size_t Pos = 0;
           if (!legeval::parseNode(CR.Predicate, Pos, ER.Pred, Err))
             PrintFatalError("rule predicate does not parse: " + Err);
+          if (!CR.Mutation.empty()) {
+            size_t MPos = 0;
+            if (!legeval::parseMutation(CR.Mutation, MPos, ER.Mut, Err))
+              PrintFatalError("rule mutation does not parse: " + Err);
+          }
           Rules.push_back(std::move(ER));
         }
 
@@ -3151,11 +3164,21 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
               E.Feature = Feature;
 
               legeval::Verdict V = legeval::apply(Rules, E);
+              if (V.Matched)
+                ++MutCounts[static_cast<unsigned>(V.MutKind)];
               Out << T << '\t' << L0 << '\t' << L1 << '\t' << L2 << '\t'
                   << (V.Matched ? V.Action : "<none>") << '\t' << V.TypeIdx
-                  << '\t' << V.Why << '\t' << Bits << '\n';
+                  << '\t';
+              if (V.HasNewType)
+                V.NewType.print(Out);
+              else
+                Out << '-';
+              Out << '\t' << V.Why << '\t' << Bits << '\n';
             }
       }
+      Out << "# mutations " << Bits << " none " << MutCounts[0] << " elem_type "
+          << MutCounts[1] << " elem_bits " << MutCounts[2] << " lanes "
+          << MutCounts[3] << "\n";
     }
   }
 

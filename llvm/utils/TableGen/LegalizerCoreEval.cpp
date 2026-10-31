@@ -11,6 +11,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/MathExtras.h"
 
 using namespace llvm;
 using namespace llvm::legeval;
@@ -414,6 +415,92 @@ bool llvm::legeval::parseNode(StringRef S, size_t &I, Node &N,
   }
 }
 
+bool llvm::legeval::parseMutation(StringRef S, size_t &I, Mutation &M,
+                                  std::string &Err) {
+  auto Finish = [&]() -> bool {
+    switch (M.K) {
+    case Mutation::None:
+      Err = "mutation has no kind";
+      return false;
+    case Mutation::ElemType:
+    case Mutation::ElemBits:
+      if (M.Text.empty()) {
+        Err = "mutation has no value";
+        return false;
+      }
+      return true;
+    case Mutation::Lanes:
+      if (!M.IsLiteral && M.Text.empty()) {
+        Err = "lane mutation has no value";
+        return false;
+      }
+      return true;
+    }
+    return false;
+  };
+
+  if (!expect(S, I, '{', Err))
+    return false;
+  for (;;) {
+    skipSpace(S, I);
+    if (I != S.size() && S[I] == '}') {
+      ++I;
+      return Finish();
+    }
+    std::string Key;
+    if (!parseString(S, I, Key, Err))
+      return false;
+    if (!expect(S, I, ':', Err))
+      return false;
+    skipSpace(S, I);
+    if (Key == "target") {
+      Arg A;
+      if (!parseArg(S, I, A, Err) || A.K != Arg::Int) {
+        Err = "mutation target is not an integer";
+        return false;
+      }
+      M.Target = static_cast<unsigned>(A.I);
+    } else if (Key == "kind") {
+      std::string V;
+      if (!parseString(S, I, V, Err))
+        return false;
+      if (V == "set_elem_type")
+        M.K = Mutation::ElemType;
+      else if (V == "set_elem_bits")
+        M.K = Mutation::ElemBits;
+      else if (V == "set_lanes")
+        M.K = Mutation::Lanes;
+      else {
+        Err = "unknown mutation kind '" + V + "'";
+        return false;
+      }
+    } else if (Key == "value") {
+      if (S.substr(I).starts_with("null")) {
+        I += 4;
+      } else {
+        Arg A;
+        if (!parseArg(S, I, A, Err))
+          return false;
+        if (A.K == Arg::Int) {
+          M.IsLiteral = true;
+          M.Literal = static_cast<uint64_t>(A.I);
+        } else if (A.K == Arg::Str) {
+          M.Text = A.S;
+        } else {
+          Err = "mutation value is a list";
+          return false;
+        }
+      }
+    } else {
+      Err = "unexpected mutation key '" + Key + "'";
+      return false;
+    }
+    skipSpace(S, I);
+    if (I != S.size() && S[I] == ',')
+      ++I;
+  }
+}
+
 bool llvm::legeval::evalBound(const std::string &Text, const Env &E,
                               uint64_t &Out) {
   StringRef S = stripParens(Text);
@@ -562,6 +649,95 @@ bool evalNode(const Node &N, Env &E) {
   llvm_unreachable("unknown predicate node kind");
 }
 
+/// The new type a matched rule's mutation produces, or why it has none.
+///
+/// Each branch mirrors the C++ mutation it names, including the pointer
+/// restriction: changeElementSize() asserts on a pointer, so the evaluator
+/// reports a hole instead of doing what the chain would not survive either.
+bool applyMutation(const Mutation &M, const Env &E, LLT &NewTy,
+                   std::string &Why) {
+  if (M.Target >= E.Types.size()) {
+    Why = "mutation targets slot " + std::to_string(M.Target) +
+          ", which the query does not have";
+    return false;
+  }
+  const LLT OldTy = E.Types[M.Target];
+
+  switch (M.K) {
+  case Mutation::None:
+    return false;
+  case Mutation::ElemType: {
+    const LLT *Bound = named(E, M.Text);
+    if (!Bound) {
+      Why = "mutation names unknown type '" + M.Text + "'";
+      return false;
+    }
+    if (OldTy.isPointerOrPointerVector()) {
+      Why = "changeElementSize on a pointer type";
+      return false;
+    }
+    NewTy = OldTy.changeElementSize(Bound->getScalarSizeInBits());
+    return true;
+  }
+  case Mutation::ElemBits: {
+    if (OldTy.isPointerOrPointerVector()) {
+      Why = "changeElementSize on a pointer type";
+      return false;
+    }
+    const unsigned OldBits = OldTy.getScalarSizeInBits();
+    if (OldBits == 0) {
+      Why = "next-pow-2 of a zero-sized scalar";
+      return false;
+    }
+    unsigned NewBits = 0;
+    StringRef T = M.Text;
+    if (T == "nextPow2") {
+      NewBits = 1u << Log2_32_Ceil(OldBits);
+    } else if (T.starts_with("nextPow2OrMin")) {
+      StringRef Digits = T.drop_front(StringRef("nextPow2OrMin").size());
+      if (Digits.empty() ||
+          Digits.find_first_not_of("0123456789") != StringRef::npos) {
+        Why = "bit bound '" + M.Text + "' is not nextPow2OrMin<digits>";
+        return false;
+      }
+      const unsigned Min = std::stoul(Digits.str());
+      NewBits = std::max(1u << Log2_32_Ceil(OldBits), Min);
+    } else if (T.starts_with("sameAsSlot")) {
+      StringRef Digits = T.drop_front(StringRef("sameAsSlot").size());
+      if (Digits.empty() ||
+          Digits.find_first_not_of("0123456789") != StringRef::npos) {
+        Why = "bit bound '" + M.Text + "' is not sameAsSlot<index>";
+        return false;
+      }
+      const unsigned From = std::stoul(Digits.str());
+      if (From >= E.Types.size()) {
+        Why = "mutation reads slot " + std::to_string(From) +
+              ", which the query does not have";
+        return false;
+      }
+      NewBits = E.Types[From].getScalarSizeInBits();
+    } else {
+      Why = "bit bound '" + M.Text + "' has no build-time meaning";
+      return false;
+    }
+    NewTy = OldTy.changeElementSize(NewBits);
+    return true;
+  }
+  case Mutation::Lanes: {
+    uint64_t N = M.Literal;
+    if (!M.IsLiteral && !evalBound(M.Text, E, N)) {
+      Why = "lane bound '" + M.Text + "' has no value under theta";
+      return false;
+    }
+    // N == 1 is Scalarize: ElementCount::isScalar() is one element, so this
+    // returns getScalarType(), i.e. the element type.
+    NewTy = OldTy.changeElementCount(ElementCount::getFixed(N));
+    return true;
+  }
+  }
+  llvm_unreachable("unknown mutation kind");
+}
+
 } // namespace
 
 Verdict llvm::legeval::apply(ArrayRef<Rule> Rules, const Env &EnvIn) {
@@ -582,6 +758,19 @@ Verdict llvm::legeval::apply(ArrayRef<Rule> Rules, const Env &EnvIn) {
       V.Matched = true;
       V.Action = R.Action;
       V.TypeIdx = R.TypeIdx;
+      V.MutKind = R.Mut.K;
+      if (R.Mut.K != Mutation::None) {
+        LLT NewTy;
+        std::string MutWhy;
+        if (!applyMutation(R.Mut, E, NewTy, MutWhy)) {
+          // The rule won, but what it changes to is a hole in the
+          // description.  Say so; do not invent a type.
+          V.Why = MutWhy;
+          return V;
+        }
+        V.HasNewType = true;
+        V.NewType = NewTy;
+      }
       return V;
     }
   }
