@@ -77,6 +77,7 @@ public:
   uint64_t escapes() const { return Escapes; }
   uint64_t outside() const { return Outsides; }
   uint64_t pointerVectors() const { return PointerVectors; }
+  uint64_t addressSpaces() const { return AddressSpaces; }
   uint64_t untabulated() const { return Untabulated; }
   uint64_t declined() const { return Declined; }
   uint64_t fills() const { return Fills; }
@@ -92,7 +93,7 @@ private:
   mutable std::vector<std::vector<uint16_t>> Cells;
   mutable std::vector<LegalizeActionStep> Steps;
   mutable uint64_t Hits = 0, Escapes = 0, Outsides = 0, PointerVectors = 0,
-                   Untabulated = 0, Declined = 0, Fills = 0;
+                   AddressSpaces = 0, Untabulated = 0, Declined = 0, Fills = 0;
   // Off unless -x86-gisel-table-outsides.  A count says how often the table
   // refused; the log says which shapes it refused, which is what turns "41
   // outside" into "41 of these, and here is the one that is a gap".

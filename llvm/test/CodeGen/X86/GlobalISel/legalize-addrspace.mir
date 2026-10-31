@@ -1,0 +1,29 @@
+# RUN: not llc -mtriple=x86_64-unknown-linux-gnu -global-isel -run-pass=legalizer -x86-gisel-table=false %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=CHAIN
+# RUN: not llc -mtriple=x86_64-unknown-linux-gnu -global-isel -run-pass=legalizer %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=TABLE
+#
+# The table only has classes for p0.  Address space is part of LLT identity,
+# and X86 has no legalizer rule for a p272 load, so folding p272 into the p0
+# class would let the table legalize an instruction the chain rejects.  Both
+# paths must fail the same way.
+
+# CHAIN: unable to legalize instruction: {{.*}}G_LOAD{{.*}}addrspace 272
+# TABLE: unable to legalize instruction: {{.*}}G_LOAD{{.*}}addrspace 272
+
+--- |
+  target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
+  target triple = "x86_64-unknown-linux-gnu"
+
+  define void @p272_load(ptr addrspace(272) %p) {
+  entry:
+    ret void
+  }
+---
+name:            p272_load
+tracksRegLiveness: true
+body: |
+  bb.0:
+    %0:_(p272) = IMPLICIT_DEF
+    %1:_(s32) = G_LOAD %0(p272) :: (load (s32) from `ptr addrspace(272) undef`)
+    $eax = COPY %1
+    RET 0
+...

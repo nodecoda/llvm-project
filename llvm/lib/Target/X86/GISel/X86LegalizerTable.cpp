@@ -46,12 +46,21 @@ namespace {
 
 constexpr int kUnknownClass = -1;
 constexpr int kPointerVectorClass = -2;
+// A pointer in an address space the table does not model.  The class list is
+// built from the named LLT constants, and every one of them names p0.
+constexpr int kPointerAddressSpaceClass = -3;
 constexpr uint16_t kOpaqueCell = 0xFFFF;
 
-/// Class of a type, or kUnknownClass / kPointerVectorClass.
+/// Class of a type, or one of the negative class ids above.
 int classifyType(LLT T) {
   if (!T.isValid())
     return kUnknownClass;
+  // The address space is part of LLT identity: LLT::pointer(272, 64) and
+  // LLT::pointer(0, 64) are different types, and the rules only spell p0.
+  // The class list has no address-space axis, so folding the two would let the
+  // table answer a query the chain refuses (a p272 load, for example).
+  if (T.isPointerOrPointerVector() && T.getAddressSpace() != 0)
+    return kPointerAddressSpaceClass;
   // A vector of pointers is a different LLT from a vector of integers of the
   // same shape, and the class list cannot tell them apart yet.  Refuse rather
   // than merge two types the rules distinguish.
@@ -221,6 +230,12 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
     R.Kind = Answer::PointerVector;
     return R;
   }
+  if (C0 == kPointerAddressSpaceClass || C1 == kPointerAddressSpaceClass) {
+    ++AddressSpaces;
+    noteOutside(6, Table, Q);
+    R.Kind = Answer::Outside;
+    return R;
+  }
   if (C0 < 0 || C1 < 0) {
     ++Outsides;
     noteOutside(1, Table, Q);
@@ -318,8 +333,8 @@ X86LegalizerTable::~X86LegalizerTable() {
     return;
   errs() << "x86-gisel-table: hit " << Hits << " escape " << Escapes
          << " outside " << Outsides << " ptrvec " << PointerVectors
-         << " untabulated " << Untabulated << " declined " << Declined
-         << " fills " << Fills << "\n";
+         << " addrspace " << AddressSpaces << " untabulated " << Untabulated
+         << " declined " << Declined << " fills " << Fills << "\n";
   for (const std::string &S : OutsideLog)
     errs() << S << "\n";
 }
@@ -376,9 +391,9 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
 
   OS << "x86-gisel-table-check: points " << Points.size() << " compared "
      << Compared << " mismatches " << Mismatches << " skipped " << Skipped
-     << " outside " << Outsides << " ptrvec " << PointerVectors
-     << " untabulated " << Untabulated << " declined " << Declined
-     << " fills " << Fills << "\n";
+     << " outside " << Outsides << " ptrvec " << PointerVectors << " addrspace "
+     << AddressSpaces << " untabulated " << Untabulated << " declined "
+     << Declined << " fills " << Fills << "\n";
   if (Mismatches)
     report_fatal_error("x86-gisel-table-check: the table and the chain disagree");
 }
