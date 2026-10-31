@@ -91,7 +91,11 @@ public:
   /// once per (alignment, ordering) variant because the key ignores both: the
   /// rows are how "the chain does not read them either" becomes evidence
   /// instead of an assumption.
-  void dumpAnswers(raw_ostream &OS, StringRef CPU, StringRef Triple) const;
+  /// \p Features is the subtarget's feature vector as an opaque key: two CPUs
+  /// that enable the same features must produce the same key, which is what
+  /// makes a sweep over -mcpu a sweep over feature vectors.
+  void dumpAnswers(raw_ostream &OS, StringRef CPU, StringRef Triple,
+                   StringRef Features) const;
 
   uint64_t hits() const { return Hits; }
   uint64_t outside() const { return Outsides; }
