@@ -542,8 +542,8 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
 }
 
 void X86LegalizerTable::dumpAnswers(raw_ostream &OS, StringRef CPU,
-                                    StringRef Triple,
-                                    StringRef Features) const {
+                                    StringRef Triple, StringRef Features,
+                                    StringRef FeatureNames) const {
   // The key ignores both alignment and atomic ordering.  Each memdesc point is
   // therefore written once per variant: if the chain answers every variant the
   // same, the key is not dropping a distinction; if it does not, the rows say
@@ -643,6 +643,7 @@ void X86LegalizerTable::dumpAnswers(raw_ostream &OS, StringRef CPU,
   OS << "# triple " << Triple << "\n";
   OS << "# cpu " << CPU << "\n";
   OS << "# features " << Features << "\n";
+  OS << "# feature_names " << FeatureNames << "\n";
   OS << "# pointer_bits " << PointerBits << "\n";
   OS << "# tables " << X86NumTables << "\n";
   OS << "# gaps " << X86NumTableGaps << "\n";

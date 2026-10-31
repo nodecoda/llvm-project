@@ -282,16 +282,37 @@ void LegalizerInfoEmitter::emitFeatures(raw_ostream &OS) {
   std::vector<const Record *> Features =
       Records.getAllDerivedDefinitions("LegalizeFeature");
   llvm::sort(Features, LessRecordByID());
-  unsigned Emitted = 0;
+  std::vector<const Record *> Used;
   for (const Record *F : Features) {
     if (!UsedFeatures.contains(F->getName()))
       continue;
     OS << "  bool " << F->getName() << " = "
        << squashSpace(F->getValueAsString("Cond")) << ";\n";
-    ++Emitted;
+    Used.push_back(F);
   }
-  if (Emitted)
-    OS << "\n";
+  if (Used.empty())
+    return;
+
+  // The same booleans again as one bit vector, in the order they were just
+  // declared.  This is theta -- the axis the rules are written in.  A consumer
+  // that keys anything on the subtarget's own feature bits instead would be
+  // measuring an axis hundreds of bits wide where the rules read fifteen, and
+  // would call two subtargets different because of a bit no rule looks at.
+  OS << "  // theta: the feature booleans below, one bit each, in this order.\n";
+  OS << "  const uint32_t LegalizerFeatureMask = 0";
+  for (unsigned I = 0; I != Used.size(); ++I)
+    OS << " | (" << Used[I]->getName() << " ? 1u << " << I << " : 0u)";
+  OS << ";\n";
+  OS << "  static constexpr unsigned LegalizerFeatureCount = " << Used.size()
+     << ";\n";
+  OS << "  static const char LegalizerFeatureNames[] = \"";
+  for (unsigned I = 0; I != Used.size(); ++I) {
+    if (I)
+      OS << " ";
+    OS << Used[I]->getName();
+  }
+  OS << "\";\n";
+  OS << "\n";
 }
 
 /// Lower one predicate record to a C++ boolean expression.  A combination is

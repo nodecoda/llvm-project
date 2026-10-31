@@ -46,28 +46,6 @@ static cl::opt<bool> X86GISelTableCheck(
     "x86-gisel-table-check", cl::Hidden, cl::init(false),
     cl::desc("Check the X86 legalizer table against the rule chains"));
 
-namespace {
-
-/// A stable key for a subtarget's feature vector: the bits, four at a time,
-/// low bits first.  It is a key, not a number -- it only has to be equal for
-/// equal feature vectors, which is what lets a sweep over -mcpu be a sweep
-/// over features instead of over names.
-std::string featureKey(const FeatureBitset &FB) {
-  static const char Hex[] = "0123456789abcdef";
-  std::string Key;
-  Key.reserve((FB.size() + 3) / 4);
-  for (unsigned Bit = 0; Bit < FB.size(); Bit += 4) {
-    unsigned Nibble = 0;
-    for (unsigned K = 0; K != 4 && Bit + K < FB.size(); ++K)
-      if (FB[Bit + K])
-        Nibble |= 1u << K;
-    Key.push_back(Hex[Nibble]);
-  }
-  return Key;
-}
-
-} // namespace
-
 static cl::opt<std::string> X86GISelTableDump(
     "x86-gisel-legalizer-dump", cl::Hidden, cl::init(""),
     cl::value_desc("path"),
@@ -110,8 +88,18 @@ X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI,
             "cannot open " + X86GISelTableDump + ": " + EC.message();
         report_fatal_error(StringRef(Msg));
       }
-      Table.dumpAnswers(Out, STI.getCPU(), TM.getTargetTriple().str(),
-                        featureKey(STI.getFeatureBits()));
+      // theta, one character per declared feature boolean, most significant
+      // first.  Built here rather than in the dump so the dump never has to
+      // know how the target names its features.
+      std::string Key;
+      Key.reserve(LegalizerFeatureCount);
+      for (unsigned I = 0; I != LegalizerFeatureCount; ++I)
+        Key.push_back((LegalizerFeatureMask >> (LegalizerFeatureCount - 1 - I)) &
+                              1
+                          ? '1'
+                          : '0');
+      Table.dumpAnswers(Out, STI.getCPU(), TM.getTargetTriple().str(), Key,
+                        LegalizerFeatureNames);
     }
   }
 }

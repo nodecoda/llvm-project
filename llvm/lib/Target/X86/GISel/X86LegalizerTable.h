@@ -91,11 +91,13 @@ public:
   /// once per (alignment, ordering) variant because the key ignores both: the
   /// rows are how "the chain does not read them either" becomes evidence
   /// instead of an assumption.
-  /// \p Features is the subtarget's feature vector as an opaque key: two CPUs
-  /// that enable the same features must produce the same key, which is what
-  /// makes a sweep over -mcpu a sweep over feature vectors.
+  /// \p Features is theta -- the target's feature booleans, one character
+  /// each, in the order \p FeatureNames lists them.  That is the axis the
+  /// rules are written in; the subtarget's own feature bits carry hundreds of
+  /// bits no rule reads, and keying a sweep on those would call two subtargets
+  /// different because of a bit nobody looks at.
   void dumpAnswers(raw_ostream &OS, StringRef CPU, StringRef Triple,
-                   StringRef Features) const;
+                   StringRef Features, StringRef FeatureNames) const;
 
   uint64_t hits() const { return Hits; }
   uint64_t outside() const { return Outsides; }
