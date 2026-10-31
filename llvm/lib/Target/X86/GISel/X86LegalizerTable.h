@@ -69,7 +69,13 @@ public:
   /// installs on LP64, but the self-check also runs where the table is not
   /// installed: there the representatives have to be types the chain knows,
   /// or the check asks the chain a question it is not written for.
-  explicit X86LegalizerTable(const LegalizerInfo &LI, unsigned PointerBits);
+  ///
+  /// \p Theta is LegalizerFeatureMask: the rule booleans of this subtarget, one
+  /// bit each in the order the generated constructor declares them.  Every
+  /// table's plan is answered against it here, once, so that a query becomes
+  /// one array load.
+  X86LegalizerTable(const LegalizerInfo &LI, unsigned PointerBits,
+                    uint32_t Theta);
   ~X86LegalizerTable() override;
 
   /// LegalizerInfo::LegalizeTable.  Returns false when the cell is missing,
@@ -105,7 +111,8 @@ public:
   uint64_t addressSpaces() const { return AddressSpaces; }
   uint64_t untabulated() const { return Untabulated; }
   uint64_t declined() const { return Declined; }
-  uint64_t fills() const { return Fills; }
+  uint64_t outOfDomain() const { return OutOfDomain; }
+  uint64_t outOfKind() const { return OutOfKind; }
 
 private:
   /// Walk the self-check domain once, handing each point to \p F: the opcode
@@ -117,18 +124,24 @@ private:
                                      ArrayRef<unsigned> Local,
                                      ArrayRef<LLT> Types, LLT MemTy)>
                         F) const;
-  uint32_t fill(unsigned Table, const LegalityQuery &Q,
-                ArrayRef<unsigned> Local) const;
   /// Record one refused query, with the reason, when asked to.
   void noteOutside(unsigned Why, unsigned Table, const LegalityQuery &Q) const;
   LLT representative(unsigned ClassID) const;
+  /// Rebuild the LLT a frozen answer names.  A type travels as an index into a
+  /// deduplicated list rather than as text: the table is data, and a consumer
+  /// should not parse it.
+  LLT answerType(uint16_t NewType) const;
 
   const LegalizerInfo &LI;
   const unsigned PointerBits;
-  mutable std::vector<std::vector<uint32_t>> Cells;
-  mutable std::vector<LegalizeActionStep> Steps;
+  const uint32_t Theta;
+  /// The answer of each plan under this subtarget's theta, decided in the
+  /// constructor.  0xFFFF is a step whose answer could not be computed, which
+  /// sends the query back to the chain.
+  std::vector<uint16_t> PlanAnswer;
   mutable uint64_t Hits = 0, Outsides = 0, PointerVectors = 0,
-                   AddressSpaces = 0, Untabulated = 0, Declined = 0, Fills = 0;
+                   AddressSpaces = 0, Untabulated = 0, Declined = 0,
+                   OutOfDomain = 0, OutOfKind = 0;
   // Off unless -x86-gisel-table-outsides.  A count says how often the table
   // refused; the log says which shapes it refused, which is what turns "41
   // outside" into "41 of these, and here is the one that is a gap".

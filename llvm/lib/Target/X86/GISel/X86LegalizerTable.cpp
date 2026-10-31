@@ -11,6 +11,8 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cassert>
+
 using namespace llvm;
 
 static cl::opt<bool> X86GISelTableStats(
@@ -20,6 +22,15 @@ static cl::opt<bool> X86GISelTableStats(
 static cl::opt<bool> X86GISelTableOutsides(
     "x86-gisel-table-outsides", cl::Hidden, cl::init(false),
     cl::desc("List every query the X86 legalizer table refused, with the reason"));
+
+static cl::opt<bool> X86GISelTableCheckFull(
+    "x86-gisel-table-check-full", cl::Hidden, cl::init(false),
+    cl::desc("Check every class of every slot, not only the classes the "
+             "rules name"));
+
+static cl::opt<bool> X86GISelTableCheckTrace(
+    "x86-gisel-table-check-trace", cl::Hidden, cl::init(false),
+    cl::desc("Print every point the self-check asks the rules about"));
 
 namespace {
 
@@ -49,12 +60,10 @@ constexpr int kPointerVectorClass = -2;
 // A pointer in an address space the table does not model.  The class list is
 // built from the named LLT constants, and every one of them names p0.
 constexpr int kPointerAddressSpaceClass = -3;
-/// Cell indices start at 1, so 0 stays "not filled in".  Keeping the step
-/// count below this reserved value means a real index can never alias the
-/// empty marker.  The table only ever gets here for rule sets the Core IR can
-/// express in full; a rule set with an escape is not tabulated at all, so
-/// there is no opaque cell to represent.
-constexpr uint32_t kCellLimit = 0xFFFFFFFF;
+/// A plan step whose rule matched but whose answer the generator could not
+/// compute.  Kept apart from a cell that has no plan at all: both fall back to
+/// the chain, and neither is an answer the table may hand out.
+constexpr uint16_t kNoAnswer = 0xFFFF;
 
 /// Class of a type, or one of the negative class ids above.
 int classifyType(LLT T) {
@@ -140,22 +149,66 @@ static void memFiber(unsigned Bits, SmallVectorImpl<LLT> &Out) {
   }
 }
 
-/// Inverse of a table's global -> local map.  Local classes are a partition of
-/// the global ones, so the first hit is the only hit.
-unsigned localToGlobal(const LegalizerTableDesc &D, unsigned Slot,
-                       unsigned Local) {
-  for (unsigned G = 0; G < X86NumTypeClasses; ++G)
-    if (D.Local[Slot][G] == Local)
-      return G;
-  llvm_unreachable("local class has no global representative");
-}
-
 } // namespace
 
 X86LegalizerTable::X86LegalizerTable(const LegalizerInfo &LI,
-                                     unsigned PointerBits)
-    : LI(LI), PointerBits(PointerBits), Cells(X86NumTables),
-      LogOutsides(X86GISelTableOutsides) {}
+                                     unsigned PointerBits, uint32_t Theta)
+    : LI(LI), PointerBits(PointerBits), Theta(Theta),
+      PlanAnswer(X86NumPlans, kNoAnswer),
+      LogOutsides(X86GISelTableOutsides) {
+  // One answer per plan, decided once, here.  A plan is a list of theta cubes,
+  // so this loop is the whole run-time cost of the table: -O2 lowering of a
+  // query then reads one cell and one answer.
+  for (unsigned T = 0; T != X86NumTables; ++T) {
+    const LegalizerTableDesc &D = X86Tables[T];
+    // theta as this table writes it: bit I is the boolean D.Atoms[I] names.
+    // A table reads only the booleans its own rules mention, so two tables can
+    // read the same subtarget through different bit orders.
+    uint32_t Local = 0;
+    for (unsigned I = 0; I != D.NumAtoms; ++I)
+      if ((Theta >> D.Atoms[I]) & 1u)
+        Local |= 1u << I;
+    const unsigned Cells = static_cast<unsigned>(D.Dims[0]) * D.Dims[1] *
+                           D.Dims[2];
+    for (unsigned C = 0; C != Cells; ++C) {
+      const uint16_t Cell = D.Cells[C];
+      if (!Cell)
+        continue;
+      const unsigned P = Cell - 1;
+      assert(P < X86NumPlans && "cell names a plan that does not exist");
+      // A plan is shared by every cell whose answer depends on theta the same
+      // way, so it is answered once.
+      if (PlanAnswer[P] != kNoAnswer)
+        continue;
+      const LegalizerPlan &Plan = X86Plans[P];
+      for (unsigned S = 0; S != Plan.NumSteps; ++S) {
+        const LegalizerPlanStep &Step = X86PlanSteps[Plan.FirstStep + S];
+        if ((Local & Step.Mask) == Step.Value) {
+          PlanAnswer[P] = Step.Answer;
+          break;
+        }
+      }
+    }
+  }
+}
+
+LLT X86LegalizerTable::answerType(uint16_t NewType) const {
+  if (!NewType)
+    return LLT();
+  const LegalizerLLT &T = X86LLTs[NewType - 1];
+  switch (T.Kind) {
+  case LK_Pointer:
+    return LLT::pointer(0, T.Bits);
+  case LK_Vector:
+    return LLT::fixed_vector(T.Lanes, T.Bits);
+  case LK_PointerVector:
+    return LLT::fixed_vector(T.Lanes, LLT::pointer(0, T.Bits));
+  case LK_Scalar:
+    return LLT::scalar(T.Bits);
+  default:
+    llvm_unreachable("a frozen new type with no kind");
+  }
+}
 
 LLT X86LegalizerTable::representative(unsigned ClassID) const {
   const LegalizerTypeClass &C = X86TypeClasses[ClassID];
@@ -169,42 +222,6 @@ LLT X86LegalizerTable::representative(unsigned ClassID) const {
   default:
     return LLT::scalar(C.ElemBits);
   }
-}
-
-uint32_t X86LegalizerTable::fill(unsigned Table, const LegalityQuery &Q,
-                                 ArrayRef<unsigned> Local) const {
-  const LegalizerTableDesc &D = X86Tables[Table];
-  SmallVector<LLT, 4> Types(Q.Types.begin(), Q.Types.end());
-  SmallVector<LegalityQuery::MemDesc, 1> MemDescs(Q.MMODescrs.begin(),
-                                                  Q.MMODescrs.end());
-  for (unsigned K = 0; K != D.NumSlots; ++K) {
-    const int Slot = D.Slots[K];
-    if (Slot < 0) {
-      // The mem axis stands for one access size, so the representative is a
-      // type of exactly that size.  Alignment is not in the key: every rule
-      // asks for "at least" alignment, so the weakest alignment answers for
-      // all of them, which is also what the key generator asserts.
-      MemDescs.assign(1, LegalityQuery::MemDesc(
-                             LLT::scalar(static_cast<unsigned>(D.Mem[Local[K]])),
-                             /*AlignInBits=*/1, AtomicOrdering::NotAtomic,
-                             AtomicOrdering::NotAtomic));
-      continue;
-    }
-    Types[Slot] = representative(localToGlobal(D, K, Local[K]));
-  }
-
-  // Same question, asked with the class representatives instead of the actual
-  // types: that is what makes one cell stand for the whole class pair.  The
-  // rules are asked directly -- going through LI.getAction() would re-enter
-  // this table and recurse.
-  LegalizeActionStep Step =
-      LI.getActionDefinitions(Q.Opcode)
-          .apply(LegalityQuery(Q.Opcode, Types, MemDescs, Q.Immediates));
-  if (Steps.size() >= kCellLimit)
-    report_fatal_error("X86 legalizer table has too many filled cells");
-  ++Fills;
-  Steps.push_back(Step);
-  return static_cast<uint32_t>(Steps.size());
 }
 
 void X86LegalizerTable::noteOutside(unsigned Why, unsigned Table,
@@ -255,8 +272,13 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
                      : (Q.Types.size() > D.Slots[0]
                             ? classifyType(Q.Types[D.Slots[0]])
                             : kUnknownClass);
+  // Slot 1 is classified whenever the table keys it -- even when its domain is
+  // one class wide.  A domain of one is not "do not look": it is "only this
+  // class is modelled", and a type that maps outside it must be refused.  The
+  // load/store pointer slot is exactly that case (p0 only), and reading Dims
+  // as "is the slot used" let every other address space fall into the p0 cell.
   int C1 = 0;
-  if (D.Dims[1] > 1)
+  if (D.NumSlots > 1 && D.Slots[1] >= 0)
     C1 = Q.Types.size() > D.Slots[1] ? classifyType(Q.Types[D.Slots[1]])
                                      : kUnknownClass;
 
@@ -289,7 +311,7 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
     R.Why = 2;
     return R;
   }
-  if (D.Dims[1] > 1) {
+  if (D.NumSlots > 1 && D.Slots[1] >= 0) {
     L[1] = D.Local[1][C1];
     if (L[1] == 0xFF) {
       ++Outsides;
@@ -330,20 +352,115 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
     L[2] = static_cast<unsigned>(MemLocal);
   }
 
-  std::vector<uint32_t> &Row = Cells[Table];
-  if (Row.empty())
-    Row.assign(static_cast<size_t>(D.Dims[0]) * D.Dims[1] * D.Dims[2], 0);
-  uint32_t &Cell =
-      Row[(static_cast<size_t>(L[0]) * D.Dims[1] + L[1]) * D.Dims[2] + L[2]];
-  if (!Cell)
-    Cell = fill(Table, Q, L);
+  // A frozen table can only carry the cells its generator was allowed to
+  // evaluate and check, which is the rule-named domain.  Count the answered
+  // queries whose class sits outside it: those are the ones a frozen table
+  // would have to hand back to the chain.
+  const LegalizerTableDomain &Dom = X86TableDomains[Table];
+  bool InDomain = true;
+  for (unsigned K = 0; K != D.NumSlots; ++K) {
+    if (D.Slots[K] < 0)
+      continue;
+    const unsigned C = K == 0 ? static_cast<unsigned>(C0)
+                              : (K == 1 ? static_cast<unsigned>(C1) : 0u);
+    bool Found = false;
+    for (unsigned I = 0; I != Dom.Counts[K]; ++I)
+      if (Dom.Classes[K][I] == C) {
+        Found = true;
+        break;
+      }
+    if (!Found) {
+      InDomain = false;
+      break;
+    }
+  }
+  if (!InDomain) {
+    ++OutOfDomain;
+    if (LogOutsides && OutsideLog.size() < 4096) {
+      std::string S;
+      raw_string_ostream OS(S);
+      OS << "x86-gisel-table: out-of-domain table=" << Table
+         << " opcode=" << Q.Opcode << " types=(";
+      for (unsigned I = 0; I != Q.Types.size(); ++I) {
+        if (I)
+          OS << ", ";
+        Q.Types[I].print(OS);
+      }
+      OS << ")";
+      OutsideLog.push_back(OS.str());
+    }
+    // Out of domain is not the same as out of the questions the rules are
+    // written for: s128 where the rules name s1..s64 is the same kind the
+    // table already answers, while p0 in a scalar slot is not.  Counted
+    // apart, because a frozen table has to cover the first and cannot cover
+    // the second.
+    bool KindOk = true;
+    for (unsigned K = 0; K != D.NumSlots; ++K) {
+      if (D.Slots[K] < 0)
+        continue;
+      const unsigned C = K == 0 ? static_cast<unsigned>(C0)
+                                : (K == 1 ? static_cast<unsigned>(C1) : 0u);
+      const uint8_t Kind = X86TypeClasses[C].Kind;
+      bool Found = false;
+      for (unsigned I = 0; I != Dom.Counts[K]; ++I)
+        if (X86TypeClasses[Dom.Classes[K][I]].Kind == Kind) {
+          Found = true;
+          break;
+        }
+      if (!Found) {
+        KindOk = false;
+        break;
+      }
+    }
+    if (!KindOk) {
+      ++OutOfKind;
+      if (LogOutsides && OutsideLog.size() < 4096) {
+        std::string S;
+        raw_string_ostream OS(S);
+        OS << "x86-gisel-table: out-of-kind table=" << Table
+           << " opcode=" << Q.Opcode << " types=(";
+        for (unsigned I = 0; I != Q.Types.size(); ++I) {
+          if (I)
+            OS << ", ";
+          Q.Types[I].print(OS);
+        }
+        OS << ")";
+        OutsideLog.push_back(OS.str());
+      }
+    }
+  }
 
-  const LegalizeActionStep &S = Steps[Cell - 1];
+  // The answer was computed at generation time from the same rules; this is one
+  // array load, not a walk over the rule chain.
+  const size_t Cell =
+      (static_cast<size_t>(L[0]) * D.Dims[1] + L[1]) * D.Dims[2] + L[2];
+  const uint16_t CellID = D.Cells[Cell];
+  if (!CellID) {
+    // The generator declined this cell: an inline opaque predicate, or a
+    // mutation the chain itself cannot apply.  Not an answer, and not an
+    // out-of-kind query either -- the kind was modelled, the cell is empty.
+    ++OutOfDomain;
+    noteOutside(7, Table, Q);
+    R.Kind = Answer::Outside;
+    R.Why = 7;
+    return R;
+  }
+  const uint16_t AnswerID = PlanAnswer[CellID - 1];
+  if (AnswerID == kNoAnswer) {
+    // The matched rule's answer could not be computed when the table was
+    // generated.  Falling back to the chain is the only honest option.
+    ++OutOfDomain;
+    noteOutside(8, Table, Q);
+    R.Kind = Answer::Outside;
+    R.Why = 8;
+    return R;
+  }
+  const LegalizerAnswer &A = X86Answers[AnswerID];
   ++Hits;
   R.Kind = Answer::Hit;
-  R.Action = S.Action;
-  R.TypeIdx = S.TypeIdx;
-  R.NewType = S.NewType;
+  R.Action = A.Action;
+  R.TypeIdx = A.TypeIdx;
+  R.NewType = answerType(A.NewType);
   return R;
 }
 
@@ -362,7 +479,8 @@ X86LegalizerTable::~X86LegalizerTable() {
   errs() << "x86-gisel-table: hit " << Hits << " outside " << Outsides
          << " ptrvec " << PointerVectors << " addrspace " << AddressSpaces
          << " untabulated " << Untabulated << " declined " << Declined
-         << " fills " << Fills << "\n";
+         << " outofdomain " << OutOfDomain << " outofkind " << OutOfKind
+         << "\n";
   for (const std::string &S : OutsideLog)
     errs() << S << "\n";
 }
@@ -435,9 +553,22 @@ void X86LegalizerTable::forEachPoint(
     const auto &Entry = X86TableOpcodes[EntryIdx];
     const LegalizerTableDesc &D = X86Tables[Entry.Table];
     const LegalizerTableDomain &Domain = X86TableDomains[Entry.Table];
-    const unsigned N0 = D.NumSlots > 0 ? Domain.Counts[0] : 1;
-    const unsigned N1 = D.NumSlots > 1 ? Domain.Counts[1] : 1;
-    const unsigned N2 = D.NumSlots > 2 ? Domain.Counts[2] : 1;
+    // The domain the tables were built for is the classes the rules name;
+    // asking the chain about anything else is a question it is not written
+    // for.  -x86-gisel-table-check-full measures exactly how far that is
+    // true: it walks every class the key can produce.
+    const unsigned N0 = D.NumSlots > 0
+                            ? (X86GISelTableCheckFull ? X86NumTypeClasses
+                                                      : Domain.Counts[0])
+                            : 1;
+    const unsigned N1 = D.NumSlots > 1
+                            ? (X86GISelTableCheckFull ? X86NumTypeClasses
+                                                      : Domain.Counts[1])
+                            : 1;
+    const unsigned N2 = D.NumSlots > 2
+                            ? (X86GISelTableCheckFull ? X86NumTypeClasses
+                                                      : Domain.Counts[2])
+                            : 1;
 
     // A tabulated table reads no type slot outside its key, so an unkeyed
     // slot can use any representative; it is the same one fill() saw.
@@ -457,7 +588,10 @@ void X86LegalizerTable::forEachPoint(
             if (D.Slots[K] < 0)
               MemBits = static_cast<unsigned>(D.Mem[Local[K]]);
             else
-              Types[D.Slots[K]] = representative(Domain.Classes[K][Local[K]]);
+              Types[D.Slots[K]] = representative(
+                  X86GISelTableCheckFull
+                      ? static_cast<unsigned>(Local[K])
+                      : static_cast<unsigned>(Domain.Classes[K][Local[K]]));
           }
 
           // A type slot's class is exactly one type, so its representative is
@@ -493,6 +627,19 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
                             AtomicOrdering::NotAtomic);
 
     ++Points;
+    if (X86GISelTableCheckTrace) {
+      errs() << "x86-gisel-table-check: ask " << Name << "(";
+      for (unsigned I = 0; I != Types.size(); ++I) {
+        if (I)
+          errs() << ", ";
+        Types[I].print(errs());
+      }
+      if (MemTy.isValid()) {
+        errs() << " mem ";
+        MemTy.print(errs());
+      }
+      errs() << ")\n";
+    }
     const LegalityQuery Q(X86TableOpcodes[Entry].Opcode, Types, MemDescs);
     // Ask the rules directly.  LI.getAction() consults the installed table
     // first, which would compare the table against itself; the point of this
@@ -535,7 +682,8 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
      << " mismatches " << Mismatches << " skipped " << Skipped << " outside "
      << Outsides << " ptrvec " << PointerVectors << " addrspace "
      << AddressSpaces << " untabulated " << Untabulated << " declined "
-     << Declined << " fills " << Fills << "\n";
+     << Declined << " outofdomain " << OutOfDomain << " outofkind "
+     << OutOfKind << "\n";
   if (Mismatches)
     report_fatal_error(
         "x86-gisel-table-check: the table and the chain disagree");
@@ -661,8 +809,8 @@ void X86LegalizerTable::dumpAnswers(raw_ostream &OS, StringRef CPU,
        << static_cast<unsigned>(D.Dims[2]) << " domain "
        << static_cast<unsigned>(Domain.Counts[0]) << " "
        << static_cast<unsigned>(Domain.Counts[1]) << " "
-       << static_cast<unsigned>(Domain.Counts[2]) << " rules " << D.NumRules
-       << "\n";
+       << static_cast<unsigned>(Domain.Counts[2]) << " atoms "
+       << static_cast<unsigned>(D.NumAtoms) << "\n";
   }
   OS << "# columns opcode table l0 l1 l2 types mem align order failorder "
         "chain_action chain_idx chain_type table_kind why table_action "

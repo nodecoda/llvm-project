@@ -177,6 +177,7 @@ class LegalizerInfoEmitter {
     return Mutation.empty() || llvm::is_contained(Known, Mutation);
   }
 
+  void collectUsedFeatures();
   void emitFeatures(raw_ostream &OS);
   void emitPredicate(const Record &P, raw_ostream &OS);
   void emitTypes(raw_ostream &OS);
@@ -294,6 +295,55 @@ static void collectPredicateFeatures(const Record *P, StringSet<> &Out) {
 /// refer to a feature by writing the record itself instead of a string.  A
 /// feature that nothing references is skipped: it would only become an unused
 /// variable in the generated constructor.
+/// Fill UsedFeatures with every feature the generated chain can read: a
+/// predicate dag's leaves, the C++ text the escape hatches carry, and the
+/// conditions that name another feature.  The table backend needs the same
+/// set in the same order, because the atoms it emits are bit indices into the
+/// LegalizerFeatureMask those booleans form.
+void LegalizerInfoEmitter::collectUsedFeatures() {
+  StringSet<> Declared;
+  for (const Record *F : Records.getAllDerivedDefinitions("LegalizeFeature"))
+    Declared.insert(F->getName());
+
+  // Everything a feature name can be written in: a predicate dag's leaves, and
+  // the C++ text the escape hatches carry.
+  auto CollectUsed = [&](StringRef Text) {
+    SmallVector<StringRef, 8> Idents;
+    collectIdentifiers(Text, Idents);
+    for (StringRef Id : Idents)
+      if (Declared.contains(Id))
+        UsedFeatures.insert(Id);
+  };
+  for (const Record *D :
+       Records.getAllDerivedDefinitions("LegalizeBoolPredicateDag"))
+    collectPredicateFeatures(D, UsedFeatures);
+  for (const Record *D :
+       Records.getAllDerivedDefinitions("LegalizeQueryPredicateDag"))
+    collectPredicateFeatures(D, UsedFeatures);
+  for (const Record *P : Records.getAllDerivedDefinitions("LegalizeRule")) {
+    CollectUsed(P->getValueAsString("OpaqueArgs"));
+    if (const Record *Pred = P->getValueAsOptionalDef("Pred"))
+      collectPredicateFeatures(Pred, UsedFeatures);
+  }
+  for (const Record *E : Records.getAllDerivedDefinitions("LegalizeOpaqueBool"))
+    CollectUsed(E->getValueAsString("Expr"));
+  // A feature whose condition names another feature is a reference like any
+  // other: without this, the named feature would be reported as unused and not
+  // declared, and the generated bool would not compile.
+  for (const Record *F : Records.getAllDerivedDefinitions("LegalizeFeature"))
+    CollectUsed(F->getValueAsString("Cond"));
+  for (const Record *T : Records.getAllDerivedDefinitions("LegalizeNamedType"))
+    CollectUsed(T->getValueAsString("Expr"));
+  for (const Record *X : Records.getAllDerivedDefinitions("LegalizeInlineType"))
+    CollectUsed(X->getValueAsString("Text"));
+  for (const Record *X :
+       Records.getAllDerivedDefinitions("LegalizeTypeListChoice"))
+    CollectUsed(X->getValueAsString("Text"));
+  for (const Record *X : Records.getAllDerivedDefinitions("LegalizeRawArg"))
+    CollectUsed(X->getValueAsString("Text"));
+
+}
+
 void LegalizerInfoEmitter::emitFeatures(raw_ostream &OS) {
   std::vector<const Record *> Features =
       Records.getAllDerivedDefinitions("LegalizeFeature");
@@ -957,42 +1007,7 @@ void LegalizerInfoEmitter::run(raw_ostream &OS) {
 
   verifyLattices();
 
-  // Everything a feature name can be written in: a predicate dag's leaves, and
-  // the C++ text the escape hatches carry.
-  auto CollectUsed = [&](StringRef Text) {
-    SmallVector<StringRef, 8> Idents;
-    collectIdentifiers(Text, Idents);
-    for (StringRef Id : Idents)
-      if (Declared.contains(Id))
-        UsedFeatures.insert(Id);
-  };
-  for (const Record *D :
-       Records.getAllDerivedDefinitions("LegalizeBoolPredicateDag"))
-    collectPredicateFeatures(D, UsedFeatures);
-  for (const Record *D :
-       Records.getAllDerivedDefinitions("LegalizeQueryPredicateDag"))
-    collectPredicateFeatures(D, UsedFeatures);
-  for (const Record *P : Records.getAllDerivedDefinitions("LegalizeRule")) {
-    CollectUsed(P->getValueAsString("OpaqueArgs"));
-    if (const Record *Pred = P->getValueAsOptionalDef("Pred"))
-      collectPredicateFeatures(Pred, UsedFeatures);
-  }
-  for (const Record *E : Records.getAllDerivedDefinitions("LegalizeOpaqueBool"))
-    CollectUsed(E->getValueAsString("Expr"));
-  // A feature whose condition names another feature is a reference like any
-  // other: without this, the named feature would be reported as unused and not
-  // declared, and the generated bool would not compile.
-  for (const Record *F : Records.getAllDerivedDefinitions("LegalizeFeature"))
-    CollectUsed(F->getValueAsString("Cond"));
-  for (const Record *T : Records.getAllDerivedDefinitions("LegalizeNamedType"))
-    CollectUsed(T->getValueAsString("Expr"));
-  for (const Record *X : Records.getAllDerivedDefinitions("LegalizeInlineType"))
-    CollectUsed(X->getValueAsString("Text"));
-  for (const Record *X :
-       Records.getAllDerivedDefinitions("LegalizeTypeListChoice"))
-    CollectUsed(X->getValueAsString("Text"));
-  for (const Record *X : Records.getAllDerivedDefinitions("LegalizeRawArg"))
-    CollectUsed(X->getValueAsString("Text"));
+  collectUsedFeatures();
 
   for (const Record *F : Records.getAllDerivedDefinitions("LegalizeFeature"))
     if (!UsedFeatures.contains(F->getName()))
@@ -2822,6 +2837,7 @@ void collectPredLeaves(
 void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
   CurrentRK = &Records;
   verifyLattices();
+  collectUsedFeatures();
   std::vector<const Record *> RuleSets = validatedRuleSets();
   std::vector<std::string> Types = domainTypes();
 
@@ -2838,6 +2854,16 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     // Slots.  Empty for the mem axis, whose sizes travel in Mem.
     std::vector<std::vector<unsigned>> SlotDomains;
     unsigned FirstRule = 0, NumRules = 0;
+    // Theta bits this table's rules read, as indices into the declared
+    // feature list the generated mask uses.
+    std::vector<unsigned> Atoms;
+    // One entry per cell, 0 = no frozen answer, else 1 + plan index.
+    std::vector<uint16_t> Cells;
+    // Why rows of this table have no answer, counted.  A cell that falls back
+    // to the chain is a gap either in the description or in the evaluator, and
+    // the reason is the only thing that tells the two apart.
+    std::map<std::string, unsigned> NoAnswerWhy;
+  
     // The rules the table answers with, in the order the chain applies them.
     // Kept per table rather than in one array: a rule set that is not
     // tabulated contributes no rules, so a global cursor would leave a hole
@@ -2992,6 +3018,30 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     llvm_unreachable("mentioned type has no class");
   };
 
+  // One table's rules, in the order the chain applies them, lowered to the
+  // evaluator's form once.  The frozen cells, the dump and the self-check ask
+  // the same questions, so they must ask the same rules.
+  auto ParseRules = [](const TableRec &R) {
+    std::vector<legeval::Rule> Rules;
+    Rules.reserve(R.NumRules);
+    for (const CoreRule &CR : R.Rules) {
+      legeval::Rule ER;
+      ER.Action = CR.Action;
+      ER.TypeIdx = CR.TypeIdx;
+      std::string Err;
+      size_t Pos = 0;
+      if (!legeval::parseNode(CR.Predicate, Pos, ER.Pred, Err))
+        PrintFatalError("rule predicate does not parse: " + Err);
+      if (!CR.Mutation.empty()) {
+        size_t MPos = 0;
+        if (!legeval::parseMutation(CR.Mutation, MPos, ER.Mut, Err))
+          PrintFatalError("rule mutation does not parse: " + Err);
+      }
+      Rules.push_back(std::move(ER));
+    }
+    return Rules;
+  };
+
   // The self-check domain is per slot, not the product of the whole class set.
   // Most slots only ever see one kind of type: a load's pointer operand is
   // never a vector, and a scalar arithmetic source is never a pointer.  Asking
@@ -3000,34 +3050,57 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
   // measures a question no rule set is written to answer.
   for (TableRec &R : Tables) {
     R.SlotDomains.resize(R.Slots.size());
+    // Does this rule set name any type at all?  A rule set that names none
+    // (G_UNMERGE_VALUES: every rule clamps and widens both operands) has no
+    // slot that says what the operands are, and the real queries are vectors
+    // and pointers as well as scalars.
+    bool TableNamesAny = false;
+    for (const auto &Entry : R.SlotTypes)
+      if (!Entry.second.empty())
+        TableNamesAny = true;
     for (size_t K = 0; K != R.Slots.size(); ++K) {
       const int Slot = R.Slots[K];
       if (Slot < 0)
         continue; // the mem axis enumerates R.Mem directly
       std::set<unsigned> IDs;
-      bool HasPointer = false, HasScalar = false;
+      bool HasScalar = false;
       auto Named = R.SlotTypes.find(static_cast<unsigned>(Slot));
       if (Named != R.SlotTypes.end())
         for (const std::string &S : Named->second) {
           const unsigned ID = ClassID(S);
           IDs.insert(ID);
-          if (Classes[ID].Kind == 0 || Classes[ID].Kind == 3)
-            HasPointer = true;
-          else if (Classes[ID].Kind == 1)
+          if (Classes[ID].Kind == 1)
             HasScalar = true;
         }
-      if (HasPointer) {
-        // Pointer slots stay pointers.  A scalar where the rules spell a
-        // pointer is a query the chain does not accept, not a table answer to
-        // compare against.
-        for (auto I = IDs.begin(); I != IDs.end();)
-          if (Classes[*I].Kind == 0 || Classes[*I].Kind == 3)
-            ++I;
-          else
-            I = IDs.erase(I);
-      } else if (IDs.empty() || HasScalar) {
-        // Width boundaries matter even when no rule spells them: a rule that
-        // only says scalarNarrowerThan still reads every width below the bound.
+      // A slot's domain is every class of a kind the rules spell there, with
+      // scalars expanded to every width: a rule that says only
+      // scalarNarrowerThan reads every width below its bound.
+      //
+      // Two earlier forms were wrong, and both were invisible because the
+      // check still reported zero mismatches over what it did ask.
+      //
+      // Narrowing any slot that named a pointer to pointers only dropped
+      // LOAD's integer half: LOAD's *value* slot spells p0 (a load can
+      // produce a pointer) and s8/s32/v4s8 (a load can produce an integer),
+      // so the check walked 3 points instead of 24 classes.  Measured: 179
+      // real queries were answered by the table without ever being compared.
+      //
+      // Substituting class 0 for a slot that spells nothing did the
+      // opposite: class 0 is p0, so the check asked G_ANYEXT(s32, p0) and
+      // G_UNMERGE_VALUES(p0, p0), and every real scalar query counted as
+      // outside the domain.
+      //
+      // A slot that spells nothing takes the scalar widths when another slot
+      // of the same table says what the operands are, and every class when
+      // the rule set names no type at all.  A vector class no rule names
+      // where the rules do name a scalar stays out: that is a question the
+      // chain is not written for (LLT::changeElementSize on a pointer).
+      const bool NothingNamed =
+          Named == R.SlotTypes.end() || Named->second.empty();
+      if (NothingNamed && !TableNamesAny) {
+        for (unsigned I = 0; I != Classes.size(); ++I)
+          IDs.insert(I);
+      } else if (NothingNamed || HasScalar) {
         for (unsigned I = 0; I != Classes.size(); ++I)
           if (Classes[I].Kind == 1)
             IDs.insert(I);
@@ -3036,6 +3109,356 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
         IDs.insert(0); // no named type and no scalar class
       R.SlotDomains[K].assign(IDs.begin(), IDs.end());
     }
+  }
+
+  // ---- frozen cells -------------------------------------------------------
+  //
+  // The .inc carries each cell's answer, so the runtime never asks the chain.
+  // Two facts make that possible, and both are what the earlier steps were
+  // building toward:
+  //
+  //  - a class is exactly one type (kind, element bits, lanes), so the cell's
+  //    representative *is* the query, and the answer -- including a mutation's
+  //    new type -- is constant on the cell;
+  //  - the only input left is theta, the feature booleans the rules are
+  //    written in, and a table's rules read a handful of them.
+  //
+  // So a cell becomes a truth table over the atoms its rules mention.
+  // Enumerating those atoms is exhaustive by construction: every feature leaf
+  // the evaluator can read is one of them (a leaf with no declared boolean is
+  // a fatal error, never a silent false), so the table answers for every
+  // theta, not only the ones a CPU list happens to reach.
+  //
+  // The cells cover the self-check domain and nothing else.  A class no rule
+  // names is left at 0 and the caller keeps the chain: those are the
+  // combinations the chain is not written for -- G_CTLZ(p0) asserts in
+  // LLT::changeElementSize (issue #236651) -- and on the MIR corpus no
+  // answered query lands there (measured: 0 of 732 hits).
+  std::vector<const Record *> AllFeats =
+      Records.getAllDerivedDefinitions("LegalizeFeature");
+  llvm::sort(AllFeats, LessRecordByID());
+  std::vector<const Record *> Feats;
+  for (const Record *F : AllFeats)
+    if (UsedFeatures.contains(F->getName()))
+      Feats.push_back(F);
+
+  // The Core IR writes a feature as the condition text it stands for; the
+  // generated chain writes the same feature as one bit of
+  // LegalizerFeatureMask, in this order.  Both spellings of one record -- the
+  // text and the record name -- must land on the same atom.
+  std::map<std::string, unsigned> CondToFeat, NameToFeat;
+  for (unsigned I = 0; I != Feats.size(); ++I) {
+    StringRef Cond = Feats[I]->getValueAsString("Cond");
+    CondToFeat.emplace(Cond.str(), I);
+    CondToFeat.emplace(squashSpace(Cond), I);
+    NameToFeat.emplace(Feats[I]->getName().str(), I);
+  }
+
+  std::map<std::string, LLT> NamedTypes;
+  for (const TableClass &C : Classes) {
+    LLT T;
+    switch (C.Kind) {
+    case 0:
+      T = LLT::pointer(0, C.Elem);
+      break;
+    case 1:
+      T = LLT::scalar(C.Elem);
+      break;
+    case 2:
+      T = LLT::fixed_vector(C.Lanes, C.Elem);
+      break;
+    default:
+      T = LLT::fixed_vector(C.Lanes, LLT::pointer(0, C.Elem));
+      break;
+    }
+    NamedTypes.emplace(C.Spell, T);
+  }
+  auto NamedFn = [&NamedTypes](StringRef S) -> const LLT * {
+    auto It = NamedTypes.find(S.str());
+    return It == NamedTypes.end() ? nullptr : &It->second;
+  };
+
+  struct CellAnswer {
+    std::string Action;
+    unsigned TypeIdx = 0;
+    unsigned Kind = 0, Bits = 0, Lanes = 1;
+  };
+  std::map<std::tuple<std::string, unsigned, unsigned, unsigned, unsigned>,
+           unsigned>
+      AnswerIds;
+  std::vector<CellAnswer> Answers;
+  std::map<std::vector<unsigned>, unsigned> PlanIds;
+  std::vector<std::vector<std::tuple<unsigned, unsigned, unsigned>>> Plans;
+
+  auto EncodeLLT = [](const LLT &T, unsigned &Kind, unsigned &Bits,
+                      unsigned &Lanes) {
+    Kind = 0;
+    Bits = 0;
+    Lanes = 1;
+    if (!T.isValid())
+      return;
+    if (T.isPointer()) {
+      Kind = 3;
+      Bits = static_cast<unsigned>(T.getSizeInBits().getFixedValue());
+    } else if (T.isPointerVector()) {
+      Kind = 4;
+      Bits = static_cast<unsigned>(T.getScalarSizeInBits());
+      Lanes = static_cast<unsigned>(T.getNumElements());
+    } else if (T.isVector()) {
+      Kind = 2;
+      Bits = static_cast<unsigned>(T.getScalarSizeInBits());
+      Lanes = static_cast<unsigned>(T.getNumElements());
+    } else {
+      Kind = 1;
+      Bits = static_cast<unsigned>(T.getSizeInBits().getFixedValue());
+    }
+  };
+
+  // 0xFFFF is "the rules do not answer here", which is not an answer.
+  constexpr unsigned kNoAnswer = 0xFFFF;
+  auto AnswerId = [&](const legeval::Verdict &V) -> unsigned {
+    CellAnswer A;
+    // No rule held.  That is an *answer* -- the chain says Unsupported -- and
+    // not a hole in the table; conflating the two sends every such cell back
+    // to the chain at run time, which is where the answer came from anyway.
+    // What stays unanswered is a row the evaluator could not compute
+    // (V.Why); that one is the caller's business, not the rules'.
+    A.Action = V.Matched ? V.Action : "Unsupported";
+    A.TypeIdx = V.Matched ? V.TypeIdx : 0;
+    if (V.Matched && V.HasNewType)
+      EncodeLLT(V.NewType, A.Kind, A.Bits, A.Lanes);
+    auto Key = std::make_tuple(A.Action, A.TypeIdx, A.Kind, A.Bits, A.Lanes);
+    auto It = AnswerIds.find(Key);
+    if (It != AnswerIds.end())
+      return It->second;
+    const unsigned Id = static_cast<unsigned>(Answers.size());
+    AnswerIds.emplace(Key, Id);
+    Answers.push_back(std::move(A));
+    return Id;
+  };
+
+  // One truth table row per atom assignment, grouped by answer, merged into
+  // cubes.  The cubes of a cell partition the atom space, so the first match
+  // is the answer whichever order they are written in; they are written most
+  // specific first so that a reader can check that by eye.
+  //
+  // A plan is keyed on the atoms as well as on the cubes: a cube's bit 3 is
+  // "the fourth atom this table reads", and two tables that read the same
+  // booleans in a different order mean different things by it.  Sharing a plan
+  // between them would silently swap two inputs.
+  auto PlanId = [&](ArrayRef<unsigned> Row, unsigned K,
+                    ArrayRef<unsigned> Atoms) -> unsigned {
+    constexpr unsigned kDeadCare = ~0u;
+    std::map<unsigned, std::vector<unsigned>> Groups;
+    for (unsigned A = 0; A != Row.size(); ++A)
+      Groups[Row[A]].push_back(A);
+    const unsigned Full = K == 0 ? 0u : (1u << K) - 1u;
+    std::vector<std::tuple<unsigned, unsigned, unsigned>> Steps;
+    for (const auto &G : Groups) {
+      struct Cube {
+        unsigned Value, Care;
+      };
+      std::vector<Cube> Cs;
+      for (unsigned V : G.second)
+        Cs.push_back({V, Full});
+      bool Changed = true;
+      while (Changed) {
+        Changed = false;
+        for (unsigned I = 0; I != Cs.size(); ++I)
+          for (unsigned J = I + 1; J != Cs.size(); ++J) {
+            if (Cs[I].Care == kDeadCare || Cs[I].Care != Cs[J].Care)
+              continue;
+            const unsigned Diff = Cs[I].Value ^ Cs[J].Value;
+            if (!Diff || !isPowerOf2_32(Diff))
+              continue;
+            Cs[I].Care &= ~Diff;
+            Cs[I].Value &= Cs[I].Care;
+            Cs[J].Care = kDeadCare;
+            Changed = true;
+          }
+        Cs.erase(std::remove_if(Cs.begin(), Cs.end(),
+                                [](const Cube &C) {
+                                  return C.Care == kDeadCare;
+                                }),
+                 Cs.end());
+      }
+      for (const Cube &C : Cs)
+        Steps.emplace_back(C.Care, C.Value & C.Care, G.first);
+    }
+    llvm::sort(Steps, [](const auto &A, const auto &B) {
+      const unsigned PA = llvm::popcount(std::get<0>(A));
+      const unsigned PB = llvm::popcount(std::get<0>(B));
+      if (PA != PB)
+        return PA > PB;
+      return std::get<1>(A) < std::get<1>(B);
+    });
+    std::vector<unsigned> Key;
+    Key.push_back(static_cast<unsigned>(Atoms.size()));
+    Key.insert(Key.end(), Atoms.begin(), Atoms.end());
+    for (const auto &S : Steps) {
+      Key.push_back(std::get<0>(S));
+      Key.push_back(std::get<1>(S));
+      Key.push_back(std::get<2>(S));
+    }
+    // Every step is three values below 0xFFFF, so the terminator cannot be
+    // mistaken for one of them, and a shorter prefix is a different key.
+    Key.push_back(0xFFFFFFFFu);
+    auto It = PlanIds.find(Key);
+    if (It != PlanIds.end())
+      return It->second;
+    const unsigned Id = static_cast<unsigned>(Plans.size());
+    PlanIds.emplace(Key, Id);
+    Plans.push_back(std::move(Steps));
+    return Id;
+  };
+
+  for (TableRec &R : Tables) {
+    std::set<unsigned> AtomSet;
+    // A condition the Core IR carries may be a compound: a type-select
+    // condition such as "(UseX87 && !HasSSE1)" reaches the Core IR with each
+    // record name replaced by the condition text it stands for.  It is not a
+    // boolean of its own -- it is a function of declared ones -- so the bits
+    // it reads are its leaves' bits and its value is recomputed from them.
+    // Giving the compound a bit of its own would put an input in the table
+    // that no LegalizerFeatureMask bit can carry at run time.
+    std::vector<std::string> Compounds;
+    auto NoteCondition = [&](const std::string &Cond) {
+      auto It = CondToFeat.find(Cond);
+      if (It != CondToFeat.end()) {
+        AtomSet.insert(It->second);
+        return;
+      }
+      Compounds.push_back(Cond);
+      for (unsigned F = 0; F != Feats.size(); ++F) {
+        StringRef C = Feats[F]->getValueAsString("Cond");
+        if (!C.empty() && StringRef(Cond).contains(C))
+          AtomSet.insert(F);
+      }
+    };
+    for (const CoreRule &CR : R.Rules) {
+      StringRef P = CR.Predicate;
+      size_t Pos = 0;
+      while ((Pos = P.find("\"name\":\"hasFeature\"", Pos)) !=
+             StringRef::npos) {
+        const size_t Args = P.find("\"args\":[\"", Pos);
+        if (Args == StringRef::npos)
+          PrintFatalError(R.Def->getLoc(),
+                          "hasFeature leaf has no argument in " + P);
+        const size_t Begin = Args + 9;
+        const size_t End = P.find('"', Begin);
+        if (End == StringRef::npos)
+          PrintFatalError(R.Def->getLoc(),
+                          "hasFeature leaf has an unterminated argument in " +
+                              P);
+        NoteCondition(P.substr(Begin, End - Begin).str());
+        Pos = End;
+      }
+      // A mutation can name a feature too: a lane bound written as
+      // "HasBWI ? 64 : (HasAVX2 ? 32 : 16)" is a theta input like any guard.
+      SmallVector<StringRef, 8> Idents;
+      collectIdentifiers(CR.Mutation, Idents);
+      for (StringRef Id : Idents) {
+        auto It = NameToFeat.find(Id.str());
+        if (It != NameToFeat.end())
+          AtomSet.insert(It->second);
+      }
+    }
+    // A compound condition that theta cannot answer is not a hole to fall back
+    // over; it is a mistake in the description.  Reported here, where the .td
+    // line is still at hand: left to the cell loop, every cell that asks the
+    // condition would quietly go back to the chain, which reads as a gap in
+    // the table.
+    if (!Compounds.empty()) {
+      legeval::Theta Th;
+      for (const Record *F : Feats)
+        Th.add(F->getName(), F->getValueAsString("Cond"), false);
+      for (const std::string &C : Compounds) {
+        bool Ok = false;
+        Th.eval(C, Ok);
+        if (!Ok)
+          PrintFatalError(R.Def->getLoc(),
+                          "'" + C + "' is read by " + R.Def->getName() +
+                              " but it is not a boolean combination of "
+                              "declared LegalizeFeature conditions");
+      }
+    }
+    R.Atoms.assign(AtomSet.begin(), AtomSet.end());
+    if (R.Atoms.size() > 16)
+      PrintFatalError(R.Def->getLoc(),
+                      R.Def->getName() + " reads " +
+                          std::to_string(R.Atoms.size()) +
+                          " feature booleans; a plan step carries 16");
+
+    std::vector<legeval::Rule> Rules = ParseRules(R);
+    auto Dim = [&R](size_t K) -> unsigned {
+      if (K >= R.Slots.size())
+        return 1;
+      return R.Slots[K] < 0 ? static_cast<unsigned>(R.Mem.size())
+                            : static_cast<unsigned>(R.SlotDomains[K].size());
+    };
+    const unsigned D0 = Dim(0), D1 = Dim(1), D2 = Dim(2);
+    R.Cells.assign(static_cast<size_t>(D0) * D1 * D2, 0);
+    const unsigned K = static_cast<unsigned>(R.Atoms.size());
+    const unsigned Rows = 1u << K;
+    for (unsigned L0 = 0; L0 != D0; ++L0)
+      for (unsigned L1 = 0; L1 != D1; ++L1)
+        for (unsigned L2 = 0; L2 != D2; ++L2) {
+          const unsigned Ls[3] = {L0, L1, L2};
+          std::vector<LLT> Types(3, LLT::scalar(1));
+          bool HasMem = false;
+          LLT MemTy;
+          for (size_t Kk = 0; Kk != R.Slots.size(); ++Kk) {
+            if (R.Slots[Kk] < 0) {
+              HasMem = true;
+              MemTy = LLT::scalar(static_cast<unsigned>(R.Mem[Ls[Kk]]));
+              Types[2] = MemTy;
+              continue;
+            }
+            Types[R.Slots[Kk]] =
+                NamedTypes.find(Classes[R.SlotDomains[Kk][Ls[Kk]]].Spell)
+                    ->second;
+          }
+
+          std::vector<unsigned> Row(Rows);
+          for (unsigned A = 0; A != Rows; ++A) {
+            legeval::Theta Th;
+            for (unsigned F = 0; F != Feats.size(); ++F) {
+              bool Value = false;
+              auto It = std::lower_bound(R.Atoms.begin(), R.Atoms.end(), F);
+              if (It != R.Atoms.end() && *It == F)
+                Value = (A >> (It - R.Atoms.begin())) & 1;
+              Th.add(Feats[F]->getName(), Feats[F]->getValueAsString("Cond"),
+                     Value);
+            }
+            legeval::Env E;
+            E.Types = Types;
+            E.HasMem = HasMem;
+            E.MemTy = MemTy;
+            // The key does not observe alignment: every tabulated rule asks
+            // for "at least" one, so the weakest answers for all of them.
+            E.MemAlignInBits = 1;
+            E.NamedType = NamedFn;
+            E.Feature = [&Th](StringRef T, bool &Ok) {
+              return Th.eval(T, Ok);
+            };
+            legeval::Verdict V = legeval::apply(Rules, E);
+            // An answer the evaluator cannot compute is left out, not
+            // guessed: an inline opaque predicate (one rule in
+            // X86_IMPLICIT_DEF), or a mutation the chain itself cannot apply
+            // (changeElementSize on a pointer, issue #236651).  The cell then
+            // falls back to the chain at run time, and the self-check reports
+            // it as skipped rather than as checked.
+            if (V.Why.empty()) {
+              Row[A] = AnswerId(V);
+            } else {
+              Row[A] = kNoAnswer;
+              ++R.NoAnswerWhy[V.Why];
+            }
+          }
+          const size_t Cell =
+              (static_cast<size_t>(L0) * D1 + L1) * D2 + L2;
+          R.Cells[Cell] = static_cast<uint16_t>(PlanId(Row, K, R.Atoms) + 1);
+        }
   }
 
   // Answer every cell here, at generation time, by evaluating the rules.
@@ -3114,23 +3537,7 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
                      : static_cast<unsigned>(R.SlotDomains[K].size());
         };
 
-        std::vector<legeval::Rule> Rules;
-        Rules.reserve(R.NumRules);
-        for (const CoreRule &CR : R.Rules) {
-          legeval::Rule ER;
-          ER.Action = CR.Action;
-          ER.TypeIdx = CR.TypeIdx;
-          std::string Err;
-          size_t Pos = 0;
-          if (!legeval::parseNode(CR.Predicate, Pos, ER.Pred, Err))
-            PrintFatalError("rule predicate does not parse: " + Err);
-          if (!CR.Mutation.empty()) {
-            size_t MPos = 0;
-            if (!legeval::parseMutation(CR.Mutation, MPos, ER.Mut, Err))
-              PrintFatalError("rule mutation does not parse: " + Err);
-          }
-          Rules.push_back(std::move(ER));
-        }
+        std::vector<legeval::Rule> Rules = ParseRules(R);
 
         for (unsigned L0 = 0; L0 != Dim(0); ++L0)
           for (unsigned L1 = 0; L1 != Dim(1); ++L1)
@@ -3295,8 +3702,24 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
       const size_t Count = R.Slots[K] < 0 ? R.Mem.size() : Classes.size();
       OS << "static constexpr uint8_t " << Prefix << "LocalT" << T << "S" << K
          << "[] = {";
-      for (size_t C = 0; C != Count; ++C)
-        OS << (C ? ", " : "") << C;
+      if (R.Slots[K] < 0) {
+        for (size_t C = 0; C != Count; ++C)
+          OS << (C ? ", " : "") << C;
+      } else {
+        // A global class to its position in this slot's domain, or 0xFF when
+        // the domain does not carry it.  0xFF is exactly what the key reports
+        // as Outside, and the caller then keeps the chain.
+        std::vector<int> Pos(Classes.size(), -1);
+        for (size_t I = 0; I != R.SlotDomains[K].size(); ++I)
+          Pos[R.SlotDomains[K][I]] = static_cast<int>(I);
+        for (size_t C = 0; C != Classes.size(); ++C) {
+          OS << (C ? ", " : "");
+          if (Pos[C] < 0)
+            OS << "0xFF";
+          else
+            OS << format_decimal(static_cast<unsigned>(Pos[C]), 2);
+        }
+      }
       OS << "};\n";
       if (R.Slots[K] < 0)
         continue;
@@ -3313,8 +3736,134 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
         OS << (M ? ", " : "") << R.Mem[M];
       OS << "};\n";
     }
+
+    OS << "// theta bits " << R.Def->getName() << " reads, as indices into "
+          "LegalizerFeatureNames\n";
+    OS << "static constexpr uint8_t " << Prefix << "AtomsT" << T << "[] = {";
+    for (size_t I = 0; I != R.Atoms.size(); ++I)
+      OS << (I ? ", " : "") << R.Atoms[I];
+    if (R.Atoms.empty())
+      OS << "0"; // never read: NumAtoms is 0
+    OS << "};\n";
+
+    unsigned CD[3] = {1, 1, 1};
+    for (size_t K = 0; K != R.Slots.size() && K != 3; ++K)
+      CD[K] = R.Slots[K] < 0 ? static_cast<unsigned>(R.Mem.size())
+                             : static_cast<unsigned>(R.SlotDomains[K].size());
+    OS << "static constexpr uint16_t " << Prefix << "CellsT" << T << "[] = {";
+    for (size_t I = 0; I != R.Cells.size(); ++I)
+      OS << (I ? ", " : "") << R.Cells[I];
+    OS << "};\n";
+    OS << "static_assert(sizeof(" << Prefix << "CellsT" << T
+       << ") / sizeof(uint16_t) == " << CD[0] << "u * " << CD[1] << "u * "
+       << CD[2] << "u, \"" << R.Def->getName()
+       << ": cell count does not match the key\");\n";
+    for (const auto &W : R.NoAnswerWhy)
+      OS << "// no frozen answer for " << W.second
+         << " row(s) of this table: " << W.first << "\n";
   }
   OS << "\n";
+
+  // One answer is (action, type slot, new type).  The new type travels as an
+  // index into a deduplicated LLT list rather than a printed type: the cell
+  // table is data, and a consumer should not parse text to rebuild a type.
+  std::map<std::tuple<unsigned, unsigned, unsigned>, unsigned> LLTIds;
+  std::vector<std::tuple<unsigned, unsigned, unsigned>> LLTs;
+  std::vector<unsigned> AnswerNewType(Answers.size(), 0);
+  for (size_t I = 0; I != Answers.size(); ++I) {
+    const CellAnswer &A = Answers[I];
+    if (!A.Kind)
+      continue;
+    auto Key = std::make_tuple(A.Kind, A.Bits, A.Lanes);
+    auto It = LLTIds.find(Key);
+    unsigned Id;
+    if (It != LLTIds.end()) {
+      Id = It->second;
+    } else {
+      Id = static_cast<unsigned>(LLTs.size());
+      LLTIds.emplace(Key, Id);
+      LLTs.push_back(Key);
+    }
+    AnswerNewType[I] = Id + 1;
+  }
+
+  // The kind of a frozen type is spelled with its own enumerators, not with
+  // the class list's: that list says Kind_Pointer == 0 for a type the key cuts,
+  // and a new type here cannot be "none" by the same value.  Two meanings for
+  // one small integer is how a pointer becomes a one-lane vector.
+  OS << "enum LegalizerLLTKind : uint8_t {\n";
+  OS << "  LK_None = 0,\n";
+  OS << "  LK_Scalar = 1,\n";
+  OS << "  LK_Vector = 2,\n";
+  OS << "  LK_Pointer = 3,\n";
+  OS << "  LK_PointerVector = 4\n";
+  OS << "};\n";
+  OS << "// A new type a rule asks for.  The entry is 1-based from a cell,\n";
+  OS << "// 0 = none.\n";
+  OS << "struct LegalizerLLT {\n";
+  OS << "  LegalizerLLTKind Kind;\n";
+  OS << "  uint16_t Bits;\n";
+  OS << "  uint16_t Lanes;\n";
+  OS << "};\n";
+  OS << "static constexpr LegalizerLLT " << Prefix << "LLTs[] = {\n";
+  static const char *const LLTKindNames[] = {
+      "LK_None", "LK_Scalar", "LK_Vector", "LK_Pointer", "LK_PointerVector"};
+  for (const auto &L : LLTs)
+    OS << "  {" << LLTKindNames[std::get<0>(L)] << ", " << std::get<1>(L)
+       << ", " << std::get<2>(L) << "},\n";
+  if (LLTs.empty())
+    OS << "  {0, 0, 0},\n";
+  OS << "};\n";
+
+  OS << "// A cell's answer.  Index 0xFFFF in a plan step means the rules do\n";
+  OS << "// not answer at that point, which is not the same as Unsupported.\n";
+  OS << "struct LegalizerAnswer {\n";
+  OS << "  LegalizeAction Action;\n";
+  OS << "  uint8_t TypeIdx;\n";
+  OS << "  uint16_t NewType;   // 1-based into " << Prefix
+     << "LLTs, 0 = none\n";
+  OS << "};\n";
+  OS << "static constexpr LegalizerAnswer " << Prefix << "Answers[] = {\n";
+  for (size_t I = 0; I != Answers.size(); ++I)
+    OS << "  {LegalizeAction::" << Answers[I].Action << ", "
+       << Answers[I].TypeIdx << ", " << AnswerNewType[I] << "},\n";
+  if (Answers.empty())
+    OS << "  {LegalizeAction::Unsupported, 0, 0},\n";
+  OS << "};\n";
+
+  OS << "// One cube of theta: the answer holds when every bit set in Mask\n";
+  OS << "// has the value in Value.  A cell's cubes partition its atom\n";
+  OS << "// space, so first match is the answer and no order is implied.\n";
+  OS << "struct LegalizerPlanStep {\n";
+  OS << "  uint16_t Mask, Value, Answer;\n";
+  OS << "};\n";
+  OS << "static constexpr LegalizerPlanStep " << Prefix << "PlanSteps[] = {\n";
+  unsigned StepCursor = 0;
+  for (size_t P = 0; P != Plans.size(); ++P) {
+    OS << "  // plan " << P << "\n";
+    for (const auto &Step : Plans[P])
+      OS << "  {" << std::get<0>(Step) << ", " << std::get<1>(Step) << ", "
+         << std::get<2>(Step) << "},\n";
+    StepCursor += static_cast<unsigned>(Plans[P].size());
+  }
+  if (!StepCursor)
+    OS << "  {0, 0, 0xFFFF},\n";
+  OS << "};\n";
+  OS << "struct LegalizerPlan {\n";
+  OS << "  uint16_t FirstStep;\n";
+  OS << "  uint8_t NumSteps;\n";
+  OS << "};\n";
+  OS << "static constexpr LegalizerPlan " << Prefix << "Plans[] = {\n";
+  StepCursor = 0;
+  for (size_t P = 0; P != Plans.size(); ++P) {
+    OS << "  {" << StepCursor << ", " << Plans[P].size() << "},\n";
+    StepCursor += static_cast<unsigned>(Plans[P].size());
+  }
+  if (Plans.empty())
+    OS << "  {0, 0},\n";
+  OS << "};\n";
+  OS << "static constexpr unsigned " << Prefix
+     << "NumPlans = " << Plans.size() << ";\n\n";
 
   // The mem axis used to be searched by the consumer: walk MemT until the
   // access size matched, or the axis ran out.  It is the same generated list
@@ -3382,7 +3931,9 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
   OS << "  const uint8_t *Local[3];\n";
   OS << "  const int32_t *Mem; // access sizes (bits) of the mem axis, or "
         "null\n";
-  OS << "  uint16_t FirstRule, NumRules;   // range into the rule table\n";
+  OS << "  const uint8_t *Atoms; // theta bits this table reads\n";
+  OS << "  uint8_t NumAtoms;\n";
+  OS << "  const uint16_t *Cells; // 0 = no frozen answer, else 1 + plan\n";
   OS << "};\n\n";
 
   OS << "static constexpr LegalizerTableDesc " << Prefix << "Tables[] = {\n";
@@ -3398,7 +3949,7 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     for (size_t K = 0; K != 3; ++K) {
       unsigned Dim = 1;
       if (K < R.Slots.size())
-        Dim = R.Slots[K] < 0 ? R.Mem.size() : Classes.size();
+        Dim = R.Slots[K] < 0 ? R.Mem.size() : R.SlotDomains[K].size();
       if (K)
         OS << ", ";
       OS << format_decimal(Dim, 3);
@@ -3420,9 +3971,9 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
       OS << "nullptr";
     else
       OS << Prefix << "MemT" << T;
-    OS << ", " << format_decimal(R.FirstRule, 4) << ","
-       << format_decimal(R.NumRules, 3) << "},   // " << R.Def->getName()
-       << "\n";
+    OS << ", " << Prefix << "AtomsT" << T << ", " << R.Atoms.size() << ", "
+       << Prefix << "CellsT" << T
+       << "},   // " << R.Def->getName() << "\n";
   }
   OS << "};\n";
   OS << "static constexpr unsigned " << Prefix << "NumTables = sizeof("

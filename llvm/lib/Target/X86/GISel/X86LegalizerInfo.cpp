@@ -73,11 +73,16 @@ X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI,
   // expression and the points it cannot key are reported as Outside.
   const unsigned PointerBits = STI.isTarget64BitLP64() ? 64 : 32;
 
+  // The table answers a plan by theta, so it needs the same booleans the rule
+  // chains are written in.  LegalizerFeatureMask is one bit per boolean, in the
+  // order the generated rules declare them, which is the order the generated
+  // atom indices refer to.
   if (X86GISelTable && STI.is64Bit())
-    setTable(std::make_unique<X86LegalizerTable>(*this, PointerBits));
+    setTable(std::make_unique<X86LegalizerTable>(*this, PointerBits,
+                                                 LegalizerFeatureMask));
 
   if (X86GISelTableCheck || !X86GISelTableDump.empty()) {
-    X86LegalizerTable Table(*this, PointerBits);
+    X86LegalizerTable Table(*this, PointerBits, LegalizerFeatureMask);
     if (X86GISelTableCheck)
       Table.selfCheck(errs());
     if (!X86GISelTableDump.empty()) {

@@ -95,7 +95,10 @@ def Test_UNPAREN : LegalizeRuleSet<["G_AND"]> {
 // TABLE-NEXT: // the chain answers:
 // TABLE-NEXT: //   Test_UNPAREN
 // TABLE: static constexpr LegalizerTypeClass
-// TABLE: {1, {0, 0, 0}{{.*}},  3},   // Test_INLINE
-// TABLE: {1, {0, 0, 0}{{.*}},  4},   // Test_NESTED
-// TABLE: {2, {0, 1, 0}{{.*}},  6},   // Test_CHOICE
+// The row ends with the theta atoms the table reads: the booleans its own rules
+// mention, one entry per atom in the generated list.  Test_INLINE is guarded by
+// HasAVX alone, Test_NESTED by HasAVX and HasAVX512, Test_CHOICE by HasAVX.
+// TABLE: TestAtomsT1, 1, TestCellsT1},   // Test_INLINE
+// TABLE: TestAtomsT2, 2, TestCellsT2},   // Test_NESTED
+// TABLE: TestAtomsT3, 1, TestCellsT3},   // Test_CHOICE
 // TABLE-NOT: //   Test_UNPAREN
