@@ -103,9 +103,17 @@ int classifyType(LLT T) {
 }
 
 /// Every type a size-keyed mem cell stands for.  The fiber of an access size
-/// is all LLTs of that size; lanes and address spaces are unbounded, so this is
-/// the bounded sample the self-check asks about.  Two members of one cell that
-/// disagree are two queries the key merged and the chain did not.
+/// is the set of LLTs whose size is exactly that one; lanes and address spaces
+/// are unbounded, so this is the bounded sample the self-check asks about.  Two
+/// members of one cell that disagree are two queries the key merged and the
+/// chain did not.
+///
+/// Every member really has \p Bits.  A vector of pointers whose total size is
+/// different belongs to a different cell, and asking it here would spend the
+/// check on a query the cell never answers: measured, a fiber that added
+/// v2p0/v3p0/v4p0 to the 32- and 64-bit cells produced 590 points whose size
+/// no rule names, all of which the chain also rejects -- 12390 rows of noise
+/// (all of them, in fact, "outside").
 static void memFiber(unsigned Bits, SmallVectorImpl<LLT> &Out) {
   Out.push_back(LLT::scalar(Bits));
   for (unsigned Elem = 1; Elem <= 128; Elem *= 2) {
@@ -116,13 +124,19 @@ static void memFiber(unsigned Bits, SmallVectorImpl<LLT> &Out) {
       continue;
     Out.push_back(LLT::fixed_vector(Lanes, LLT::scalar(Elem)));
   }
-  if (Bits != 32 && Bits != 64)
-    return;
-  for (unsigned AS : {0u, 1u, 270u, 271u, 272u}) {
-    const LLT P = LLT::pointer(AS, Bits);
-    Out.push_back(P);
-    for (unsigned Lanes = 2; Lanes <= 4; ++Lanes)
-      Out.push_back(LLT::fixed_vector(Lanes, P));
+  // A pointer element is part of the same cell: a 128-bit access may be a
+  // v16s8, a v4s32, or a v2p0, and the key sees one size for all three.  These
+  // are the shapes a size-keyed axis could hide a rule's dependence on.
+  for (unsigned ElemBits : {32u, 64u}) {
+    if (Bits % ElemBits)
+      continue;
+    const unsigned Lanes = Bits / ElemBits;
+    if (Lanes > 8)
+      continue;
+    for (unsigned AS : {0u, 1u, 270u, 271u, 272u}) {
+      const LLT P = LLT::pointer(AS, ElemBits);
+      Out.push_back(Lanes == 1 ? P : LLT::fixed_vector(Lanes, P));
+    }
   }
 }
 
@@ -255,12 +269,14 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
     ++AddressSpaces;
     noteOutside(6, Table, Q);
     R.Kind = Answer::Outside;
+    R.Why = 6;
     return R;
   }
   if (C0 < 0 || C1 < 0) {
     ++Outsides;
     noteOutside(1, Table, Q);
     R.Kind = Answer::Outside;
+    R.Why = 1;
     return R;
   }
 
@@ -270,6 +286,7 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
     ++Outsides;
     noteOutside(2, Table, Q);
     R.Kind = Answer::Outside;
+    R.Why = 2;
     return R;
   }
   if (D.Dims[1] > 1) {
@@ -278,6 +295,7 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
       ++Outsides;
       noteOutside(3, Table, Q);
       R.Kind = Answer::Outside;
+      R.Why = 3;
       return R;
     }
   }
@@ -295,6 +313,7 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
       ++Outsides;
       noteOutside(4, Table, Q);
       R.Kind = Answer::Outside;
+      R.Why = 4;
       return R;
     }
     // The axis is a generated switch over the sizes the rules name, so this
@@ -305,6 +324,7 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
       ++Outsides;
       noteOutside(5, Table, Q);
       R.Kind = Answer::Outside;
+      R.Why = 5;
       return R;
     }
     L[2] = static_cast<unsigned>(MemLocal);
@@ -347,17 +367,67 @@ X86LegalizerTable::~X86LegalizerTable() {
     errs() << S << "\n";
 }
 
-void X86LegalizerTable::selfCheck(raw_ostream &OS) {
+namespace {
+
+StringRef answerName(X86LegalizerTable::Answer A) {
+  switch (A) {
+  case X86LegalizerTable::Answer::Hit:
+    return "hit";
+  case X86LegalizerTable::Answer::Outside:
+    return "outside";
+  case X86LegalizerTable::Answer::PointerVector:
+    return "ptrvec";
+  case X86LegalizerTable::Answer::Untabulated:
+    return "untabulated";
+  case X86LegalizerTable::Answer::Declined:
+    return "declined";
+  }
+  return "?";
+}
+
+StringRef orderName(AtomicOrdering O) {
+  switch (O) {
+  case AtomicOrdering::NotAtomic:
+    return "notatomic";
+  case AtomicOrdering::Unordered:
+    return "unordered";
+  case AtomicOrdering::Monotonic:
+    return "monotonic";
+  case AtomicOrdering::Acquire:
+    return "acquire";
+  case AtomicOrdering::Release:
+    return "release";
+  case AtomicOrdering::AcquireRelease:
+    return "acqrel";
+  case AtomicOrdering::SequentiallyConsistent:
+    return "seqcst";
+  }
+  return "?";
+}
+
+void printTypes(raw_ostream &OS, ArrayRef<LLT> Types) {
+  if (Types.empty()) {
+    OS << "-";
+    return;
+  }
+  for (unsigned I = 0; I != Types.size(); ++I) {
+    if (I)
+      OS << ",";
+    Types[I].print(OS);
+  }
+}
+
+} // namespace
+
+void X86LegalizerTable::forEachPoint(
+    function_ref<void(StringRef Name, unsigned Entry, ArrayRef<unsigned> Local,
+                      ArrayRef<LLT> Types, LLT MemTy)>
+        F) const {
   // The domain is generated with the tables: each keyed slot lists the classes
   // its rules name for it, so the check asks the questions the IR can produce.
   // Iterating the full class set instead would crash the chain on queries it
   // is not written for (a pointer in a scalar slot, for one), which measures
   // nothing about the table.
-  uint64_t Points = 0;
-  uint64_t Compared = 0;
-  uint64_t Skipped = 0;
-  unsigned Mismatches = 0;
-
   static_assert(X86NumTableDomains == X86NumTables,
                 "every table needs a self-check domain");
 
@@ -400,56 +470,66 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
           else
             MemTypes.push_back(LLT());
 
-          for (LLT MemTy : MemTypes) {
-            SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
-            if (MemTy.isValid())
-              MemDescs.emplace_back(MemTy, /*AlignInBits=*/1,
-                                    AtomicOrdering::NotAtomic,
-                                    AtomicOrdering::NotAtomic);
-
-            ++Points;
-            const LegalityQuery Q(Entry.Opcode, Types, MemDescs);
-            // Ask the rules directly.  LI.getAction() consults the installed
-            // table first, which would compare the table against itself; the
-            // point of this check is the chain.
-            const LegalizeActionStep ChainStep =
-                LI.getActionDefinitions(Q.Opcode).apply(Q);
-            const Result R = query(Q);
-            if (R.Kind != Answer::Hit) {
-              ++Skipped;
-              continue;
-            }
-            ++Compared;
-            if (R.Action == ChainStep.Action &&
-                R.TypeIdx == ChainStep.TypeIdx &&
-                R.NewType == ChainStep.NewType)
-              continue;
-            ++Mismatches;
-            if (Mismatches <= 20) {
-              OS << "x86-gisel-table-check: MISMATCH " << Entry.Name << "(";
-              for (unsigned I = 0; I != Types.size(); ++I) {
-                if (I)
-                  OS << ", ";
-                Types[I].print(OS);
-              }
-              if (MemTy.isValid()) {
-                OS << " mem ";
-                MemTy.print(OS);
-              }
-              OS << "): table ";
-              OS << static_cast<unsigned>(R.Action) << "/" << R.TypeIdx << "/";
-              R.NewType.print(OS);
-              OS << " chain ";
-              OS << static_cast<unsigned>(ChainStep.Action) << "/"
-                 << ChainStep.TypeIdx << "/";
-              ChainStep.NewType.print(OS);
-              OS << "\n";
-            }
-          }
+          for (LLT MemTy : MemTypes)
+            F(Entry.Name, EntryIdx, Local, Types, MemTy);
         }
       }
     }
   }
+}
+
+void X86LegalizerTable::selfCheck(raw_ostream &OS) {
+  uint64_t Points = 0;
+  uint64_t Compared = 0;
+  uint64_t Skipped = 0;
+  unsigned Mismatches = 0;
+
+  forEachPoint([&](StringRef Name, unsigned Entry, ArrayRef<unsigned>,
+                   ArrayRef<LLT> Types, LLT MemTy) {
+    SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+    if (MemTy.isValid())
+      MemDescs.emplace_back(MemTy, /*AlignInBits=*/1,
+                            AtomicOrdering::NotAtomic,
+                            AtomicOrdering::NotAtomic);
+
+    ++Points;
+    const LegalityQuery Q(X86TableOpcodes[Entry].Opcode, Types, MemDescs);
+    // Ask the rules directly.  LI.getAction() consults the installed table
+    // first, which would compare the table against itself; the point of this
+    // check is the chain.
+    const LegalizeActionStep ChainStep =
+        LI.getActionDefinitions(Q.Opcode).apply(Q);
+    const Result R = query(Q);
+    if (R.Kind != Answer::Hit) {
+      ++Skipped;
+      return;
+    }
+    ++Compared;
+    if (R.Action == ChainStep.Action && R.TypeIdx == ChainStep.TypeIdx &&
+        R.NewType == ChainStep.NewType)
+      return;
+    ++Mismatches;
+    if (Mismatches <= 20) {
+      OS << "x86-gisel-table-check: MISMATCH " << Name << "(";
+      for (unsigned I = 0; I != Types.size(); ++I) {
+        if (I)
+          OS << ", ";
+        Types[I].print(OS);
+      }
+      if (MemTy.isValid()) {
+        OS << " mem ";
+        MemTy.print(OS);
+      }
+      OS << "): table ";
+      OS << static_cast<unsigned>(R.Action) << "/" << R.TypeIdx << "/";
+      R.NewType.print(OS);
+      OS << " chain ";
+      OS << static_cast<unsigned>(ChainStep.Action) << "/"
+         << ChainStep.TypeIdx << "/";
+      ChainStep.NewType.print(OS);
+      OS << "\n";
+    }
+  });
 
   OS << "x86-gisel-table-check: points " << Points << " compared " << Compared
      << " mismatches " << Mismatches << " skipped " << Skipped << " outside "
@@ -459,4 +539,144 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
   if (Mismatches)
     report_fatal_error(
         "x86-gisel-table-check: the table and the chain disagree");
+}
+
+void X86LegalizerTable::dumpAnswers(raw_ostream &OS, StringRef CPU,
+                                    StringRef Triple) const {
+  // The key ignores both alignment and atomic ordering.  Each memdesc point is
+  // therefore written once per variant: if the chain answers every variant the
+  // same, the key is not dropping a distinction; if it does not, the rows say
+  // which variant, which is the gap.
+  static constexpr uint64_t Aligns[] = {1, 8, 16, 32, 64, 128, 256};
+  static constexpr AtomicOrdering Orders[] = {AtomicOrdering::NotAtomic,
+                                              AtomicOrdering::Monotonic,
+                                              AtomicOrdering::AcquireRelease};
+
+  // The rows are buffered: the file starts with the counts, and a count is
+  // only known once every point has been asked.
+  std::string Body;
+  raw_string_ostream BodyOS(Body);
+
+  uint64_t DomainPoints = 0, Rows = 0, Mismatches = 0;
+  uint64_t Kinds[5] = {0, 0, 0, 0, 0};
+  uint64_t Whys[7] = {0, 0, 0, 0, 0, 0, 0};
+
+  forEachPoint([&](StringRef Name, unsigned Entry, ArrayRef<unsigned> Local,
+                   ArrayRef<LLT> Types, LLT MemTy) {
+    ++DomainPoints;
+
+    SmallVector<std::pair<uint64_t, AtomicOrdering>, 24> Variants;
+    if (MemTy.isValid()) {
+      for (uint64_t Align : Aligns)
+        for (AtomicOrdering O : Orders)
+          Variants.push_back({Align, O});
+    } else {
+      Variants.push_back({0, AtomicOrdering::NotAtomic});
+    }
+
+    for (const auto &V : Variants) {
+      SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+      if (MemTy.isValid()) {
+        // A valid MMO never has a weaker failure ordering than its success
+        // ordering; the weakest pair is (Monotonic, Monotonic).
+        const AtomicOrdering Fail =
+            V.second == AtomicOrdering::NotAtomic ? AtomicOrdering::NotAtomic
+                                                  : AtomicOrdering::Monotonic;
+        MemDescs.emplace_back(MemTy, V.first, V.second, Fail);
+      }
+
+      const LegalityQuery Q(X86TableOpcodes[Entry].Opcode, Types, MemDescs);
+      const LegalizeActionStep ChainStep =
+          LI.getActionDefinitions(Q.Opcode).apply(Q);
+      const Result R = query(Q);
+
+      const bool Match = R.Kind == Answer::Hit &&
+                         R.Action == ChainStep.Action &&
+                         R.TypeIdx == ChainStep.TypeIdx &&
+                         R.NewType == ChainStep.NewType;
+      ++Rows;
+      ++Kinds[static_cast<unsigned>(R.Kind)];
+      ++Whys[R.Why];
+      if (R.Kind == Answer::Hit && !Match)
+        ++Mismatches;
+
+      BodyOS << Name << '\t'
+             << static_cast<unsigned>(X86TableOpcodes[Entry].Table) << '\t'
+             << Local[0] << '\t' << Local[1] << '\t' << Local[2] << '\t';
+      printTypes(BodyOS, Types);
+      BodyOS << '\t';
+      if (MemTy.isValid())
+        MemTy.print(BodyOS);
+      else
+        BodyOS << "-";
+      BodyOS << '\t' << V.first << '\t' << orderName(V.second) << '\t'
+             << (V.second == AtomicOrdering::NotAtomic ? "notatomic"
+                                                       : "monotonic")
+             << '\t';
+
+      BodyOS << ChainStep.Action << '\t' << ChainStep.TypeIdx << '\t';
+      if (ChainStep.NewType.isValid())
+        ChainStep.NewType.print(BodyOS);
+      else
+        BodyOS << "-";
+
+      BodyOS << '\t' << answerName(R.Kind) << '\t' << R.Why << '\t';
+      if (R.Kind == Answer::Hit) {
+        BodyOS << R.Action << '\t' << R.TypeIdx << '\t';
+        if (R.NewType.isValid())
+          R.NewType.print(BodyOS);
+        else
+          BodyOS << "-";
+      } else {
+        BodyOS << "-\t-\t-";
+      }
+      BodyOS << '\t'
+             << (R.Kind != Answer::Hit ? "skip"
+                                       : (Match ? "ok" : "mismatch"))
+             << '\n';
+    }
+  });
+  BodyOS.flush();
+
+  OS << "# x86-gisel-legalizer-dump\n";
+  OS << "# triple " << Triple << "\n";
+  OS << "# cpu " << CPU << "\n";
+  OS << "# pointer_bits " << PointerBits << "\n";
+  OS << "# tables " << X86NumTables << "\n";
+  OS << "# gaps " << X86NumTableGaps << "\n";
+  for (unsigned I = 0; I != X86NumTableGaps; ++I)
+    OS << "# gap " << X86TableGaps[I].Name << " "
+       << (X86TableGaps[I].Why == 1 ? "escape" : "unkeyable") << "\n";
+  for (unsigned I = 0; I != X86NumTables; ++I) {
+    const LegalizerTableDesc &D = X86Tables[I];
+    const LegalizerTableDomain &Domain = X86TableDomains[I];
+    OS << "# table " << I << " slots";
+    for (unsigned K = 0; K != D.NumSlots; ++K)
+      OS << " " << static_cast<int>(D.Slots[K]);
+    OS << " dims " << static_cast<unsigned>(D.Dims[0]) << " "
+       << static_cast<unsigned>(D.Dims[1]) << " "
+       << static_cast<unsigned>(D.Dims[2]) << " domain "
+       << static_cast<unsigned>(Domain.Counts[0]) << " "
+       << static_cast<unsigned>(Domain.Counts[1]) << " "
+       << static_cast<unsigned>(Domain.Counts[2]) << " rules " << D.NumRules
+       << "\n";
+  }
+  OS << "# columns opcode table l0 l1 l2 types mem align order failorder "
+        "chain_action chain_idx chain_type table_kind why table_action "
+        "table_idx table_type match\n";
+  // The last line of the header is the whole answer in one place: how many
+  // points, how many rows, how each row was answered, and which axis refused
+  // the ones that were refused.  A reader that only wants the counts can stop
+  // here.
+  OS << "# summary domain_points " << DomainPoints << " rows " << Rows
+     << " hit " << Kinds[static_cast<unsigned>(Answer::Hit)] << " outside "
+     << Kinds[static_cast<unsigned>(Answer::Outside)] << " ptrvec "
+     << Kinds[static_cast<unsigned>(Answer::PointerVector)] << " untabulated "
+     << Kinds[static_cast<unsigned>(Answer::Untabulated)] << " declined "
+     << Kinds[static_cast<unsigned>(Answer::Declined)] << " mismatch "
+     << Mismatches;
+  for (unsigned W = 1; W != 7; ++W)
+    OS << " why" << W << " " << Whys[W];
+  OS << "\n";
+  OS << Body;
 }

@@ -3036,6 +3036,29 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
   }
   OS << "\n";
 
+  // The same two lists again, as data.  A comment says a rule set has no
+  // table; this says how many and why, so a reader can count the gap without
+  // parsing text.  Why: 1 = the Core IR cannot express one of its rules, so
+  // the key cannot see what the rule reads; 2 = the key has no axis for what
+  // the rules read.  Both mean "the chain answers".  A sentinel keeps the
+  // array well-formed when every rule set is tabulated, and the count -- not
+  // sizeof() -- is what a consumer iterates, so the sentinel is never read.
+  OS << "struct LegalizerTableGap {\n";
+  OS << "  const char *Name;\n";
+  OS << "  unsigned Why;\n";
+  OS << "};\n";
+  OS << "static constexpr LegalizerTableGap " << Prefix << "TableGaps[] = {\n";
+  for (StringRef Name : EscapeRuleSets)
+    OS << "  {\"" << Name << "\", 1},\n";
+  for (StringRef Name : UnkeyableRuleSets)
+    OS << "  {\"" << Name << "\", 2},\n";
+  if (EscapeRuleSets.empty() && UnkeyableRuleSets.empty())
+    OS << "  {nullptr, 0},\n";
+  OS << "};\n";
+  OS << "static constexpr unsigned " << Prefix << "NumTableGaps = "
+     << (EscapeRuleSets.size() + UnkeyableRuleSets.size()) << ";\n";
+  OS << "\n";
+
   OS << "static constexpr LegalizerTypeClass " << Prefix
      << "TypeClasses[] = {\n";
   for (size_t I = 0; I != Classes.size(); ++I) {

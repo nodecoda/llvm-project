@@ -27,6 +27,7 @@
 #include "llvm/IR/IntrinsicsX86.h"
 #include "llvm/IR/Type.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
@@ -44,6 +45,12 @@ static cl::opt<bool> X86GISelTable(
 static cl::opt<bool> X86GISelTableCheck(
     "x86-gisel-table-check", cl::Hidden, cl::init(false),
     cl::desc("Check the X86 legalizer table against the rule chains"));
+
+static cl::opt<std::string> X86GISelTableDump(
+    "x86-gisel-legalizer-dump", cl::Hidden, cl::init(""),
+    cl::value_desc("path"),
+    cl::desc("Write every domain point's table answer and chain answer to a "
+             "TSV file"));
 
 X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI,
                                    const X86TargetMachine &TM)
@@ -69,9 +76,20 @@ X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI,
   if (X86GISelTable && STI.is64Bit())
     setTable(std::make_unique<X86LegalizerTable>(*this, PointerBits));
 
-  if (X86GISelTableCheck) {
+  if (X86GISelTableCheck || !X86GISelTableDump.empty()) {
     X86LegalizerTable Table(*this, PointerBits);
-    Table.selfCheck(errs());
+    if (X86GISelTableCheck)
+      Table.selfCheck(errs());
+    if (!X86GISelTableDump.empty()) {
+      std::error_code EC;
+      raw_fd_ostream Out(X86GISelTableDump, EC);
+      if (EC) {
+        const std::string Msg =
+            "cannot open " + X86GISelTableDump + ": " + EC.message();
+        report_fatal_error(StringRef(Msg));
+      }
+      Table.dumpAnswers(Out, STI.getCPU(), TM.getTargetTriple().str());
+    }
   }
 }
 

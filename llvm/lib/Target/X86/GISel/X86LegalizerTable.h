@@ -22,6 +22,7 @@
 #ifndef LLVM_LIB_TARGET_X86_GISEL_X86LEGALIZERTABLE_H
 #define LLVM_LIB_TARGET_X86_GISEL_X86LEGALIZERTABLE_H
 
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/CodeGen/GlobalISel/LegalizerInfo.h"
 #include <cstdint>
@@ -55,6 +56,12 @@ public:
     LegalizeAction Action = LegalizeAction::Unsupported;
     unsigned TypeIdx = 0;
     LLT NewType;
+    /// Which axis the key refused, for Kind == Outside: 1 = a keyed type has
+    /// no class at all, 2 = slot 0's class is not in this table's map, 3 = the
+    /// same for slot 1, 4 = the memory type is scalable, 5 = the access size is
+    /// one no rule names, 6 = a pointer in an address space the class list does
+    /// not model.  0 for every other Kind.
+    unsigned Why = 0;
   };
 
   /// \p PointerBits is the width the current subtarget gives LLT::pointer(0),
@@ -75,6 +82,16 @@ public:
   /// Fatal on a mismatch: a table that disagrees with the chain is a bug in
   /// the key, not a number to look at.
   void selfCheck(raw_ostream &OS);
+  /// Write the table's answers, with the chain's, as one TSV row per
+  /// (domain point, memdesc variant).  This writes data, not a verdict: a row
+  /// whose table and chain disagree is recorded with match=mismatch, and the
+  /// caller -- not this function -- decides what that means.
+  ///
+  /// The domain is the same one selfCheck() walks.  A memdesc point is written
+  /// once per (alignment, ordering) variant because the key ignores both: the
+  /// rows are how "the chain does not read them either" becomes evidence
+  /// instead of an assumption.
+  void dumpAnswers(raw_ostream &OS, StringRef CPU, StringRef Triple) const;
 
   uint64_t hits() const { return Hits; }
   uint64_t outside() const { return Outsides; }
@@ -85,6 +102,15 @@ public:
   uint64_t fills() const { return Fills; }
 
 private:
+  /// Walk the self-check domain once, handing each point to \p F: the opcode
+  /// name, its entry in the generated opcode list, the local class indices,
+  /// the representative types, and the memory type (invalid for a point with
+  /// no mem axis).  Shared by selfCheck() and dumpAnswers() so the two cannot
+  /// drift into checking different questions.
+  void forEachPoint(function_ref<void(StringRef Name, unsigned Entry,
+                                     ArrayRef<unsigned> Local,
+                                     ArrayRef<LLT> Types, LLT MemTy)>
+                        F) const;
   uint32_t fill(unsigned Table, const LegalityQuery &Q,
                 ArrayRef<unsigned> Local) const;
   /// Record one refused query, with the reason, when asked to.
