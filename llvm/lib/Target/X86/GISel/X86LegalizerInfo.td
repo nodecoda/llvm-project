@@ -842,29 +842,51 @@ def X86_BUILD_VECTOR : LegalizeRuleSet<["G_BUILD_VECTOR"]> {
   ];
 }
 
-def X86_EXTRACT : LegalizeRuleSet<["G_EXTRACT", "G_INSERT"]> {
+// G_EXTRACT's type slots are (sub, full); G_INSERT's are (full, sub).  The
+// hand-written chain served both opcodes with one legalIf that picked the slot
+// order from Query.Opcode, which is a judgment the Core IR cannot express and
+// therefore kept both rule sets out of the table.  Split in two, the same pair
+// list is stated once per operand order and the predicate is literal.
+//
+// legalForTypeWithAnyImm, not legalFor: the free-form predicate marked every
+// operand as covered, including imm 0 (the extract/insert index).  Keeping the
+// pair rule does not by itself say anything about that imm, and dropping the
+// coverage silently is the kind of loss the verifier exists to catch.
+def X86_EXTRACT : LegalizeRuleSet<["G_EXTRACT"]> {
   let Rules = [
-    LegalizeOpaqueRule<BuilderLegalIf, [{
+    LegalForPairsWithAnyImmIf<HasAVX,
+      [LegalizeTypePair<X86_v16s8, X86_v32s8>,
+       LegalizeTypePair<X86_v8s16, X86_v16s16>,
+       LegalizeTypePair<X86_v4s32, X86_v8s32>,
+       LegalizeTypePair<X86_v2s64, X86_v4s64>]>,
+    LegalForPairsWithAnyImmIf<HasAVX512,
+      [LegalizeTypePair<X86_v16s8, X86_v64s8>,
+       LegalizeTypePair<X86_v32s8, X86_v64s8>,
+       LegalizeTypePair<X86_v8s16, X86_v32s16>,
+       LegalizeTypePair<X86_v16s16, X86_v32s16>,
+       LegalizeTypePair<X86_v4s32, X86_v16s32>,
+       LegalizeTypePair<X86_v8s32, X86_v16s32>,
+       LegalizeTypePair<X86_v2s64, X86_v8s64>,
+       LegalizeTypePair<X86_v4s64, X86_v8s64>]>,
+  ];
+}
 
-      [=](const LegalityQuery &Query) {
-              unsigned SubIdx = Query.Opcode == G_EXTRACT ? 0 : 1;
-              unsigned FullIdx = Query.Opcode == G_EXTRACT ? 1 : 0;
-              return (HasAVX && typePairInSet(SubIdx, FullIdx,
-                                              {{X86_v16s8, X86_v32s8},
-                                               {X86_v8s16, X86_v16s16},
-                                               {X86_v4s32, X86_v8s32},
-                                               {X86_v2s64, X86_v4s64}})(Query)) ||
-                     (HasAVX512 && typePairInSet(SubIdx, FullIdx,
-                                                 {{X86_v16s8, X86_v64s8},
-                                                  {X86_v32s8, X86_v64s8},
-                                                  {X86_v8s16, X86_v32s16},
-                                                  {X86_v16s16, X86_v32s16},
-                                                  {X86_v4s32, X86_v16s32},
-                                                  {X86_v8s32, X86_v16s32},
-                                                  {X86_v2s64, X86_v8s64},
-                                                  {X86_v4s64, X86_v8s64}})(Query));
-            }
-    }]>,
+def X86_INSERT : LegalizeRuleSet<["G_INSERT"]> {
+  let Rules = [
+    LegalForPairsWithAnyImmIf<HasAVX,
+      [LegalizeTypePair<X86_v32s8, X86_v16s8>,
+       LegalizeTypePair<X86_v16s16, X86_v8s16>,
+       LegalizeTypePair<X86_v8s32, X86_v4s32>,
+       LegalizeTypePair<X86_v4s64, X86_v2s64>]>,
+    LegalForPairsWithAnyImmIf<HasAVX512,
+      [LegalizeTypePair<X86_v64s8, X86_v16s8>,
+       LegalizeTypePair<X86_v64s8, X86_v32s8>,
+       LegalizeTypePair<X86_v32s16, X86_v8s16>,
+       LegalizeTypePair<X86_v32s16, X86_v16s16>,
+       LegalizeTypePair<X86_v16s32, X86_v4s32>,
+       LegalizeTypePair<X86_v16s32, X86_v8s32>,
+       LegalizeTypePair<X86_v8s64, X86_v2s64>,
+       LegalizeTypePair<X86_v8s64, X86_v4s64>]>,
   ];
 }
 

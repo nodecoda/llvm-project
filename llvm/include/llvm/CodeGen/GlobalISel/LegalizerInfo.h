@@ -644,6 +644,17 @@ public:
     return actionForTypeWithAnyImm(LegalizeAction::Legal, Types);
   }
 
+  /// The same, installed only when the subtarget predicate holds.  A false
+  /// predicate leaves the rule out and claims no coverage, so the imm
+  /// accounting stays truthful for that configuration.
+  LegalizeRuleSet &
+  legalForTypeWithAnyImm(bool Pred,
+                         std::initializer_list<std::pair<LLT, LLT>> Types) {
+    if (!Pred)
+      return *this;
+    return legalForTypeWithAnyImm(Types);
+  }
+
   /// The instruction is legal when type indexes 0 and 1 along with the memory
   /// size and minimum alignment is any type and size tuple in the given list.
   LegalizeRuleSet &legalForTypesWithMemDesc(

@@ -2196,7 +2196,11 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
     return Ts.front();
   };
 
-  if (Builder == "BuilderLegalFor") {
+  // legalForTypeWithAnyImm has the same Core IR form as legalFor on a pair
+  // list: "imm index 0 is anything" is a coverage statement, not a predicate,
+  // and the table declines a query that carries an immediate anyway.
+  if (Builder == "BuilderLegalFor" ||
+      Builder == "BuilderLegalForTypeWithAnyImm") {
     for (const Record *A : Args) {
       if (A->isSubClassOf("LegalizeTypePair")) {
         std::vector<TypeAlt> T0, T1;

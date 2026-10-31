@@ -92,6 +92,19 @@ def Test_CARTESIAN : LegalizeRuleSet<["G_PTRTOINT"]> {
 // CHECK-NEXT: .legalForCartesianProduct({s16, s32}, Tys)
 // CHECK-NEXT: .legalForCartesianProduct(Is64Bit ? Tys : Tys, Tys);
 
+// A pair rule that also says "imm index 0 is anything".  The coverage is not
+// part of the predicate -- the Core IR keeps the same type-pair rule -- but the
+// generated chain must keep it, or a free-form legalIf that used to cover the
+// imm loses that bookkeeping when it is rewritten as a literal pair list.
+def Test_ANYIMM : LegalizeRuleSet<["G_EXTRACT"]> {
+  let Rules = [
+    LegalForPairsWithAnyImmIf<HasPOPCNT, [LegalizeTypePair<s16, s32>]>,
+  ];
+}
+
+// CHECK:      getActionDefinitionsBuilder(G_EXTRACT)
+// CHECK-NEXT: .legalForTypeWithAnyImm(HasPOPCNT, {{[{][{]s16, s32[}][}]}});
+
 // The only reference to SlowMem is the condition of SlowMemOr64, so this rule
 // set is what keeps both of them in the generated constructor.
 def Test_FENCE : LegalizeRuleSet<["G_FENCE"]> {

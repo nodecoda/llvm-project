@@ -361,6 +361,15 @@ def BuilderLegalForTypesWithMemDesc      : LegalizeBuilder<"legalForTypesWithMem
   let Formals = [[ShapeMemDescList]];
 }
 
+// Legal on a type pair, with imm index 0 unconstrained.  The "any imm" part is
+// coverage, not a predicate: the Core IR does not carry it, but the generated
+// chain must, or a free-form legalIf that used to cover the imm loses that
+// bookkeeping when the rule is written as a literal pair list.
+def BuilderLegalForTypeWithAnyImm        : LegalizeBuilder<"legalForTypeWithAnyImm", ActionLegal> {
+  let Guards = [GuardBool];
+  let Formals = [[ShapeTypePairList]];
+}
+
 def BuilderLower                         : LegalizeBuilder<"lower", ActionLower> {
   let Guards = [];
   let Formals = [[]];
@@ -596,6 +605,10 @@ class LegalForPairs<list<LegalizeTypePair> Pairs>
 
 class LegalForPairsIf<LegalizeBoolPredicate P, list<LegalizeTypePair> Pairs>
     : LegalizeGuardedCall<BuilderLegalFor, P, Pairs>;
+
+class LegalForPairsWithAnyImmIf<LegalizeBoolPredicate P,
+                                list<LegalizeTypePair> Pairs>
+    : LegalizeGuardedCall<BuilderLegalForTypeWithAnyImm, P, Pairs>;
 
 class LegalForCartesianProduct<LegalizeArgTypeList T0, LegalizeArgTypeList T1>
     : LegalizeCall<BuilderLegalForCartesianProduct, [T0, T1]>;
