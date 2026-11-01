@@ -150,6 +150,68 @@ Kind_Pointer=0  Kind_Scalar=1  Kind_Vector=2  Kind_PointerVector=3
 恒等不是浪费：把 Dims 压到域内，就必须让"域外类"从"填表问链"变成
 "直接 Outside"，那是行为改变，不是纯优化。
 
+### C4b 为什么是这个键（论证）
+
+键 = `opcode → table` + 至多两个类型槽的**全局类 id** + 可选的 mem 轴
+（访问位宽，或类 id）。
+
+设规则集的规则为 `r1..rn`，`findRule(Q)` 是第一个满足 `p_i(Q)` 的 i。表要正确，
+只需 `κ(Q) = κ(Q') ⇒ p_i(Q) = p_i(Q')` 对所有可表化规则成立——也就是说，键必须是
+每个谓词真值集的**细化**（refinement）。反过来越粗越好：越粗，格子越少。
+
+**类型的类 `(kind, elem, lanes)` 足够**，因为每个叶子只读这些坐标：
+
+| leaf | 读的坐标 |
+|---|---|
+| `typeIs` / `typeIn` | 整个字面量 |
+| `isVector` / `elementTypeIs` | 是否向量、元素 kind+elem |
+| `sizeIs` / `sizeNotPow2` | 总位数（= elem × lanes；`sizeNotPow2` 还要求 scalar） |
+| `scalarNarrowerThan` / `scalarWiderThan` / `scalarOrEltWiderThan` / `scalarOrEltSizeNotPow2` | elem 位数 |
+| `numElementsNotPow2` / `fewerElementsThan` / `moreElementsThan` | lanes |
+| `scalarSizeLargerThanSlot` / `scalarSizeSmallerThanSlot` | 两个槽的 elem 位数 |
+
+没有一条读 LLT 的 integer/float 区分：规则都写成 `LLT::scalar(N)`，而 ANY_SCALAR
+在 `LLT::operator==` 里是通配。所以类里不放这个区分——这正是**答案缓存**必须
+单独门控 `!LLT::getUseExtended()` 的原因。如果规则真写了 kind 敏感的类型（`i64`），
+`parseTableClass` 不认识这个前缀，生成器 fatal，不会静默合并。
+
+**mem 轴为什么两态**：`memSize` 和 `isCompatible` 只比访问位宽，位宽就是精确的商；
+`typeDiffersFromMemDesc` 比整个 `MemoryTy`，两个同宽不同类型会分开（v2s32 vs s64），
+所以轴要按类 id 切（`MemIsClass`）。规则读整类型却没写出任何 memory type 时，
+轴没有可枚举的有限集合 → `UnkeyableRuleSets`，拒绝建表。
+
+**不进键的坐标，以及为什么安全**：
+
+| 坐标 | 为什么可以不在键里 |
+|---|---|
+| subtarget feature | 每个 `X86LegalizerInfo` 实例的常量（`X86Subtarget.cpp:340`）；进键只会让表变成 per-subtarget |
+| immediate | 没有 core leaf 读它；读它只能写成 opaque C++，而含 opaque 谓词的规则集不表化 |
+| 未 key 的类型槽 | 没有谓词读它，规则号与之无关；重放时 mutation 用真实查询重算 |
+| 写槽 / mutation 读槽 | 规则号不依赖它们；只有**答案缓存**需要，所以它们进的是 OneQuestion 条件，不是键 |
+| alignment | 规则只问 "at least"，`memSize` 要求 align==1，代表元取最弱对齐 |
+| 地址空间 | 类表只写 p0；AS≠0 直接 Outside（回退链），不是与 p0 合并 |
+| LLT kind（int/float） | 谓词通配（见上）；答案缓存需要，所以单独门控 |
+
+**粗一点 / 细一点的代价**：
+
+| 候选键 | 后果 |
+|---|---|
+| 只按总 size | v2s32 与 s64 同格，规则不同（vector 分支 vs scalar 分支）→ 错答 |
+| 按完整 LLT | 类爆炸且大量不可达；规则不读 kind/AS |
+| 每 opcode 一格 | 所有类型同格 → 错答 |
+| 把 immediate / 写槽加进键 | 格数 ×N，规则号不变；答案缓存才需要（条件式） |
+
+结论：键是"每个可表化谓词都恒定的最粗划分"。它由 `collectPredLeaves` 从 Core IR
+**推导**，不是手写清单：规则新增一个读槽，键自动变宽；遇到不认识的 leaf 或 opaque
+谓词，生成器要么 fatal 要么拒绝建表，不会猜。
+
+键还是**偏函数**：域外的类型 / 内存类型不给错答案，而是 `Outside` / `Declined` /
+`PointerVector` / `Split` → 回退链。这也是为什么 `Dims` 用全局类数（24）而不是
+每表域——域外类照样有格子，由 `fill` 问链。
+
+可测性来自域的有限性：2866 个域点可以枚举（`selfCheck`），真实查询由 check 模式比对
+（语料 92352 次）。键的每一个"细化"主张都有一个能红的检查。
+
 ### C5 自检域
 
 per-slot 域，不是全类笛卡尔积（`SlotDomains`）：
