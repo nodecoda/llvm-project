@@ -12,15 +12,14 @@
 /// wins for this shape" by indexing a table instead of walking the comparison
 /// chain: one classify per keyed slot and one array load per query.
 ///
-/// The table is filled lazily, one cell at a time, from whatever the rule
-/// chain answers for that cell's key.  Filling from the chain means a cell
-/// cannot invent a rule; a cell whose key is exactly one question (the
-/// descriptor's OneQuestion) also stores the answer, and that answer is the
-/// generator's claim that nothing but the key can change it.  Both claims are
-/// checked rather than assumed: selfCheck() asks every key domain point, and
-/// lookup() under -x86-gisel-table-check asks every real query.  What the
-/// table *can* expose is a key that merges two questions the rules treat
-/// differently -- the reason those two checks exist.
+/// The table is built from the rules: each cell names the rule that wins for
+/// that cell's key.  A query classifies its types, finds its cell and replays
+/// the named rule on the *query*, so every answer comes from the rules and is
+/// spelled for the type that asked.  What the table can get wrong is the key
+/// merging two questions the rules tell apart; the rule then does not match
+/// the query and the table refuses, leaving the chain to answer.  Both claims
+/// are checked rather than assumed: selfCheck() asks every key domain point,
+/// and lookup() under -x86-gisel-table-check asks every real query.
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_LIB_TARGET_X86_GISEL_X86LEGALIZERTABLE_H
@@ -40,7 +39,7 @@ class X86LegalizerTable : public LegalizerInfo::LegalizeTable {
 public:
   /// What the table could say about a query.
   enum class Answer : uint8_t {
-    /// The cell held an answer; the result carries it.
+    /// The cell named a rule and it was replayed on this query.
     Hit,
     /// A keyed type is not one of the classes the table was built for.
     Outside,
@@ -83,11 +82,6 @@ public:
 
   Result query(const LegalityQuery &Q) const;
 
-  /// As query(), but never answers from a cached cell answer.
-  Result queryUncached(const LegalityQuery &Q) const {
-    return queryImpl(Q, /*AllowCachedAnswer=*/false);
-  }
-
   /// Run every tabulated table's key domain through both paths and report.
   /// Fatal on a mismatch: a table that disagrees with the chain is a bug in
   /// the key, not a number to look at.
@@ -107,9 +101,6 @@ public:
   uint64_t declined() const { return Declined; }
   uint64_t splits() const { return Splits; }
   uint64_t fills() const { return Fills; }
-  /// Answers served from a cell's stored answer rather than replayed.  Zero on
-  /// a target with extended LLTs, where the cache is switched off.
-  uint64_t cachedAnswers() const { return Cached; }
 
 private:
   /// One question in the check domain, owning the storage its query points at:
@@ -151,7 +142,7 @@ private:
   /// Enumerate the questions the table must refuse, one per reason.
   void collectOutside(std::vector<OutsidePoint> &Out) const;
 
-  Result queryImpl(const LegalityQuery &Q, bool AllowCachedAnswer) const;
+  Result queryImpl(const LegalityQuery &Q) const;
   uint32_t fill(unsigned Table, const LegalityQuery &Q,
                 ArrayRef<unsigned> Local) const;
   /// Record one refused query, with the reason, when asked to.
@@ -173,23 +164,12 @@ private:
   mutable std::vector<std::vector<uint32_t>> Cells;
   /// Per cell, the rule that answered it -- see LegalizeRuleSet::findRule.
   ///
-  /// A cell caches *which rule wins*, not the answer that rule gave.  One rule
-  /// answers many queries ("widen slot 0 to 64 bits" answers both i128 and
-  /// s128) and its answers differ in spelling, so a cached answer would carry
-  /// whichever type happened to fill the cell first.  A cached rule is replayed
-  /// against the real query, and each query gets its own answer back.
+  /// The cell stores *which rule wins*, not the answer that rule gave.  One
+  /// rule answers many queries ("widen slot 0 to 64 bits" answers both i128
+  /// and s128) and its answers differ in spelling, so a stored answer would
+  /// carry whichever type happened to fill the cell first.  The rule is
+  /// replayed on the real query, and each query gets its own answer back.
   mutable std::vector<int64_t> RulesOfCell;
-  /// Per cell, the answer that cell's one question has.  Filled in lockstep
-  /// with RulesOfCell, and read only for tables whose descriptor says the
-  /// cell stands for exactly one question -- for any other table the answer
-  /// depends on which query in the cell is asking, so it is re-derived.
-  ///
-  /// "One question" is a property of the key, and the key is only as fine as
-  /// the LLTs it folds together: classifyType() maps every scalar kind to one
-  /// class, so a target whose LLTs distinguish i128 from s128 has cells that
-  /// look like one question and are not (a076fbbf9e72).  queryImpl() gates
-  /// this cache on !LLT::getUseExtended() for that reason.
-  mutable std::vector<LegalizeActionStep> Answers;
   /// -x86-gisel-table-check for the installed table: verify real queries.
   /// Checked counts how many it compared, so a run that verified nothing
   /// cannot look like a run that verified everything.
@@ -197,7 +177,7 @@ private:
   mutable uint64_t Checked = 0;
   mutable uint64_t Hits = 0, Outsides = 0, PointerVectors = 0,
                    AddressSpaces = 0, Untabulated = 0, Declined = 0, Splits = 0,
-                   Fills = 0, Cached = 0;
+                   Fills = 0;
   /// How deep the winning rule sits on the queries a compilation actually
   /// asks.  The check domain is uniform over type classes; real code is not,
   /// and this is what connects the two measurements.

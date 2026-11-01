@@ -95,7 +95,7 @@ def Test_UNPAREN : LegalizeRuleSet<["G_AND"]> {
 // TABLE-NEXT: // the chain answers:
 // TABLE-NEXT: //   Test_UNPAREN
 // TABLE: static constexpr LegalizerTypeClass
-// TABLE: {1, {0, 0, 0}{{.*}},  3, {{true|false}}},   // Test_INLINE
-// TABLE: {1, {0, 0, 0}{{.*}},  4, {{true|false}}},   // Test_NESTED
-// TABLE: {2, {0, 1, 0}{{.*}},  6, {{true|false}}},   // Test_CHOICE
+// TABLE: {1, {0, 0, 0}{{.*}},  3},   // Test_INLINE
+// TABLE: {1, {0, 0, 0}{{.*}},  4},   // Test_NESTED
+// TABLE: {2, {0, 1, 0}{{.*}},  6},   // Test_CHOICE
 // TABLE-NOT: //   Test_UNPAREN

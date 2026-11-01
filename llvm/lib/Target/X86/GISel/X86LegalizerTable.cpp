@@ -27,14 +27,6 @@ static cl::opt<bool> X86GISelTableOnce(
              "harness that cannot tell this from -x86-gisel-table=false cannot "
              "see the table's contribution at all"));
 
-static cl::opt<bool> X86GISelTableCacheExtended(
-    "x86-gisel-table-cache-extended", cl::Hidden, cl::init(false),
-    cl::desc(
-        "Serve answers from a cell even when the target's LLTs are extended, "
-        "where the key already folds different spellings of one type together. "
-        "Negative control for -x86-gisel-table-check: with this on the check "
-        "must report CACHED-VS-REPLAY, which is the a076fbbf9e72 shape"));
-
 static cl::opt<bool> X86GISelTableOutsides(
     "x86-gisel-table-outsides", cl::Hidden, cl::init(false),
     cl::desc("List every query the X86 legalizer table refused, with the reason"));
@@ -377,12 +369,9 @@ uint32_t X86LegalizerTable::fill(unsigned Table, const LegalityQuery &Q,
   // rules are asked directly -- going through LI.getAction() would re-enter
   // this table and recurse.
   //
-  // What is kept per cell depends on what the cell stands for.  A cell of a
-  // one-question table is exactly one (opcode, types) tuple, so the answer is
-  // one value and can be stored; that is what makes the table's fixed cost a
-  // load instead of a rule match.  Any other cell stands for a fiber of
-  // questions, and one rule answers several of them with different types, so
-  // only the rule identity is kept -- see RulesOfCell.
+  // The cell keeps the rule, not the answer: one rule answers many queries
+  // ("widen slot 0 to 64 bits" answers both i128 and s128) and the answers
+  // differ in spelling, so the rule is replayed on the query that asks.
   const LegalityQuery RepQ(Q.Opcode, Types, MemDescs, Q.Immediates);
   const LegalizeRuleSet &RS = LI.getActionDefinitions(Q.Opcode);
   const int64_t RuleIdx = RS.findRule(RepQ);
@@ -390,13 +379,6 @@ uint32_t X86LegalizerTable::fill(unsigned Table, const LegalityQuery &Q,
     report_fatal_error("X86 legalizer table has too many filled cells");
   ++Fills;
   RulesOfCell.push_back(RuleIdx);
-  // Answers is indexed with the same cell number as RulesOfCell, so it grows
-  // in lockstep even for tables that never read it; skipping the push here
-  // would shift every later cell's index.
-  Answers.push_back(
-      D.OneQuestion && RuleIdx >= 0
-          ? RS.applyRule(RuleIdx, RepQ)
-          : LegalizeActionStep(LegalizeAction::Unsupported, 0, LLT{}));
   return static_cast<uint32_t>(RulesOfCell.size());
 }
 
@@ -420,12 +402,11 @@ void X86LegalizerTable::noteOutside(unsigned Why, unsigned Table,
 }
 
 X86LegalizerTable::Result X86LegalizerTable::query(const LegalityQuery &Q) const {
-  return queryImpl(Q, /*AllowCachedAnswer=*/true);
+  return queryImpl(Q);
 }
 
 X86LegalizerTable::Result
-X86LegalizerTable::queryImpl(const LegalityQuery &Q,
-                             bool AllowCachedAnswer) const {
+X86LegalizerTable::queryImpl(const LegalityQuery &Q) const {
   Result R;
   const int Table = x86TableForOpcode(Q.Opcode);
   if (Table < 0) {
@@ -566,50 +547,12 @@ X86LegalizerTable::queryImpl(const LegalityQuery &Q,
   if (!Cell)
     Cell = fill(Table, Q, L);
 
-  // A cell of a one-question table holds the answer itself; there is nothing
-  // left to ask.  This is the whole point of the cache: the query's fixed cost
-  // becomes a virtual call, a classify and a load, where replaying the rule
-  // would cost a rule match -- the same predicate call the chain makes, plus
-  // the table's own work on top.
+  // Replay the winning rule on *this* query.
   //
-  // Sound because the answer is a function of the cell: the key reads every
-  // slot a predicate reads, a class names exactly one LLT, and a tabulated
-  // rule reads no immediate.  The generator only sets OneQuestion for tables
-  // where the key also covers the slot every rule action writes, so the cell
-  // fixes the rule's mutations too.  lookup() verifies this on real queries
-  // under -x86-gisel-table-check rather than trusting the argument.
-  // A cell's stored answer is the chain's answer for the cell's
-  // *representative*, and that is the same answer for every query in the cell
-  // only if the key is injective over the LLTs the target can produce.  It is
-  // not when LLT kinds are distinct: classifyType() maps INTEGER, FLOAT and
-  // ANY_SCALAR onto one scalar class, so an i128 query lands in the s128 cell
-  // and would be handed s64 where the chain says i64 -- a076fbbf9e72.  Which
-  // LLTs exist is a property of the target, published before any query runs,
-  // so that is where the decision belongs: on a target with extended LLTs the
-  // cache is off and the rule number is replayed on the real query, which
-  // recomputes the mutation instead of copying the representative's.
-  //
-  // X86 never enables extended LLTs, so this is a relaxed load of a global
-  // that is constant for the process; -x86-gisel-extended-llt exists to make
-  // the closed path reachable in a test.
-  if (D.OneQuestion && AllowCachedAnswer &&
-      (!LLT::getUseExtended() || X86GISelTableCacheExtended)) {
-    const int64_t RuleIdx = RulesOfCell[Cell - 1];
-    if (RuleIdx >= 0) {
-      RuleIdxSum += static_cast<uint64_t>(RuleIdx);
-      ++RuleIdxCount;
-      RuleIdxMax = std::max(RuleIdxMax, static_cast<unsigned>(RuleIdx));
-    }
-    const LegalizeActionStep &S = Answers[Cell - 1];
-    ++Hits;
-    ++Cached;
-    R.Kind = Answer::Hit;
-    R.Action = S.Action;
-    R.TypeIdx = S.TypeIdx;
-    R.NewType = S.NewType;
-    return R;
-  }
-
+  // This is the whole design: the cell says which rule wins, and the answer is
+  // recomputed from the query, so a type the key folded into the cell still
+  // gets its own spelling back (a076fbbf9e72).  ruleMatches() then decides
+  // whether the cell's rule is entitled to answer this query at all.
   // Replay the winning rule on *this* query.  The cell was filled from the
   // class representatives, so anything the answer derives from the actual type
   // -- the element type a scalar change lands on, the spelling of a scalar --
@@ -625,7 +568,7 @@ X86LegalizerTable::queryImpl(const LegalityQuery &Q,
     R.Kind = Answer::Split;
     return R;
   }
-  // ruleMatches() proves the cached rule still matches; it cannot prove that
+  // ruleMatches() proves the cell's rule still matches; it cannot prove that
   // no *earlier* rule does, which is what the chain would answer with.  That
   // is sound only because every predicate of a tabulated rule set is constant
   // on a cell: the emitter keys every slot any predicate leaf reads, refuses
@@ -677,16 +620,15 @@ bool X86LegalizerTable::lookup(const LegalityQuery &Q,
     OnceServed = true;
   Step = LegalizeActionStep(R.Action, R.TypeIdx, R.NewType);
   if (Verify) {
-    // A real query, not a representative: this is the only place a cached
-    // answer can be wrong, because the domain check asks the same question
-    // the fill asked.  Same comparison `selfCheck` makes, on the other half
-    // of the question space.
+    // A real query, not a representative: the domain check asks the same
+    // question the fill asked, so this is the other half of the question
+    // space.  Same comparison `selfCheck` makes.
     ++Checked;
     const LegalizeActionStep Chain =
         LI.getActionDefinitions(Q.Opcode).apply(Q);
     // Compared by spelling, not by LegalizeActionStep::operator==: that
     // operator's LLT comparison treats s64, i64 and f64 as one type, so it
-    // cannot see the one disagreement a cached answer can introduce.
+    // cannot see a disagreement in the kind a mutation produces.
     if (!sameAnswer(Step.Action, Step.TypeIdx, Step.NewType, Chain)) {
       std::string S;
       raw_string_ostream OS(S);
@@ -712,8 +654,8 @@ X86LegalizerTable::~X86LegalizerTable() {
   errs() << "x86-gisel-table: hit " << Hits << " outside " << Outsides
          << " ptrvec " << PointerVectors << " addrspace " << AddressSpaces
          << " untabulated " << Untabulated << " splits " << Splits
-         << " declined " << Declined << " fills " << Fills << " cached "
-         << Cached << " checked " << Checked << " rule_mean "
+         << " declined " << Declined << " fills " << Fills
+         << " checked " << Checked << " rule_mean "
          << format("%.2f",
                    RuleIdxCount ? double(RuleIdxSum) / RuleIdxCount : 0.0)
          << " rule_max " << RuleIdxMax << "\n";
@@ -1068,35 +1010,11 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
     }
     const LegalizeActionStep ChainStep =
         LI.getActionDefinitions(Q.Opcode).apply(Q);
-    // Uncached: the point of the check is that the table's key and the chain
-    // agree, which a stored answer would state about itself.
-    const Result R = queryUncached(Q);
-    // And the path a compilation takes, which may answer from a cell.  Asking
-    // only the uncached path would leave the cache untested by construction:
-    // a cached answer is the representative's, so a comparison that never
-    // allows it cannot disagree with it.  This is the second half of
-    // a076fbbf9e72 -- the cell answers the fiber member with the
-    // representative's spelling.
-    const Result Cached = query(Q);
-    const LegalizeActionStep Replayed(R.Action, R.TypeIdx, R.NewType);
-    if (Cached.Kind != R.Kind ||
-        (R.Kind == Answer::Hit &&
-         !sameAnswer(Cached.Action, Cached.TypeIdx, Cached.NewType,
-                     Replayed))) {
-      ++Mismatches;
-      if (Mismatches <= 20) {
-        Report("CACHED-VS-REPLAY", P);
-        OS << "): replay ";
-        OS << static_cast<unsigned>(R.Action) << "/" << R.TypeIdx << "/";
-        R.NewType.print(OS);
-        OS << " cached ";
-        OS << static_cast<unsigned>(Cached.Action) << "/" << Cached.TypeIdx
-           << "/";
-        Cached.NewType.print(OS);
-        OS << "\n";
-      }
-      continue;
-    }
+    // The path a compilation takes: classify, find the cell, replay the rule
+    // on this query.  There is no second path to compare it with, and that is
+    // the point -- the answer is always the rules' answer, spelled for the
+    // type that asked.
+    const Result R = query(Q);
     if (R.Kind == Answer::Split) {
       if (!P.IsRepresentative) {
         // The cell refused a member of its own fiber.  That is the table

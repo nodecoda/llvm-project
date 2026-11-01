@@ -5,53 +5,37 @@
 ; RUN: llc < %s -mtriple=x86_64-unknown-linux-gnu -global-isel -O0 \
 ; RUN:     -stop-after=legalizer -x86-gisel-extended-llt -o - 2>/dev/null \
 ; RUN:     | FileCheck %s --check-prefix=KIND
-; RUN: not --crash llc < %s -mtriple=x86_64-unknown-linux-gnu -global-isel -O0 \
-; RUN:     -stop-after=legalizer -x86-gisel-extended-llt -x86-gisel-table-check \
-; RUN:     -x86-gisel-table-cache-extended -o /dev/null 2>&1 \
-; RUN:     | FileCheck %s --check-prefix=CACHE-IS-WRONG
 
-; A cell of a one-question table stores the chain's answer for the cell's
-; *representative*.  That is only the answer for every query in the cell if the
-; class key is injective over the LLTs the target can produce, and it is not
-; when LLT kinds are distinct: classifyType() folds INTEGER, FLOAT and
+; The table stores, per cell, the rule that wins -- not the answer it gave.
+; The answer is recomputed by replaying that rule on the real query, so a
+; query whose LLT kinds the key folded into one class still gets its own
+; spelling back (a076fbbf9e72).  This test pins that down on the one shape
+; where the difference is visible: classifyType() folds INTEGER, FLOAT and
 ; ANY_SCALAR into one scalar class, so i128 lands in the s128 cell and the
-; stored answer spells s64 where the chain spells i64 (a076fbbf9e72).
+; *rule* has to widen i128 to i64, not to s64.
 ;
 ; X86 does not use extended LLTs, so -x86-gisel-extended-llt is a test hook
 ; that makes the situation reachable; x86 instruction selection is written for
-; ANY_SCALAR, hence -stop-after=legalizer.  On this target the answer cache
-; must be off: the rule number is replayed on the real query, which recomputes
-; the mutation and keeps the kind.
+; ANY_SCALAR, hence -stop-after=legalizer.
 ;
-; Two independent red signals:
-;  - `cached 0`: an answer served from a cell.  Removing the
-;    !LLT::getUseExtended() gate in queryImpl() makes this non-zero.
-;  - `i64`/`f64` in the MIR below: with the gate removed the same queries are
-;    handed s64/s8, i.e. the representative's spelling.
-; The domain check's *representative* points cannot see any of this -- that is
-; one point per cell, and the stored answer is that point's own answer.  What
-; can see it is the fiber expansion: under -x86-gisel-extended-llt every class
-; whose keyed slot can hold an integer is asked s128 and i128, so a cell that
-; answers both with s64 disagrees with the chain on the second.  `fiber` counts
-; those extra points and `fiber_max` is the size of the largest expansion --
-; 4 where the slot also admits the float spellings, which the generator decides
-; per slot from the widths the rules force (G_FADD does, G_FCMP cannot: its
-; clamp narrows to s8).  `fiber_skipped` counts the float spellings the fiber
-; declined for that reason, so a slot with no float coverage is a number here
-; rather than an absence: 288 of them across the tables.  All four numbers are
-; matched below, so a run that stopped expanding, a run that started asking
-; floats of a slot the chain aborts on, and a run that quietly dropped a
-; spelling cannot look like a run that found nothing.
-;
-; The third RUN line is the negative control, made permanent:
-; -x86-gisel-table-cache-extended ignores the !LLT::getUseExtended() gate, and
-; the check must then report CACHED-VS-REPLAY.  Without that line, "mismatches
-; 0" above would also be produced by a check that cannot fail this way.
+; The domain check's *representative* points cannot see this -- one point per
+; cell, and each representative answers with its own spelling.  What can see
+; it is the fiber expansion: under -x86-gisel-extended-llt every class whose
+; keyed slot can hold an integer is asked s128 and i128, so a table that
+; replayed the representative's answer would disagree with the chain on the
+; second.  `fiber` counts those extra points and `fiber_max` is the size of
+; the largest expansion -- 4 where the slot also admits the float spellings,
+; which the generator decides per slot from the widths the rules force
+; (G_FADD does, G_FCMP cannot: its clamp narrows to s8).  `fiber_skipped`
+; counts the float spellings the fiber declined for that reason, so a slot
+; with no float coverage is a number here rather than an absence: 288 of them
+; across the tables.  All four numbers are matched below, so a run that
+; stopped expanding, a run that started asking floats of a slot the chain
+; aborts on, and a run that quietly dropped a spelling cannot look like a run
+; that found nothing.
 
 ; VERIFY: x86-gisel-table-check: points [[P:[0-9]+]] compared [[P]] mismatches 0 skipped 0 {{.*}} fiber [[F:[1-9][0-9]*]] fiber_refused 0 fiber_skipped [[SK:[1-9][0-9]*]] fiber_max 4 outside_checked [[OC:[1-9][0-9]*]]
-; VERIFY: x86-gisel-table: hit {{[1-9][0-9]*}} {{.*}} cached 0 checked {{[1-9][0-9]*}}
-
-; CACHE-IS-WRONG: CACHED-VS-REPLAY G_ADD(i128): replay {{.*}}i64 cached {{.*}}s64
+; VERIFY: x86-gisel-table: hit {{[1-9][0-9]*}} {{.*}} checked {{[1-9][0-9]*}}
 
 ; KIND: %{{[0-9]+}}:_(i32) = G_ADD
 ; KIND: %{{[0-9]+}}:_(i64) = G_MUL

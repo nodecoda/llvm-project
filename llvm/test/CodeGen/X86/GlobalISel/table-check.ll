@@ -61,14 +61,14 @@
 
 ; The VERIFY runs put real instructions through the GlobalISel pipeline with
 ; the table installed.  The check above asks the domain the key was built
-; from; this one asks the questions a compilation actually asks, and the
-; cached answers -- one per cell, for the tables whose cell is one question --
-; are only ever exercised here.  `checked` is the number of real queries the
+; from; this one asks the questions a compilation actually asks, which is the
+; only place a cell's stored rule is replayed on a spelling the cell's
+; representative did not have.  `checked` is the number of real queries the
 ; table compared against the chain; a run that verified nothing would satisfy
 ; the mismatch line trivially, so it is matched as non-zero.
 ;
 ; VERIFY: x86-gisel-table-check: points [[P:[0-9]+]] compared [[P]] mismatches 0 skipped 0
-; VERIFY: x86-gisel-table: hit {{[1-9][0-9]*}} {{.*}} cached {{[1-9][0-9]*}} checked {{[1-9][0-9]*}}
+; VERIFY: x86-gisel-table: hit {{[1-9][0-9]*}} {{.*}} checked {{[1-9][0-9]*}}
 
 define void @f() {
   ret void
