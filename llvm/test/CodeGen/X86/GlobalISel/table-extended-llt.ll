@@ -31,18 +31,21 @@
 ; The domain check's *representative* points cannot see any of this -- that is
 ; one point per cell, and the stored answer is that point's own answer.  What
 ; can see it is the fiber expansion: under -x86-gisel-extended-llt every class
-; whose keyed slot can hold an integer is asked twice, s128 and i128, so a cell
-; that answers both with s64 disagrees with the chain on the second.  `fiber`
-; counts those extra points and `fiber_max 2` is the size of the largest
-; expansion; both are matched below so a run that stopped expanding cannot look
-; like a run that found nothing.
+; whose keyed slot can hold an integer is asked s128 and i128, so a cell that
+; answers both with s64 disagrees with the chain on the second.  `fiber` counts
+; those extra points and `fiber_max` is the size of the largest expansion --
+; 3 where the slot also admits the FLOAT spelling, which the generator decides
+; per slot from the widths the rules force (G_FADD does, G_FCMP cannot: its
+; clamp narrows to s8).  All three numbers are matched below, so a run that
+; stopped expanding, or that started asking floats of a slot the chain aborts
+; on, cannot look like a run that found nothing.
 ;
 ; The third RUN line is the negative control, made permanent:
 ; -x86-gisel-table-cache-extended ignores the !LLT::getUseExtended() gate, and
 ; the check must then report CACHED-VS-REPLAY.  Without that line, "mismatches
 ; 0" above would also be produced by a check that cannot fail this way.
 
-; VERIFY: x86-gisel-table-check: points [[P:[0-9]+]] compared [[P]] mismatches 0 skipped 0 {{.*}} fiber [[F:[1-9][0-9]*]] fiber_refused 0 fiber_max 2
+; VERIFY: x86-gisel-table-check: points [[P:[0-9]+]] compared [[P]] mismatches 0 skipped 0 {{.*}} fiber [[F:[1-9][0-9]*]] fiber_refused 0 fiber_max 3
 ; VERIFY: x86-gisel-table: hit {{[1-9][0-9]*}} {{.*}} cached 0 checked {{[1-9][0-9]*}}
 
 ; CACHE-IS-WRONG: CACHED-VS-REPLAY G_ADD(i128): replay {{.*}}i64 cached {{.*}}s64

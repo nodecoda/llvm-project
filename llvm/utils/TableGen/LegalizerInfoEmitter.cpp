@@ -2094,6 +2094,96 @@ void collectMutationReadSlots(StringRef Json, std::set<unsigned> &Out) {
   }
 }
 
+/// What a mutation does to the width of its target slot's element, as far as
+/// asking the chain about a FLOAT spelling is concerned.
+///
+/// LLT::changeElementSize() on a FLOAT has to name an FP semantics, and its
+/// builder aborts at any width that has none ("Wrong SizeInBits for IEEE
+/// Floating point").  A rule that forces such a width therefore makes the
+/// chain undefined on the float spelling of that slot -- not wrong, undefined:
+/// G_FCMP narrows a too-wide operand to s8, which is fine for the ANY_SCALAR
+/// lattice the rules were written for and aborts on f16 under extended LLTs.
+/// The fiber test may only ask spellings both sides answer, so the emitter
+/// works out here which keyed slots those are.
+struct MutationWidths {
+  unsigned Target = 0;
+  /// Widths the mutation builds unconditionally (set_elem_type sN).  A zero
+  /// stands for a value this function could not read, which is a hazard.
+  std::vector<unsigned> Forced;
+  /// A slot whose width the mutation copies, or -1.
+  int SameAs = -1;
+};
+
+MutationWidths parseMutationWidths(StringRef Json) {
+  MutationWidths M;
+  size_t At = Json.find("\"target\":");
+  if (At == StringRef::npos)
+    PrintFatalError("a mutation has no target slot");
+  size_t I = At + 9; // just past the colon
+  bool Any = false;
+  while (I < Json.size() && isDigit(Json[I])) {
+    M.Target = M.Target * 10 + (Json[I] - '0');
+    Any = true;
+    ++I;
+  }
+  if (!Any)
+    PrintFatalError("mutation target is not a number");
+
+  size_t KindAt = Json.find("\"kind\":\"", I);
+  if (KindAt == StringRef::npos)
+    PrintFatalError("a mutation has no kind");
+  size_t KindBeg = KindAt + 8;
+  size_t KindEnd = Json.find('"', KindBeg);
+  if (KindEnd == StringRef::npos)
+    PrintFatalError("mutation kind is unterminated");
+  StringRef Kind = Json.substr(KindBeg, KindEnd - KindBeg);
+
+  StringRef Value;
+  size_t ValAt = Json.find("\"value\":\"", KindEnd);
+  if (ValAt != StringRef::npos) {
+    size_t Beg = ValAt + 9;
+    size_t End = Json.find('"', Beg);
+    if (End == StringRef::npos)
+      PrintFatalError("mutation value is unterminated");
+    Value = Json.substr(Beg, End - Beg);
+  }
+
+  if (Kind == "set_elem_bits") {
+    // max(nextPow2(w), Min).  An IEEE width is already a power of two and at
+    // or above every floor the rules use, so this cannot move a float off an
+    // IEEE width: not a hazard.
+    return M;
+  }
+  if (Kind == "set_lanes") {
+    // The element is untouched.
+    return M;
+  }
+  if (Kind != "set_elem_type") {
+    // A kind this emitter has never seen.  Assume the worst for the fiber
+    // rather than build one on a guess.
+    M.Forced.push_back(0);
+    return M;
+  }
+  if (Value.starts_with("sameAsSlot")) {
+    M.SameAs = std::stoi(Value.drop_front(10).str());
+    return M;
+  }
+  if (Value.starts_with("s")) {
+    const unsigned Bits = lltBits(Value);
+    M.Forced.push_back(Bits); // 0 when it does not parse: a hazard
+    return M;
+  }
+  // A pointer, a vector, or a spelling this function does not understand: the
+  // element width is not something it can vouch for.
+  M.Forced.push_back(0);
+  return M;
+}
+
+/// Whether a FLOAT of this width is a type LLT::changeElementSize() can build.
+bool hasIEEESemantics(unsigned Bits) {
+  return Bits == 16 || Bits == 32 || Bits == 64 || Bits == 128;
+}
+
 /// Expand one LegalizeRule record into zero or more core rules.
 void expandRule(const RecordKeeper &Records, const Record &Rule,
                 std::vector<CoreRule> &Out, std::string &Why) {
@@ -2906,6 +2996,10 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     // query's types, and a slot the key does not read is the same for every
     // query in the cell only by accident.
     std::set<unsigned> MutationReadSlots;
+    /// Bit K: the keyed type axis K's slots accept the FLOAT spelling, so the
+    /// self-check may ask it.  A slot is cleared when a rule can force a width
+    /// with no FP semantics (see parseMutationWidths).
+    uint8_t FloatOK = 0;
     unsigned FirstRule = 0, NumRules = 0;
   };
   std::vector<TableRec> Tables;
@@ -2923,6 +3017,7 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
   StringSet<> SeenOpcodes;
   for (const Record *RuleSet : RuleSets) {
     std::set<unsigned> SlotSet, MemSet, ActionSlotSet, MutationReadSlotSet;
+    std::vector<MutationWidths> Hazards;
     std::map<unsigned, std::set<std::string>> SlotTypes;
     unsigned Count = 0;
     bool HasEscape = false;
@@ -2967,6 +3062,7 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
         if (!CR.Mutation.empty()) {
           ActionSlotSet.insert(CR.TypeIdx);
           collectMutationReadSlots(CR.Mutation, MutationReadSlotSet);
+          Hazards.push_back(parseMutationWidths(CR.Mutation));
         }
         ++Count;
       }
@@ -2994,6 +3090,45 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     // because it has nothing to answer with.
     if (!Count)
       continue;
+
+    // Which slots a FLOAT spelling can be asked of.  The chain is not defined
+    // on a float whose element a rule forces to a width with no FP semantics,
+    // so the fiber test would be asking a question one side cannot answer.
+    // This is derived from the mutations, not listed by hand: a rule that
+    // narrows to s8 clears the slot, a rule that copies another slot's width
+    // inherits that slot's answer, and set_elem_bits / set_lanes leave it be.
+    bool FloatOKSlot[2] = {true, true};
+    const auto WidthsOfSlot = [&](unsigned Slot,
+                                  std::vector<unsigned> &Out) -> bool {
+      auto It = SlotTypes.find(Slot);
+      if (It == SlotTypes.end())
+        return false; // the rules never name a type for it: unknown
+      for (const std::string &Spelling : It->second) {
+        const unsigned Bits = lltBits(Spelling);
+        if (!Bits)
+          return false;
+        Out.push_back(Bits);
+      }
+      return true;
+    };
+    for (const MutationWidths &M : Hazards) {
+      if (M.Target >= 2)
+        continue; // not a slot the key can ask about
+      if (M.SameAs >= 0) {
+        std::vector<unsigned> Widths;
+        if (M.SameAs >= 2 || !WidthsOfSlot(M.SameAs, Widths)) {
+          FloatOKSlot[M.Target] = false;
+          continue;
+        }
+        for (unsigned Bits : Widths)
+          if (!hasIEEESemantics(Bits))
+            FloatOKSlot[M.Target] = false;
+        continue;
+      }
+      for (unsigned Bits : M.Forced)
+        if (!hasIEEESemantics(Bits))
+          FloatOKSlot[M.Target] = false;
+    }
 
     TableRec T;
     T.Def = RuleSet;
@@ -3034,6 +3169,11 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
                           "slot in front of it");
     if (HasMemAxis)
       T.Slots.push_back(-1);
+    for (size_t K = 0; K != T.Slots.size(); ++K) {
+      const int Slot = T.Slots[K];
+      if (Slot >= 0 && Slot < 2 && FloatOKSlot[Slot])
+        T.FloatOK |= static_cast<uint8_t>(1u << K);
+    }
     T.FirstRule = RuleCursor;
     T.NumRules = Count;
     RuleCursor += Count;
@@ -3376,6 +3516,8 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
   OS << "  const int32_t *Mem; // access sizes (bits), or class ids when\n";
   OS << "                      // MemIsClass\n";
   OS << "  bool MemIsClass;    // the mem axis keys a type class, not a size\n";
+  OS << "  uint8_t FloatOK;    // bit K: keyed type axis K accepts the FLOAT\n";
+  OS << "                      // spelling, so the check may ask it\n";
   OS << "  uint16_t FirstRule, NumRules;   // range into the rule table\n";
   OS << "  bool OneQuestion;   // the cell stands for exactly one question,\n";
   OS << "                      // so its answer is constant\n";
@@ -3446,6 +3588,7 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     else
       OS << Prefix << "MemT" << T;
     OS << ", " << (R.MemIsClass ? "true" : "false");
+    OS << ", " << format_decimal(R.FloatOK, 3);
     OS << ", " << format_decimal(R.FirstRule, 4) << ","
        << format_decimal(R.NumRules, 3) << ", "
        << (IsOneQuestion(R) ? "true" : "false") << "},   // "

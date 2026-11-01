@@ -194,37 +194,54 @@ static void memFiber(unsigned Bits, SmallVectorImpl<LLT> &Out) {
   }
 }
 
-/// Every LLT spelling of one scalar width that both implementations are
-/// defined on.  classifyType() files ANY_SCALAR and INTEGER and FLOAT of the
-/// same width into one class, so the key cannot tell them apart, while the
-/// answer can: a mutation keeps the kind it was given, so the widened type
-/// comes out spelled i64 or s64 depending on which spelling asked.
+/// Every LLT spelling of one scalar width.  classifyType() files ANY_SCALAR,
+/// INTEGER and FLOAT of the same width into one class, so the key cannot tell
+/// them apart, while the answer can: a mutation keeps the kind it was given, so
+/// the widened type comes out spelled i64, f64 or s64 depending on which
+/// spelling asked.
 ///
-/// Only ANY_SCALAR and INTEGER are enumerated.  The float spelling is left out
-/// on purpose: X86's rules narrow a scalar through LLT::changeElementSize(),
-/// which for a FLOAT has to name an IEEE semantics and hits "Wrong SizeInBits"
-/// at 8.  Asking G_FCMP(f16) or G_ASHR(s8, f16) therefore aborts inside the
-/// chain, before the table is asked anything -- the two are not comparable on
-/// that question, and a check that compares them would report a limitation of
-/// the rules as a defect of the table.  The float spelling is covered where
-/// both sides are defined: table-extended-llt.ll runs f64 through G_FADD and
-/// matches the MIR.
+/// Whether the FLOAT spelling may be asked at all is not this function's
+/// decision: a rule that forces an element width with no FP semantics makes
+/// LLT::changeElementSize() abort on a FLOAT, so the chain has no answer there.
+/// The generator works that out per keyed slot from the rule set's mutations
+/// (LegalizerTableDesc::FloatOK) and this only follows it.
 ///
 /// Without extended LLTs there is nothing to enumerate: LLT::integer() returns
 /// LLT::scalar(), so the fiber really is one type and this returns one.  That
 /// is also the configuration the answer cache is live in, which is why the
 /// fiber test has to be run with -x86-gisel-extended-llt to say anything.
-static void scalarFiber(unsigned Bits, SmallVectorImpl<LLT> &Out) {
+static void scalarFiber(unsigned Bits, bool AllowFloat,
+                        SmallVectorImpl<LLT> &Out) {
   Out.push_back(LLT::scalar(Bits));
-  if (LLT::getUseExtended())
-    Out.push_back(LLT::integer(Bits));
+  if (!LLT::getUseExtended())
+    return;
+  Out.push_back(LLT::integer(Bits));
+  if (!AllowFloat)
+    return;
+  switch (Bits) {
+  case 16:
+    Out.push_back(LLT::float16());
+    break;
+  case 32:
+    Out.push_back(LLT::float32());
+    break;
+  case 64:
+    Out.push_back(LLT::float64());
+    break;
+  case 128:
+    Out.push_back(LLT::float128());
+    break;
+  default:
+    break;
+  }
 }
 
 /// Every type a class stands for.  A pointer has one spelling at address space
 /// 0 (classifyType() refuses the others, and that refusal is counted
 /// separately), and a vector stands for the vector of each spelling of its
 /// element.
-static void typeFiber(const LegalizerTypeClass &C, SmallVectorImpl<LLT> &Out) {
+static void typeFiber(const LegalizerTypeClass &C, bool AllowFloat,
+                      SmallVectorImpl<LLT> &Out) {
   if (C.Kind == Kind_Pointer || C.Kind == Kind_PointerVector) {
     const LLT P = LLT::pointer(0, C.ElemBits);
     Out.push_back(C.Kind == Kind_Pointer ? P
@@ -232,7 +249,7 @@ static void typeFiber(const LegalizerTypeClass &C, SmallVectorImpl<LLT> &Out) {
     return;
   }
   SmallVector<LLT, 4> Elems;
-  scalarFiber(C.ElemBits, Elems);
+  scalarFiber(C.ElemBits, AllowFloat, Elems);
   for (LLT E : Elems) {
     if (C.Lanes == 1)
       Out.push_back(E);
@@ -718,7 +735,11 @@ void X86LegalizerTable::collectDomain(std::vector<DomainPoint> &Out) const {
           // cell arrays go through the local map.
           const unsigned Class = Domain.Classes[K][I];
           const size_t Before = Members.size();
-          typeFiber(X86TypeClasses[Class], Members);
+          // FloatOK says whether this axis may be asked the FLOAT spelling:
+          // the generator clears it when a rule can force an element width
+          // with no FP semantics, which is where the chain stops being
+          // defined (G_FCMP narrows its operand to s8).
+          typeFiber(X86TypeClasses[Class], (D.FloatOK >> K) & 1u, Members);
           TypeFiberHere = std::max<unsigned>(
               TypeFiberHere, static_cast<unsigned>(Members.size() - Before));
         }
