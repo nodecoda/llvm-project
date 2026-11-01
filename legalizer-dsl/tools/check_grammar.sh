@@ -13,6 +13,7 @@ g++ -std=c++17 -I"$build" -o "$build/parse_check" \
     "$here/tools/parse_check.cc" "$build/v7.cc"
 
 "$build/parse_check" "$here/tests/v7-shapes.decl"
+"$build/parse_check" "$here/tests/v8-env.decl"
 [ -n "$V6_CORPUS" ] && "$build/parse_check" "$V6_CORPUS"
 
 # Every negative file must fail; otherwise "the parser accepts everything"

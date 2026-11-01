@@ -1,0 +1,577 @@
+/* X86 legalizer in the v5 declaration language.
+ * Generated from data/x86-core.json (legal, escapes) and
+ * data/x86-rule-chains.json (prefer, follow).
+ * Core rules that are neither Legal nor a delegate (WidenScalar /
+ * NarrowScalar / MoreElements / ...) are deliberately not emitted:
+ * the inference covers them; the count is reported on stderr. */
+
+env {
+  mode    Is64Bit from triple;
+  feature HasSSE1, HasSSE2, HasSSE41, HasAVX, HasAVX2, HasAVX512,
+          HasVLX, HasPOPCNT, HasLZCNT, HasBMI from mattr;
+  feature cmov, bwi, dqi, x87, softfloat from mattr;
+
+  let HasCMOV = cmov || HasSSE1 || Is64Bit;
+  let UseX87  = !softfloat && x87;
+  let HasBWI  = HasAVX512 && bwi;
+  let HasDQI  = HasAVX512 && dqi;
+}
+
+// The subtarget classes the generated table is built for.  The C++ gate
+// must be generated from this clause, not written by hand:
+// `if (X86GISelTable && STI.is64Bit())` is the same fact in a second
+// place; the two can drift.
+table over Is64Bit;
+
+macro MaxScalar  = cond(Is64Bit, s64, s32);
+macro MaxVector8  = cond(HasAVX512, v64s8,  cond(HasAVX, v32s8,  v16s8));
+macro MaxVector16 = cond(HasAVX512, v32s16, cond(HasAVX, v16s16, v8s16));
+macro MaxVector32 = cond(HasAVX512, v16s32, cond(HasAVX, v8s32,  v4s32));
+macro MaxVector64 = cond(HasAVX512, v8s64,  cond(HasAVX, v4s64,  v2s64));
+
+class int = s8, s16, s32, s64;
+
+// X86_IMPLICIT_DEF
+op G_IMPLICIT_DEF, G_PHI, G_FREEZE, G_CONSTANT_FOLD_BARRIER {
+  legal p0:64, s1, s8, s16, s32, s64;
+  legal s80 when UseX87;
+  legal s128 when Is64Bit;
+  legal v16s8, v8s16, v4s32, v2s64 when HasSSE2;
+  legal v32s8, v16s16, v8s32, v4s64 when HasAVX;
+  legal v64s8, v32s16, v16s32, v8s64 when HasAVX512;
+  prefer pow2 min 8 on 0;
+  prefer s8 on 0 when bits(elem(ty(0))) < 8;
+  prefer MaxScalar on 0 when bits(elem(ty(0))) > bits(MaxScalar);
+  shapes on 0;
+  prefer elem on 0 when bits(elem(ty(0))) > 64;
+}
+
+// X86_CONSTANT
+op G_CONSTANT {
+  legal p0:64, s8, s16, s32;
+  legal s64 when Is64Bit;
+  class int pow2 8;
+}
+
+// X86_LROUND
+op G_LROUND, G_LLROUND {
+  prefer s32 on 1 when bits(ty(1)) < 32;
+  except true -> delegate(libcall);
+}
+
+// X86_FCOS
+op G_FCOS, G_FCOSH, G_FACOS, G_FSIN, G_FSINH, G_FASIN, G_FTAN, G_FTANH, G_FATAN, G_FATAN2, G_FPOW, G_FEXP, G_FEXP2, G_FEXP10, G_FLOG, G_FLOG2, G_FLOG10, G_FPOWI, G_FSINCOS, G_FCEIL, G_FFLOOR {
+  except true -> delegate(libcall);
+}
+
+// X86_FNEG
+op G_FNEG {
+  legal s32 when UseX87 && !HasSSE1;
+  legal s64 when UseX87 && !HasSSE2;
+  legal s80 when UseX87;
+  except true -> delegate(lower);
+}
+
+// X86_FSQRT
+op G_FSQRT {
+  legal s32 when HasSSE1 || UseX87;
+  legal s64 when HasSSE2 || UseX87;
+  legal s80 when UseX87;
+}
+
+// X86_GET_ROUNDING
+op G_GET_ROUNDING, G_SET_ROUNDING {
+  except ty(0) = s32 -> delegate(custom);
+}
+
+// X86_MERGE_VALUES
+op G_MERGE_VALUES {
+  prefer pow2 min 8 on 1 when kind(ty(1)) = scalar;
+  prefer pow2 min 16 on 0 when kind(ty(0)) = scalar;
+  prefer s8 on 1 when kind(ty(1)) = scalar && bits(ty(1)) < 8;
+  prefer s32 on 0 when kind(ty(0)) = scalar && bits(ty(0)) < 32;
+  legal (size(16) + size(32) + size(64) + size(128) + size(256) + size(512), size(8) + size(16) + size(32) + size(64) + size(128) + size(256));
+}
+
+// X86_UNMERGE_VALUES
+op G_UNMERGE_VALUES {
+  prefer pow2 min 8 on 0 when kind(ty(0)) = scalar;
+  prefer pow2 min 16 on 1 when kind(ty(1)) = scalar;
+  prefer s8 on 0 when kind(ty(0)) = scalar && bits(ty(0)) < 8;
+  prefer s32 on 1 when kind(ty(1)) = scalar && bits(ty(1)) < 32;
+  legal (size(8) + size(16) + size(32) + size(64) + size(128) + size(256), size(16) + size(32) + size(64) + size(128) + size(256) + size(512));
+}
+
+// X86_UMIN
+op G_UMIN, G_UMAX, G_SMIN, G_SMAX {
+  prefer pow2 min 32 on 0 when kind(ty(0)) = scalar;
+  except true -> delegate(lower);
+}
+
+// X86_ADD
+op G_ADD, G_SUB {
+  legal s8, s16, s32;
+  legal s64 when Is64Bit;
+  legal v16s8, v8s16, v4s32, v2s64 when HasSSE2;
+  legal v32s8, v16s16, v8s32, v4s64 when HasAVX2;
+  legal v16s32, v8s64 when HasAVX512;
+  legal v64s8, v32s16 when HasBWI;
+  shapes on 0;
+  class int pow2 32;
+  elemwise;
+}
+
+// X86_UADDE
+op G_UADDE, G_UADDO, G_USUBE, G_USUBO {
+  legal (s16 + s32 + s8) * s8;
+  legal (s64, s8) when Is64Bit;
+  class int pow2 32;
+  prefer s8 on 1 when kind(ty(1)) = scalar && bits(ty(1)) < 8;
+  prefer s8 on 1 when kind(ty(1)) = scalar && bits(ty(1)) > 8;
+  elemwise;
+}
+
+// X86_MUL
+op G_MUL {
+  legal s8, s16, s32;
+  legal s64 when Is64Bit;
+  legal v8s16 when HasSSE2;
+  legal v4s32 when HasSSE41;
+  legal v16s16, v8s32 when HasAVX2;
+  legal v16s32 when HasAVX512;
+  legal v8s64 when HasDQI;
+  legal v2s64, v4s64 when HasDQI && HasVLX;
+  legal v32s16 when HasBWI;
+  shapes on 0;
+  class int pow2 32;
+  elemwise;
+}
+
+// X86_SMULH
+op G_SMULH, G_UMULH {
+  legal s8, s16, s32;
+  legal s64 when Is64Bit;
+  class int pow2 32;
+  elemwise;
+}
+
+// X86_SDIV
+op G_SDIV, G_SREM, G_UDIV, G_UREM {
+  legal s8, s16, s32;
+  legal s64 when Is64Bit;
+  except ty(0) = s64 -> delegate(libcall);
+  class int;
+}
+
+// X86_SHL
+op G_SHL, G_LSHR, G_ASHR {
+  legal (s16 + s32 + s8) * s8;
+  legal (s64, s8) when Is64Bit;
+  class int;
+  prefer s8 on 1 when kind(ty(1)) = scalar && bits(ty(1)) < 8;
+  prefer s8 on 1 when kind(ty(1)) = scalar && bits(ty(1)) > 8;
+}
+
+// X86_AND
+op G_AND, G_OR, G_XOR {
+  legal s8, s16, s32;
+  legal s64 when Is64Bit;
+  legal v16s8, v8s16, v4s32, v2s64 when HasSSE2;
+  legal v32s8, v16s16, v8s32, v4s64 when HasAVX;
+  legal v64s8, v32s16, v16s32, v8s64 when HasAVX512;
+  shapes on 0;
+  class int pow2 32;
+  elemwise;
+}
+
+// X86_ICMP
+op G_ICMP {
+  legal s8 * (p0:64 + s16 + s32 + s8);
+  legal (s8, s64) when Is64Bit;
+  class int;
+  prefer pow2 min 8 on 1 when kind(ty(1)) = scalar;
+  prefer s8 on 1 when kind(ty(1)) = scalar && bits(ty(1)) < 8;
+  prefer MaxScalar on 1 when kind(ty(1)) = scalar && bits(ty(1)) > bits(MaxScalar);
+}
+
+// X86_BSWAP
+op G_BSWAP {
+  legal s32;
+  legal s64 when Is64Bit;
+  class int pow2 32;
+}
+
+// X86_CTPOP
+op G_CTPOP {
+  legal (s16, s16), (s32, s32) when HasPOPCNT;
+  legal (s64, s64) when HasPOPCNT && Is64Bit;
+  prefer pow2 min 16 on 1 when kind(ty(1)) = scalar;
+  prefer s16 on 1 when kind(ty(1)) = scalar && bits(ty(1)) < 16;
+  prefer MaxScalar on 1 when kind(ty(1)) = scalar && bits(ty(1)) > bits(MaxScalar);
+  follow 0 from 1 by elem;
+}
+
+// X86_CTLZ
+op G_CTLZ {
+  legal (s16, s16), (s32, s32) when HasLZCNT;
+  legal (s64, s64) when HasLZCNT && Is64Bit;
+  prefer pow2 min 16 on 1 when kind(ty(1)) = scalar;
+  prefer s16 on 1 when kind(ty(1)) = scalar && bits(ty(1)) < 16;
+  prefer MaxScalar on 1 when kind(ty(1)) = scalar && bits(ty(1)) > bits(MaxScalar);
+  follow 0 from 1 by elem;
+}
+
+// X86_CTTZ_ZERO_POISON
+op G_CTTZ_ZERO_POISON {
+  legal (s16, s16), (s32, s32);
+  legal (s64, s64) when Is64Bit;
+  prefer pow2 min 16 on 1 when kind(ty(1)) = scalar;
+  prefer s16 on 1 when kind(ty(1)) = scalar && bits(ty(1)) < 16;
+  prefer MaxScalar on 1 when kind(ty(1)) = scalar && bits(ty(1)) > bits(MaxScalar);
+  follow 0 from 1 by elem;
+}
+
+// X86_CTTZ
+op G_CTTZ {
+  legal (s16, s16), (s32, s32) when HasBMI;
+  legal (s64, s64) when HasBMI && Is64Bit;
+  prefer pow2 min 16 on 1 when kind(ty(1)) = scalar;
+  prefer s16 on 1 when kind(ty(1)) = scalar && bits(ty(1)) < 16;
+  prefer MaxScalar on 1 when kind(ty(1)) = scalar && bits(ty(1)) > bits(MaxScalar);
+  follow 0 from 1 by elem;
+}
+
+// X86_BR
+op G_BR {
+  legal any;
+}
+
+// X86_BRCOND
+op G_BRCOND {
+  legal s1;
+}
+
+// X86_PTRTOINT
+op G_PTRTOINT {
+  legal (s1 + s16 + s32 + s8) * p0:64;
+  legal (s64, p0:64) when Is64Bit;
+  prefer MaxScalar on 0 when kind(ty(0)) = scalar && bits(ty(0)) > bits(MaxScalar);
+  prefer pow2 min 8 on 0 when kind(ty(0)) = scalar;
+}
+
+// X86_INTTOPTR
+op G_INTTOPTR {
+  legal (p0:64, s64);
+}
+
+// X86_CONSTANT_POOL
+op G_CONSTANT_POOL {
+  legal p0:64;
+}
+
+// X86_PTR_ADD
+op G_PTR_ADD {
+  legal (p0:64, s32);
+  legal (p0:64, s64) when Is64Bit;
+  prefer pow2 min 32 on 1 when kind(ty(1)) = scalar;
+  prefer s32 on 1 when kind(ty(1)) = scalar && bits(ty(1)) < 32;
+  prefer MaxScalar on 1 when kind(ty(1)) = scalar && bits(ty(1)) > bits(MaxScalar);
+}
+
+// X86_FRAME_INDEX
+op G_FRAME_INDEX {
+  legal p0:64;
+}
+
+// X86_GLOBAL_VALUE
+op G_GLOBAL_VALUE {
+  except ty(0) = p0:64 -> delegate(custom);
+}
+
+// X86_LOAD
+op G_LOAD {
+  legal any when ty(1) = p0:64 && bits(ty(0)) = bits(mem(0).ty) && ty(0) in (s8 + s16 + v4s8 + s32 + p0:64 + s80);
+  legal (s8, p0:64, mem(1, 1)), (s16, p0:64, mem(8, 1)), (s32, p0:64, mem(8, 1)), (s32, p0:64, mem(16, 1));
+  legal any when ty(1) = p0:64 && bits(ty(0)) = bits(mem(0).ty) && ty(0) in (v2s32 + s64) && Is64Bit;
+  legal any when ty(1) = p0:64 && bits(ty(0)) > bits(mem(0).ty) && (bits(mem(0).ty) = 8 || bits(mem(0).ty) = 16 || bits(mem(0).ty) = 32) && ty(0) = s64 && Is64Bit;
+  legal any when ty(1) = p0:64 && bits(ty(0)) = bits(mem(0).ty) && ty(0) = v4s32 && HasSSE1;
+  legal any when ty(1) = p0:64 && bits(ty(0)) = bits(mem(0).ty) && ty(0) in (v16s8 + v8s16 + v2p0:64 + v2s64) && HasSSE2;
+  legal any when ty(1) = p0:64 && bits(ty(0)) = bits(mem(0).ty) && ty(0) in (v32s8 + v16s16 + v8s32 + v4p0:64 + v4s64) && HasAVX;
+  legal any when ty(1) = p0:64 && bits(ty(0)) = bits(mem(0).ty) && ty(0) in (v64s8 + v32s16 + v16s32 + v8s64) && HasAVX512;
+  prefer pow2 min 8 on 0 when kind(ty(0)) = scalar;
+  prefer s8 on 0 when kind(ty(0)) = scalar && bits(ty(0)) < 8;
+  prefer MaxScalar on 0 when kind(ty(0)) = scalar && bits(ty(0)) > bits(MaxScalar);
+  prefer elem on 0;
+}
+
+// X86_STORE
+op G_STORE {
+  legal any when ty(1) = p0:64 && bits(ty(0)) = bits(mem(0).ty) && ty(0) in (s8 + s16 + v4s8 + s32 + p0:64 + s80);
+  legal any when ty(1) = p0:64 && bits(ty(0)) = bits(mem(0).ty) && ty(0) in (v2s32 + s64) && Is64Bit;
+  legal any when ty(1) = p0:64 && bits(ty(0)) = bits(mem(0).ty) && ty(0) = v4s32 && HasSSE1;
+  legal any when ty(1) = p0:64 && bits(ty(0)) = bits(mem(0).ty) && ty(0) in (v16s8 + v8s16 + v2p0:64 + v2s64) && HasSSE2;
+  legal any when ty(1) = p0:64 && bits(ty(0)) = bits(mem(0).ty) && ty(0) in (v32s8 + v16s16 + v8s32 + v4p0:64 + v4s64) && HasAVX;
+  legal any when ty(1) = p0:64 && bits(ty(0)) = bits(mem(0).ty) && ty(0) in (v64s8 + v32s16 + v16s32 + v8s64) && HasAVX512;
+  except ty(0) != mem(0).ty -> delegate(custom);
+  prefer pow2 min 8 on 0 when kind(ty(0)) = scalar;
+  prefer s8 on 0 when kind(ty(0)) = scalar && bits(ty(0)) < 8;
+  prefer MaxScalar on 0 when kind(ty(0)) = scalar && bits(ty(0)) > bits(MaxScalar);
+  prefer elem on 0;
+}
+
+// X86_SEXTLOAD
+op G_SEXTLOAD {
+  legal any when ty(1) = p0:64 && bits(ty(0)) > bits(mem(0).ty) && (bits(mem(0).ty) = 8 || bits(mem(0).ty) = 16) && ty(0) in (s16 + s32);
+  legal any when ty(1) = p0:64 && bits(ty(0)) > bits(mem(0).ty) && (bits(mem(0).ty) = 8 || bits(mem(0).ty) = 16 || bits(mem(0).ty) = 32) && ty(0) = s64 && Is64Bit;
+}
+
+// X86_ZEXTLOAD
+op G_ZEXTLOAD {
+  legal any when ty(1) = p0:64 && bits(ty(0)) > bits(mem(0).ty) && (bits(mem(0).ty) = 8 || bits(mem(0).ty) = 16) && ty(0) in (s16 + s32);
+  legal any when ty(1) = p0:64 && bits(ty(0)) > bits(mem(0).ty) && (bits(mem(0).ty) = 8 || bits(mem(0).ty) = 16 || bits(mem(0).ty) = 32) && ty(0) = s64 && Is64Bit;
+}
+
+// X86_FPEXTLOAD
+op G_FPEXTLOAD {
+  legal any when ty(1) = p0:64 && bits(ty(0)) > bits(mem(0).ty) && (bits(mem(0).ty) = 32 || bits(mem(0).ty) = 64) && ty(0) in (s64 + s80) && UseX87;
+}
+
+// X86_FPTRUNCSTORE
+op G_FPTRUNCSTORE {
+  legal any when ty(1) = p0:64 && bits(ty(0)) > bits(mem(0).ty) && (bits(mem(0).ty) = 32 || bits(mem(0).ty) = 64) && ty(0) in (s64 + s80) && UseX87;
+}
+
+// X86_ANYEXT
+op G_ANYEXT {
+  legal s8, s16, s32, s128;
+  legal s64 when Is64Bit;
+  class int pow2 8;
+  prefer pow2 min 8 on 1 when kind(ty(1)) = scalar;
+  prefer s8 on 1 when kind(ty(1)) = scalar && bits(ty(1)) < 8;
+  prefer MaxScalar on 1 when kind(ty(1)) = scalar && bits(ty(1)) > bits(MaxScalar);
+  elemwise;
+}
+
+// X86_SEXT
+op G_SEXT, G_ZEXT {
+  legal s8, s16, s32;
+  legal s64 when Is64Bit;
+  class int pow2 8;
+  prefer pow2 min 8 on 1 when kind(ty(1)) = scalar;
+  prefer s8 on 1 when kind(ty(1)) = scalar && bits(ty(1)) < 8;
+  prefer MaxScalar on 1 when kind(ty(1)) = scalar && bits(ty(1)) > bits(MaxScalar);
+  elemwise;
+}
+
+// X86_TRUNC
+op G_TRUNC {
+  legal (s1 + s16 + s32 + s64 + s8) * (s128 + s16 + s32 + s64 + s8);
+}
+
+// X86_SEXT_INREG
+op G_SEXT_INREG {
+  except true -> delegate(lower);
+}
+
+// X86_FCONSTANT
+op G_FCONSTANT {
+  legal s32, s64;
+  legal s80 when UseX87;
+}
+
+// X86_FADD
+op G_FADD, G_FSUB, G_FMUL, G_FDIV {
+  legal s32, s64;
+  legal v4s32 when HasSSE1;
+  legal v2s64 when HasSSE2;
+  legal v8s32, v4s64 when HasAVX;
+  legal v16s32, v8s64 when HasAVX512;
+  legal s80 when UseX87;
+}
+
+// X86_FABS
+op G_FABS {
+  legal s80 when UseX87;
+  legal s64 when UseX87 && !Is64Bit;
+  except true -> delegate(lower);
+}
+
+// X86_FCMP
+op G_FCMP {
+  legal s8, s32 when HasSSE1 || UseX87;
+  legal s8, s64 when HasSSE2 || UseX87;
+  legal s8, s80 when UseX87;
+  prefer s8 on 0 when kind(ty(0)) = scalar && bits(ty(0)) < 8;
+  prefer s8 on 0 when kind(ty(0)) = scalar && bits(ty(0)) > 8;
+  prefer s32 on 1 when kind(ty(1)) = scalar && bits(ty(1)) < 32;
+  prefer cond(HasSSE2, s64, s32) on 1 when kind(ty(1)) = scalar && bits(ty(1)) > bits(cond(HasSSE2, s64, s32));
+  prefer pow2 on 1 when kind(ty(1)) = scalar;
+}
+
+// X86_FPEXT
+op G_FPEXT {
+  legal (s64, s32) when HasSSE2;
+  legal (v4s64, v4s32) when HasAVX;
+  legal (v8s64, v8s32) when HasAVX512;
+  except UseX87 && (ty(0) = s64 && ty(1) = s32) -> delegate(lower);
+  except UseX87 && (ty(0) = s80 && ty(1) = s32) -> delegate(lower);
+  except UseX87 && (ty(0) = s80 && ty(1) = s64) -> delegate(lower);
+  except true -> delegate(libcall);
+}
+
+// X86_FPTRUNC
+op G_FPTRUNC {
+  legal (s32, s64) when HasSSE2;
+  legal (v4s32, v4s64) when HasAVX;
+  legal (v8s32, v8s64) when HasAVX512;
+  except UseX87 && (ty(0) = s32 && ty(1) = s64) -> delegate(lower);
+  except UseX87 && (ty(0) = s32 && ty(1) = s80) -> delegate(lower);
+  except UseX87 && (ty(0) = s64 && ty(1) = s80) -> delegate(lower);
+}
+
+// X86_SITOFP
+op G_SITOFP {
+  legal (s32, s32) when HasSSE1;
+  legal (s32, s64) when HasSSE1 && Is64Bit;
+  legal (s64, s32) when HasSSE2;
+  legal (s64, s64) when HasSSE2 && Is64Bit;
+  prefer cond((UseX87 && !HasSSE1), s16, s32) on 1 when kind(ty(1)) = scalar && bits(ty(1)) < bits(cond((UseX87 && !HasSSE1), s16, s32));
+  prefer MaxScalar on 1 when kind(ty(1)) = scalar && bits(ty(1)) > bits(MaxScalar);
+  prefer pow2 on 1 when kind(ty(1)) = scalar;
+  except UseX87 && (ty(0) = s32 && ty(1) = s16) -> delegate(custom);
+  except UseX87 && (ty(0) = s32 && ty(1) = s32) -> delegate(custom);
+  except UseX87 && (ty(0) = s32 && ty(1) = s64) -> delegate(custom);
+  except UseX87 && (ty(0) = s64 && ty(1) = s16) -> delegate(custom);
+  except UseX87 && (ty(0) = s64 && ty(1) = s32) -> delegate(custom);
+  except UseX87 && (ty(0) = s64 && ty(1) = s64) -> delegate(custom);
+  except UseX87 && (ty(0) = s80 && ty(1) = s16) -> delegate(custom);
+  except UseX87 && (ty(0) = s80 && ty(1) = s32) -> delegate(custom);
+  except UseX87 && (ty(0) = s80 && ty(1) = s64) -> delegate(custom);
+  prefer s32 on 0 when kind(ty(0)) = scalar && bits(ty(0)) < 32;
+  prefer cond(HasSSE2, s64, s32) on 0 when kind(ty(0)) = scalar && bits(ty(0)) > bits(cond(HasSSE2, s64, s32));
+  prefer pow2 on 0 when kind(ty(0)) = scalar;
+}
+
+// X86_FPTOSI
+op G_FPTOSI {
+  legal (s32, s32) when HasSSE1;
+  legal (s64, s32) when HasSSE1 && Is64Bit;
+  legal (s32, s64) when HasSSE2;
+  legal (s64, s64) when HasSSE2 && Is64Bit;
+  prefer cond((UseX87 && !HasSSE1), s16, s32) on 0 when kind(ty(0)) = scalar && bits(ty(0)) < bits(cond((UseX87 && !HasSSE1), s16, s32));
+  prefer MaxScalar on 0 when kind(ty(0)) = scalar && bits(ty(0)) > bits(MaxScalar);
+  prefer pow2 on 0 when kind(ty(0)) = scalar;
+  except UseX87 && (ty(0) = s16 && ty(1) = s32) -> delegate(custom);
+  except UseX87 && (ty(0) = s16 && ty(1) = s64) -> delegate(custom);
+  except UseX87 && (ty(0) = s16 && ty(1) = s80) -> delegate(custom);
+  except UseX87 && (ty(0) = s32 && ty(1) = s32) -> delegate(custom);
+  except UseX87 && (ty(0) = s32 && ty(1) = s64) -> delegate(custom);
+  except UseX87 && (ty(0) = s32 && ty(1) = s80) -> delegate(custom);
+  except UseX87 && (ty(0) = s64 && ty(1) = s32) -> delegate(custom);
+  except UseX87 && (ty(0) = s64 && ty(1) = s64) -> delegate(custom);
+  except UseX87 && (ty(0) = s64 && ty(1) = s80) -> delegate(custom);
+  prefer s32 on 1 when kind(ty(1)) = scalar && bits(ty(1)) < 32;
+  prefer cond(HasSSE2, s64, s32) on 1 when kind(ty(1)) = scalar && bits(ty(1)) > bits(cond(HasSSE2, s64, s32));
+  prefer pow2 on 1 when kind(ty(1)) = scalar;
+}
+
+// X86_UITOFP
+op G_UITOFP {
+  legal (s32 + s64) * (s32 + s64) when HasAVX512;
+  except !HasAVX512 && ((HasSSE1 && ty(0) = s32) || (HasSSE2 && ty(0) = s64)) && kind(ty(1)) = scalar && bits(ty(1)) < cond(Is64Bit, 64, 32) -> delegate(custom);
+  except !HasAVX512 && ((HasSSE1 && ty(0) = s32) || (HasSSE2 && ty(0) = s64)) && Is64Bit && ty(1) = s64 -> delegate(lower);
+  prefer s32 on 0 when kind(ty(0)) = scalar && bits(ty(0)) < 32;
+  prefer cond(HasSSE2, s64, s32) on 0 when kind(ty(0)) = scalar && bits(ty(0)) > bits(cond(HasSSE2, s64, s32));
+  prefer pow2 on 0 when kind(ty(0)) = scalar;
+  prefer s32 on 1 when kind(ty(1)) = scalar && bits(ty(1)) < 32;
+  prefer MaxScalar on 1 when kind(ty(1)) = scalar && bits(ty(1)) > bits(MaxScalar);
+  prefer pow2 on 1 when kind(ty(1)) = scalar;
+}
+
+// X86_FPTOUI
+op G_FPTOUI {
+  legal (s32 + s64) * (s32 + s64) when HasAVX512;
+  except !HasAVX512 && ((HasSSE1 && ty(1) = s32) || (HasSSE2 && ty(1) = s64)) && kind(ty(0)) = scalar && bits(ty(0)) < cond(Is64Bit, 64, 32) -> delegate(custom);
+  except !HasAVX512 && ((HasSSE1 && ty(1) = s32) || (HasSSE2 && ty(1) = s64)) && Is64Bit && ty(0) = s64 -> delegate(lower);
+  prefer s32 on 0 when kind(ty(0)) = scalar && bits(ty(0)) < 32;
+  prefer MaxScalar on 0 when kind(ty(0)) = scalar && bits(ty(0)) > bits(MaxScalar);
+  prefer pow2 on 0 when kind(ty(0)) = scalar;
+  prefer s32 on 1 when kind(ty(1)) = scalar && bits(ty(1)) < 32;
+  prefer cond(HasSSE2, s64, s32) on 1 when kind(ty(1)) = scalar && bits(ty(1)) > bits(cond(HasSSE2, s64, s32));
+  prefer pow2 on 1 when kind(ty(1)) = scalar;
+}
+
+// X86_BUILD_VECTOR
+op G_BUILD_VECTOR {
+  except (HasSSE1 && ty(0) in (v4s32)) || (HasSSE2 && ty(0) in (v2s64 + v8s16 + v16s8)) || (HasAVX && ty(0) in (v4s64 + v8s32 + v16s16 + v32s8)) || (HasAVX512 && ty(0) in (v8s64 + v16s32 + v32s16 + v64s8)) -> delegate(custom);
+  shapes on 0;
+}
+
+// X86_EXTRACT
+op G_EXTRACT {
+  legal (v16s8, v32s8), (v8s16, v16s16), (v4s32, v8s32), (v2s64, v4s64) when HasAVX;
+  legal (v16s8, v64s8), (v32s8, v64s8), (v8s16, v32s16), (v16s16, v32s16), (v4s32, v16s32), (v8s32, v16s32), (v2s64, v8s64), (v4s64, v8s64) when HasAVX512;
+}
+
+// X86_INSERT
+op G_INSERT {
+  legal (v32s8, v16s8), (v16s16, v8s16), (v8s32, v4s32), (v4s64, v2s64) when HasAVX;
+  legal (v64s8, v16s8), (v64s8, v32s8), (v32s16, v8s16), (v32s16, v16s16), (v16s32, v4s32), (v16s32, v8s32), (v8s64, v2s64), (v8s64, v4s64) when HasAVX512;
+}
+
+// X86_CONCAT_VECTORS
+op G_CONCAT_VECTORS {
+  legal (v32s8, v16s8), (v16s16, v8s16), (v8s32, v4s32), (v4s64, v2s64) when HasSSE1;
+  legal (v64s8, v16s8), (v64s8, v32s8), (v32s16, v8s16), (v32s16, v16s16), (v16s32, v4s32), (v16s32, v8s32), (v8s64, v2s64), (v8s64, v4s64) when HasAVX;
+}
+
+// X86_SELECT
+op G_SELECT {
+  legal (p0:64 + s16 + s32) * s32;
+  legal (s8, s32) when !HasCMOV;
+  legal (s64, s32) when Is64Bit;
+  legal (s80, s32) when UseX87;
+  prefer s32 on 1 when kind(ty(1)) = scalar && bits(ty(1)) < 32;
+  prefer s32 on 1 when kind(ty(1)) = scalar && bits(ty(1)) > 32;
+  class int pow2 8;
+}
+
+// X86_MEMCPY
+op G_MEMCPY, G_MEMMOVE, G_MEMSET {
+  except true -> delegate(libcall);
+}
+
+// X86_DYN_STACKALLOC
+op G_DYN_STACKALLOC, G_STACKSAVE, G_STACKRESTORE {
+  except true -> delegate(lower);
+}
+
+// X86_IS_FPCLASS
+op G_IS_FPCLASS {
+  except Is64Bit && (ty(0) = s1 && ty(1) = s32) -> delegate(lower);
+  except Is64Bit && (ty(0) = s1 && ty(1) = s64) -> delegate(lower);
+  except Is64Bit && (ty(0) = s1 && ty(1) = s80) -> delegate(lower);
+}
+
+// X86_INTRINSIC_ROUNDEVEN
+op G_INTRINSIC_ROUNDEVEN, G_INTRINSIC_TRUNC {
+  elemwise;
+  prefer s32 on 0 when kind(ty(0)) = scalar && bits(ty(0)) < 32;
+  except true -> delegate(libcall);
+}
+
+// X86_INTRINSIC
+op G_INTRINSIC, G_INTRINSIC_W_SIDE_EFFECTS {
+  legal any;
+}
+
+// X86_TRAP
+op G_TRAP, G_DEBUGTRAP, G_UBSANTRAP {
+  legal any;
+}
+
+// X86_INVOKE_REGION_START
+op G_INVOKE_REGION_START {
+  legal any;
+}
+

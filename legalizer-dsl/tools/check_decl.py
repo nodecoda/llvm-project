@@ -366,19 +366,42 @@ NOT_A_FEATURE = {
 }
 
 
+def env_mentions(block, macros):
+    """Identifiers the block mentions, before `let` elimination."""
+    body = ' '.join(block['stmts'])
+    if D.env_declared():
+        body = D.expand_macros_used(body, macros)
+    return set(re.findall(r'[A-Za-z_][A-Za-z0-9_]*', body))
+
+
 def feature_atoms_of(block, macros):
-    """Construction-time features mentioned anywhere in the block.
+    """Construction-time features the block's *own* text mentions.
 
     Not just the `when` guards: G_UITOFP's `HasSSE2` shows up only inside an
     `except` condition and inside a `cond(...)` target.  Missing it makes
-    eval_cond return None and turns a real answer into "undecided"."""
-    text = ' '.join(block['stmts']) + ' ' + ' '.join(macros.values())
-    atoms = set()
-    # `p0` is a prefix of `p0:64`, not a feature.
+    eval_cond return None and turns a real answer into "undecided".
+
+    Two rules, and they are different:
+      * a declared file (v8) is expanded: `let` names are substituted away
+        (they are definitions, not dimensions) and only the macros the block
+        mentions are pulled in.  The old code concatenated every macro body
+        into every block, so 37 of 63 X86 blocks carried
+        `{Is64Bit, HasAVX, HasAVX512}` from macros they never used.
+      * an undeclared file keeps the v7 guess, byte for byte, so the corpus
+        before `env { }` still measures what it used to.
+    """
+    body = ' '.join(block['stmts'])
     prefixes = {t[:i] for t in D.U for i in range(1, len(t))} - set(D.U)
+    if D.env_declared():
+        text = D.expand_lets(D.expand_macros_used(body, macros))
+        extra = set(D.ENV['let'])
+    else:
+        text = body + ' ' + ' '.join(macros.values())
+        extra = set()
+    atoms = set()
     for w in re.findall(r'[A-Za-z_][A-Za-z0-9_]*', text):
         if (w in NOT_A_FEATURE or w in D.CLASSES or w in macros
-                or D.TY.fullmatch(w) or w in prefixes):
+                or w in extra or D.TY.fullmatch(w) or w in prefixes):
             continue
         atoms.add(w)
     return sorted(atoms)
@@ -1069,8 +1092,72 @@ def check(path, self_test_errors=None):
             if D.kind(t) != 'scalar':
                 errs.append(('12-class-nonscalar', name, t))
 
+    # --- the declared environment (v8) -----------------------------------
+    # A v8 file names its alphabet instead of letting the tools guess it.  The
+    # checks below are the ones the guess could not make: an undeclared atom is
+    # an error (it used to become a silent extra dimension), a `let` must be
+    # acyclic and total, and `table over` may only name declared atoms.
+    if D.env_declared():
+        declared = D.env_primitives() | set(D.ENV['let'])
+        for name, body in D.ENV['let'].items():
+            for w in re.findall(r'[A-Za-z_][A-Za-z0-9_]*', body):
+                if w in declared or w in NOT_A_FEATURE or D.TY.fullmatch(w):
+                    continue
+                errs.append(('13-let-undeclared', name, w))
+        # Cycle: a name reachable from itself by substitution.  A cycle would
+        # make the substitution non-terminating, so it is an error here rather
+        # than a hang inside expand_lets.
+        for name in D.ENV['let']:
+            seen, work = set(), [name]
+            hit = False
+            while work:
+                cur = work.pop()
+                if cur in seen:
+                    continue
+                seen.add(cur)
+                body = D.ENV['let'].get(cur)
+                if body is None:
+                    continue
+                for w in re.findall(r'[A-Za-z_][A-Za-z0-9_]*', body):
+                    if w == name:
+                        hit = True
+                        break
+                    if w not in seen:
+                        work.append(w)
+                if hit:
+                    break
+            if hit:
+                errs.append(('13-let-cycle', name, name))
+        for a in D.ENV['table_over']:
+            if a not in declared:
+                errs.append(('13-table-over-unknown', '-', a))
+        # "Unused" is asked *before* `let` elimination: a name that only
+        # appears inside a used definition is used.  Asking after elimination
+        # would report every defined name as unused -- the definition is
+        # exactly what removed it.
+        used = set()
+        for b in blocks:
+            used |= env_mentions(b, macros)
+        work = list(used)
+        while work:
+            cur = work.pop()
+            body = D.ENV['let'].get(cur)
+            if body is None:
+                continue
+            for w in re.findall(r'[A-Za-z_][A-Za-z0-9_]*', body):
+                if w not in used:
+                    used.add(w)
+                    work.append(w)
+        for a in sorted(declared - used):
+            warns.append(('13-env-unused', '-', a))
+
     for b in blocks:
         ops = b['ops']
+        if D.env_declared():
+            declared = D.env_primitives() | set(D.ENV['let'])
+            for a in feature_atoms_of(b, macros):
+                if a not in declared:
+                    errs.append(('13-env-undeclared', ops, a))
         legal = [s for s in b['stmts'] if s.startswith('legal ')]
         for st in b['stmts']:
             if st.startswith('class '):
@@ -1549,6 +1636,31 @@ SHAPE_SELF_TEST = [
      '  policy 0: scalar to s8;\n}\n', '13-policy-dead-config'),
     ('op G_T {\n  query ty 0;\n  legal s8 when HasSSE1;\n'
      '  policy 0: scalar to s8 when HasSSE1;\n}\n', None),
+    # --- the declared environment (v8) ---------------------------------
+    # Declared alphabet: the guard's atom is known, so nothing to report.
+    ('env {\n  mode Is64Bit;\n  feature HasSSE2;\n}\n'
+     'table over Is64Bit;\n'
+     'op G_T {\n  query ty 0;\n  legal s8 when Is64Bit;\n}\n', None),
+    # An atom the file never declared was a silent extra dimension in v7.
+    ('env {\n  mode Is64Bit;\n}\n'
+     'op G_T {\n  query ty 0;\n  legal s8 when HasSSE2;\n}\n',
+     '13-env-undeclared'),
+    # A `let` is substituted away, so a cycle would not terminate.
+    ('env {\n  mode Is64Bit;\n  let A = B;\n  let B = A;\n}\n'
+     'op G_T {\n  query ty 0;\n  legal s8;\n}\n', '13-let-cycle'),
+    # A `let` body may only name declared things.
+    ('env {\n  mode Is64Bit;\n  let A = B;\n}\n'
+     'op G_T {\n  query ty 0;\n  legal s8;\n}\n',
+     '13-let-undeclared'),
+    # `table over` is a commitment: it may only name declared atoms.
+    ('env {\n  mode Is64Bit;\n}\ntable over HasSSE2;\n'
+     'op G_T {\n  query ty 0;\n  legal s8;\n}\n',
+     '13-table-over-unknown'),
+    # A defined name is not a dimension: the block's alphabet is the
+    # primitives, so the phantom `{HasCMOV=0, Is64Bit=1}` cannot be built.
+    ('env {\n  mode Is64Bit;\n  feature cmov, HasSSE1;\n'
+     '  let HasCMOV = cmov || HasSSE1 || Is64Bit;\n}\n'
+     'op G_T {\n  query ty 0;\n  legal s8 when HasCMOV;\n}\n', None),
 ]
 
 
@@ -1627,6 +1739,62 @@ def slot_self_test():
     return fails
 
 
+def env_self_test():
+    """The `let` is a definition: the environments it removes are gone.
+
+    This is the negative control for the v8 environment.  Three cases, and
+    each one can fail on its own:
+
+      1. a defined name never appears in the sampled alphabet;
+      2. no environment has `HasCMOV` false at `Is64Bit=1` -- impossible,
+         because canUseCMOV() is `hasCMOV() || hasSSE1() || is64Bit()`;
+      3. the v7 file still guesses `HasCMOV`/`UseX87` as atoms, so the old
+         measurement keeps its old numbers (the declaration is opt-in).
+    """
+    import itertools
+    fails = 0
+    D.set_universe(json.load(open(ROOT + '/data/x86-core.json'))['domain']['types'])
+    macros, blocks = D.parse(ROOT + '/data/2026-11-01-x86-env.decl')
+    lets = set(D.ENV['let'])
+
+    # The sampled alphabet is primitives only: a defined name was substituted
+    # away, and anything the file never declared would be a silent dimension.
+    prims = D.env_primitives()
+    leaked = set()
+    for b in blocks:
+        leaked |= set(feature_atoms_of(b, macros)) - prims
+    if leaked:
+        print('  FAIL env: %s sampled but not a declared primitive'
+              % sorted(leaked))
+        fails += 1
+
+    # Every environment at Is64Bit=1 has HasCMOV true, by the definition.
+    bad = 0
+    for b in blocks:
+        if 'HasCMOV' not in ' '.join(b['stmts']):
+            continue
+        atoms = feature_atoms_of(b, macros)
+        for v in itertools.product([False, True], repeat=len(atoms)):
+            env = dict(zip(atoms, v))
+            if env.get('Is64Bit') and D.eval_bool('HasCMOV', env) is not True:
+                bad += 1
+    if bad:
+        print('  FAIL env: %d environments have HasCMOV=0 at Is64Bit=1' % bad)
+        fails += 1
+
+    # v7 control: without `env { }` the alphabet is still guessed.
+    _m2, vb = D.parse(ROOT + '/data/2026-11-01-x86.decl')
+    guessed = set()
+    for b in vb:
+        guessed |= set(feature_atoms_of(b, _m2))
+    if not {'HasCMOV', 'UseX87'} <= guessed:
+        print('  FAIL env: the v7 file stopped guessing its atoms')
+        fails += 1
+
+    print('  env self-test: 3 cases, %d failed' % fails)
+    return fails
+
+
 def self_test():
     ok = 0
     for src, want in SELF_TEST:
@@ -1649,8 +1817,9 @@ def self_test():
     gfails = guard_self_test()
     cfails = class_self_test()
     lfails = slot_self_test()
+    efails = env_self_test()
     return 0 if (ok == len(SELF_TEST) and not sfails and not gfails
-                 and not cfails and not lfails) else 1
+                 and not cfails and not lfails and not efails) else 1
 
 
 def main(argv):

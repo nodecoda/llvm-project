@@ -537,7 +537,35 @@ def _fold_class(lines, macros):
     return lines, False
 
 
-def main():
+# The declared environment (v8).  The three-way split is not cosmetic: a
+# `mode` changes the type universe and the macros, a `feature` is a
+# per-function bit, and a `let` is a *definition* that is substituted away
+# before enumeration -- so `{HasCMOV=0, Is64Bit=1}` stops being buildable
+# instead of being filtered afterwards.  canUseCMOV() is
+# `hasCMOV() || hasSSE1() || is64Bit()` (X86Subtarget.h:208).
+ENV_HEADER = [
+    'env {',
+    '  mode    Is64Bit from triple;',
+    '  feature HasSSE1, HasSSE2, HasSSE41, HasAVX, HasAVX2, HasAVX512,',
+    '          HasVLX, HasPOPCNT, HasLZCNT, HasBMI from mattr;',
+    '  feature cmov, bwi, dqi, x87, softfloat from mattr;',
+    '',
+    '  let HasCMOV = cmov || HasSSE1 || Is64Bit;',
+    '  let UseX87  = !softfloat && x87;',
+    '  let HasBWI  = HasAVX512 && bwi;',
+    '  let HasDQI  = HasAVX512 && dqi;',
+    '}',
+    '',
+    '// The subtarget classes the generated table is built for.  The C++ gate',
+    '// must be generated from this clause, not written by hand:',
+    '// `if (X86GISelTable && STI.is64Bit())` is the same fact in a second',
+    '// place; the two can drift.',
+    'table over Is64Bit;',
+    '',
+]
+
+
+def main(env=False):
     D.set_universe(CORE['domain']['types'])
     chains = {key(r['opcodes']): r['chain'] for r in CH}
     o = ['/* X86 legalizer in the v5 declaration language.',
@@ -545,7 +573,9 @@ def main():
          ' * data/x86-rule-chains.json (prefer, follow).',
          ' * Core rules that are neither Legal nor a delegate (WidenScalar /',
          ' * NarrowScalar / MoreElements / ...) are deliberately not emitted:',
-         ' * the inference covers them, and the count is reported on stderr. */', '']
+         ' * the inference covers them; the count is reported on stderr. */', '']
+    if env:
+        o += ENV_HEADER
     o += ['macro MaxScalar  = cond(Is64Bit, s64, s32);',
           'macro MaxVector8  = cond(HasAVX512, v64s8,  cond(HasAVX, v32s8,  v16s8));',
           'macro MaxVector16 = cond(HasAVX512, v32s16, cond(HasAVX, v16s16, v8s16));',
@@ -692,4 +722,4 @@ def self_test():
 if __name__ == '__main__':
     if '--self-test' in sys.argv[1:]:
         sys.exit(self_test())
-    sys.exit(main())
+    sys.exit(main(env='--env' in sys.argv[1:]))

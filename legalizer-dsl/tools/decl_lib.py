@@ -189,6 +189,70 @@ def dom_of(shape, guard):
 
 CLASSES = {}
 
+# The declared environment alphabet.  Empty for a v7 file, which keeps the old
+# behaviour (atoms are guessed from the text).  A v8 file declares it, and then
+# every tool uses the declaration instead of guessing -- see `let_env`.
+ENV = {'mode': [], 'feature': [], 'let': {}, 'table_over': []}
+
+
+def env_declared():
+    """True when the file declares an environment alphabet (v8)."""
+    return bool(ENV['mode'] or ENV['feature'] or ENV['let'])
+
+
+def env_primitives():
+    """The atoms the environment is *sampled* on: modes and features.
+
+    A `let` is a definition, not a dimension: it is substituted away before
+    enumeration, so it must not appear here.
+    """
+    return set(ENV['mode']) | set(ENV['feature'])
+
+
+def expand_lets(text, _seen=None):
+    """Substitute every `let` name by its body, transitively.
+
+    Elimination, not constraint: after this, a defined name is gone from the
+    text, so no later stage has to remember to filter it.  A cycle leaves the
+    name in place (check_decl reports `13-let-cycle`); silently looping would
+    turn a declaration error into a hang.
+    """
+    if not ENV['let']:
+        return text
+    seen = set(_seen or ())
+    out, changed = text, True
+    while changed:
+        changed = False
+        for name, body in ENV['let'].items():
+            if name in seen:
+                continue
+            pat = r'(?<![A-Za-z0-9_])' + re.escape(name) + r'(?![A-Za-z0-9_])'
+            if re.search(pat, out):
+                out = re.sub(pat, '(' + body + ')', out)
+                seen.add(name)
+                changed = True
+    return out
+
+
+def expand_macros_used(text, macros):
+    """Expand only the macros the text mentions, transitively.
+
+    v7 concatenated *every* macro body into *every* block, so a block that
+    mentions nothing inherited `{Is64Bit, HasAVX, HasAVX512}` from macros it
+    never used -- 37 of 63 X86 blocks had exactly that alphabet.  Those are
+    dimensions nothing in the block reads.
+    """
+    macros = macros or {}
+    out, changed = text, True
+    while changed:
+        changed = False
+        for name, body in macros.items():
+            pat = r'(?<![A-Za-z0-9_])' + re.escape(name) + r'(?![A-Za-z0-9_])'
+            if re.search(pat, out):
+                out = re.sub(pat, '(' + body + ')', out)
+                changed = True
+    return out
+
 
 def class_members(name):
     """`class int = s8, s16;` -> {s8, s16}; None when the class is undeclared."""
@@ -229,8 +293,9 @@ def parse(path):
     needs it to tell a declaration the author wrote for a slot from one a group
     spelled out.
     """
-    global CLASSES
+    global CLASSES, ENV
     CLASSES = {}
+    ENV = {'mode': [], 'feature': [], 'let': {}, 'table_over': []}
     src = re.sub(r'/\*.*?\*/', '', open(path).read(), flags=re.S)
     src = re.sub(r'//[^\n]*', '', src)
     macros, blocks = {}, []
@@ -258,6 +323,12 @@ def parse(path):
         if not text:
             return
         if not stack:
+            m = re.match(r'table\s+over\s+(.+)$', text)
+            if m:
+                ENV['table_over'] = [x.strip() for x in
+                                     strip_list(m.group(1)).split(',')
+                                     if x.strip()]
+                return
             m = re.match(r'macro\s+(\w+)\s*=\s*(.+)$', text)
             if m:
                 macros[m.group(1)] = m.group(2)
@@ -267,6 +338,22 @@ def parse(path):
                 CLASSES[m.group(1)] = m.group(2).strip()
             return
         top = stack[-1]
+        if top['kind'] == 'env':
+            m = re.match(r'(mode|feature)\s+([\w,\s]+?)(?:\s+from\s+(\w+))?$',
+                         text)
+            if m:
+                kind = m.group(1)
+                for name in m.group(2).split(','):
+                    name = name.strip()
+                    if name:
+                        ENV[kind].append(name)
+                return
+            m = re.match(r'let\s+(\w+)\s*=\s*(.+)$', text)
+            if m:
+                ENV['let'][m.group(1)] = ' '.join(m.group(2).split())
+                return
+            fail('13-env-syntax: %s' % text[:60])
+            return
         if top['kind'] == 'op':
             blk = top['blk']
             m = re.match(r'group\s+(\w+)\s*=\s*(.+)$', text)
@@ -305,6 +392,8 @@ def parse(path):
                        'groups': {}}
                 blocks.append(blk)
                 stack.append({'kind': 'op', 'blk': blk})
+            elif head == 'env':
+                stack.append({'kind': 'env'})
             elif head.startswith('with '):
                 opent = [e for e in stack if e['kind'] == 'op']
                 if not opent:
@@ -346,7 +435,12 @@ def parse(path):
 
 # ---------- three-valued feature evaluation ---------------------------------
 def eval_bool(expr, env):
-    """Only && || ! and identifiers; a query predicate evaluates to None."""
+    """Only && || ! and identifiers; a query predicate evaluates to None.
+
+    `let` names are expanded first: a defined name is not an atom, so an env
+    only ever carries primitives."""
+    if ENV['let']:
+        expr = expand_lets(expr)
     toks = re.findall(r'&&|\|\||!|\(|\)|[A-Za-z_][A-Za-z0-9_]*|\S', expr)
     pos = [0]
 

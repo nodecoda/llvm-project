@@ -65,6 +65,16 @@ def features_for(env, composed=()):
     generator writes (`UseX87 && !HasSSE1`), so evaluate that form against the
     same env instead of leaving the judge to raise unknown_feature.
     """
+    if D.ENV['let']:
+        # The environment now carries primitives (cmov, bwi, ...); the rules
+        # still name the definitions (HasCMOV, HasBWI).  Resolve them once, in
+        # the same place the judge looks values up, instead of at every use.
+        env = dict(env)
+        for name in D.ENV['let']:
+            if name not in env:
+                v = D.eval_bool(name, env)
+                if v is not None:
+                    env[name] = v
     feats = {}
     for raw, short in C_FEAT.items():
         feats[raw] = bool(env.get(short, False))

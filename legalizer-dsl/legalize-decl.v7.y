@@ -4,6 +4,12 @@
  * 本文件是 v6 的**加法**：v6 的每一条 production、每一个 token 的含义都不变，
  * 只追加三样东西。用 v6 写的 .decl 在 v7 下逐字节同义。
  *
+ * v8 追加第四样，同样是加法：`env { }` 与 `table over`。v7 的读取器仍然
+ * 接受不写这两个的文件，并保持 v7 的语义（原子从文本里猜）。写了 `env { }`
+ * 之后，原子就是声明的：`mode` / `feature` 是采样维度，`let` 是**定义**，
+ * 在枚举之前被替换掉，所以永远不是维度。详见文件末尾的 envdef。
+ * 没有 `assume`：一个能关掉的默认值（x86-64 的 SSE2）不是不变式。
+ *
  * 追加的三样，全部来自测量（见 2026-11-01-default-inference.md §5.6 与
  * 2026-11-01-x86.decl 的 84 条 prefer）：
  *
@@ -51,7 +57,11 @@
  * 文法一页纸（EBNF）。分隔符一人一职：`[ ]` 是有序列表，`{ }` 是块/作用域，
  * `( )` 只用于表达式分组和产品（product）。
  *
- *   file      = { macrodef | classdef | opdef } ;
+ *   file      = { macrodef | classdef | envdef | tabledef | opdef } ;
+ *   envdef    = "env" "{" { envdecl } "}" ;
+ *   envdecl   = ( "mode" | "feature" ) ident_list [ "from" IDENT ] ";"
+ *             | "let" IDENT "=" expr ";" ;
+ *   tabledef  = "table" "over" ident_list ";" ;
  *   opdef     = "op" opcode { "," opcode } block ;
  *   block     = "{" { item } "}" ;
  *   item      = query | variadic | groupdef | with | legal | prefer
@@ -107,6 +117,9 @@ void yyerror(const char *);
 %token WITH GROUP
 %token PROMOTE TRUNCATE
 
+/* --- v8 additions: the declared environment ------------------------- */
+%token ENV MODE FEATURE LET TABLE OVER
+
 %left OROR
 %left ANDAND
 %nonassoc EQ NE LT LE GT GE IN
@@ -117,7 +130,51 @@ void yyerror(const char *);
 %start file
 %%
 file      : %empty | file defn ;
-defn      : opdef | macrodef | classdef ;
+defn      : opdef | macrodef | classdef | envdef | tabledef ;
+
+/* v8: the alphabet is declared, not guessed.
+ *
+ * v7 discovered the construction-time features by scanning the block text for
+ * identifiers that are not types, macros, classes or query predicates.  That
+ * guess cannot tell three different things apart, and the measurement showed
+ * what it costs:
+ *
+ *   mode     Is64Bit                     comes from the triple, is not a feature
+ *            bit, and changes the *type universe* (p0:64 vs p0:32) and the
+ *            macros, not just a guard.
+ *   feature  HasSSE2, HasAVX512, ...     comes from -mcpu/-mattr, per function.
+ *   let      HasCMOV = cmov || HasSSE1 || Is64Bit
+ *                                        a *definition*: it is substituted
+ *                                        away before enumeration, so the
+ *                                        declared name is never a dimension.
+ *
+ * The distinction is not cosmetic.  Treating a definition as a dimension is
+ * how `{HasCMOV=0, Is64Bit=1}` -- impossible, because canUseCMOV() is
+ * `hasCMOV() || hasSSE1() || is64Bit()` -- got enumerated as reachable and
+ * diluted a measurement by 6 of 301 environments.
+ *
+ * What is deliberately NOT here: an `assume` clause.  `llc -mtriple=x86_64
+ * -mattr=-sse2` exits 0, so "x86-64 implies SSE2" is a default, not a fact;
+ * writing it as an assumption would bake a switchable setting into the spec.
+ * Which configurations a generated table covers is a `table over` clause --
+ * a commitment, checked at the point of use -- not a truth about the target.
+ */
+envdef    : ENV LBRACE envbody RBRACE ;
+
+envbody   : %empty | envbody envitem ;
+envitem   : envdecl | letdef ;
+envdecl   : MODE ident_list from_clause SEMI
+          | FEATURE ident_list from_clause SEMI ;
+from_clause : %empty | FROM IDENT ;
+letdef    : LET IDENT EQ expr SEMI ;
+
+/* `table over Is64Bit;`  -- the environments a generated table is built for.
+ * The generator must emit the matching gate (`if (!Is64Bit) -> Outside`); a
+ * gate narrower than this clause answers wrongly, a wider one silently loses
+ * the fallback. */
+tabledef  : TABLE OVER ident_list SEMI ;
+ident_list: IDENT | ident_list COMMA IDENT
+          | LBRACKET ident_list RBRACKET ;
 
 opdef     : OP opcodes LBRACE body RBRACE ;   /* query/variadic are items */
 

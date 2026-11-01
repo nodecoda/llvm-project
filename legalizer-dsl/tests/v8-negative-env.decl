@@ -1,0 +1,8 @@
+/* Must NOT parse: `let` needs `= expr;`, and `table over` needs a list.
+ * These are grammar errors, not semantic ones -- `13-let-*` covers the
+ * semantic side. */
+env {
+  let HasCMOV;
+  mode Is64Bit;
+}
+table over;

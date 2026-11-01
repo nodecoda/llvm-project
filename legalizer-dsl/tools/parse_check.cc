@@ -65,7 +65,8 @@ static const std::map<std::string, int> &Keywords() {
       {"false", FALSE}, {"in", IN}, {"query", QUERY},
       {"variadic", VARIADIC}, {"policy", POLICY}, {"imm", IMM}, {"to", TO},
       {"hull", HULL}, {"promote", PROMOTE}, {"truncate", TRUNCATE},
-      {"with", WITH}, {"group", GROUP},
+      {"with", WITH}, {"group", GROUP}, {"env", ENV}, {"mode", MODE},
+      {"feature", FEATURE}, {"let", LET}, {"table", TABLE}, {"over", OVER},
   };
   return K;
 }

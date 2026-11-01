@@ -3,7 +3,7 @@
  * data/x86-rule-chains.json (prefer, follow).
  * Core rules that are neither Legal nor a delegate (WidenScalar /
  * NarrowScalar / MoreElements / ...) are deliberately not emitted:
- * the inference covers them, && the count is reported on stderr. */
+ * the inference covers them; the count is reported on stderr. */
 
 macro MaxScalar  = cond(Is64Bit, s64, s32);
 macro MaxVector8  = cond(HasAVX512, v64s8,  cond(HasAVX, v32s8,  v16s8));

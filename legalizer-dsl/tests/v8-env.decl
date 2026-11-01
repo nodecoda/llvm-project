@@ -1,0 +1,54 @@
+/* v8 acceptance corpus: the declared environment.
+ * Parsed by tools/parse_check.cc; semantics are NOT checked here. */
+
+env {
+  mode    Is64Bit
+      from triple;
+  feature HasSSE1, HasSSE2, HasSSE41, HasAVX, HasAVX2, HasAVX512,
+          HasVLX, HasPOPCNT, HasLZCNT, HasBMI, cmov, bwi, dqi, x87,
+          softfloat
+      from mattr;
+
+  /* Definitions, substituted away before enumeration: a `let` name is never
+   * a dimension.  canUseCMOV() is `hasCMOV() || hasSSE1() || is64Bit()`
+   * (X86Subtarget.h:208), so at Is64Bit=1 the value is a constant. */
+  let HasCMOV = cmov || HasSSE1 || Is64Bit;
+  let UseX87  = !softfloat && x87;
+  let HasBWI  = HasAVX512 && bwi;
+  let HasDQI  = HasAVX512 && dqi;
+}
+
+/* The environments a generated table is built for.  The generator must emit
+ * the matching gate; a narrower gate answers wrongly. */
+table over Is64Bit;
+
+macro MaxScalar = cond(Is64Bit, s64, s32);
+class int = s8, s16, s32, s64;
+
+op G_FCMP {
+  query ty 0, ty 1;
+  legal s8, s32 when HasSSE1 || UseX87;
+  legal s8, s64 when HasSSE2 || UseX87;
+  legal s8, s80 when UseX87;
+  policy 0: scalar to s8 when HasSSE1 || UseX87;
+  policy 1: scalar [s32, cond(HasSSE2, s64, s32)] pow2;
+}
+
+op G_ADD, G_SUB {
+  query ty 0;
+  legal s8, s16, s32;
+  legal s64 when Is64Bit;
+  legal v16s8, v8s16, v4s32, v2s64 when HasSSE2;
+  legal v32s8, v16s16, v8s32, v4s64 when HasAVX2;
+  legal v16s32, v8s64 when HasAVX512;
+  legal v64s8, v32s16 when HasBWI;
+  policy: scalar hull pow2 32;
+  elemwise;
+}
+
+op G_SELECT {
+  query ty 0, ty 1, ty 2;
+  legal s8, s16, s32 when HasSSE2;
+  legal s8, s16, s32, s64 when HasCMOV;
+  policy 0: scalar [s8, MaxScalar] pow2;
+}
