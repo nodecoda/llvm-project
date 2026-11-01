@@ -91,54 +91,99 @@ Corpus: `--copies 32`, 8256 functions,
 
 | mode  | chain_ns | mixed_ns | speedup | hits |
 | ----- | -------- | -------- | ------- | ---- |
-| table | 97.94    | 73.07    | 1.346   | 2866 |
-| once  | 97.91    | 101.31   | 0.964   | 1    |
+| table | 98.18    | 42.76    | 2.30    | 2866 |
+| once  | 98.29    | 103.74   | 0.95    | 1    |
 
-On the domain the table wins: 26.5% less per question.  The domain's mean
-winning rule index is 3.05.  The control separates: with the table answering
-once, the mixed path rises 38.4%.
+On the domain the table wins: 56.4% less per question, and the control
+separates (with the table answering once, the mixed path rises 142.6% against
+table mode).
 
 ### Pass level, 21 repetitions
 
-| pipeline           | table      | chain      | once       | table - chain       |
-| ------------------ | ---------- | ---------- | ---------- | ------------------- |
-| full (`-O0`)       | 80.700 ms  | 78.400 ms  | 78.900 ms  | +2.30 ms (0/21 win) |
-| `-run-pass=legalizer` | 105.500 ms | 101.800 ms | 102.200 ms | +3.65 ms (0/21 win) |
+| pipeline              | table      | chain      | once       | table - chain            |
+| --------------------- | ---------- | ---------- | ---------- | ------------------------ |
+| full (`-O0`)          | 75.300 ms  | 78.600 ms  | 79.300 ms  | -3.16 ms (21/21 win)     |
+| `-run-pass=legalizer` | 100.100 ms | 100.800 ms | 102.700 ms | -2.02 ms (16/21 win)     |
 
-Total compile: 1403.3 ms against 1398.6 ms, i.e. +0.34%.
+Total compile: 1393.4 ms against 1400.0 ms, i.e. -0.47%.
 
 Paired 95% bootstrap CI of the mean difference, full pipeline:
-[+1.96, +2.75] ms.  It excludes zero, and 21 of 21 pairs favour the chain.
-`table - once` is [+1.39, +2.09] ms; `once - chain` is small, as the control
-predicts.  The table's contribution is resolved, and it is a cost.
+[-3.52, -2.79] ms.  It excludes zero on the winning side, and 21 of 21 pairs
+favour the table.  The isolated-legalizer delta is noisier (sd 2.1-2.7 ms):
+16 of 21 pairs favour the table, CI [-3.52, -0.50] ms.  `once - chain` is
++0.63 ms on the full pipeline, i.e. the control costs what its one lookup
+costs, as it should.
 
 The three modes emit byte-identical assembly (same sha256), so the legalizer
 does the same work either way and the difference is only in how it decides.
 
-### Why the two levels disagree
+A second run of the same tree, same protocol, reproduced the sign and the size:
+42.31 ns per lookup (2.34x), -4.45% full pipeline (21/21 pairs, CI
+[-3.86, -3.15] ms), -2.32% isolated (16/21 pairs, CI [-4.19, -1.12] ms).
 
-The check domain is uniform over the type classes the rules name.  A
-compilation is not.  The table counts the winning rule index on the queries
-actually asked (`-x86-gisel-table-stats`):
+### Real queries, all of them
 
-| corpus                   | winning rule mean | legalizer, table - chain |
-| ------------------------ | ----------------- | ------------------------ |
-| scalar + memory only     | 0.30              | +5.7% (isolated)         |
-| whole corpus             | 0.91              | +3.6% (isolated)         |
-| wide/odd/vector only     | 1.29              | +1.7% (isolated)         |
+The domain check only asks the questions the key was built from.
+`-x86-gisel-table-check` with the table installed also compares every answer a
+compilation receives.  Over the whole corpus:
 
-Real queries stop at the first rule.  `G_ADD`'s rule 0 is
-`LegalFor<[s8, s16, s32]>` and rule 1 is the 64-bit case, so a scalar add costs
-the chain about one predicate.  The table pays a fixed cost -- virtual
-dispatch, two type classifications, the cell index, and one `ruleMatches`
-call -- and saves one predicate per skipped rule.  On this build that fixed
-cost is about 50 ns against roughly 25 ns per rule, so the crossing is near two
-rules.  The uniform domain (3.05) is past it; every mix a compilation produces
-(0.3 to 1.3) is well short of it.
+```
+llc -mtriple=x86_64 -global-isel -O0 -x86-gisel-table-check -x86-gisel-table-stats corpus.ll
+x86-gisel-table: hit 92352 outside 672 ... checked 92352 rule_mean 0.91 rule_max 13
+```
 
-That is the result: on X86, with the chains ordered the way they are, the table
-is slower than the rules, by about 19 to 43 ns per query, or 1.7% to 8.8% of
-the legalizer's own time.
+92352 real queries, 0 mismatches against the chain.  The 672 `outside` are
+queries whose keyed type is not a class the table was built for; the chain
+answers those, and the check does not count them as verified answers.
+
+### What changed: the cell answers instead of replaying the rule
+
+The first measurement of this harness found the table *slower* than the chains
+by 2.9% at pass level (full pipeline, 21/21 pairs), even though it won on the
+lookup domain by 1.35x.  The reason is visible in the rule mix: real queries
+stop at the first rule (`rule_mean 0.91`), so the chain costs about one
+predicate, while the table paid a fixed cost -- virtual dispatch, two
+classifications, the cell index -- *plus* one `ruleMatches` call, which is the
+same predicate call the chain makes.  The table was doing the chain's work and
+its own on top.
+
+A cell of a table with no mem axis and whose key reads exactly slots
+0..N-1 holds exactly one question, so its answer is a constant.  The generator
+now says which tables those are (`OneQuestion` in `LegalizerTableDesc`; 56 of
+X86's 63), the runtime stores the answer at fill time, and the lookup returns
+it without matching anything.  The other seven keep replaying the winning rule
+from the query, which is still correct, just slower.
+
+Re-measured with the same protocol, same corpus, same build:
+
+| level                        | before      | after        |
+| ---------------------------- | ----------- | ------------ |
+| lookup, per query            | 73.07 ns    | 42.76 ns     |
+| full pipeline legalizer      | +2.93%      | -4.20%       |
+| isolated legalizer           | +3.63%      | -0.69%       |
+| total compile                | +0.34%      | -0.47%       |
+
+The 5.4 ms the full pipeline gains is consistent with 92352 table hits times
+the 56 ns the lookup saves: 5.2 ms.
+
+### Negative controls
+
+- `-x86-gisel-table-once`: the harness still separates it from `chain` and
+  from `table` at both levels (see the tables above).  Without that, a "no
+  difference" result would be unreadable.
+- `llvm/test/CodeGen/X86/GlobalISel/table-check.ll` runs real functions
+  through the pipeline with the table installed and asserts
+  `checked > 0`, i.e. that the check actually compared real queries.  Forcing
+  `checked` to 0 (by checking a function with no instructions) fails the test.
+- Corrupting the cached answer (returning `Legal` for every hit) makes the
+  check fail on `add i128`, which is the shape the gate used to lack: with only
+  "legal" questions in the test, both paths say `Legal` and the check cannot
+  see a stale answer.
+- Forcing `OneQuestion` on for all 63 tables does *not* fail, and that is
+  expected: the seven excluded tables are structurally not one-question (mem
+  axis, or a key that reads slot 1 only), but on the questions X86 can be
+  asked here their answers are consistent anyway.  The predicate is
+  conservative, not tight.
 
 ## Caveats
 

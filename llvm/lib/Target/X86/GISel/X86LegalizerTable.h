@@ -66,7 +66,13 @@ public:
   /// installs on LP64, but the self-check also runs where the table is not
   /// installed: there the representatives have to be types the chain knows,
   /// or the check asks the chain a question it is not written for.
-  explicit X86LegalizerTable(const LegalizerInfo &LI, unsigned PointerBits);
+  /// \p Verify makes lookup() compare every answer the table gives a real
+  /// query against the chain, and fail hard when they differ.  A table that
+  /// answers a question it was not built for can only be caught on questions
+  /// something actually asked; the domain check covers the shapes the key was
+  /// built from, this covers the rest.
+  explicit X86LegalizerTable(const LegalizerInfo &LI, unsigned PointerBits,
+                             bool Verify = false);
   ~X86LegalizerTable() override;
 
   /// LegalizerInfo::LegalizeTable.  Returns false when the cell is missing,
@@ -74,6 +80,11 @@ public:
   bool lookup(const LegalityQuery &Query, LegalizeActionStep &Step) const override;
 
   Result query(const LegalityQuery &Q) const;
+
+  /// As query(), but never answers from a cached cell answer.
+  Result queryUncached(const LegalityQuery &Q) const {
+    return queryImpl(Q, /*AllowCachedAnswer=*/false);
+  }
 
   /// Run every tabulated table's key domain through both paths and report.
   /// Fatal on a mismatch: a table that disagrees with the chain is a bug in
@@ -86,6 +97,7 @@ public:
   void benchmark(raw_ostream &OS, unsigned Reps);
 
   uint64_t hits() const { return Hits; }
+  uint64_t checked() const { return Checked; }
   uint64_t outside() const { return Outsides; }
   uint64_t pointerVectors() const { return PointerVectors; }
   uint64_t addressSpaces() const { return AddressSpaces; }
@@ -110,6 +122,7 @@ private:
   /// Enumerate every question selfCheck() and benchmark() must ask, once.
   void collectDomain(std::vector<DomainPoint> &Out) const;
 
+  Result queryImpl(const LegalityQuery &Q, bool AllowCachedAnswer) const;
   uint32_t fill(unsigned Table, const LegalityQuery &Q,
                 ArrayRef<unsigned> Local) const;
   /// Record one refused query, with the reason, when asked to.
@@ -127,6 +140,16 @@ private:
   /// whichever type happened to fill the cell first.  A cached rule is replayed
   /// against the real query, and each query gets its own answer back.
   mutable std::vector<int64_t> RulesOfCell;
+  /// Per cell, the answer that cell's one question has.  Filled in lockstep
+  /// with RulesOfCell, and read only for tables whose descriptor says the
+  /// cell stands for exactly one question -- for any other table the answer
+  /// depends on which query in the cell is asking, so it is re-derived.
+  mutable std::vector<LegalizeActionStep> Answers;
+  /// -x86-gisel-table-check for the installed table: verify real queries.
+  /// Checked counts how many it compared, so a run that verified nothing
+  /// cannot look like a run that verified everything.
+  bool Verify;
+  mutable uint64_t Checked = 0;
   mutable uint64_t Hits = 0, Outsides = 0, PointerVectors = 0,
                    AddressSpaces = 0, Untabulated = 0, Declined = 0,
                    Splits = 0, Fills = 0;

@@ -2873,6 +2873,10 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     // Global class ids the self-check enumerates per keyed slot, parallel to
     // Slots.  Empty for the mem axis, whose sizes travel in Mem.
     std::vector<std::vector<unsigned>> SlotDomains;
+    // The slots the rules *write*.  A cell can only cache an answer when the
+    // key fixes those too, or the stored answer would carry the mutation of
+    // whichever query filled the cell first.
+    std::set<unsigned> ActionSlots;
     unsigned FirstRule = 0, NumRules = 0;
   };
   std::vector<TableRec> Tables;
@@ -2889,7 +2893,7 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
   unsigned RuleCursor = 0;
   StringSet<> SeenOpcodes;
   for (const Record *RuleSet : RuleSets) {
-    std::set<unsigned> SlotSet, MemSet;
+    std::set<unsigned> SlotSet, MemSet, ActionSlotSet;
     std::map<unsigned, std::set<std::string>> SlotTypes;
     unsigned Count = 0;
     bool HasEscape = false;
@@ -2929,6 +2933,10 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
       for (const CoreRule &CR : Expanded) {
         collectPredLeaves(CR.Predicate, SlotSet, MemSet, &SlotTypes,
                           &MemNeedsClass, &HasOpaquePredicate);
+        // A rule with no mutation writes nothing, so its type index is not a
+        // dependency of its answer.
+        if (!CR.Mutation.empty())
+          ActionSlotSet.insert(CR.TypeIdx);
         ++Count;
       }
     }
@@ -2960,6 +2968,7 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     T.Def = RuleSet;
     T.Opcodes = RuleSet->getValueAsListOfStrings("Opcodes");
     T.SlotTypes = std::move(SlotTypes);
+    T.ActionSlots = std::move(ActionSlotSet);
     T.Slots.assign(SlotSet.begin(), SlotSet.end());
     if (T.Slots.size() > 2) {
       T.Slots.resize(2);
@@ -3316,8 +3325,30 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
   OS << "                      // MemIsClass\n";
   OS << "  bool MemIsClass;    // the mem axis keys a type class, not a size\n";
   OS << "  uint16_t FirstRule, NumRules;   // range into the rule table\n";
+  OS << "  bool OneQuestion;   // the cell stands for exactly one question,\n";
+  OS << "                      // so its answer is constant\n";
   OS << "};\n\n";
 
+  // A cell stands for exactly one question when no axis it does not key can
+  // change the answer: no mem axis at all, and the type slots it reads are
+  // exactly 0..NumSlots-1, so each class names one type and the cell holds one
+  // (type tuple).  The rules must also only *write* keyed slots, or the cached
+  // answer would carry the mutation of whichever query happened to fill the
+  // cell first.  Only such a table may cache the answer instead of the rule
+  // that produced it; anything else stands for a fiber of questions and has to
+  // re-derive the answer from the query that asks it.
+  const auto IsOneQuestion = [](const TableRec &R) {
+    if (!R.Mem.empty())
+      return false;
+    for (size_t K = 0; K != R.Slots.size(); ++K)
+      if (R.Slots[K] != static_cast<int>(K))
+        return false;
+    for (unsigned Slot : R.ActionSlots)
+      if (std::find(R.Slots.begin(), R.Slots.end(), static_cast<int>(Slot)) ==
+          R.Slots.end())
+        return false;
+    return true;
+  };
   OS << "static constexpr LegalizerTableDesc " << Prefix << "Tables[] = {\n";
   for (size_t T = 0; T != Tables.size(); ++T) {
     const TableRec &R = Tables[T];
@@ -3355,8 +3386,9 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
       OS << Prefix << "MemT" << T;
     OS << ", " << (R.MemIsClass ? "true" : "false");
     OS << ", " << format_decimal(R.FirstRule, 4) << ","
-       << format_decimal(R.NumRules, 3) << "},   // " << R.Def->getName()
-       << "\n";
+       << format_decimal(R.NumRules, 3) << ", "
+       << (IsOneQuestion(R) ? "true" : "false") << "},   // "
+       << R.Def->getName() << "\n";
   }
   OS << "};\n";
   OS << "static constexpr unsigned " << Prefix << "NumTables = sizeof("

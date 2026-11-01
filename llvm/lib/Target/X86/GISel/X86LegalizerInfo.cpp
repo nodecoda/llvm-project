@@ -73,7 +73,8 @@ X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI,
   const unsigned PointerBits = STI.isTarget64BitLP64() ? 64 : 32;
 
   if (X86GISelTable && STI.is64Bit())
-    setTable(std::make_unique<X86LegalizerTable>(*this, PointerBits));
+    setTable(std::make_unique<X86LegalizerTable>(*this, PointerBits,
+                                                 /*Verify=*/X86GISelTableCheck));
 
   if (X86GISelTableCheck) {
     X86LegalizerTable Table(*this, PointerBits);
