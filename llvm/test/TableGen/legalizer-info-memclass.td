@@ -22,10 +22,14 @@ def Test_STORE : LegalizeRuleSet<["G_STORE"]> {
   ];
 }
 
-// Two 64-bit memory types, kept apart by the class key.
+// Two 64-bit memory types, kept apart by the class key.  The key is the whole
+// declared vocabulary -- p0 is a class here because a slot names it, even
+// though no memdesc does -- so a memory type the rules never spell still has a
+// cell.  Cutting the axis on the literals instead would make the table refuse
+// such a query although the rules answer it.
 // CHECK-NOT: Not tabulated
-// CHECK: static constexpr uint8_t TestLocalT0S2[] = {0, 1};
-// CHECK: static constexpr uint8_t TestDomainT0S2[] = {1, 2};
-// CHECK: static constexpr int32_t TestMemT0[] = {1, 2};
+// CHECK: static constexpr uint8_t TestLocalT0S2[] = {0, 1, 2};
+// CHECK: static constexpr uint8_t TestDomainT0S2[] = {0, 1, 2};
+// CHECK: static constexpr int32_t TestMemT0[] = {0, 1, 2};
 // CHECK: TestMemT0, true,
 // CHECK: // Test_STORE

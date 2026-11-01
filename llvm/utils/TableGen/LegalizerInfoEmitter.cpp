@@ -3057,20 +3057,21 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     llvm_unreachable("mentioned type has no class");
   };
 
-  // A class-keyed mem axis is a type axis over the memory types the rules
-  // name.  Doing it here, after the class set exists, keeps one definition of
-  // what a class is: the same parsing and the same ids the type slots use.
+  // A class-keyed mem axis is a type axis, so its domain is the declared
+  // vocabulary -- every class -- not only the memory types some rule happens
+  // to spell.  Cutting it on the literals looks cheaper, but it makes the axis
+  // refuse a memory type no rule names even when the rules do have an answer
+  // for it: measured on the X86 corpus, G_STORE was asked about i1 memory ten
+  // times and i128 once, and refused all eleven because no literal spelled
+  // them.  Same principle as D-67: the domain comes from the vocabulary, the
+  // answer still comes from the chain.  Doing it here, after the class set
+  // exists, keeps one definition of what a class is: the same parsing and the
+  // same ids the type slots use.
   for (TableRec &R : Tables) {
     if (!R.MemIsClass)
       continue;
-    std::set<unsigned> IDs;
-    for (const std::string &S : R.MemTypes)
-      IDs.insert(ClassID(S));
-    if (IDs.empty())
-      PrintFatalError(R.Def->getLoc(),
-                      "mem axis is class-keyed but the rule set names no "
-                      "memory type");
-    R.Mem.assign(IDs.begin(), IDs.end());
+    for (unsigned I = 0; I != Classes.size(); ++I)
+      R.Mem.push_back(I);
   }
 
   // The self-check domain is per slot, not the product of the whole class set.
