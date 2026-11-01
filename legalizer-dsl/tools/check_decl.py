@@ -34,6 +34,7 @@ Usage:
   python3 tools/check_decl.py --domain 2026-11-01-x86.decl
   python3 tools/check_decl.py --self-test
 """
+import collections
 import itertools
 import json
 import os
@@ -1047,6 +1048,55 @@ def env_classes(block, envs, macros, slots=(), coarse=False):
     return out
 
 
+# The modes each tool may look at.  `data/x86-core.json` carries p0:64 and no
+# p0:32, so a 32-bit configuration compared against it would be compared with
+# 64-bit evidence -- that is why the point measurement is restricted.  The
+# coverage check reads the block's own bounds, so it can and does use both.
+# The sets live here so the choice is a named one, not a literal at a call
+# site, and envs_for takes it as an argument rather than reading a global.
+MODE = {'measured': frozenset([True]), 'all': frozenset([True, False])}
+
+# The environment domain of one block, with the counters that explain it.
+# raw = mode_out + pruned + measured, and measured = merged + len(envs): both
+# identities are asserted in --self-test, because the report used to print
+# three of these numbers in two different places and compare none of them.
+Envs = collections.namedtuple(
+    'Envs', 'envs raw mode_out pruned measured merged')
+
+
+def envs_for(block, macros, slots=(), modes=None, coarse=False, cap=None,
+             quotient=True, reachable=True):
+    """The environments every tool samples this block on.
+
+    One function, because two tools that each build their own domain will
+    disagree: they did (301 measured here, 602 in the coverage check) and
+    nothing noticed.  Returns None when the powerset exceeds `cap`.
+    """
+    atoms = feature_atoms_of(block, macros)
+    limit = MAX_COMBOS if cap is None else cap
+    if 2 ** len(atoms) > limit:
+        return None
+    raw = [dict(zip(atoms, v))
+           for v in itertools.product([False, True], repeat=len(atoms))]
+    n_raw = len(raw)
+    n_pruned = 0
+    if reachable:
+        try:
+            import infer_defaults as I      # one implication table, not two
+            raw = [e for e in raw if I.realizable(e)]
+            n_pruned = n_raw - len(raw)
+        except Exception:                    # pragma: no cover
+            pass
+    n_mode = 0
+    if 'Is64Bit' in atoms and modes is not None:
+        before = len(raw)
+        raw = [e for e in raw if e.get('Is64Bit', True) in frozenset(modes)]
+        n_mode = before - len(raw)
+    quoted = env_classes(block, raw, macros, slots, coarse) if quotient else raw
+    return Envs(quoted, n_raw, n_mode, n_pruned, len(raw),
+                len(raw) - len(quoted))
+
+
 def policy_coverage(block, ops, type_slots, macros):
     """Answer coverage: `policy*` must land in legal union escape.
 
@@ -1061,17 +1111,15 @@ def policy_coverage(block, ops, type_slots, macros):
     something: without it the policy names a destination in configurations
     where no legal clause fires, and nothing else in the pipeline notices.
     """
-    atoms = feature_atoms_of(block, macros)
-    if 2 ** len(atoms) > MAX_COMBOS:
-        return [], [('13-reach-skipped', ops, '%d feature atoms' % len(atoms))]
-    try:
-        import infer_defaults as I          # one implication table, not two
-    except Exception:                        # pragma: no cover
-        return [], [('13-reach-skipped', ops, 'no implication table')]
-    envs = [dict(zip(atoms, v))
-            for v in itertools.product([False, True], repeat=len(atoms))]
-    envs = [e for e in envs if I.realizable(e)]
-    envs = env_classes(block, envs, macros, type_slots)
+    # Every mode: this check reads the block's own legal projection, so a
+    # 32-bit configuration is checked against 32-bit bounds (`MaxScalar` is
+    # s32 there).  It is the point measurement that cannot look at 32-bit --
+    # there the chain's baked answers are 64-bit, not the bounds.
+    got = envs_for(block, macros, type_slots, modes=MODE['all'])
+    if got is None:
+        return [], [('13-reach-skipped', ops,
+                     '%d feature atoms' % len(feature_atoms_of(block, macros)))]
+    envs = got.envs
 
     errs, warns = [], []
     reported = set()
@@ -1399,12 +1447,17 @@ def check(path, self_test_errors=None):
         if total:
             continue
 
-        atoms = feature_atoms_of(b, macros)
-        if 2 ** len(atoms) > MAX_COMBOS:
-            skipped.append(('5/6/9', ops, '%d feature atoms' % len(atoms)))
+        # 5/6/9 ask whether the rules are well formed, and they read only the
+        # block -- no type universe, so every mode is checkable here.  Modes
+        # are filtered where U enters (the point measurement and the answer
+        # coverage), which is a different question.
+        got = envs_for(b, macros, modes=MODE['all'], cap=MAX_COMBOS,
+                       quotient=False)
+        if got is None:
+            skipped.append(('5/6/9', ops, '%d feature atoms'
+                            % len(feature_atoms_of(b, macros))))
             continue
-        envs = [dict(zip(atoms, v))
-                for v in itertools.product([False, True], repeat=len(atoms))]
+        envs = got.envs
         pref_slots = {p[0] for p in prefs}
 
         # 5 D_i != empty, per assignment
@@ -1911,6 +1964,17 @@ def env_self_test():
         print('  FAIL env: %d environments have HasCMOV=0 at Is64Bit=1' % bad)
         fails += 1
 
+    # The mode set is an argument, not a global: `measured` must exclude the
+    # 32-bit configurations and `all` must include them.  If the two ever
+    # return the same set, one of the two tools is back to its own domain.
+    b = blocks[0]
+    a = envs_for(b, macros, modes=MODE['measured']).envs
+    c = envs_for(b, macros, modes=MODE['all']).envs
+    if not (len(c) > len(a) and all(e.get('Is64Bit') for e in a)):
+        print('  FAIL env: measured %d classes, all %d -- the mode filter is '
+              'not what separates them' % (len(a), len(c)))
+        fails += 1
+
     # v7 control: without `env { }` the alphabet is still guessed.
     _m2, vb = D.parse(ROOT + '/data/2026-11-01-x86.decl')
     guessed = set()
@@ -1920,7 +1984,7 @@ def env_self_test():
         print('  FAIL env: the v7 file stopped guessing its atoms')
         fails += 1
 
-    print('  env self-test: 3 cases, %d failed' % fails)
+    print('  env self-test: 4 cases, %d failed' % fails)
     return fails
 
 

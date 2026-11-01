@@ -575,32 +575,31 @@ def run(decl, only=None, verbose=False, kind=None, only_class=False):
         arity = max(C.slot_count(b, C.domain(b, None)[1]),
                     chain_arity(doc, b['ops']))
         atoms = C.feature_atoms_of(b, macros)
+        # One domain for every tool (check_decl.envs_for): the powerset, the
+        # reachability filter, the mode filter and the quotient were built
+        # here and in the coverage check separately, and they disagreed.
         # With the reachability filter the product is built only to be pruned:
-        # G_MUL mentions 10 features (1024 assignments) and 13 of them can
+        # G_MUL mentions 9 features (512 assignments) and 26 of them can
         # occur.  The cap is on the product, so it has to be raised together
         # with the filter, or the filter would *reduce* coverage -- it did:
         # G_MUL disappeared from the report the first time this ran.
         cap = 65536 if MEASURE['realizable'] else I.MAX_COMBOS
-        if 2 ** len(atoms) > cap:
+        # Measured mode only: both sides of this comparison come from
+        # `x86-core.json`, whose legal sets are the chain's answers on a
+        # 64-bit subtarget (baked sMaxScalar, p0:64).  The answer-coverage
+        # check uses both modes because it reads the block's own bounds.
+        got = C.envs_for(b, macros, range(arity), cap=cap,
+                          modes=C.MODE['measured'],
+                          reachable=MEASURE['realizable'])
+        if got is None:
             rows.append((ops, None, None, None, '%d feature atoms' % len(atoms)))
             continue
-        envs = [dict(zip(atoms, v))
-                for v in itertools.product([False, True], repeat=len(atoms))]
-        raw[0] += len(envs)
-        before = len(envs)
-        envs = [e for e in envs if e.get('Is64Bit', True)]
-        mode_out[0] += before - len(envs)
-        n_all = len(envs)
-        if MEASURE['realizable']:
-            envs = [e for e in envs if realizable(e)]
-        n_real = len(envs)
-        realized[0] += n_real
-        # Environments the block cannot tell apart are the same question, so
-        # they are asked once.  This is the environment half of the same
-        # quotient `rule_atoms.py` does on the type axis.
-        envs = C.env_classes(b, envs, macros, range(arity))
-        merged[0] += n_real - len(envs)
-        dropped[0] += n_all - n_real
+        envs = got.envs
+        raw[0] += got.raw
+        realized[0] += got.measured
+        mode_out[0] += got.mode_out
+        dropped[0] += got.pruned
+        merged[0] += got.merged
         elemwise = any(st == 'elemwise' for st in b['stmts'])
         has_class = any(st.startswith('class ') for st in b['stmts'])
         if arity > 1 and not MULTI['on']:
@@ -886,13 +885,15 @@ def main(argv):
         print('  no answer: %d points where the chain itself cycles; they are '
               'left out of the denominator' % cycles[0])
     if MEASURE['realizable']:
-        print('  domain: %d feature assignments dropped as unreachable '
-              '(tools/x86-implies.json); use --all-envs to count them' % dropped[0])
+        print('  domain: %d assignments pruned as unrealizable '
+              '(tools/x86-implies.json); %d reachable but outside the measured '
+              'mode (Is64Bit=0; U has no p0:32)'
+              % (dropped[0], mode_out[0]))
         print('  quotient: %d more merged into a representative the block '
               'cannot tell apart' % merged[0])
-        print('  arithmetic: %d raw = %d outside the measured mode + %d pruned '
-              'by implies + %d measured'
-              % (raw[0], mode_out[0], dropped[0], raw[0] - mode_out[0] - dropped[0]))
+        print('  arithmetic: %d raw = %d unmeasured + %d pruned + %d measured'
+              % (raw[0], mode_out[0], dropped[0],
+                 raw[0] - mode_out[0] - dropped[0]))
     if CHOICE and MEASURE['optin']:
         add = [k for k, (d, c, _on, _off) in CHOICE.items()
                if d == 'no class' and c == 'class']

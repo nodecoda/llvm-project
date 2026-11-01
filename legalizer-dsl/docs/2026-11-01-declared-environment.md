@@ -115,7 +115,25 @@ arithmetic: 1688 raw = 844 outside the measured mode + 543 pruned by implies + 3
 | `UseX87` 拆成 `softfloat × x87`，再被商合并 | `G_FPEXT`、`G_FCMP`、`G_SELECT`… | 4608 → 9216 → 商回 1536 |
 | 字母表没变（对照） | `G_EXTRACT`、`G_INSERT`、`G_LOAD`、`G_STORE` | 不变，逐点相同 |
 
-## 5.1 没有做的
+## 5.1 一份域，两个模式集
+
+`envs_for()` 是唯一的域构造函数（幂集 → 可达 → 模式 → 商），返回四个计数器。
+两个工具不再各建各的：
+
+| 调用点 | 模式集 | 为什么 |
+|---|---|---|
+| `infer_defaults` | `MODE['measured']` = `{Is64Bit=1}` | 两边都来自 `x86-core.json`，它的合法集是 64 位 subtarget 的答案（`sMaxScalar` 已烘死、指针是 `p0:64`） |
+| `policy_coverage` | `MODE['all']` | 它读 block 自己的界，32 位配置就用 32 位的 `sMaxScalar`，与 `U` 无关 |
+
+模式集是**参数**，不是全局默认：漏传就是“全部模式”，不会悄悄少一半。
+
+**顺带清掉 4 条幽灵警告。** `5/6/9` 那组检查以前枚举**全部**幂集，包括
+`HasSSE1=0,HasSSE2=1` 这种被 implies 表判死的配置，于是
+`6-prefer-transient` 在不可能的配置上报警。语料警告数 5 → 1（剩下的那条是
+`7-diagonal-needs-follow`）。这组检查不读 `U`，所以它用**全部模式 × 可达**，
+与点测量不同——这是三个不同的域，现在每个都在调用点写清楚了。
+
+## 5.2 没有做的
 
 * 没有 32 位：`U` 里没有 `p0:32` / `v16p0`，测不了，不是「被丢弃」。
 * 没有生成 `table over` 的闸门：C++ 侧仍是手写。
