@@ -99,6 +99,62 @@ C++ 表达式，不 residualize，`WidenScalarToNextPow2` 2 条，`ClampScalar` 
 写槽（`ActionSlots`）和 mutation 读槽（`MutationReadSlots`，`sameAsSlotN`）
 **不进键**，只用来判 `OneQuestion`。
 
+### C1b 键是推导出来的，不是手写的
+
+`collectPredLeaves`（`LegalizerInfoEmitter.cpp:2739`）不"知道"某个 rule set 该有
+几个轴；它只读 Core IR 的谓词 JSON，对每个 `"name"` 查表：
+
+- 名字在 `SlotArg0`（line 2744，13 个）里 → 该叶子的第一个整数参数是**槽号**，
+  `Slots.insert(arg0)`；`typeIs`/`typeIn` 的字面量同时进 `SlotTypes`；
+- 名字在 `SlotArg1`（line 2758，2 个）里 → 第二个整数参数也是槽号，两个都进 `Slots`；
+- `memSize` → `MemSizes.insert(arg1)`；`typeDiffersFromMemDesc` → `MemNeedsClass=true`；
+- `hasFeature` / `true` → 不进键（feature 是每实例常量）；
+- 名字**不在任何表里** → 不猜，直接看下一节（生成期 fatal 或整组不表化）。
+
+所以"C2 里那些拒绝清单"和"C4 的 Dims"不是人维护的常量表，而是**同一遍扫描的产物**：
+加一条读槽的规则，`Dims` 自动多一个轴；加一条读新槽的谓词，`Slots.size()` 自动变大，
+超过 2 直接 fatal（line 3005）而不是默默丢维度。
+
+四个可复现例子（`/tmp/key-demo.td`，三个 rule set，只差在谓词）：
+
+| | 谓词读的槽 | 生成描述符 |
+|---|---|---|
+| `T_SLOT0` | `typeIs(0,s32)`、`sizeNotPow2(0)` | `{1, {0,0,0}, {3,1,1}, …}` |
+| `T_SLOT1` | 上面两条 + `typeIs(1,s32)` | `{2, {0,1,0}, {3,3,1}, …}` |
+| `T_OPAQUE` | 同上 + `opaque("RawPred")` | 不进 `TTables`，进 `.inc` 头部注释 |
+
+1. **新增一个读槽 → 键自动变宽**。`T_SLOT1` 只比 `T_SLOT0` 多了一条
+   `LowerIf<Src1IsS32>`（`Src1IsS32 : LegalizeTypePredicate<"typeIs(1, s32)">`），
+   别的都没改。生成器的 `NumSlots` 从 1 变 2，`Slots` 从 `{0}` 变 `{0,1}`，
+   并且凭空长出 `TLocalT1S1` / `TDomainT1S1` 两个数组。没有人告诉它"slot 1 也要进键"。
+
+2. **不认识的叶子 → 生成期 fatal，不是静默忽略**。真实负控：
+   `llvm/test/TableGen/legalizer-info-core-unknown-predicate.td` 用了
+   `scalarOrEltNarrowerThan(0, 64)`（`LegalizerInfo.h` 里有，Core IR 还没定义），
+   `llvm-tblgen` 输出
+   `error: type predicate 'scalarOrEltNarrowerThan' has no Core IR expansion; add it to LegalizerInfo.td first`，
+   退出码 1。这是关键设计：*新增谓词*和*新增读槽*走同一个入口，前者的默认结果
+   是"停下来"，所以不存在"新谓词读了 slot 1 但键里没有 slot 1"这种状态。
+
+3. **raw C++ 谓词 → 整组不表化**。`T_OPAQUE` 的 `LowerIf<RawPred>` 落成
+   `{"kind":"leaf","name":"opaque","args":["RawPred"]}`，`collectPredLeaves` 把
+   `OpaquePredicate` 置真，`runTable` 在 line 2989 判定后 `continue`，rule set 只出现在
+   `.inc` 头部的 `// Not tabulated because …` 注释里。理由写在代码注释里：
+   把"不知道读哪些槽"当成"不读槽"，就是地址空间那个 bug 的槽轴版本——
+   表照样答，只是 first-cell-wins。
+
+4. **写槽 / mutation 读槽不进键**（对照例）。`WidenScalarToNextPow2<0,32>` 写 slot 0，
+   但键里没有为"写"加轴；`ActionSlots` 只喂 `IsOneQuestion`（line 3393）：
+   写一个没被键覆盖的槽会让格子携带"填充时那个查询的 mutation"，于是缓存答案不安全。
+   `X86_CTPOP` 这类 `sameAsSlotN` 的 mutation 读槽同理——`MutationReadSlots`
+   让 `OneQuestion` 自动为 false，而不需要为它扩键。
+
+边界要说清：这套保证的前提是 **Core IR 是谓词的完整表示**。"新叶子 fatal"拦的是
+*语言里没有*的谓词；如果某个叶子在 Core IR 里有定义、但语义写错了（比如
+`sizeIs` 该读 slot 0 却生成成 slot 1），生成器照样得到一个自洽的键，
+只有 `-x86-gisel-table-check` 的逐查询对拍会红。推导保证的是"键覆盖所有**被声明**的读槽"，
+不是"声明的读槽是对的"。
+
 ### C2 拒绝清单（不是 gap）
 
 三类不表化的 rule set，各自一个 vector，最后写成 `.inc` 头部的注释：
