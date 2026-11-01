@@ -87,3 +87,15 @@ define i128 @add128(i128 %a, i128 %b) {
   ret i128 %r
 }
 
+
+; A scalar wider than any class the table names must be Outside, not answered.
+; The key packs (kind, element bits, lanes) into one integer, and the element
+; field is the width LLT gives it: 32 bits.  When it had 16, i65537's element
+; size 0x10001 carried into the kind field, classified as i1, and the table
+; answered "narrow to s8" for a type the chain widens to s131072.  Wide enough
+; to exercise the field, small enough that the chain legalizes it (a vector of
+; i65537 does not, which is why this is a scalar).
+define i65537 @huge_scalar(i65537 %a, i65537 %b) {
+  %r = add i65537 %a, %b
+  ret i65537 %r
+}

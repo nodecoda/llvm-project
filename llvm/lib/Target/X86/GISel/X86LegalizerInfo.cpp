@@ -63,29 +63,41 @@ X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI,
 
   verify(*STI.getInstrInfo());
 
-  // The table's key pins the two subtarget-dependent LLT constants (the pointer
+  // The table's key pins the subtarget-dependent LLT constants (the pointer
   // width and the widest scalar) to their 64-bit values, which is what makes a
   // class list that does not vary with the subtarget possible.  That pin is
-  // only sound where the pin holds, so a 32-bit subtarget keeps the chains.
-  // LLT::pointer(0) is 64 bits under LP64 and 32 under ILP32; the class list
-  // pins it to 64, so the self-check's representatives follow the same
-  // expression and the points it cannot key are reported as Outside.
-  const unsigned PointerBits = STI.isTarget64BitLP64() ? 64 : 32;
-
-  if (X86GISelTable && STI.is64Bit())
-    setTable(std::make_unique<X86LegalizerTable>(*this, PointerBits,
+  // only sound where it holds, so a 32-bit subtarget keeps the chains.
+  // (x32 is the boundary: is64Bit() is true there while isTarget64BitLP64()
+  // is not, so the table is installed and the rules it can answer are the
+  // 64-bit ones; a p0:32 query classifies as no class and goes to the chain.
+  // Making validity a property of the key itself is the gate's next step.)
+  const bool TableApplies = STI.is64Bit();
+  if (X86GISelTable && TableApplies)
+    setTable(std::make_unique<X86LegalizerTable>(*this,
                                                  /*Verify=*/X86GISelTableCheck));
 
+  // The check and the benchmark build their own table, so they follow the same
+  // condition as the install.  On a 32-bit subtarget the chain is written in
+  // terms of p0:32, and the class list's p0:64 representatives are questions
+  // it is not written for: asking one asserts inside a rule
+  // (changeElementSize on a pointer).  That is a mismatch between the check's
+  // question and the chain, not a disagreement about the table, so say so
+  // instead of asking.
   if (X86GISelTableCheck) {
-    X86LegalizerTable Table(*this, PointerBits);
-    Table.selfCheck(errs());
+    if (TableApplies) {
+      X86LegalizerTable Table(*this);
+      Table.selfCheck(errs());
+    } else {
+      errs() << "x86-gisel-table-check: the table is not installed on a 32-bit "
+                "subtarget; nothing to check\n";
+    }
   }
 
   // Same table, same questions, timed through the two paths getAction() can
   // take.  Kept out of the pass so the numbers do not depend on what the
   // legalizer happens to ask.
-  if (X86GISelTableBench) {
-    X86LegalizerTable Table(*this, PointerBits);
+  if (X86GISelTableBench && TableApplies) {
+    X86LegalizerTable Table(*this);
     Table.benchmark(errs(), X86GISelTableBench);
   }
 }

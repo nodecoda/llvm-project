@@ -13,10 +13,14 @@
 /// chain: one classify per keyed slot and one array load per query.
 ///
 /// The table is filled lazily, one cell at a time, from whatever the rule
-/// chain answers for that cell's key.  Filling from the chain means the table
-/// cannot invent an answer the chain would not give; what it *can* expose is
-/// a key that merges two types the rules treat differently, which is exactly
-/// what selfCheck() is for.
+/// chain answers for that cell's key.  Filling from the chain means a cell
+/// cannot invent a rule; a cell whose key is exactly one question (the
+/// descriptor's OneQuestion) also stores the answer, and that answer is the
+/// generator's claim that nothing but the key can change it.  Both claims are
+/// checked rather than assumed: selfCheck() asks every key domain point, and
+/// lookup() under -x86-gisel-table-check asks every real query.  What the
+/// table *can* expose is a key that merges two questions the rules treat
+/// differently -- the reason those two checks exist.
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_LIB_TARGET_X86_GISEL_X86LEGALIZERTABLE_H
@@ -61,18 +65,16 @@ public:
     LLT NewType;
   };
 
-  /// \p PointerBits is the width the current subtarget gives LLT::pointer(0),
-  /// which X86_p0 denotes.  The class list pins it to 64 because the table only
-  /// installs on LP64, but the self-check also runs where the table is not
-  /// installed: there the representatives have to be types the chain knows,
-  /// or the check asks the chain a question it is not written for.
+  /// A class's representative is built from the class itself, so it is the
+  /// type the key names on every subtarget.  Nothing here takes a subtarget
+  /// width: a class list that had to be re-derived per subtarget would be a
+  /// second answer to "what is p0", and the two could disagree.
   /// \p Verify makes lookup() compare every answer the table gives a real
   /// query against the chain, and fail hard when they differ.  A table that
   /// answers a question it was not built for can only be caught on questions
   /// something actually asked; the domain check covers the shapes the key was
   /// built from, this covers the rest.
-  explicit X86LegalizerTable(const LegalizerInfo &LI, unsigned PointerBits,
-                             bool Verify = false);
+  explicit X86LegalizerTable(const LegalizerInfo &LI, bool Verify = false);
   ~X86LegalizerTable() override;
 
   /// LegalizerInfo::LegalizeTable.  Returns false when the cell is missing,
@@ -130,7 +132,6 @@ private:
   LLT representative(unsigned ClassID) const;
 
   const LegalizerInfo &LI;
-  const unsigned PointerBits;
   mutable std::vector<std::vector<uint32_t>> Cells;
   /// Per cell, the rule that answered it -- see LegalizeRuleSet::findRule.
   ///

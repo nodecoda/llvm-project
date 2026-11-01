@@ -44,7 +44,10 @@ enum LegalizerTypeClassKind : uint8_t {
 
 struct LegalizerTypeClass {
   uint8_t Kind;
-  uint16_t ElemBits;
+  // LLT's own widths: an element/size is 32 bits and lanes are 16.  A 16-bit
+  // element field would silently truncate a class the rules can spell, and the
+  // classifier would then answer a question about a narrower type.
+  uint32_t ElemBits;
   uint16_t Lanes;
 };
 
@@ -162,20 +165,19 @@ unsigned localToGlobal(const LegalizerTableDesc &D, unsigned Slot,
 
 } // namespace
 
-X86LegalizerTable::X86LegalizerTable(const LegalizerInfo &LI,
-                                     unsigned PointerBits, bool Verify)
-    : LI(LI), PointerBits(PointerBits), Cells(X86NumTables), Verify(Verify),
+X86LegalizerTable::X86LegalizerTable(const LegalizerInfo &LI, bool Verify)
+    : LI(LI), Cells(X86NumTables), Verify(Verify),
       LogOutsides(X86GISelTableOutsides) {}
 
 LLT X86LegalizerTable::representative(unsigned ClassID) const {
   const LegalizerTypeClass &C = X86TypeClasses[ClassID];
   switch (C.Kind) {
   case Kind_Pointer:
-    return LLT::pointer(0, PointerBits);
+    return LLT::pointer(0, C.ElemBits);
   case Kind_Vector:
     return LLT::fixed_vector(C.Lanes, C.ElemBits);
   case Kind_PointerVector:
-    return LLT::fixed_vector(C.Lanes, LLT::pointer(0, PointerBits));
+    return LLT::fixed_vector(C.Lanes, LLT::pointer(0, C.ElemBits));
   default:
     return LLT::scalar(C.ElemBits);
   }
@@ -190,6 +192,12 @@ uint32_t X86LegalizerTable::fill(unsigned Table, const LegalityQuery &Q,
   for (unsigned K = 0; K != D.NumSlots; ++K) {
     const int Slot = D.Slots[K];
     if (Slot < 0) {
+      // Once per cell, not once per query: the mem axis is appended last by
+      // the generator, and the cell index is built from the slot order, so a
+      // table whose -1 was not last would read the wrong dimension.  Asserting
+      // this on every lookup put an indexed load in the hot path of the mem
+      // tables; here it is paid once per cell.
+      assert(K == D.NumSlots - 1 && "the mem axis is the last keyed axis");
       // A size-keyed axis stands for one access size, so a scalar of exactly
       // that size answers for the cell.  A class-keyed axis stands for one
       // type, and the class's own representative is the type the rules wrote
@@ -294,16 +302,27 @@ X86LegalizerTable::queryImpl(const LegalityQuery &Q,
   }
 
   // A table with no keyed axis (NumSlots == 0) answers the same thing for
-  // every type, so it must not read one: G_BR carries no types at all.
-  const int C0 = D.NumSlots == 0
-                     ? 0
-                     : (Q.Types.size() > D.Slots[0]
-                            ? classifyType(Q.Types[D.Slots[0]])
-                            : kUnknownClass);
+  // every type, so it must not read one: G_BR carries no types at all.  The
+  // mem-only shape is rejected by the generator, so a non-negative slot here
+  // is the only case that asks about a type.
+  const bool HasFirstTypeSlot = D.NumSlots > 0 && D.Slots[0] >= 0;
+  int C0 = 0;
+  if (HasFirstTypeSlot)
+    C0 = Q.Types.size() > static_cast<size_t>(D.Slots[0])
+             ? classifyType(Q.Types[D.Slots[0]])
+             : kUnknownClass;
+  // Dims[1] > 1 is not the test for "slot 1 is a type slot": a table with one
+  // type slot and a mem axis has Dims {classes, mems, 1}, so its second
+  // dimension is the mem axis and Dims[1] says nothing about a type.  Reading
+  // D.Slots[1] there would be -1, every query would land Outside, and the
+  // table would never answer -- a silent hole, not a wrong answer.  Ask the
+  // slot list, which is where the mem axis actually lives.
+  const bool HasSecondTypeSlot = D.NumSlots > 1 && D.Slots[1] >= 0;
   int C1 = 0;
-  if (D.Dims[1] > 1)
-    C1 = Q.Types.size() > D.Slots[1] ? classifyType(Q.Types[D.Slots[1]])
-                                     : kUnknownClass;
+  if (HasSecondTypeSlot)
+    C1 = Q.Types.size() > static_cast<size_t>(D.Slots[1])
+             ? classifyType(Q.Types[D.Slots[1]])
+             : kUnknownClass;
 
   if (C0 == kPointerVectorClass || C1 == kPointerVectorClass) {
     ++PointerVectors;
@@ -331,7 +350,7 @@ X86LegalizerTable::queryImpl(const LegalityQuery &Q,
     R.Kind = Answer::Outside;
     return R;
   }
-  if (D.Dims[1] > 1) {
+  if (HasSecondTypeSlot) {
     L[1] = D.Local[1][C1];
     if (L[1] == 0xFF) {
       ++Outsides;
@@ -374,7 +393,11 @@ X86LegalizerTable::queryImpl(const LegalityQuery &Q,
       R.Kind = Answer::Outside;
       return R;
     }
-    L[2] = static_cast<unsigned>(MemLocal);
+    // The generator appends the mem axis last, but it is not always the
+    // third dimension: a table with one type slot carries it at index 1, and
+    // the cell index is built from the slot order.  Put the local where the
+    // axis is.
+    L[D.NumSlots - 1] = static_cast<unsigned>(MemLocal);
   }
 
   std::vector<uint32_t> &Row = Cells[Table];
@@ -427,6 +450,27 @@ X86LegalizerTable::queryImpl(const LegalityQuery &Q,
     noteOutside(9, Table, Q);
     R.Kind = Answer::Split;
     return R;
+  }
+  // ruleMatches() proves the cached rule still matches; it cannot prove that
+  // no *earlier* rule does, which is what the chain would answer with.  That
+  // is sound only because every predicate of a tabulated rule set is constant
+  // on a cell: the emitter keys every slot any predicate leaf reads, refuses
+  // (fatally) a leaf it does not know, and cuts the mem axis on the type class
+  // when a rule reads the memory type as a whole -- so within one cell the
+  // first matching rule cannot change.  Check mode tests exactly that on the
+  // questions a compilation asks instead of trusting the argument; the release
+  // path pays nothing for it.
+  if (RuleIdx >= 0 && Verify) {
+    const int64_t ChainRule = RS.findRule(Q);
+    if (ChainRule != RuleIdx) {
+      std::string S;
+      raw_string_ostream OS(S);
+      OS << "x86-gisel-table-check: the cell's rule is not the chain's rule: "
+            "table "
+         << RuleIdx << " chain " << ChainRule << " for ";
+      Q.print(OS);
+      report_fatal_error(StringRef(S));
+    }
   }
   if (RuleIdx >= 0) {
     RuleIdxSum += static_cast<uint64_t>(RuleIdx);

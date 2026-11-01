@@ -2070,6 +2070,30 @@ std::string mutationJsonLanes(unsigned Target, StringRef Bound) {
   return mutationJson(Target, "set_lanes", Bound);
 }
 
+/// The slots a mutation *reads*, when its value is another slot's type.
+/// `sameAsSlotN` is the only such spelling: the new element size is slot N's
+/// element size.  A cached answer depends on every slot the answer reads, not
+/// just the slot it writes, so these are key dependencies like the predicate
+/// leaves and have to be collected the same way.
+void collectMutationReadSlots(StringRef Json, std::set<unsigned> &Out) {
+  StringRef Needle = "sameAsSlot";
+  size_t Pos = 0;
+  while ((Pos = Json.find(Needle, Pos)) != StringRef::npos) {
+    size_t I = Pos + Needle.size();
+    unsigned Slot = 0;
+    bool Any = false;
+    while (I < Json.size() && isDigit(Json[I])) {
+      Slot = Slot * 10 + (Json[I] - '0');
+      Any = true;
+      ++I;
+    }
+    if (!Any)
+      PrintFatalError("mutation value 'sameAsSlot' has no slot index");
+    Out.insert(Slot);
+    Pos = I;
+  }
+}
+
 /// Expand one LegalizeRule record into zero or more core rules.
 void expandRule(const RecordKeeper &Records, const Record &Rule,
                 std::vector<CoreRule> &Out, std::string &Why) {
@@ -2877,6 +2901,11 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     // key fixes those too, or the stored answer would carry the mutation of
     // whichever query filled the cell first.
     std::set<unsigned> ActionSlots;
+    // The slots the mutations *read* (sameAsSlotN).  A cell can only cache an
+    // answer when the key fixes those too: the answer is derived from the
+    // query's types, and a slot the key does not read is the same for every
+    // query in the cell only by accident.
+    std::set<unsigned> MutationReadSlots;
     unsigned FirstRule = 0, NumRules = 0;
   };
   std::vector<TableRec> Tables;
@@ -2893,7 +2922,7 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
   unsigned RuleCursor = 0;
   StringSet<> SeenOpcodes;
   for (const Record *RuleSet : RuleSets) {
-    std::set<unsigned> SlotSet, MemSet, ActionSlotSet;
+    std::set<unsigned> SlotSet, MemSet, ActionSlotSet, MutationReadSlotSet;
     std::map<unsigned, std::set<std::string>> SlotTypes;
     unsigned Count = 0;
     bool HasEscape = false;
@@ -2935,8 +2964,10 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
                           &MemNeedsClass, &HasOpaquePredicate);
         // A rule with no mutation writes nothing, so its type index is not a
         // dependency of its answer.
-        if (!CR.Mutation.empty())
+        if (!CR.Mutation.empty()) {
           ActionSlotSet.insert(CR.TypeIdx);
+          collectMutationReadSlots(CR.Mutation, MutationReadSlotSet);
+        }
         ++Count;
       }
     }
@@ -2969,6 +3000,7 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
     T.Opcodes = RuleSet->getValueAsListOfStrings("Opcodes");
     T.SlotTypes = std::move(SlotTypes);
     T.ActionSlots = std::move(ActionSlotSet);
+    T.MutationReadSlots = std::move(MutationReadSlotSet);
     T.Slots.assign(SlotSet.begin(), SlotSet.end());
     if (T.Slots.size() > 2) {
       T.Slots.resize(2);
@@ -3208,9 +3240,29 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
   // missing -- class is a compile error in the generated switch.
   OS << "constexpr uint64_t " << Prefix
      << "ClassKey(unsigned Kind, unsigned ElemBits, unsigned Lanes) {\n";
-  OS << "  return (static_cast<uint64_t>(Kind) << 32) |\n"
+  // The fields are LLT's own widths: 32 bits of element/size starting at bit
+  // 16, 16 bits of lanes at bit 0, and the kind above both.  A narrower
+  // element field is not just a smaller number: i65537's element size
+  // 0x10001 sets bit 32, which was where the kind lived, so the type
+  // classified as i1 and the table answered a question about a different
+  // type.  The two asserts below pin the layout to the shapes that collided.
+  OS << "  return (static_cast<uint64_t>(Kind) << 48) |\n"
      << "         (static_cast<uint64_t>(ElemBits) << 16) | Lanes;\n";
   OS << "}\n";
+  OS << "// A class key has to be injective over the whole (kind, element, "
+        "lanes) domain.\n";
+  OS << "// Element bits 0x10001 set bit 32 when the element field is 16 bits "
+        "wide, and\n";
+  OS << "// 0x10000 sets it when it is shifted by 16 instead of 32; both then "
+        "collide\n";
+  OS << "// with a different kind.  Pin the layout: a narrower field is a "
+        "compile error.\n";
+  OS << "static_assert(" << Prefix << "ClassKey(Kind_Scalar, 65537, 1) != "
+     << Prefix << "ClassKey(Kind_Scalar, 1, 1),\n"
+     << "              \"class key: element bits overlap the kind field\");\n";
+  OS << "static_assert(" << Prefix << "ClassKey(Kind_Scalar, 65536, 1) != "
+     << Prefix << "ClassKey(Kind_Vector, 0, 1),\n"
+     << "              \"class key: element bits overlap the kind field\");\n";
   OS << "static inline int " << Prefix
      << "ClassifyType(unsigned Kind, unsigned ElemBits, unsigned Lanes) {\n";
   OS << "  switch (" << Prefix << "ClassKey(Kind, ElemBits, Lanes)) {\n";
@@ -3332,11 +3384,12 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
   // A cell stands for exactly one question when no axis it does not key can
   // change the answer: no mem axis at all, and the type slots it reads are
   // exactly 0..NumSlots-1, so each class names one type and the cell holds one
-  // (type tuple).  The rules must also only *write* keyed slots, or the cached
-  // answer would carry the mutation of whichever query happened to fill the
-  // cell first.  Only such a table may cache the answer instead of the rule
-  // that produced it; anything else stands for a fiber of questions and has to
-  // re-derive the answer from the query that asks it.
+  // (type tuple).  The rules must also only *write* and *read* keyed slots:
+  // a write to an unkeyed slot would carry the mutation of whichever query
+  // filled the cell first, and a read from one would make the answer depend on
+  // the query rather than on the cell.  Only such a table may cache the answer
+  // instead of the rule that produced it; anything else stands for a fiber of
+  // questions and has to re-derive the answer from the query that asks it.
   const auto IsOneQuestion = [](const TableRec &R) {
     if (!R.Mem.empty())
       return false;
@@ -3344,6 +3397,14 @@ void LegalizerInfoEmitter::runTable(raw_ostream &OS) {
       if (R.Slots[K] != static_cast<int>(K))
         return false;
     for (unsigned Slot : R.ActionSlots)
+      if (std::find(R.Slots.begin(), R.Slots.end(), static_cast<int>(Slot)) ==
+          R.Slots.end())
+        return false;
+    // Already implied for the CTPOP/CTLZ/CTTZ rules -- their guards read the
+    // same slot their sameAsSlot mutation does -- but the write test above is
+    // not the read test, and a builder that derives the new size from a slot
+    // it does not guard would otherwise cache a class's representative size.
+    for (unsigned Slot : R.MutationReadSlots)
       if (std::find(R.Slots.begin(), R.Slots.end(), static_cast<int>(Slot)) ==
           R.Slots.end())
         return false;

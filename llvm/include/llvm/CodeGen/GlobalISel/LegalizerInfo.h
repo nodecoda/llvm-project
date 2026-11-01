@@ -1367,11 +1367,24 @@ public:
   /// index replays and gets each query's own.
   LLVM_ABI int64_t findRule(const LegalityQuery &Query) const;
 
-  /// Whether the rule at \p RuleIdx answers \p Query.
+  /// Whether the rule at \p RuleIdx answers \p Query.  False out of range.
+  ///
+  /// This does not say the rule is the one apply() would pick: an earlier
+  /// rule may match \p Query too, and apply() answers with the first match.
+  /// Use findRule() == RuleIdx when the answer has to be the chain's.  A
+  /// caller replaying one rule per equivalence class may use this test when
+  /// the class fixes every predicate -- a property of the class, which the
+  /// caller has to establish, not a property of this function.
   LLVM_ABI bool ruleMatches(int64_t RuleIdx, const LegalityQuery &Query) const;
 
-  /// Apply the rule at \p RuleIdx to \p Query.  \p RuleIdx must come from
-  /// findRule() and ruleMatches() must hold for \p Query.
+  /// Apply the rule at \p RuleIdx to \p Query.  \p RuleIdx must be in range
+  /// and ruleMatches() must hold for \p Query.
+  ///
+  /// This replays one rule and cannot see the rest of the chain: when the
+  /// answer is meant to be the chain's, the caller must also have established
+  /// that no earlier rule matches (findRule() == RuleIdx).  It is the caller's
+  /// obligation because only the caller knows whether its proof covers the
+  /// chain -- a table cell, for one, proves it for the whole cell at once.
   LLVM_ABI LegalizeActionStep applyRule(int64_t RuleIdx,
                                         const LegalityQuery &Query) const;
 };
