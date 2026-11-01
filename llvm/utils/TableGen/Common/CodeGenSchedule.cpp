@@ -19,6 +19,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Regex.h"
@@ -53,6 +54,12 @@ struct InstrsOp : public SetTheory::Operator {
 struct InstRegexOp : public SetTheory::Operator {
   const CodeGenTarget &Target;
   InstRegexOp(const CodeGenTarget &t) : Target(t) {}
+
+  /// Cache of the instructions matched by each distinct pattern. InstRW
+  /// definitions frequently repeat the same pattern across processor models;
+  /// expanding each pattern once avoids recompiling its regex and rescanning
+  /// the instruction ranges for every occurrence.
+  StringMap<SmallVector<const Record *, 16>> MatchCache;
 
   /// Remove any text inside of parentheses from S.
   static std::string removeParens(llvm::StringRef S) {
@@ -89,7 +96,16 @@ struct InstRegexOp : public SetTheory::Operator {
       if (!SI)
         PrintFatalError(Loc, "instregex requires pattern string: " +
                                  Expr->getAsString());
-      StringRef Original = SI->getValue();
+      StringRef Pattern = SI->getValue();
+      auto Cached = MatchCache.find(Pattern);
+      if (Cached != MatchCache.end()) {
+        for (const Record *Inst : Cached->second)
+          Elts.insert(Inst);
+        continue;
+      }
+
+      StringRef Original = Pattern;
+      SmallVector<const Record *, 16> Matches;
       // Drop an explicit ^ anchor to not interfere with prefix search.
       bool HadAnchor = Original.consume_front("^");
 
@@ -138,6 +154,7 @@ struct InstRegexOp : public SetTheory::Operator {
         if (InstName.starts_with(Prefix) &&
             (!Regexpr || Regexpr->match(InstName.substr(Prefix.size())))) {
           Elts.insert(Inst->TheDef);
+          Matches.push_back(Inst->TheDef);
           NumMatches++;
         }
       }
@@ -164,6 +181,7 @@ struct InstRegexOp : public SetTheory::Operator {
         StringRef InstName = Inst->getName();
         if (!Regexpr || Regexpr->match(InstName.substr(Prefix.size()))) {
           Elts.insert(Inst->TheDef);
+          Matches.push_back(Inst->TheDef);
           NumMatches++;
         }
       };
@@ -172,6 +190,8 @@ struct InstRegexOp : public SetTheory::Operator {
 
       if (0 == NumMatches)
         PrintFatalError(Loc, "instregex has no matches: " + Original);
+
+      MatchCache.try_emplace(Pattern, std::move(Matches));
     }
   }
 };
