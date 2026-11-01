@@ -46,6 +46,39 @@
  *   IDENT    := [A-Za-z_][A-Za-z0-9_]*   其余
  *
  * 验证：bison 3.8.2 -Wall → 0 error / 0 warning / 0 conflict。
+ *
+ * ---------------------------------------------------------------------------
+ * 文法一页纸（EBNF）。分隔符一人一职：`[ ]` 是有序列表，`{ }` 是块/作用域，
+ * `( )` 只用于表达式分组和产品（product）。
+ *
+ *   file      = { macrodef | classdef | opdef } ;
+ *   opdef     = "op" opcode { "," opcode } block ;
+ *   block     = "{" { item } "}" ;
+ *   item      = query | variadic | groupdef | with | legal | prefer
+ *             | policy | follow | except | shapes | elemwise | class_use ;
+ *
+ *   list      = "[" [ elem { "," elem } ] "]" | elem { "," elem } ;
+ *   query     = "query" list ";" ;        (* 元数 = 声明的坐标个数 *)
+ *   groupdef  = "group" IDENT "=" list ";" ;
+ *   with      = "with" ( IDENT | list ) block ;   (* 块 = 槽位作用域 *)
+ *   policy    = "policy" [ INT ] ":" kind bound [ "pow2" [ INT ] ] [ "when" expr ] ";" ;
+ *   bound     = "to" expr | "promote" expr | "truncate" expr
+ *             | "[" bound "," bound "]"        (* 恰好两个：下界、上界，位置固定 *)
+ *             | "hull" ;
+ *
+ * 列表是有序的、位置有意义的：`[s8, s16]` 是点，`[a, b], [c, d]` 才是并。
+ * 这不是集合语法；集合仍然由 `,`（并）和 `+`（并）在 `expr` 里表达。
+ *
+ * ---------------------------------------------------------------------------
+ * 规则优先级与覆盖性质（这两条是语义，文法只负责能把它们写出来）：
+ *
+ *   priority   specific > default，tie = error       （同 yacc 的 %nonassoc）
+ *   coverage   slot     每个声明的 `ty` 坐标都被约束   -> 13-slot-unconstrained
+ *              default  特指 ∪ 默认 = 声明的全部槽      -> 13-policy-duplicate
+ *              answer   policy* 落在 legal ∪ escape      -> 待实现（可达性）
+ *
+ * 覆盖是**可检查的属性**，不是注释：三条各有一个检查点，前两条已经在
+ * check_decl 里，第三条是下一轮的门禁。
  */
 
 %{
@@ -93,7 +126,9 @@ opdef     : OP opcodes LBRACE body RBRACE ;   /* query/variadic are items */
  * is a whole-op terminal (`legal any;` / `except true -> ...`) or an old v6
  * block, which keeps v6 semantics: arity is inferred as before. */
 query     : QUERY coords SEMI ;
-coords    : coord | coords COMMA coord ;
+coords    : coord | coords COMMA coord
+          | LBRACKET coord_list RBRACKET ;
+coord_list: coord | coord_list COMMA coord ;
 coord     : TY INT | MEM INT | IMM INT ;
 
 /* v7: variadic operands after the declared ones share this type variable.
@@ -116,7 +151,9 @@ variadic  : VARIADIC INT SEMI ;
 groupdef  : GROUP IDENT EQ slot_list SEMI ;
 with_decl : WITH slot_set LBRACE body RBRACE ;
 slot_set  : slot_list | IDENT ;
-slot_list : INT | slot_list COMMA INT ;
+slot_list : INT | slot_list COMMA INT
+          | LBRACKET int_list RBRACKET ;
+int_list  : INT | int_list COMMA INT ;
 
 /* A type class is the one thing LLT cannot tell us: `s32` is i32 or float.
  * The membership is a set of concrete types, and `class int;` inside a block

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Grammar gate: compile with -Wall (0/0/0), accept the v7 corpus, accept the
-# v6 corpus unchanged (set V6_CORPUS), and reject the negative case.
+# v6 corpus unchanged (set V6_CORPUS), and reject every negative case.
 set -e
 here=$(cd "$(dirname "$0")/.." && pwd)
 build=${TMPDIR:-/tmp}/dslbuild
@@ -15,8 +15,15 @@ g++ -std=c++17 -I"$build" -o "$build/parse_check" \
 "$build/parse_check" "$here/tests/v7-shapes.decl"
 [ -n "$V6_CORPUS" ] && "$build/parse_check" "$V6_CORPUS"
 
-if "$build/parse_check" "$here/tests/v7-negative.decl" >/dev/null 2>&1; then
-  echo "FAIL negative case parsed" >&2
-  exit 1
-fi
-echo "negative case rejected (expected)"
+# Every negative file must fail; otherwise "the parser accepts everything"
+# would pass this gate.
+rc=0
+for f in "$here"/tests/*negative*.decl; do
+  if "$build/parse_check" "$f" >/dev/null 2>&1; then
+    echo "FAIL negative case parsed: $f" >&2
+    rc=1
+  else
+    echo "negative case rejected (expected): $(basename "$f")"
+  fi
+done
+exit $rc

@@ -201,6 +201,19 @@ def class_members(name):
     return out
 
 
+def strip_list(s):
+    """`[0, 1]` -> `0, 1`; anything else unchanged.
+
+    v8 puts lists in brackets, but the older comma form is still accepted:
+    both spellings reach the tools as the same text.  One helper, because
+    three call sites (query, group, with) must agree on what a list is.
+    """
+    s = s.strip()
+    if len(s) >= 2 and s.startswith('[') and s.endswith(']'):
+        return s[1:-1].strip()
+    return s
+
+
 def parse(path):
     """Read a .decl file into (macros, blocks).
 
@@ -260,7 +273,7 @@ def parse(path):
             if m:
                 try:
                     blk['groups'][m.group(1)] = tuple(
-                        int(x) for x in m.group(2).split(','))
+                        int(x) for x in strip_list(m.group(2)).split(','))
                 except ValueError:
                     fail('13-group-syntax: %s' % text[:60])
                 return
@@ -298,7 +311,7 @@ def parse(path):
                     fail('13-with-outside-op: %s' % head[:60])
                     continue
                 blk = opent[-1]['blk']
-                spec = head[len('with '):].strip()
+                spec = strip_list(head[len('with '):].strip())
                 if spec.isdigit():
                     slots = (int(spec),)
                 elif spec in blk['groups']:

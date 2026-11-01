@@ -56,6 +56,20 @@ op G_SELECT {
   policy 1: scalar to s32;
 }
 
+/* The uniform spelling: a list is `[ ]` and a block is `{ }`.  The comma
+ * form stays accepted, so v6/v7 files are unchanged. */
+op G_UNMERGE_VALUES {
+  query [ty 0, ty 1];
+  group pair = [0, 1];
+  with [0, 1] {
+    prefer pow2 min 8;
+  }
+  with pair {
+    prefer elem;
+  }
+  legal (size(16) + size(32), size(8) + size(16));
+}
+
 op G_LOAD {
   query ty 0, ty 1, mem 0;
   legal any when ty(1) = p0:64 && bits(ty(0)) = bits(mem(0).ty);

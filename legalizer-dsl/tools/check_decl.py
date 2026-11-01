@@ -540,7 +540,7 @@ def query_of(block):
         if not m:
             continue
         out = []
-        for part in D.split_top(m.group(1), ','):
+        for part in D.split_top(D.strip_list(m.group(1)), ','):
             mm = re.fullmatch(r'(ty|mem|imm)\s+(\d+)', part.strip())
             out.append((mm.group(1), int(mm.group(2))) if mm else ('bad', -1))
         return out
@@ -1073,6 +1073,12 @@ def check(path, self_test_errors=None):
                 errs.append(('1-sort', ops, st))
         for st in legal:
             shape, _g = D.clause_of(st)
+            if '[' in st:
+                # `[ ]` is a list; a legal clause is a set of *products*, and
+                # a product is a tuple `(a, b)`.  The real grammar rejects
+                # `legal [s8, s16]`; so must the loose reader, or the two
+                # layers drift and the corpus check passes on nonsense.
+                errs.append(('13-legal-bracket', ops, st))
             if shape == '_':
                 errs.append(('2-unit', ops, st))
             if ' - ' in ' %s ' % shape or re.search(r'\bnever\b', shape):
@@ -1381,6 +1387,13 @@ SHAPE_SELF_TEST = [
      '  legal s8, s16;\n}\n', '13-with-non-slot'),
     ('op G_T {\n  query ty 0, ty 1;\n  with nosuch { policy: scalar hull; }\n'
      '  legal s8, s16;\n}\n', '13-with-unknown-group'),
+    # The uniform spelling: lists in `[ ]`, blocks in `{ }`.
+    ('op G_T {\n  query [ty 0, ty 1];\n  group pair = [0, 1];\n'
+     '  with [0, 1] {\n    policy: scalar hull;\n  }\n'
+     '  with pair { prefer pow2; }\n  legal s8, s16;\n}\n', None),
+    # A product is a tuple, not a list: the grammar rejects this spelling.
+    ('op G_T {\n  query [ty 0, ty 1];\n  legal [s8, s16];\n}\n',
+     '13-legal-bracket'),
 ]
 
 

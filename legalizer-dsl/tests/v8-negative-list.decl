@@ -1,0 +1,7 @@
+/* Must NOT parse: `[ ]` is a list, a legal clause is a set of products, and a
+ * product is a tuple `(a, b)`.  Accepting this spelling would let the loose
+ * reader and the grammar disagree. */
+op G_BROKEN {
+  query [ty 0, ty 1];
+  legal [s8, s16];
+}
