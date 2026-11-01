@@ -35,6 +35,7 @@
 #include "llvm/CodeGen/MachineScheduler.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/TargetPassConfig.h"
+#include "llvm/CodeGenTypes/LowLevelType.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Function.h"
@@ -52,6 +53,19 @@
 #include <optional>
 
 using namespace llvm;
+
+// GlobalISel's table tests need a target on which an LLT's kind is part of its
+// identity, because that is the condition under which the legalizer table must
+// not answer from a cached cell (see X86LegalizerTable::queryImpl).  X86 does
+// not use extended LLTs -- its rules and its instruction selector are written
+// in terms of ANY_SCALAR -- so this hook exists only to produce that situation
+// up to -stop-after=legalizer.  Default off: nothing else in the pipeline is
+// expected to work with it on.
+static cl::opt<bool> X86GISelExtendedLLT(
+    "x86-gisel-extended-llt", cl::Hidden, cl::init(false),
+    cl::desc("Make integer and floating-point LLTs distinct kinds, as AArch64, "
+             "AMDGPU and WebAssembly do.  Test hook for the GlobalISel "
+             "legalizer table; x86 instruction selection does not support it"));
 
 extern "C" LLVM_C_ABI void LLVMInitializeX86Target() {
   // Register the target.
@@ -199,6 +213,9 @@ X86TargetMachine::X86TargetMachine(const Target &T, const Triple &TT,
   }
 
   setMachineOutliner(true);
+
+  if (X86GISelExtendedLLT)
+    LLT::setUseExtended(true);
 
   // x86 supports the debug entry values.
   setSupportsDebugEntryValues(true);

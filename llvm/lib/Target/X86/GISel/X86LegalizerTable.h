@@ -107,6 +107,9 @@ public:
   uint64_t declined() const { return Declined; }
   uint64_t splits() const { return Splits; }
   uint64_t fills() const { return Fills; }
+  /// Answers served from a cell's stored answer rather than replayed.  Zero on
+  /// a target with extended LLTs, where the cache is switched off.
+  uint64_t cachedAnswers() const { return Cached; }
 
 private:
   /// One question in the check domain, owning the storage its query points at:
@@ -145,6 +148,12 @@ private:
   /// with RulesOfCell, and read only for tables whose descriptor says the
   /// cell stands for exactly one question -- for any other table the answer
   /// depends on which query in the cell is asking, so it is re-derived.
+  ///
+  /// "One question" is a property of the key, and the key is only as fine as
+  /// the LLTs it folds together: classifyType() maps every scalar kind to one
+  /// class, so a target whose LLTs distinguish i128 from s128 has cells that
+  /// look like one question and are not (a076fbbf9e72).  queryImpl() gates
+  /// this cache on !LLT::getUseExtended() for that reason.
   mutable std::vector<LegalizeActionStep> Answers;
   /// -x86-gisel-table-check for the installed table: verify real queries.
   /// Checked counts how many it compared, so a run that verified nothing
@@ -152,8 +161,8 @@ private:
   bool Verify;
   mutable uint64_t Checked = 0;
   mutable uint64_t Hits = 0, Outsides = 0, PointerVectors = 0,
-                   AddressSpaces = 0, Untabulated = 0, Declined = 0,
-                   Splits = 0, Fills = 0;
+                   AddressSpaces = 0, Untabulated = 0, Declined = 0, Splits = 0,
+                   Fills = 0, Cached = 0;
   /// How deep the winning rule sits on the queries a compilation actually
   /// asks.  The check domain is uniform over type classes; real code is not,
   /// and this is what connects the two measurements.

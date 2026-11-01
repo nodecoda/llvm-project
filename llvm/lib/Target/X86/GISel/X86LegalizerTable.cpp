@@ -57,6 +57,39 @@ struct LegalizerTypeClass {
 
 namespace {
 
+/// Whether two types are the same *spelling*, not merely the same value.
+///
+/// LLT::operator== treats ANY_SCALAR as a wildcard: s64 equals i64 and f64
+/// whenever the size matches.  Legalization's output is an LLT that ends up in
+/// MIR, and on a target with extended LLTs those are different types, so the
+/// checks here compare what print() says instead of what operator== hides.
+bool sameSpelling(const LLT &A, const LLT &B) {
+  if (A.isValid() != B.isValid())
+    return false;
+  if (!A.isValid())
+    return true;
+  std::string SA, SB;
+  {
+    raw_string_ostream OS(SA);
+    A.print(OS);
+  }
+  {
+    raw_string_ostream OS(SB);
+    B.print(OS);
+  }
+  return SA == SB;
+}
+
+/// Whether a (action, slot, new type) answer is the chain's answer, spelling
+/// included.  This is what every check uses; comparing LegalizeActionSteps
+/// with operator== would pass a table that handed i64 the s64 an s128
+/// representative produced -- the a076fbbf9e72 bug, invisible per query.
+bool sameAnswer(LegalizeAction Action, unsigned TypeIdx, const LLT &NewType,
+                const LegalizeActionStep &Chain) {
+  return Action == Chain.Action && TypeIdx == Chain.TypeIdx &&
+         sameSpelling(NewType, Chain.NewType);
+}
+
 constexpr int kUnknownClass = -1;
 constexpr int kPointerVectorClass = -2;
 // A pointer in an address space the table does not model.  The class list is
@@ -197,7 +230,7 @@ uint32_t X86LegalizerTable::fill(unsigned Table, const LegalityQuery &Q,
       // table whose -1 was not last would read the wrong dimension.  Asserting
       // this on every lookup put an indexed load in the hot path of the mem
       // tables; here it is paid once per cell.
-      assert(K == D.NumSlots - 1 && "the mem axis is the last keyed axis");
+      assert(K + 1 == D.NumSlots && "the mem axis is the last keyed axis");
       // A size-keyed axis stands for one access size, so a scalar of exactly
       // that size answers for the cell.  A class-keyed axis stands for one
       // type, and the class's own representative is the type the rules wrote
@@ -420,7 +453,21 @@ X86LegalizerTable::queryImpl(const LegalityQuery &Q,
   // where the key also covers the slot every rule action writes, so the cell
   // fixes the rule's mutations too.  lookup() verifies this on real queries
   // under -x86-gisel-table-check rather than trusting the argument.
-  if (D.OneQuestion && AllowCachedAnswer) {
+  // A cell's stored answer is the chain's answer for the cell's
+  // *representative*, and that is the same answer for every query in the cell
+  // only if the key is injective over the LLTs the target can produce.  It is
+  // not when LLT kinds are distinct: classifyType() maps INTEGER, FLOAT and
+  // ANY_SCALAR onto one scalar class, so an i128 query lands in the s128 cell
+  // and would be handed s64 where the chain says i64 -- a076fbbf9e72.  Which
+  // LLTs exist is a property of the target, published before any query runs,
+  // so that is where the decision belongs: on a target with extended LLTs the
+  // cache is off and the rule number is replayed on the real query, which
+  // recomputes the mutation instead of copying the representative's.
+  //
+  // X86 never enables extended LLTs, so this is a relaxed load of a global
+  // that is constant for the process; -x86-gisel-extended-llt exists to make
+  // the closed path reachable in a test.
+  if (D.OneQuestion && AllowCachedAnswer && !LLT::getUseExtended()) {
     const int64_t RuleIdx = RulesOfCell[Cell - 1];
     if (RuleIdx >= 0) {
       RuleIdxSum += static_cast<uint64_t>(RuleIdx);
@@ -429,6 +476,7 @@ X86LegalizerTable::queryImpl(const LegalityQuery &Q,
     }
     const LegalizeActionStep &S = Answers[Cell - 1];
     ++Hits;
+    ++Cached;
     R.Kind = Answer::Hit;
     R.Action = S.Action;
     R.TypeIdx = S.TypeIdx;
@@ -510,11 +558,15 @@ bool X86LegalizerTable::lookup(const LegalityQuery &Q,
     ++Checked;
     const LegalizeActionStep Chain =
         LI.getActionDefinitions(Q.Opcode).apply(Q);
-    if (!(Chain == Step)) {
+    // Compared by spelling, not by LegalizeActionStep::operator==: that
+    // operator's LLT comparison treats s64, i64 and f64 as one type, so it
+    // cannot see the one disagreement a cached answer can introduce.
+    if (!sameAnswer(Step.Action, Step.TypeIdx, Step.NewType, Chain)) {
       std::string S;
       raw_string_ostream OS(S);
       OS << "x86-gisel-table-check: the table answered a query the chain does "
-           "not; table "
+            "not (new type compared by spelling, not by LLT::operator==); "
+            "table "
          << static_cast<unsigned>(Step.Action) << "/" << Step.TypeIdx << "/";
       Step.NewType.print(OS);
       OS << ", chain " << static_cast<unsigned>(Chain.Action) << "/"
@@ -534,8 +586,8 @@ X86LegalizerTable::~X86LegalizerTable() {
   errs() << "x86-gisel-table: hit " << Hits << " outside " << Outsides
          << " ptrvec " << PointerVectors << " addrspace " << AddressSpaces
          << " untabulated " << Untabulated << " splits " << Splits
-         << " declined " << Declined << " fills " << Fills << " checked "
-         << Checked << " rule_mean "
+         << " declined " << Declined << " fills " << Fills << " cached "
+         << Cached << " checked " << Checked << " rule_mean "
          << format("%.2f",
                    RuleIdxCount ? double(RuleIdxSum) / RuleIdxCount : 0.0)
          << " rule_max " << RuleIdxMax << "\n";
@@ -676,8 +728,7 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
       continue;
     }
     ++Compared;
-    if (R.Action == ChainStep.Action && R.TypeIdx == ChainStep.TypeIdx &&
-        R.NewType == ChainStep.NewType)
+    if (sameAnswer(R.Action, R.TypeIdx, R.NewType, ChainStep))
       continue;
     ++Mismatches;
     if (Mismatches <= 20) {
@@ -752,8 +803,7 @@ void X86LegalizerTable::benchmark(raw_ostream &OS, unsigned Reps) {
       ++Hits;
     else
       Mixed = Chain;
-    if (Mixed.Action != Chain.Action || Mixed.TypeIdx != Chain.TypeIdx ||
-        Mixed.NewType != Chain.NewType)
+    if (!sameAnswer(Mixed.Action, Mixed.TypeIdx, Mixed.NewType, Chain))
       ++Mismatches;
     Sink += static_cast<unsigned>(Mixed.Action) + Mixed.TypeIdx;
 

@@ -38,7 +38,7 @@
 ; the mismatch line trivially, so it is matched as non-zero.
 ;
 ; VERIFY: x86-gisel-table-check: points [[P:[0-9]+]] compared [[P]] mismatches 0 skipped 0
-; VERIFY: x86-gisel-table: hit {{[1-9][0-9]*}} {{.*}} checked {{[1-9][0-9]*}}
+; VERIFY: x86-gisel-table: hit {{[1-9][0-9]*}} {{.*}} cached {{[1-9][0-9]*}} checked {{[1-9][0-9]*}}
 
 define void @f() {
   ret void
