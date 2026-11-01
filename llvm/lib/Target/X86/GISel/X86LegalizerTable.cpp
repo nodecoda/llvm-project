@@ -253,13 +253,21 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
   }
   const LegalizerTableDesc &D = X86Tables[Table];
   // The keyed axes are the type slots and, where the rule set reads one, the
-  // access size of MMO 0.  A query that carries an axis the key does not
-  // observe -- an immediate anywhere, a second memdesc, or a memdesc on a
-  // types-only table -- is a different question with the same key, so the
-  // table must not answer it.  The count says how often that happens.
+  // access size of MMO 0.  A query that carries a memdesc the key does not
+  // observe -- a second one, or any memdesc on a types-only table -- asks a
+  // different question, so the table must not answer it.  The count says how
+  // often that happens.
+  //
+  // Immediates are not a reason to decline, and that is by construction
+  // rather than by luck: the only way to spell a predicate that reads one is
+  // raw C++ (LegalizeOpaqueBool), and a rule set holding such a predicate is
+  // not tabulated at all -- -gen-legalizer-table lists it under "Not
+  // tabulated".  Every predicate in a table that exists is therefore a core
+  // leaf, and no core leaf reads Q.Immediates.  Proved by construction on
+  // sync/table-classify, measured there: 10 queries, all G_SEXT_INREG, were
+  // declined for carrying one and are now answered, with no output change.
   const bool HasMemAxis = D.Mem != nullptr;
-  if (!Q.Immediates.empty() ||
-      Q.MMODescrs.size() != (HasMemAxis ? 1u : 0u)) {
+  if (Q.MMODescrs.size() != (HasMemAxis ? 1u : 0u)) {
     ++Declined;
     R.Kind = Answer::Declined;
     return R;
