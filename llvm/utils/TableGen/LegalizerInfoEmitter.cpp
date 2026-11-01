@@ -2782,9 +2782,14 @@ const char *className(int Kind) {
     return "Kind_Scalar";
   case 2:
     return "Kind_Vector";
-  default:
+  case 3:
     return "Kind_PointerVector";
   }
+  // No default above: a fourth class kind would otherwise be emitted under
+  // another kind's name and silently share its classifier case, which is the
+  // one way this list can be wrong without anything noticing.
+  PrintFatalError("type class kind " + std::to_string(Kind) +
+                  " has no spelling in the consumer");
 }
 
 /// (kind, element bits, lanes) of a literal LLT.  This is the class the key is

@@ -51,7 +51,10 @@ enum LegalizerTypeClassKind : uint8_t {
 };
 
 struct LegalizerTypeClass {
-  uint8_t Kind;
+  // The enum type, not uint8_t: typeFiber() and representative() switch on it
+  // with no default case, so a new kind of class is a compile error in every
+  // place that has to know how to spell it.
+  LegalizerTypeClassKind Kind;
   // LLT's own widths: an element/size is 32 bits and lanes are 16.  A 16-bit
   // element field would silently truncate a class the rules can spell, and the
   // classifier would then answer a question about a narrower type.
@@ -194,68 +197,115 @@ static void memFiber(unsigned Bits, SmallVectorImpl<LLT> &Out) {
   }
 }
 
+/// Every FP semantics LLT can name.  The static_assert is the completeness
+/// check: FpSemantics ends at S_MaxSemantics and its values are contiguous, so
+/// a semantics added to APFloat without adding it here fails to compile instead
+/// of silently leaving a spelling out of every fiber.
+static constexpr LLT::FpSemantics AllFpSemantics[] = {
+    LLT::FpSemantics::S_IEEEhalf,
+    LLT::FpSemantics::S_BFloat,
+    LLT::FpSemantics::S_IEEEsingle,
+    LLT::FpSemantics::S_IEEEdouble,
+    LLT::FpSemantics::S_IEEEquad,
+    LLT::FpSemantics::S_x87DoubleExtended,
+    LLT::FpSemantics::S_PPCDoubleDouble,
+    LLT::FpSemantics::S_PPCDoubleDoubleLegacy,
+    LLT::FpSemantics::S_Float8E5M2,
+    LLT::FpSemantics::S_Float8E5M2FNUZ,
+    LLT::FpSemantics::S_Float8E4M3,
+    LLT::FpSemantics::S_Float8E4M3FN,
+    LLT::FpSemantics::S_Float8E4M3FNUZ,
+    LLT::FpSemantics::S_Float8E4M3B11FNUZ,
+    LLT::FpSemantics::S_Float8E3M4,
+    LLT::FpSemantics::S_FloatTF32,
+    LLT::FpSemantics::S_Float8E8M0FNU,
+    LLT::FpSemantics::S_Float6E3M2FN,
+    LLT::FpSemantics::S_Float6E2M3FN,
+    LLT::FpSemantics::S_Float4E2M1FN,
+    LLT::FpSemantics::S_Float8E5M3FNU,
+};
+static_assert(std::size(AllFpSemantics) ==
+                  static_cast<size_t>(LLT::FpSemantics::S_MaxSemantics) + 1,
+              "a new FP semantics needs a spelling in the fiber");
+
+/// The float spellings of one scalar width.  Derived rather than listed: every
+/// semantics LLT can name is constructed and kept when it is that wide *and*
+/// prints differently from the plain scalar of that width.  The second filter
+/// is what defines "spelling" here -- sameAnswer() compares printed types, so
+/// two LLTs print() cannot tell apart are one question, not two.  bf16 and
+/// ppcf128 survive it; the FP8/FP6/FP4 semantics and x86fp80 do not, because
+/// LLT::print() gives them the plain scalar spelling.
+static void appendFloatSpellings(unsigned Bits, SmallVectorImpl<LLT> &Out) {
+  for (LLT::FpSemantics Sem : AllFpSemantics) {
+    if (APFloat::getSizeInBits(APFloatBase::EnumToSemantics(Sem)) != Bits)
+      continue;
+    const LLT T = LLT::floatingPoint(Sem);
+    if (sameSpelling(T, LLT::scalar(Bits)))
+      continue;
+    Out.push_back(T);
+  }
+}
+
 /// Every LLT spelling of one scalar width.  classifyType() files ANY_SCALAR,
 /// INTEGER and FLOAT of the same width into one class, so the key cannot tell
 /// them apart, while the answer can: a mutation keeps the kind it was given, so
-/// the widened type comes out spelled i64, f64 or s64 depending on which
+/// the widened type comes out spelled i64, s64 or f64 depending on which
 /// spelling asked.
 ///
-/// Whether the FLOAT spelling may be asked at all is not this function's
+/// Whether the float spellings may be asked at all is not this function's
 /// decision: a rule that forces an element width with no FP semantics makes
 /// LLT::changeElementSize() abort on a FLOAT, so the chain has no answer there.
 /// The generator works that out per keyed slot from the rule set's mutations
-/// (LegalizerTableDesc::FloatOK) and this only follows it.
+/// (LegalizerTableDesc::FloatOK) and this only follows it -- counting what it
+/// declined, so a slot with no float coverage says so in the report instead of
+/// quietly looking complete.
 ///
 /// Without extended LLTs there is nothing to enumerate: LLT::integer() returns
 /// LLT::scalar(), so the fiber really is one type and this returns one.  That
 /// is also the configuration the answer cache is live in, which is why the
 /// fiber test has to be run with -x86-gisel-extended-llt to say anything.
-static void scalarFiber(unsigned Bits, bool AllowFloat,
+static void scalarFiber(unsigned Bits, bool AllowFloat, unsigned &Skipped,
                         SmallVectorImpl<LLT> &Out) {
   Out.push_back(LLT::scalar(Bits));
   if (!LLT::getUseExtended())
     return;
   Out.push_back(LLT::integer(Bits));
-  if (!AllowFloat)
+  SmallVector<LLT, 4> Floats;
+  appendFloatSpellings(Bits, Floats);
+  if (!AllowFloat) {
+    Skipped += Floats.size();
     return;
-  switch (Bits) {
-  case 16:
-    Out.push_back(LLT::float16());
-    break;
-  case 32:
-    Out.push_back(LLT::float32());
-    break;
-  case 64:
-    Out.push_back(LLT::float64());
-    break;
-  case 128:
-    Out.push_back(LLT::float128());
-    break;
-  default:
-    break;
   }
+  Out.append(Floats.begin(), Floats.end());
 }
 
-/// Every type a class stands for.  A pointer has one spelling at address space
-/// 0 (classifyType() refuses the others, and that refusal is counted
-/// separately), and a vector stands for the vector of each spelling of its
-/// element.
+/// Every type a class stands for -- the preimage of classifyType().  A pointer
+/// has one spelling at address space 0 (classifyType() refuses the others, and
+/// that refusal is counted separately), and a vector stands for the vector of
+/// each spelling of its element.
+///
+/// No default case: this switch has to cover every LegalizerTypeClassKind, so
+/// adding one to the class list is a compile error here rather than a class
+/// whose fiber is silently empty.
 static void typeFiber(const LegalizerTypeClass &C, bool AllowFloat,
-                      SmallVectorImpl<LLT> &Out) {
-  if (C.Kind == Kind_Pointer || C.Kind == Kind_PointerVector) {
-    const LLT P = LLT::pointer(0, C.ElemBits);
-    Out.push_back(C.Kind == Kind_Pointer ? P
-                                         : LLT::fixed_vector(C.Lanes, P));
+                      unsigned &Skipped, SmallVectorImpl<LLT> &Out) {
+  switch (C.Kind) {
+  case Kind_Pointer:
+    Out.push_back(LLT::pointer(0, C.ElemBits));
+    return;
+  case Kind_PointerVector:
+    Out.push_back(LLT::fixed_vector(C.Lanes, LLT::pointer(0, C.ElemBits)));
+    return;
+  case Kind_Vector:
+  case Kind_Scalar: {
+    SmallVector<LLT, 6> Elems;
+    scalarFiber(C.ElemBits, AllowFloat, Skipped, Elems);
+    for (LLT E : Elems)
+      Out.push_back(C.Kind == Kind_Vector ? LLT::fixed_vector(C.Lanes, E) : E);
     return;
   }
-  SmallVector<LLT, 4> Elems;
-  scalarFiber(C.ElemBits, AllowFloat, Elems);
-  for (LLT E : Elems) {
-    if (C.Lanes == 1)
-      Out.push_back(E);
-    else
-      Out.push_back(LLT::fixed_vector(C.Lanes, E));
   }
+  llvm_unreachable("unhandled type class kind");
 }
 
 /// Inverse of a table's global -> local map.  Local classes are a partition of
@@ -276,6 +326,8 @@ X86LegalizerTable::X86LegalizerTable(const LegalizerInfo &LI, bool Verify)
 
 LLT X86LegalizerTable::representative(unsigned ClassID) const {
   const LegalizerTypeClass &C = X86TypeClasses[ClassID];
+  // No default: a new class kind must decide what its representative is
+  // rather than inherit the scalar one.
   switch (C.Kind) {
   case Kind_Pointer:
     return LLT::pointer(0, C.ElemBits);
@@ -283,9 +335,10 @@ LLT X86LegalizerTable::representative(unsigned ClassID) const {
     return LLT::fixed_vector(C.Lanes, C.ElemBits);
   case Kind_PointerVector:
     return LLT::fixed_vector(C.Lanes, LLT::pointer(0, C.ElemBits));
-  default:
+  case Kind_Scalar:
     return LLT::scalar(C.ElemBits);
   }
+  llvm_unreachable("unhandled type class kind");
 }
 
 uint32_t X86LegalizerTable::fill(unsigned Table, const LegalityQuery &Q,
@@ -739,7 +792,24 @@ void X86LegalizerTable::collectDomain(std::vector<DomainPoint> &Out) const {
           // the generator clears it when a rule can force an element width
           // with no FP semantics, which is where the chain stops being
           // defined (G_FCMP narrows its operand to s8).
-          typeFiber(X86TypeClasses[Class], (D.FloatOK >> K) & 1u, Members);
+          typeFiber(X86TypeClasses[Class], (D.FloatOK >> K) & 1u, FiberSkipped,
+                    Members);
+          // The fiber is the preimage of classifyType(), so every spelling it
+          // produced has to classify back to the class it came from.  This is
+          // what makes the expansion mechanical rather than a wish: a spelling
+          // added under the wrong class fails here, and a class whose fiber
+          // missed a spelling is what the counters below make visible.
+          for (size_t M = Before; M != Members.size(); ++M) {
+            if (classifyType(Members[M]) != static_cast<int>(Class)) {
+              std::string S;
+              raw_string_ostream OS(S);
+              OS << "x86-gisel-table-check: " << Entry.Name
+                 << ": a fiber member does not classify back to the class it "
+                    "was built for: ";
+              Members[M].print(OS);
+              report_fatal_error(StringRef(S));
+            }
+          }
           TypeFiberHere = std::max<unsigned>(
               TypeFiberHere, static_cast<unsigned>(Members.size() - Before));
         }
@@ -911,8 +981,8 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
      << Outsides << " ptrvec " << PointerVectors << " addrspace "
      << AddressSpaces << " untabulated " << Untabulated << " splits " << Splits
      << " declined " << Declined << " fills " << Fills << " fiber "
-     << FiberPoints << " fiber_refused " << FiberRefused << " fiber_max "
-     << FiberMax << "\n";
+     << FiberPoints << " fiber_refused " << FiberRefused << " fiber_skipped "
+     << FiberSkipped << " fiber_max " << FiberMax << "\n";
   if (Mismatches)
     report_fatal_error(
         "x86-gisel-table-check: the table and the chain disagree");

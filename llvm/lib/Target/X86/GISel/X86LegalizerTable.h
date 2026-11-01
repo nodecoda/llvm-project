@@ -147,6 +147,11 @@ private:
   /// without extended LLTs: the check is then a cover of the quotients, not of
   /// what the quotients merged.  Reported rather than assumed.
   mutable unsigned FiberMax = 0;
+  /// Float spellings the fiber declined to ask because the generator found a
+  /// rule that forces a width with no FP semantics (see FloatOK).  Counted, so
+  /// a slot with no float coverage is a number in the report rather than an
+  /// absence nobody can see.
+  mutable unsigned FiberSkipped = 0;
   mutable std::vector<std::vector<uint32_t>> Cells;
   /// Per cell, the rule that answered it -- see LegalizeRuleSet::findRule.
   ///

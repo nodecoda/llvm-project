@@ -18,7 +18,7 @@
 ; treat differently, which is the only way this table can be wrong: it cannot
 ; invent an answer the chain would not give.
 ;
-; CHECK: x86-gisel-table-check: points [[P:[0-9]+]] compared [[P]] mismatches 0 skipped 0 {{.*}} fiber [[F:[0-9]+]] fiber_refused 0 fiber_max 1
+; CHECK: x86-gisel-table-check: points [[P:[0-9]+]] compared [[P]] mismatches 0 skipped 0 {{.*}} fiber [[F:[0-9]+]] fiber_refused 0 fiber_skipped 0 fiber_max 1
 
 ; fiber_max 1 is the honest number for this configuration, not a coverage
 ; claim.  A class stands for every LLT spelling that classifies to it, and
