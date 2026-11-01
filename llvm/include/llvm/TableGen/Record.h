@@ -750,10 +750,35 @@ public:
   bool isConcrete() const override { return true; }
 
   std::string getAsString() const override {
-    if (Format == SF_String)
-      return "\"" + Value.str() + "\"";
-    else
+    if (Format == SF_Code)
       return "[{" + Value.str() + "}]";
+
+    // Escape the characters that the lexer treats specially so that the
+    // result can be parsed back as a TableGen string literal.
+    std::string Result;
+    Result.reserve(Value.size() + 2);
+    Result.push_back('"');
+    for (char C : Value) {
+      switch (C) {
+      case '\\':
+        Result += "\\\\";
+        break;
+      case '"':
+        Result += "\\\"";
+        break;
+      case '\n':
+        Result += "\\n";
+        break;
+      case '\t':
+        Result += "\\t";
+        break;
+      default:
+        Result.push_back(C);
+        break;
+      }
+    }
+    Result.push_back('"');
+    return Result;
   }
 
   std::string getAsUnquotedString() const override { return Value.str(); }

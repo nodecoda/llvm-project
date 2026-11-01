@@ -37,10 +37,7 @@ def case_04 : PrintString<!repr(!foreach(i, [1,2,3], !mul(i,2)))>;
 // Show the dumping of full records...
 def case_05 : PrintString<!repr(case_04)>;
 // CHECK-LABEL: def case_05 { // PrintString
-// CHECK-NEXT:    string S = "case_04 { // PrintString
-// CHECK-NEXT:    string S = "[2, 4, 6]";
-// CHECK-NEXT:  }
-// CHECK-NEXT:  ";
+// CHECK-NEXT:    string S = "case_04 {\t// PrintString\n  string S = \"[2, 4, 6]\";\n}\n";
 // CHECK-NEXT:  }
 
 // ... and how !repr differs compared to !cast<string>.
