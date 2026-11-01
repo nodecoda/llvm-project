@@ -1029,9 +1029,12 @@ def env_signature(block, env, macros, slots=(), coarse=False):
 def env_classes(block, envs, macros, slots=(), coarse=False):
     """One representative per set of environments the block cannot tell apart.
 
-    Enumerating the atom powerset counts the same query many times: G_ADD has
-    six realizable environments at Is64Bit=1 and one answer.  The measurement
-    is a count of *distinct questions*, so equivalent environments collapse.
+    Enumerating the atom powerset asks the same question many times: several
+    realizable environments give a block the same answer.  The measurement is
+    a count of *distinct questions*, so equivalent environments collapse.
+    (G_FPEXT: six realizable environments at Is64Bit=1, two answers; G_ADD:
+    six environments and five answers, because its legal set really does
+    differ per HasSSE2/HasAVX2/HasAVX512/HasBWI.)
     """
     # A `legal` shape that itself contains a `cond` would need the shape's
     # value in the signature, not just the guard's truth.  No block in the
