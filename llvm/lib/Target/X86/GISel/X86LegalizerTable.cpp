@@ -853,6 +853,169 @@ void X86LegalizerTable::collectDomain(std::vector<DomainPoint> &Out) const {
   }
 }
 
+/// The complement of the class set.  The key was built for a finite list of
+/// classes, so every other type has to reach the chain; this enumerates one
+/// witness per way of being outside.  Three claims are checked here and they
+/// are different claims: that the *classifier* refuses the type, that the
+/// *table* refuses the question, and that it refuses it for the same reason.
+/// A table that answered an outside query would already be wrong; a table that
+/// refused it at a different guard would be wrong the day that guard moved.
+///
+/// Every witness is a variant of one answered shape, differing in exactly one
+/// axis, so a refusal is attributable to the thing the witness is named for.
+/// The answered shape is built from the generated domain itself (each keyed
+/// axis at its first key) and is asserted to be answered; without that, each
+/// witness could pass for whatever reason the shape itself was bad.
+void X86LegalizerTable::collectOutside(std::vector<OutsidePoint> &Out) const {
+  static_assert(X86NumTableDomains == X86NumTables,
+                "every table needs a self-check domain");
+
+  const auto MemOf = [](LLT Ty) {
+    SmallVector<LegalityQuery::MemDesc, 1> M;
+    M.emplace_back(Ty, /*AlignInBits=*/1, AtomicOrdering::NotAtomic,
+                   AtomicOrdering::NotAtomic);
+    return M;
+  };
+
+  for (unsigned EntryIdx = 0; EntryIdx != X86NumTableOpcodes; ++EntryIdx) {
+    const auto &Entry = X86TableOpcodes[EntryIdx];
+    const LegalizerTableDesc &D = X86Tables[Entry.Table];
+    const LegalizerTableDomain &Domain = X86TableDomains[Entry.Table];
+    int MaxSlot = -1;
+    for (unsigned K = 0; K != D.NumSlots; ++K)
+      if (D.Slots[K] > MaxSlot)
+        MaxSlot = D.Slots[K];
+
+    SmallVector<LLT, 3> Inside(static_cast<size_t>(MaxSlot + 1));
+    LLT InsideMem;
+    for (unsigned K = 0; K != D.NumSlots; ++K) {
+      if (Domain.Counts[K] == 0) {
+        std::string S;
+        raw_string_ostream OS(S);
+        OS << "x86-gisel-table-check: " << Entry.Name << ": keyed axis " << K
+           << " of the domain is empty; there is no inside question to vary";
+        report_fatal_error(StringRef(S));
+      }
+      if (D.Slots[K] >= 0) {
+        // The domain lists global class ids, not local indices.
+        Inside[D.Slots[K]] = representative(Domain.Classes[K][0]);
+      } else {
+        const unsigned Key = static_cast<unsigned>(D.Mem[0]);
+        InsideMem = D.MemIsClass ? representative(Key) : LLT::scalar(Key);
+      }
+    }
+    SmallVector<LegalityQuery::MemDesc, 1> InsideMems;
+    if (D.Mem)
+      InsideMems = MemOf(InsideMem);
+
+    const auto Add = [&](ArrayRef<LLT> Types,
+                         ArrayRef<LegalityQuery::MemDesc> Mems, int TypeSlot,
+                         int Expected, Answer Want, const char *Why) {
+      OutsidePoint P;
+      P.Opcode = Entry.Opcode;
+      P.Name = Entry.Name;
+      P.Types.assign(Types.begin(), Types.end());
+      P.MemDescs.assign(Mems.begin(), Mems.end());
+      P.TypeSlot = TypeSlot;
+      P.Expected = Expected;
+      P.Want = Want;
+      P.Why = Why;
+      Out.push_back(std::move(P));
+    };
+
+    const Result InsideResult =
+        query(LegalityQuery(Entry.Opcode, Inside, InsideMems));
+    if (InsideResult.Kind != Answer::Hit) {
+      std::string S;
+      raw_string_ostream OS(S);
+      OS << "x86-gisel-table-check: " << Entry.Name
+         << ": the shape built from the generated domain is not answered "
+            "(kind "
+         << static_cast<unsigned>(InsideResult.Kind)
+         << "), so the outside witnesses cannot be attributed";
+      report_fatal_error(StringRef(S));
+    }
+
+    if (MaxSlot >= 0) {
+      // Widths and lane counts no rule names.  These are the shapes a real
+      // program can produce and the class set does not contain, which is why
+      // they are the ones that matter: i65537 was exactly this, before the
+      // class key was wide enough to hold it.
+      const int Slot = D.Slots[0];
+      const auto AddType = [&](LLT Ty, int Expected, Answer Want,
+                               const char *Why) {
+        SmallVector<LLT, 3> Types(Inside);
+        Types[Slot] = Ty;
+        Add(Types, InsideMems, Slot, Expected, Want, Why);
+      };
+      AddType(LLT::scalar(33), kUnknownClass, Answer::Outside,
+              "unnamed scalar width");
+      AddType(LLT::scalar(256), kUnknownClass, Answer::Outside,
+              "unnamed scalar width");
+      AddType(LLT::fixed_vector(3, LLT::scalar(8)), kUnknownClass,
+              Answer::Outside, "unnamed lane count");
+      AddType(LLT::scalable_vector(4, 32), kUnknownClass, Answer::Outside,
+              "scalable vector");
+      // The two refusals that exist for reasons rather than for gaps: a
+      // pointer in an address space no rule spells, and a vector of pointers
+      // whose shape has no class.  They leave by their own doors, which is
+      // what the expected kind says.
+      AddType(LLT::pointer(1, 64), kPointerAddressSpaceClass, Answer::Outside,
+              "nonzero addrspace");
+      AddType(LLT::fixed_vector(3, LLT::pointer(0, 64)), kPointerVectorClass,
+              Answer::PointerVector, "pointer vector with no class");
+    }
+
+    // A memdesc count the key does not observe, in both directions: a table
+    // with an axis asked without one, a table without an axis asked with one.
+    // This leaves at the count guard, a different door from the type checks
+    // above, so it is counted rather than assumed.
+    if (D.Mem)
+      Add(Inside, {}, /*TypeSlot=*/-1, 0, Answer::Declined, "memdesc count");
+    else
+      Add(Inside, MemOf(LLT::scalar(64)), /*TypeSlot=*/-1, 0, Answer::Declined,
+          "memdesc count");
+
+    if (D.Mem && !D.MemIsClass) {
+      // A width the axis does not name.  Derived from the generated switch
+      // rather than picked by hand: the axis is a list, and this is the first
+      // integer that is not on it.
+      int Missing = -1;
+      for (int Size = 1; Size != 1024 && Missing < 0; ++Size)
+        if (x86MemIndex(Entry.Table, Size) < 0)
+          Missing = Size;
+      if (Missing < 0) {
+        std::string S;
+        raw_string_ostream OS(S);
+        OS << "x86-gisel-table-check: " << Entry.Name
+           << ": the size-keyed mem axis names every width below 1024; there "
+              "is no unnamed-size witness to check";
+        report_fatal_error(StringRef(S));
+      }
+      Add(Inside, MemOf(LLT::scalar(Missing)), /*TypeSlot=*/-1, 0,
+          Answer::Outside, "access size no rule names");
+    }
+    if (D.Mem) {
+      // A memory type the classifier refuses.  For a class-keyed axis this is
+      // one of the two ways to be outside; for a size-keyed axis it is the
+      // second door, after the width check above.
+      Add(Inside, MemOf(LLT::scalable_vector(4, 32)), /*TypeSlot=*/-1,
+          kUnknownClass, Answer::Outside, "memory type with no class");
+    }
+    if (D.Mem && D.MemIsClass) {
+      // A class that exists but this table's axis does not name.  When none
+      // exists the axis is the whole class set, and the witness above is the
+      // only memory shape it refuses.
+      for (unsigned C = 0; C != X86NumTypeClasses; ++C)
+        if (x86MemIndex(Entry.Table, static_cast<int>(C)) < 0) {
+          Add(Inside, MemOf(representative(C)), /*TypeSlot=*/-1, 0,
+              Answer::Outside, "memory class no rule names");
+          break;
+        }
+    }
+  }
+}
+
 void X86LegalizerTable::selfCheck(raw_ostream &OS) {
   std::vector<DomainPoint> Domain;
   collectDomain(Domain);
@@ -976,13 +1139,55 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
     }
   }
 
+  // The complement.  The differential above can only say "the answers agree";
+  // it cannot say "the table answered only what it was built for", because a
+  // table that widened its class set would still agree with the chain on the
+  // questions it did answer.  These are the witnesses: each one must be
+  // refused, by the same door the classifier used, and the classifier's answer
+  // for the type is checked beside it.
+  std::vector<OutsidePoint> Outside;
+  collectOutside(Outside);
+  uint64_t OutsideChecked = 0;
+  for (const OutsidePoint &O : Outside) {
+    if (O.TypeSlot >= 0 && O.Expected != 0) {
+      const int Got = classifyType(O.Types[O.TypeSlot]);
+      if (Got != O.Expected) {
+        std::string S;
+        raw_string_ostream RSO(S);
+        RSO << "x86-gisel-table-check: " << O.Name << ": " << O.Why
+            << " classified as " << Got << " (expected " << O.Expected
+            << "); the class set is wider than the rules name: ";
+        O.Types[O.TypeSlot].print(RSO);
+        report_fatal_error(StringRef(S));
+      }
+    }
+    ++OutsideChecked;
+    const Result R = query(LegalityQuery(O.Opcode, O.Types, O.MemDescs));
+    if (R.Kind == Answer::Hit || R.Kind != O.Want) {
+      ++Mismatches;
+      if (Mismatches <= 20) {
+        OS << "x86-gisel-table-check: ANSWERED-OUTSIDE " << O.Name << " ("
+           << O.Why << "): expected refusal " << static_cast<unsigned>(O.Want)
+           << ", got " << static_cast<unsigned>(R.Kind) << ": ";
+        if (O.TypeSlot >= 0)
+          O.Types[O.TypeSlot].print(OS);
+        else if (!O.MemDescs.empty())
+          O.MemDescs[0].MemoryTy.print(OS);
+        else
+          OS << "<no memdesc>";
+        OS << "\n";
+      }
+    }
+  }
+
   OS << "x86-gisel-table-check: points " << Points << " compared " << Compared
      << " mismatches " << Mismatches << " skipped " << Skipped << " outside "
      << Outsides << " ptrvec " << PointerVectors << " addrspace "
      << AddressSpaces << " untabulated " << Untabulated << " splits " << Splits
      << " declined " << Declined << " fills " << Fills << " fiber "
      << FiberPoints << " fiber_refused " << FiberRefused << " fiber_skipped "
-     << FiberSkipped << " fiber_max " << FiberMax << "\n";
+     << FiberSkipped << " fiber_max " << FiberMax << " outside_checked "
+     << OutsideChecked << "\n";
   if (Mismatches)
     report_fatal_error(
         "x86-gisel-table-check: the table and the chain disagree");

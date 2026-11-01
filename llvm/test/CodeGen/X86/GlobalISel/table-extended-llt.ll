@@ -48,7 +48,7 @@
 ; the check must then report CACHED-VS-REPLAY.  Without that line, "mismatches
 ; 0" above would also be produced by a check that cannot fail this way.
 
-; VERIFY: x86-gisel-table-check: points [[P:[0-9]+]] compared [[P]] mismatches 0 skipped 0 {{.*}} fiber [[F:[1-9][0-9]*]] fiber_refused 0 fiber_skipped [[SK:[1-9][0-9]*]] fiber_max 4
+; VERIFY: x86-gisel-table-check: points [[P:[0-9]+]] compared [[P]] mismatches 0 skipped 0 {{.*}} fiber [[F:[1-9][0-9]*]] fiber_refused 0 fiber_skipped [[SK:[1-9][0-9]*]] fiber_max 4 outside_checked [[OC:[1-9][0-9]*]]
 ; VERIFY: x86-gisel-table: hit {{[1-9][0-9]*}} {{.*}} cached 0 checked {{[1-9][0-9]*}}
 
 ; CACHE-IS-WRONG: CACHED-VS-REPLAY G_ADD(i128): replay {{.*}}i64 cached {{.*}}s64

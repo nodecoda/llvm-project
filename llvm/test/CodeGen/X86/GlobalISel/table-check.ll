@@ -18,7 +18,30 @@
 ; treat differently, which is the only way this table can be wrong: it cannot
 ; invent an answer the chain would not give.
 ;
-; CHECK: x86-gisel-table-check: points [[P:[0-9]+]] compared [[P]] mismatches 0 skipped 0 {{.*}} fiber [[F:[0-9]+]] fiber_refused 0 fiber_skipped 0 fiber_max 1
+; CHECK: x86-gisel-table-check: points [[P:[0-9]+]] compared [[P]] mismatches 0 skipped 0 {{.*}} fiber [[F:[0-9]+]] fiber_refused 0 fiber_skipped 0 fiber_max 1 outside_checked [[OC:[1-9][0-9]*]]
+
+; `outside_checked` is the other half of the gate, and the differential above
+; cannot supply it: a table that widened its class set would still agree with
+; the chain on every question it answered, because the extra answers would be
+; correct ones.  What the differential cannot say is "the table answered only
+; what it was built for".  So the check also asks one witness per way of being
+; outside -- an unnamed scalar width, an unnamed lane count, a scalable vector,
+; a nonzero address space, a pointer-vector shape with no class, a memdesc
+; count the key does not observe, and, where the table keys memory, an access
+; size, a memory class and a memory type no rule names -- and requires the
+; table to refuse each at the same door the classifier uses (`Outside` for an
+; unclassifiable type, `PointerVector` for the pointer-vector gap, `Declined`
+; for the shape mismatch).  Refusing somewhere else is a defect waiting for
+; the day that guard moves.
+;
+; Matched as non-zero, not a fixed count: adding a table must not require
+; editing this line, but a run that stopped generating witnesses must fail.
+; Measured on this tree: 606 witnesses over 63 tables.  With classifyType()
+; made to accept an unnamed width (`return 0` instead of kUnknownClass) the
+; check dies at the first witness, "G_ADD: unnamed scalar width classified as
+; 0 (expected -1)"; with the type guard in queryImpl() bypassed (`C0 ==
+; kUnknownClass` mapped to 0) it prints ANSWERED-OUTSIDE for s33, s256,
+; <3 x s8> and <vscale x 4 x s32> and fails the mismatches line.
 
 ; fiber_max 1 is the honest number for this configuration, not a coverage
 ; claim.  A class stands for every LLT spelling that classifies to it, and

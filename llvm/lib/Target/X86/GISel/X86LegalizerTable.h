@@ -132,6 +132,24 @@ private:
 
   /// Enumerate every question selfCheck() and benchmark() must ask, once.
   void collectDomain(std::vector<DomainPoint> &Out) const;
+  /// One question the table must refuse, plus what the classifier has to say
+  /// about the type that makes it outside and which door the table has to
+  /// refuse it at.  \p TypeSlot names the type slot holding the witness (it is
+  /// not always 0) and is -1 for a shape-only case, a memdesc the table does
+  /// not key.  \p Expected is the k*Class code the type has to classify to,
+  /// and 0 when the witness is about the shape rather than the class set.
+  struct OutsidePoint {
+    unsigned Opcode;
+    const char *Name;
+    SmallVector<LLT, 3> Types;
+    SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+    int TypeSlot = -1;
+    int Expected = 0;
+    Answer Want = Answer::Outside;
+    const char *Why;
+  };
+  /// Enumerate the questions the table must refuse, one per reason.
+  void collectOutside(std::vector<OutsidePoint> &Out) const;
 
   Result queryImpl(const LegalityQuery &Q, bool AllowCachedAnswer) const;
   uint32_t fill(unsigned Table, const LegalityQuery &Q,
