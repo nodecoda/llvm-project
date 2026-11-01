@@ -11,11 +11,16 @@
 
 ## 当前状态（2026-11-01）
 
-- 文法：v6。相对 v5 的三处改动**全是删除**（shapes/atoms、三份括号规则、`tied`）。
-- 语义与测量文档仍在 `/home/ubuntu/llvm/llvm-dev`（提交 `1457619`，D-74）：
-  `2026-11-01-legalize-semantics.md`、`2026-11-01-default-inference.md`、
+- 文法：v6 **活文件**，只做加法，当前 v6.1（`shapes on 0;`）；不兼容改写才换名。
+- 5 个语言缺口全部关闭（G3 `252f28c`、G4 `aa383ae`、G1 `11125c7`、G2 `195917a`、
+  G5 `e52e623`）。门禁唯一清单：`/home/ubuntu/llvm/llvm-dev/GATES.md`。
+- 全语料默认推断：63 个规则集，75900/80610（94.2%），43 个完全复现；槽 0 子集
+  3240/3240 未动；`not measured` 34 → 0。
+- 语义与测量文档仍在 `/home/ubuntu/llvm/llvm-dev`：
+  `2026-11-01-legalize-semantics.md`、`2026-11-01-default-inference.md`（§5.6 多槽）、
   `2026-11-01-grammar-review.md`、`2026-11-01-x86.decl`。
-- 迁移是**移动**，不是复制：下一轮把文法与工具一起搬过来，`llvm-dev` 里只留指针。
+- 迁移是**移动**，不是复制：只有把工具一起搬过来、`llvm-dev` 留指针之后，
+  上面这些路径才会失效。**还没做**——工具仍以 llvm-dev 为家。
 
 ## 入口（迁移完成后）
 
