@@ -109,16 +109,18 @@ def step(t, legal, pol):
 
     if k == 'scalar':
         b = bits(t)
+        # Widening comes first, and it is NOT capped by `hi`.  That is the
+        # chain's order (legal -> widenScalarToNextPow2 -> clampScalar) and
+        # the difference is observable: G_ANYEXT's s80 widens to s128, which
+        # is legal in 64-bit mode, so the clamp never runs.  Capping the pow2
+        # step at `hi` sent it to s64 and lost every s80 point.
+        if pol.pow2 and not is_pow2(b):
+            floor = max(bits(lo) if lo else 1, pol.pow2_floor or 1)
+            return ('Mutate', 's%d' % max(next_pow2(b), floor))
         if lo is not None and b < bits(lo):
             return ('Mutate', lo)
         if hi is not None and b > bits(hi):
             return ('Mutate', hi)
-        if pol.pow2 and not is_pow2(b):
-            floor = max(bits(lo) if lo else 1, pol.pow2_floor or 1)
-            n = max(next_pow2(b), floor)
-            if hi is not None:
-                n = min(n, bits(hi))
-            return ('Mutate', 's%d' % n)
         return ('NoMove', None)
 
     if k == 'vector':

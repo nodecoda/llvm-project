@@ -43,6 +43,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import decl_lib as D
+import policy_semantics as P
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAX_COMBOS = 4096
@@ -908,6 +909,148 @@ def step(block, env, qtypes, macros, mems=None):
     return ('NoMove', None, None)
 
 
+def legal_projection(block, env, type_slots, macros):
+    """What the legal relation says about each slot in one feature assignment.
+
+    -> (bound, unconstrained, fired)
+
+    `bound[s]`  types a legal clause pins slot s to.
+    `unconstrained` slots no firing clause names -- any type is admissible
+                there, provided the other slots match (G_FCMP slot 1: the
+                legal clauses only talk about slot 0).
+    `fired`     whether any clause can fire at all.  If not, the block answers
+                nothing in this assignment: every slot's answer set is empty.
+
+    `domain()` merges the first two, which is why it cannot tell "slot 1 is
+    unconstrained" from "slot 1 has no answer".  The policy check needs that
+    distinction: `policy 1: to s32` is fine in the first case and a lie in the
+    second.
+    """
+    bound, unconstrained, fired = {}, set(), False
+    for st in block['stmts']:
+        if not st.startswith('legal '):
+            continue
+        shape, guard = D.clause_of(st)
+        if guard and D.feature_holds(guard, env) is False:
+            continue
+        d, _a = D.dom_of(shape, guard)
+        fired = True
+        for s in type_slots:
+            if s in d:
+                bound.setdefault(s, set()).update(d[s])
+            else:
+                unconstrained.add(s)
+    return bound, unconstrained, fired
+
+
+def escape_projection(block, env, macros):
+    """{slot: types} the escapes answer; None when they answer everything.
+
+    `except true -> ...` (or any escape whose guard names no slot) covers every
+    type, so the coverage check has nothing to say about that block.  An
+    escape we cannot decide is treated the same way: a check that guesses is
+    worse than one that declines and says so.
+    """
+    out = {}
+    for g, _a in except_of(block):
+        v = eval_guard(g, env, {}, macros)
+        if v is False:
+            continue
+        d, _ = D.dom_of('any', g)
+        if not d:
+            return None
+        for s, ts in d.items():
+            out.setdefault(s, set()).update(ts)
+    return out
+
+
+def policy_coverage(block, ops, type_slots, macros):
+    """Answer coverage: `policy*` must land in legal union escape.
+
+    For every realizable feature assignment:
+
+      - if the block answers something, every type a policy can be asked about
+        must reach a type that is legal (or escaped) for that slot;
+      - if the block answers nothing, a policy that would move anything is a
+        claim the configuration cannot honour (`13-policy-dead-config`).
+
+    The second half is what makes G_FCMP's `when HasSSE1 || UseX87` mean
+    something: without it the policy names a destination in configurations
+    where no legal clause fires, and nothing else in the pipeline notices.
+    """
+    atoms = feature_atoms_of(block, macros)
+    if 2 ** len(atoms) > MAX_COMBOS:
+        return [], [('13-reach-skipped', ops, '%d feature atoms' % len(atoms))]
+    try:
+        import infer_defaults as I          # one implication table, not two
+    except Exception:                        # pragma: no cover
+        return [], [('13-reach-skipped', ops, 'no implication table')]
+    envs = [dict(zip(atoms, v))
+            for v in itertools.product([False, True], repeat=len(atoms))]
+    envs = [e for e in envs if I.realizable(e)]
+
+    errs, warns = [], []
+    reported = set()
+    for env in envs:
+        pols = policies_of(block, env, macros, slots=sorted(type_slots))
+        if not pols:
+            continue
+        bound, unconstrained, fired = legal_projection(
+            block, env, type_slots, macros)
+        esc = escape_projection(block, env, macros)
+        for slot, (shape, k, pow2, floor, guard, lo, hi) in pols.items():
+            if shape == 'bad':
+                continue
+            answers = None
+            if fired and slot not in unconstrained and esc is not None:
+                answers = set(bound.get(slot, ())) | set(esc.get(slot, ()))
+            if not fired:
+                # No clause fires: an active policy claims an answer here.
+                # Only report when it would actually move something -- a
+                # no-op policy in a dead configuration is harmless noise.
+                if guard and any(P.step(t, set(), P.Policy(
+                        k, lo=lo, hi=hi, hull=(shape == 'hull'), pow2=pow2,
+                        pow2_floor=floor))[0] == 'Mutate' for t in D.U
+                        if D.kind(t) == k):
+                    if ('dead', slot) not in reported:
+                        reported.add(('dead', slot))
+                        errs.append(('13-policy-dead-config', ops,
+                                     'slot %d claims a destination in %s, '
+                                     'where no legal clause fires'
+                                     % (slot, fmt(env))))
+                continue
+            if answers is None:
+                continue
+            # `hull` reads its bounds off the legal relation, so escapes do not
+            # widen what it may pick; membership is still checked against both.
+            hull_set = bound.get(slot, set()) if shape == 'hull' else answers
+            pol = P.Policy(k, lo=lo, hi=hi, hull=(shape == 'hull'), pow2=pow2,
+                           pow2_floor=floor, guard=guard)
+            for t in sorted(D.U):
+                if D.kind(t) != k:
+                    continue
+                try:
+                    _act, got = P.fixpoint(t, hull_set, pol)
+                except P.PolicyError as E:
+                    # `hull` cannot raise here (the slot is constrained by
+                    # construction); what is left is a policy that does not
+                    # settle, i.e. a cycle in its own rewrite.
+                    if ('nofix', slot) not in reported:
+                        reported.add(('nofix', slot))
+                        errs.append(('13-policy-nofix', ops,
+                                     'slot %d: %s' % (slot, E)))
+                    break
+                if got not in answers:
+                    if ('unreach', slot, got) not in reported:
+                        reported.add(('unreach', slot, got))
+                        errs.append(('13-policy-unreachable', ops,
+                                     'slot %d: %s -> %s, not in %s (%s)'
+                                     % (slot, t, got, ','.join(sorted(answers)),
+                                        fmt(env))))
+                    break
+    return errs, warns
+
+
 # ---------- checks ----------------------------------------------------------
 def check(path, self_test_errors=None):
     D.set_universe(json.load(open(ROOT + '/data/x86-core.json'))['domain']['types'])
@@ -1045,6 +1188,10 @@ def check(path, self_test_errors=None):
                              'slot %d, arity %d' % (slot, arity)))
             if k == 'vector' and pow2:
                 errs.append(('13-policy-pow2-vector', ops, 'slot %d' % slot))
+        if pols and not trivially_total(b):
+            ce, cw = policy_coverage(b, ops, type_slots, macros)
+            errs.extend(ce)
+            warns.extend(cw)
 
         ew = [i for i, st in enumerate(b['stmts']) if st == 'elemwise']
         if len(ew) > 1:
@@ -1394,6 +1541,14 @@ SHAPE_SELF_TEST = [
     # A product is a tuple, not a list: the grammar rejects this spelling.
     ('op G_T {\n  query [ty 0, ty 1];\n  legal [s8, s16];\n}\n',
      '13-legal-bracket'),
+    # Answer coverage: `policy*` must land on something the block answers.
+    ('op G_T {\n  query ty 0;\n  legal s8;\n  policy 0: scalar to s16;\n}\n',
+     '13-policy-unreachable'),
+    # Liveness: a policy may not claim a destination where no clause fires.
+    ('op G_T {\n  query ty 0;\n  legal s8 when HasSSE1;\n'
+     '  policy 0: scalar to s8;\n}\n', '13-policy-dead-config'),
+    ('op G_T {\n  query ty 0;\n  legal s8 when HasSSE1;\n'
+     '  policy 0: scalar to s8 when HasSSE1;\n}\n', None),
 ]
 
 

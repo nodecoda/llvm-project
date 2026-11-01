@@ -327,7 +327,10 @@ op G_ANYEXT {
   query ty 0, ty 1;
   legal s8, s16, s32, s128;
   legal s64 when Is64Bit;
-  policy 0: scalar hull pow2 8;
+  /* Not `hull`: s128 is legal in both modes, so the hull's upper end is s128
+   * while the chain clamps to sMaxScalar.  In 32-bit mode `hull` left s64 and
+   * s128 alone and the chain answers s32 for both. */
+  policy 0: scalar [s8, MaxScalar] pow2;
   policy 1: scalar [s8, MaxScalar] pow2;
   elemwise;
 }
@@ -382,7 +385,9 @@ op G_FCMP {
   legal s8, s64 when HasSSE2 || UseX87;
   legal s8, s80 when UseX87;
   policy 0: scalar to s8 when HasSSE1 || UseX87;
-  policy 1: scalar [s32, cond(HasSSE2, s64, s32)] pow2;
+  /* No legal clause fires without SSE1/SSE2/x87, so slot 1 must not claim a
+   * destination there -- that is what the guard says. */
+  policy 1: scalar [s32, cond(HasSSE2, s64, s32)] pow2 when HasSSE1 || HasSSE2 || UseX87;
 }
 
 // X86_FPEXT

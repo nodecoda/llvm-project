@@ -75,10 +75,11 @@
  *   priority   specific > default，tie = error       （同 yacc 的 %nonassoc）
  *   coverage   slot     每个声明的 `ty` 坐标都被约束   -> 13-slot-unconstrained
  *              default  特指 ∪ 默认 = 声明的全部槽      -> 13-policy-duplicate
- *              answer   policy* 落在 legal ∪ escape      -> 待实现（可达性）
+ *              answer   policy* 落在 legal ∪ escape      -> 13-policy-unreachable
+ *                       且不得在 block 无答案的配置里承诺 -> 13-policy-dead-config
  *
- * 覆盖是**可检查的属性**，不是注释：三条各有一个检查点，前两条已经在
- * check_decl 里，第三条是下一轮的门禁。
+ * 覆盖是**可检查的属性**，不是注释：三条各有一个检查点，都在 check_decl 里。
+ * 第三条只对 `policy` 生效，并且按 realizable 的 feature assignment 逐个算。
  */
 
 %{
