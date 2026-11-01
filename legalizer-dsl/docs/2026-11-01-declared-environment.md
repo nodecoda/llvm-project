@@ -58,34 +58,69 @@ table over Is64Bit;
 `FAIL env: ['HasBWI', 'HasCMOV', 'HasDQI', 'UseX87'] sampled but not a declared
 primitive` 和 `4 environments have HasCMOV=0 at Is64Bit=1`。
 
-## 4. 测量（同一份规则，只换头部）
+## 4. 环境商：同义的环境只问一次
+
+枚举原子的幂集会把**同一个问题问很多遍**：G_ADD 在 64 位下有 6 个可达环境，
+答案只有 1 种。所以采样域不是幂集，是**商**：
 
 ```
-v7  data/2026-11-01-x86.decl       79857 / 85419   (93.5%)   domain dropped 543
-v8  data/2026-11-01-x86-env.decl   74403 / 77089   (96.5%)   domain dropped 272
+env₁ ~ env₂  ⟺  Read(b, env₁) = Read(b, env₂)
+Read(b, env) = 该 block 从环境读到的全部取值
+             = 每条 legal/except 守卫的真值
+             + 每条 prefer 守卫的真值 **和目标的值**（cond 会产出不同的类型）
+             + 每条 policy 的守卫、界
 ```
 
-63 个 block 的规则体**逐字节相同**（`build_decl --env` 只加头部），所以差异
-全部来自环境模型。分母变了，所以两个百分比**不能直接比**；可比的是按 block：
+两条纪律：
+
+* **签名必须是值的向量，不只是真值。** 目标里的 `cond(HasSSE2, s64, s32)`
+  产出的是类型，不是真假；只取真值会把两个答案不同的环境合并——这正是
+  地址空间那个 bug 的形状（`classifyType` 只看 kind 和位宽）。
+  自检里有一条构造出来的反例：一个 agent 没被任何守卫提到的 `cond` 目标，
+  **粗签名合并成 1 类，细签名分成 2 类**，而且粗类里确实装着两个不同的答案。
+* **`legal` 形状里出现 `cond(` 的 block 不做商**（今天没有）。那需要把形状的
+  值也放进签名，而形状可能是 product；宁可退回幂集，不猜。
+
+声明的 **soundness 由不是签名的东西检查**：G_FPEXT 上逐个环境跑链的终点，
+必须等于它代表元的终点——用签名去验签名就是自检自己跟自己比。
+
+## 5. 测量（同一份规则，只换头部）
+
+```
+v7  data/2026-11-01-x86.decl       44385 / 46585  (95.3%)   dropped 543  merged 144
+v8  data/2026-11-01-x86-env.decl   43240 / 45433  (95.2%)   dropped 272  merged 114
+```
+
+**上一版这里写的「93.5% → 96.5%」是分母变动的假象**，不是改进：v8 的字母表
+变小了，分母跟着变小，比例不能直接比。引入环境商之后两个数才可比——结论
+也变了：
+
+* 百分比基本持平（95.3% vs 95.2%），
+* **v8 的收益是分母更小**：45433 个问题 vs 46585（少 2.5%），而且那 844 个
+  被 `Is64Bit` 过滤掉的环境现在**出现在报告里**：
+
+```
+arithmetic: 1688 raw = 844 outside the measured mode + 543 pruned by implies + 301 measured
+```
+
+四个计数器必须划分幂集，加不起来自检就失败。这是报告以前做不到的事——
+三个数印在两个地方，没有任何东西比较它们。
+
+63 个 block 的规则体逐字节相同（`build_decl --env` 只加头部），所以差异
+全部来自环境模型。按 block 看：
 
 | 变化原因 | block | 分母 |
 |---|---|---|
-| 去掉没人读的宏维度（3 个） | `G_ANYEXT`、`G_CTPOP`、`G_MERGE_VALUES`、`G_TRUNC`… | 1728 → 576（3×） |
-| `UseX87` 拆成 `softfloat × x87`（更精确，也更大） | `G_FCMP`、`G_SELECT`、`G_FPEXT`、`G_FPTRUNC`、`G_SITOFP`、`G_FPTOSI` | 4608 → 9216（2×） |
+| 去掉没人读的宏维度（3 个） | `G_ANYEXT`、`G_CTPOP`、`G_MERGE_VALUES`、`G_TRUNC`… | 1728 → 576 |
+| `UseX87` 拆成 `softfloat × x87`，再被商合并 | `G_FPEXT`、`G_FCMP`、`G_SELECT`… | 4608 → 9216 → 商回 1536 |
 | 字母表没变（对照） | `G_EXTRACT`、`G_INSERT`、`G_LOAD`、`G_STORE` | 不变，逐点相同 |
 
-**这两股力量方向相反**，净值 −10%。第二股是下一步要收的：`softfloat`/`x87`
-只在 `UseX87` 里出现，它们 4 种组合里只有 2 种行为不同，所以应该按「block
-读到的所有表达式的联合取值」做商，而不是按原子的幂集枚举。实测这个商是
-`135 → 49`（28 个单槽 block）。
+## 5.1 没有做的
 
-## 5. 没有做的
-
-* 没有做环境商（上面那条）。
 * 没有 32 位：`U` 里没有 `p0:32` / `v16p0`，测不了，不是「被丢弃」。
 * 没有生成 `table over` 的闸门：C++ 侧仍是手写。
-* `infer_defaults` 的 `domain: N dropped` 只统计 implies 剪枝，**不含**被
-  `Is64Bit` 过滤掉的那一半（v7 上 844 个，报告里一个数字都没有）。
+* 商的粒度是「block 读到的表达式」，不是「链的终点」。后者更粗（会把
+  `Read` 不同但答案相同的环境也合并），但需要能证明终点等价，现在没有。
 
 ## 6. 复现
 
@@ -94,6 +129,7 @@ tools/check_grammar.sh                                  # bison 0/0/0 + v7/v8 + 
 python3 tools/check_decl.py --self-test                 # 11+27+12+10+7+3
 python3 tools/check_decl.py data/2026-11-01-x86-env.decl # 0 errors, 5 warnings
 python3 tools/infer_defaults.py data/2026-11-01-x86-env.decl
+python3 tools/infer_defaults.py data/2026-11-01-x86.decl --self-test   # 含商/分区负控
 python3 tools/build_decl.py | diff - data/2026-11-01-x86.decl          # 逐字节
 python3 tools/build_decl.py --env | diff - data/2026-11-01-x86-env.decl
 ```

@@ -53,6 +53,10 @@ import policy_semantics as P
 
 TERMINAL = ('Legal', 'Unsupported', 'Custom', 'Libcall', 'Lower')
 dropped = [0]          # feature assignments the measurement domain excluded
+merged = [0]           # ... and those an equivalent one already asked
+mode_out = [0]         # ... and those outside the measured mode (Is64Bit=0)
+raw = [0]              # the powerset, before any of the three filters
+realized = [0]         # ... and those that survived both filters
 cycles = [0]           # points where the chain itself never settles
 
 # Feature implications, read from llvm/lib/Target/X86/X86.td by
@@ -113,6 +117,10 @@ POLICY = {'promote': True, 'truncate': True, 'pow2': True, 'flag': True,
 # that is illegal there and then scalarizes, while the default clamps to the
 # legal hull -- so counting them would measure the env space, not the default.
 MEASURE = {'realizable': True, 'optin': True}
+# Points measured when the multi-slot path is off.  It moves with the
+# environment axis, so it is one constant instead of a literal in a
+# message: the control is that the fallback does not drift on its own.
+MULTI_OFF = 1656
 # Two toggles that exist so the self-test can turn the new machinery off and
 # watch the number move.  Nothing else sets them.
 MULTI = {'on': True}       # off = the old "arity > 1, not modelled here"
@@ -547,6 +555,10 @@ def run(decl, only=None, verbose=False, kind=None, only_class=False):
     _dom, ar = C.domain(blocks[0], None) if blocks else ({}, 0)
     rows = []
     dropped[0] = 0
+    merged[0] = 0
+    mode_out[0] = 0
+    raw[0] = 0
+    realized[0] = 0
     cycles[0] = 0
     for b in blocks:
         ops = b['ops']
@@ -574,11 +586,21 @@ def run(decl, only=None, verbose=False, kind=None, only_class=False):
             continue
         envs = [dict(zip(atoms, v))
                 for v in itertools.product([False, True], repeat=len(atoms))]
+        raw[0] += len(envs)
+        before = len(envs)
         envs = [e for e in envs if e.get('Is64Bit', True)]
+        mode_out[0] += before - len(envs)
         n_all = len(envs)
         if MEASURE['realizable']:
             envs = [e for e in envs if realizable(e)]
-        dropped[0] += n_all - len(envs)
+        n_real = len(envs)
+        realized[0] += n_real
+        # Environments the block cannot tell apart are the same question, so
+        # they are asked once.  This is the environment half of the same
+        # quotient `rule_atoms.py` does on the type axis.
+        envs = C.env_classes(b, envs, macros, range(arity))
+        merged[0] += n_real - len(envs)
+        dropped[0] += n_all - n_real
         elemwise = any(st == 'elemwise' for st in b['stmts'])
         has_class = any(st.startswith('class ') for st in b['stmts'])
         if arity > 1 and not MULTI['on']:
@@ -722,18 +744,19 @@ def self_test(decl):
     print('  implies  %d features, 2 cases' % len(IMPLIES))
     # --- multi-slot -----------------------------------------------------
     # Control 1: the old behaviour is the control group.  Turn the new path
-    # off and the corpus must fall back to exactly 29 rule sets / 3240 points
-    # with 34 "not measured".  If it does not, the new path is not what makes
-    # the difference.
+    # off and the corpus must fall back to 34 "not measured" and MULTI_OFF
+    # points.  If it does not, the new path is not what makes the difference.
+    # MULTI_OFF moves whenever the environment axis changes (it was 3240
+    # before the env quotient and 1656 after); the control is that it stays
+    # put, not that it equals some era's number.
     old = run(decl)
     MULTI['on'] = True
     old_pts = frac(old)[1]
     not_measured = len([r for r in old if not r[1]])
     print('  multi    off -> %d not measured, %d points' % (not_measured, old_pts))
-    if not_measured != 34 or old_pts != 3240:
-        print('  FAIL with the multi-slot path off the corpus is not the old '
-              '29 rule sets / 3240 points (got %d / %d)'
-              % (not_measured, old_pts))
+    if not_measured != 34 or old_pts != MULTI_OFF:
+        print('  FAIL with the multi-slot path off the corpus is not %d '
+              'points (got %d / %d)' % (MULTI_OFF, not_measured, old_pts))
         fails += 1
     # Control 2: the legal relation is what the projections are made of.
     # Replace them with "any type" and G_SHL must lose points: (s32, s32) has
@@ -771,6 +794,49 @@ def self_test(decl):
         print('  FAIL declaring a class does not improve G_FCMP; the '
               'declaration choice is not doing the work')
         fails += 1
+    # The environment quotient is only sound if a representative answers for
+    # its whole class.  Checked against the chain judge, not against the same
+    # signature that built the class: asking the signature would be the
+    # self-check comparing itself.
+    doc = json.load(open(ROOT + '/data/x86-core.json'))
+    macros, blocks = D.parse(decl)
+    b = [x for x in blocks if x['ops'].startswith('G_FPEXT')][0]
+    atoms = C.feature_atoms_of(b, macros)
+    envs = [dict(zip(atoms, v))
+            for v in itertools.product([False, True], repeat=len(atoms))]
+    envs = [e for e in envs if e.get('Is64Bit', True) and realizable(e)]
+    slots = list(range(C.slot_count(b, C.domain(b, None)[1])))
+    reps = {C.env_signature(b, e, macros, slots): e
+            for e in C.env_classes(b, envs, macros, slots)}
+    bad = 0
+    for e in envs:
+        r = reps[C.env_signature(b, e, macros, slots)]
+        for q in (['s16', 's32'], ['s80', 's64'], ['v4s32', 'v2s64']):
+            a = chain_fixpoint_slots(E.Context(doc, I.features_for(e)),
+                                     'G_FPEXT', q)[0]
+            c = chain_fixpoint_slots(E.Context(doc, I.features_for(r)),
+                                     'G_FPEXT', q)[0]
+            bad += (a != c)
+    print('  quotient G_FPEXT %d envs -> %d classes, %d representative '
+          'disagreements' % (len(envs), len(reps), bad))
+    if bad:
+        print('  FAIL a representative does not answer for its class')
+        fails += 1
+    # The four counters must partition the powerset.  This is the check the
+    # report could not make before: 1688 = 844 + 543 + 301 was three numbers
+    # printed in two different places, and nothing compared them.
+    run(decl)
+    if raw[0] != mode_out[0] + dropped[0] + realized[0]:
+        print('  FAIL domain counters do not partition the powerset: '
+              '%d != %d + %d + %d' % (raw[0], mode_out[0], dropped[0],
+                                      realized[0]))
+        fails += 1
+    if not (mode_out[0] and dropped[0] and realized[0]):
+        print('  FAIL a domain counter is zero: raw %d, mode %d, implies %d, '
+              'measured %d' % (raw[0], mode_out[0], dropped[0], realized[0]))
+        fails += 1
+    print('  domain   partition %d = %d + %d + %d'
+          % (raw[0], mode_out[0], dropped[0], realized[0]))
     # The chain-side fixpoint in this file has the same no-progress rule as
     # infer_diff's; check the copy, not just the original.
     doc = json.load(open(ROOT + '/data/x86-core.json'))
@@ -822,6 +888,11 @@ def main(argv):
     if MEASURE['realizable']:
         print('  domain: %d feature assignments dropped as unreachable '
               '(tools/x86-implies.json); use --all-envs to count them' % dropped[0])
+        print('  quotient: %d more merged into a representative the block '
+              'cannot tell apart' % merged[0])
+        print('  arithmetic: %d raw = %d outside the measured mode + %d pruned '
+              'by implies + %d measured'
+              % (raw[0], mode_out[0], dropped[0], raw[0] - mode_out[0] - dropped[0]))
     if CHOICE and MEASURE['optin']:
         add = [k for k, (d, c, _on, _off) in CHOICE.items()
                if d == 'no class' and c == 'class']

@@ -987,6 +987,66 @@ def escape_projection(block, env, macros):
     return out
 
 
+def env_signature(block, env, macros, slots=(), coarse=False):
+    """Everything the block reads from the environment, evaluated.
+
+    The quotient is only sound if this covers *every* env-dependent surface.
+    A missed `cond` in a target merges two environments that answer
+    differently -- that is the address-space bug's shape (classifyType merged
+    p272 and p0 because it looked at kind and width only).
+
+    `coarse` drops the *values* and keeps the booleans.  It exists so the
+    self-test can show that the value half is doing work; on a block whose
+    targets are all literals the two agree, and that should be visible rather
+    than assumed.
+    """
+    sig = []
+    for st in block['stmts']:
+        if st.startswith('legal '):
+            _shape, guard = D.clause_of(st)
+            sig.append(('L', D.feature_holds(guard, env) if guard else True))
+    for ss, kind, tgt, g in prefers_of(block):
+        gv = D.feature_holds(g, env) if g else True
+        if coarse:
+            sig.append(('P', ss, kind, gv))
+        elif kind == 'target':
+            sig.append(('P', ss, kind, gv, num_or_type(tgt, env, macros)))
+        else:
+            sig.append(('P', ss, kind, gv, tgt))
+    for g, a in except_of(block):
+        sig.append(('X', D.feature_holds(g, env) if g else True,
+                    '' if coarse else a))
+    if not coarse:
+        # A policy's bounds are a `cond` over the same atoms: `[s8, MaxScalar]`
+        # is s64 on one mode and s32 on the other.
+        for slot, pol in (policies_of(block, env, macros,
+                                      slots=sorted(slots)) or {}).items():
+            sig.append(('D', slot, pol))
+    return tuple(sig)
+
+
+def env_classes(block, envs, macros, slots=(), coarse=False):
+    """One representative per set of environments the block cannot tell apart.
+
+    Enumerating the atom powerset counts the same query many times: G_ADD has
+    six realizable environments at Is64Bit=1 and one answer.  The measurement
+    is a count of *distinct questions*, so equivalent environments collapse.
+    """
+    # A `legal` shape that itself contains a `cond` would need the shape's
+    # value in the signature, not just the guard's truth.  No block in the
+    # corpus has one; rather than guess, such a block is not quotiented.
+    if any(st.startswith('legal ') and 'cond(' in st for st in block['stmts']):
+        return envs
+    seen, out = {}, []
+    for e in envs:
+        k = env_signature(block, e, macros, slots, coarse)
+        if k in seen:
+            continue
+        seen[k] = e
+        out.append(e)
+    return out
+
+
 def policy_coverage(block, ops, type_slots, macros):
     """Answer coverage: `policy*` must land in legal union escape.
 
@@ -1011,6 +1071,7 @@ def policy_coverage(block, ops, type_slots, macros):
     envs = [dict(zip(atoms, v))
             for v in itertools.product([False, True], repeat=len(atoms))]
     envs = [e for e in envs if I.realizable(e)]
+    envs = env_classes(block, envs, macros, type_slots)
 
     errs, warns = [], []
     reported = set()
@@ -1739,6 +1800,74 @@ def slot_self_test():
     return fails
 
 
+QUOTIENT_DECL = """env {
+  mode    Is64Bit;
+  feature HasAVX512;
+}
+op G_Q {
+  query ty 0;
+  legal s8;
+  prefer cond(HasAVX512, s16, s8) on 0;
+}
+"""
+
+
+def quotient_self_test():
+    """The environment quotient: two cases, and the second could fail alone.
+
+      1. a target whose *value* depends on an atom no guard mentions must
+         split (the coarse signature merges it, the typed one does not);
+      2. on the corpus the quotient must actually remove environments.
+    """
+    import itertools
+    fails = 0
+    D.set_universe(json.load(open(ROOT + '/data/x86-core.json'))['domain']['types'])
+    with tempfile.NamedTemporaryFile('w', suffix='.decl', delete=False) as f:
+        f.write(QUOTIENT_DECL)
+        path = f.name
+    macros, blocks = D.parse(path)
+    os.unlink(path)
+    b = blocks[0]
+    atoms = feature_atoms_of(b, macros)
+    envs = [dict(zip(atoms, v))
+            for v in itertools.product([False, True], repeat=len(atoms))]
+    fine = env_classes(b, envs, macros, [0])
+    coarse = env_classes(b, envs, macros, [0], coarse=True)
+    if not (len(coarse) == 1 and len(fine) == 2):
+        print('  FAIL quotient: coarse %d / typed %d classes, want 1 / 2'
+              % (len(coarse), len(fine)))
+        fails += 1
+    else:
+        # And the merged class really does hold two different answers: the
+        # coarse quotient is a bug, not a coarser reading of the same thing.
+        vals = {num_or_type('cond(HasAVX512, s16, s8)', e, macros) for e in envs}
+        if len(vals) != 2:
+            print('  FAIL quotient: the coarse class holds %s' % sorted(vals))
+            fails += 1
+
+    macros, blocks = D.parse(ROOT + '/data/2026-11-01-x86-env.decl')
+    envs = real = q = 0
+    for b in blocks:
+        atoms = feature_atoms_of(b, macros)
+        allv = [dict(zip(atoms, v))
+                for v in itertools.product([False, True], repeat=len(atoms))]
+        allv = [e for e in allv if e.get('Is64Bit', True)]
+        try:
+            import infer_defaults as I
+            allv = [e for e in allv if I.realizable(e)]
+        except Exception:
+            pass
+        slots = list(range(slot_count(b, domain(b, None)[1])))
+        envs += len(allv)
+        q += len(env_classes(b, allv, macros, slots))
+    if not q < envs:
+        print('  FAIL quotient: %d classes for %d environments' % (q, envs))
+        fails += 1
+    print('  quotient self-test: 2 cases, %d failed  (%d envs -> %d classes)'
+          % (fails, envs, q))
+    return fails
+
+
 def env_self_test():
     """The `let` is a definition: the environments it removes are gone.
 
@@ -1818,8 +1947,10 @@ def self_test():
     cfails = class_self_test()
     lfails = slot_self_test()
     efails = env_self_test()
+    qfails = quotient_self_test()
     return 0 if (ok == len(SELF_TEST) and not sfails and not gfails
-                 and not cfails and not lfails and not efails) else 1
+                 and not cfails and not lfails and not efails
+                 and not qfails) else 1
 
 
 def main(argv):

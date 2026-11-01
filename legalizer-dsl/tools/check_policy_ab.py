@@ -59,14 +59,14 @@ def main(argv):
 
     if not fast:
         out = run('tools/infer_defaults.py', 'data/2026-11-01-x86.decl')
-        need(out, '79857 / 85419', 'baseline 79857/85419')
+        need(out, '44385 / 46585', 'baseline 44385/46585')
         out = run('tools/infer_defaults.py', 'data/x86-policy.decl')
-        need(out, '80451 / 85419', 'policy 80451/85419')
+        need(out, '44663 / 46585', 'policy 44663/46585')
 
     out = run('tools/infer_defaults.py', 'data/x86-policy.decl', '--op', 'G_FCMP')
-    need(out, '5760 / 5760', 'G_FCMP 5760/5760')
+    need(out, '2880 / 2880', 'G_FCMP 2880/2880')
     out = run('tools/infer_defaults.py', 'data/x86-policy.decl', '--op', 'G_SELECT')
-    need(out, '6912 / 6912', 'G_SELECT 6912/6912')
+    need(out, '2304 / 2304', 'G_SELECT 2304/2304')
 
     # 3. negative control: `to s8` -> `hull` on G_FCMP
     f = os.path.join(tmp, 'fcmp-hull.decl')
@@ -74,7 +74,7 @@ def main(argv):
          'policy 0: scalar to s8 when HasSSE1 || UseX87;',
          'policy 0: scalar hull when HasSSE1 || UseX87;')
     out = run('tools/infer_defaults.py', f, '--op', 'G_FCMP')
-    need(out, '552 unexplained', 'negative control: hull brings 552 back')
+    need(out, '264 unexplained', 'negative control: hull brings 264 back')
 
     # 4. coverage: ANYEXT slot 0 as `hull` is caught (32-bit is unmeasured)
     f = os.path.join(tmp, 'anyext-hull.decl')
@@ -93,7 +93,7 @@ def main(argv):
 
     # 6. the 126 are rule order, not a missing bound
     out = run('tools/infer_defaults.py', 'data/x86-policy.decl', '--op', 'G_ANYEXT')
-    need(out, '126 unexplained', 'G_ANYEXT still 126 (rule order, not policy)')
+    need(out, '42 unexplained', 'G_ANYEXT still 42 (rule order, not policy)')
 
     print('check_policy_ab: %d failed' % fails)
     return 1 if fails else 0
