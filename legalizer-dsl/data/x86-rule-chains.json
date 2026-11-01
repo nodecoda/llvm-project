@@ -1,0 +1,1432 @@
+[
+ {
+  "opcodes": "{G_IMPLICIT_DEF, G_PHI, G_FREEZE, G_CONSTANT_FOLD_BARRIER}",
+  "chain": [
+   [
+    "legalFor",
+    "{p0, s1, s8, s16, s32, s64}"
+   ],
+   [
+    "legalFor",
+    "UseX87, {s80}"
+   ],
+   [
+    "legalFor",
+    "Is64Bit, {s128}"
+   ],
+   [
+    "legalFor",
+    "HasSSE2, {v16s8, v8s16, v4s32, v2s64}"
+   ],
+   [
+    "legalFor",
+    "HasAVX, {v32s8, v16s16, v8s32, v4s64}"
+   ],
+   [
+    "legalFor",
+    "HasAVX512, {v64s8, v32s16, v16s32, v8s64}"
+   ],
+   [
+    "widenScalarOrEltToNextPow2",
+    "0, /*Min=*/8"
+   ],
+   [
+    "clampScalarOrElt",
+    "0, s8, sMaxScalar"
+   ],
+   [
+    "moreElementsToNextPow2",
+    "0"
+   ],
+   [
+    "clampNumElements",
+    "0, v16s8, s8MaxVector"
+   ],
+   [
+    "clampNumElements",
+    "0, v8s16, s16MaxVector"
+   ],
+   [
+    "clampNumElements",
+    "0, v4s32, s32MaxVector"
+   ],
+   [
+    "clampNumElements",
+    "0, v2s64, s64MaxVector"
+   ],
+   [
+    "clampMaxNumElements",
+    "0, p0, Is64Bit ? s64MaxVector.getNumElements() : s32MaxVector.getNumElements()"
+   ],
+   [
+    "scalarizeIf",
+    "scalarOrEltWiderThan(0, 64), 0"
+   ]
+  ],
+  "line": 94
+ },
+ {
+  "opcodes": "G_CONSTANT",
+  "chain": [
+   [
+    "legalFor",
+    "{p0, s8, s16, s32}"
+   ],
+   [
+    "legalFor",
+    "Is64Bit, {s64}"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "0, /*Min=*/8"
+   ],
+   [
+    "clampScalar",
+    "0, s8, sMaxScalar"
+   ]
+  ],
+  "line": 114
+ },
+ {
+  "opcodes": "{G_LROUND, G_LLROUND}",
+  "chain": [
+   [
+    "widenScalarIf",
+    "typeIs(1, s16), [=](const LegalityQuery &) { return std::pair<unsigned, LLT>(1, s32); }"
+   ],
+   [
+    "libcall",
+    ""
+   ]
+  ],
+  "line": 120
+ },
+ {
+  "opcodes": "{G_FCOS, G_FCOSH, G_FACOS, G_FSIN, G_FSINH, G_FASIN, G_FTAN, G_FTANH, G_FATAN, G_FATAN2, G_FPOW, G_FEXP, G_FEXP2, G_FEXP10, G_FLOG, G_FLOG2, G_FLOG10, G_FPOWI, G_FSINCOS, G_FCEIL, G_FFLOOR}",
+  "chain": [
+   [
+    "libcall",
+    ""
+   ]
+  ],
+  "line": 127
+ },
+ {
+  "opcodes": "G_FNEG",
+  "chain": [
+   [
+    "legalFor",
+    "UseX87 && !HasSSE1, {s32}"
+   ],
+   [
+    "legalFor",
+    "UseX87 && !HasSSE2, {s64}"
+   ],
+   [
+    "legalFor",
+    "UseX87, {s80}"
+   ],
+   [
+    "lower",
+    ""
+   ]
+  ],
+  "line": 133
+ },
+ {
+  "opcodes": "G_FSQRT",
+  "chain": [
+   [
+    "legalFor",
+    "HasSSE1 || UseX87, {s32}"
+   ],
+   [
+    "legalFor",
+    "HasSSE2 || UseX87, {s64}"
+   ],
+   [
+    "legalFor",
+    "UseX87, {s80}"
+   ]
+  ],
+  "line": 139
+ },
+ {
+  "opcodes": "{G_GET_ROUNDING, G_SET_ROUNDING}",
+  "chain": [
+   [
+    "customFor",
+    "{s32}"
+   ]
+  ],
+  "line": 144
+ },
+ {
+  "opcodes": "G_MERGE_VALUES",
+  "chain": [
+   [
+    "widenScalarToNextPow2",
+    "1, /*Min=*/8"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "0, /*Min=*/16"
+   ],
+   [
+    "minScalar",
+    "1, s8"
+   ],
+   [
+    "minScalar",
+    "0, s32"
+   ],
+   [
+    "legalIf",
+    "[=](const LegalityQuery &Q) { switch (Q.Types[0].getSizeInBits()) { case 16: case 32: case 64: case 128: case 256: case 512: break; default: return false; } switch (Q.Types[1].getSizeInBits()) { case 8: case 16: case 32: case 64: case 128: case 256: return true; default: return false; } }"
+   ]
+  ],
+  "line": 151
+ },
+ {
+  "opcodes": "G_UNMERGE_VALUES",
+  "chain": [
+   [
+    "widenScalarToNextPow2",
+    "0, /*Min=*/8"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "1, /*Min=*/16"
+   ],
+   [
+    "minScalar",
+    "0, s8"
+   ],
+   [
+    "minScalar",
+    "1, s32"
+   ],
+   [
+    "legalIf",
+    "[=](const LegalityQuery &Q) { switch (Q.Types[1].getSizeInBits()) { case 16: case 32: case 64: case 128: case 256: case 512: break; default: return false; } switch (Q.Types[0].getSizeInBits()) { case 8: case 16: case 32: case 64: case 128: case 256: return true; default: return false; } }"
+   ]
+  ],
+  "line": 151
+ },
+ {
+  "opcodes": "{G_UMIN, G_UMAX, G_SMIN, G_SMAX}",
+  "chain": [
+   [
+    "widenScalarToNextPow2",
+    "0, /*Min=*/32"
+   ],
+   [
+    "lower",
+    ""
+   ]
+  ],
+  "line": 182
+ },
+ {
+  "opcodes": "{G_ADD, G_SUB}",
+  "chain": [
+   [
+    "legalFor",
+    "{s8, s16, s32}"
+   ],
+   [
+    "legalFor",
+    "Is64Bit, {s64}"
+   ],
+   [
+    "legalFor",
+    "HasSSE2, {v16s8, v8s16, v4s32, v2s64}"
+   ],
+   [
+    "legalFor",
+    "HasAVX2, {v32s8, v16s16, v8s32, v4s64}"
+   ],
+   [
+    "legalFor",
+    "HasAVX512, {v16s32, v8s64}"
+   ],
+   [
+    "legalFor",
+    "HasBWI, {v64s8, v32s16}"
+   ],
+   [
+    "clampMinNumElements",
+    "0, s8, 16"
+   ],
+   [
+    "clampMinNumElements",
+    "0, s16, 8"
+   ],
+   [
+    "clampMinNumElements",
+    "0, s32, 4"
+   ],
+   [
+    "clampMinNumElements",
+    "0, s64, 2"
+   ],
+   [
+    "clampMaxNumElements",
+    "0, s8, HasBWI ? 64 : (HasAVX2 ? 32 : 16)"
+   ],
+   [
+    "clampMaxNumElements",
+    "0, s16, HasBWI ? 32 : (HasAVX2 ? 16 : 8)"
+   ],
+   [
+    "clampMaxNumElements",
+    "0, s32, HasAVX512 ? 16 : (HasAVX2 ? 8 : 4)"
+   ],
+   [
+    "clampMaxNumElements",
+    "0, s64, HasAVX512 ? 8 : (HasAVX2 ? 4 : 2)"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "0, /*Min=*/32"
+   ],
+   [
+    "clampScalar",
+    "0, s8, sMaxScalar"
+   ],
+   [
+    "scalarize",
+    "0"
+   ]
+  ],
+  "line": 187
+ },
+ {
+  "opcodes": "{G_UADDE, G_UADDO, G_USUBE, G_USUBO}",
+  "chain": [
+   [
+    "legalFor",
+    "{{s8, s8}, {s16, s8}, {s32, s8}}"
+   ],
+   [
+    "legalFor",
+    "Is64Bit, {{s64, s8}}"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "0, /*Min=*/32"
+   ],
+   [
+    "clampScalar",
+    "0, s8, sMaxScalar"
+   ],
+   [
+    "clampScalar",
+    "1, s8, s8"
+   ],
+   [
+    "scalarize",
+    "0"
+   ]
+  ],
+  "line": 206
+ },
+ {
+  "opcodes": "G_MUL",
+  "chain": [
+   [
+    "legalFor",
+    "{s8, s16, s32}"
+   ],
+   [
+    "legalFor",
+    "Is64Bit, {s64}"
+   ],
+   [
+    "legalFor",
+    "HasSSE2, {v8s16}"
+   ],
+   [
+    "legalFor",
+    "HasSSE41, {v4s32}"
+   ],
+   [
+    "legalFor",
+    "HasAVX2, {v16s16, v8s32}"
+   ],
+   [
+    "legalFor",
+    "HasAVX512, {v16s32}"
+   ],
+   [
+    "legalFor",
+    "HasDQI, {v8s64}"
+   ],
+   [
+    "legalFor",
+    "HasDQI && HasVLX, {v2s64, v4s64}"
+   ],
+   [
+    "legalFor",
+    "HasBWI, {v32s16}"
+   ],
+   [
+    "clampMinNumElements",
+    "0, s16, 8"
+   ],
+   [
+    "clampMinNumElements",
+    "0, s32, 4"
+   ],
+   [
+    "clampMinNumElements",
+    "0, s64, HasVLX ? 2 : 8"
+   ],
+   [
+    "clampMaxNumElements",
+    "0, s16, HasBWI ? 32 : (HasAVX2 ? 16 : 8)"
+   ],
+   [
+    "clampMaxNumElements",
+    "0, s32, HasAVX512 ? 16 : (HasAVX2 ? 8 : 4)"
+   ],
+   [
+    "clampMaxNumElements",
+    "0, s64, 8"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "0, /*Min=*/32"
+   ],
+   [
+    "clampScalar",
+    "0, s8, sMaxScalar"
+   ],
+   [
+    "scalarize",
+    "0"
+   ]
+  ],
+  "line": 215
+ },
+ {
+  "opcodes": "{G_SMULH, G_UMULH}",
+  "chain": [
+   [
+    "legalFor",
+    "{s8, s16, s32}"
+   ],
+   [
+    "legalFor",
+    "Is64Bit, {s64}"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "0, /*Min=*/32"
+   ],
+   [
+    "clampScalar",
+    "0, s8, sMaxScalar"
+   ],
+   [
+    "scalarize",
+    "0"
+   ]
+  ],
+  "line": 235
+ },
+ {
+  "opcodes": "{G_SDIV, G_SREM, G_UDIV, G_UREM}",
+  "chain": [
+   [
+    "legalFor",
+    "{s8, s16, s32}"
+   ],
+   [
+    "legalFor",
+    "Is64Bit, {s64}"
+   ],
+   [
+    "libcallFor",
+    "{s64}"
+   ],
+   [
+    "clampScalar",
+    "0, s8, sMaxScalar"
+   ]
+  ],
+  "line": 243
+ },
+ {
+  "opcodes": "{G_SHL, G_LSHR, G_ASHR}",
+  "chain": [
+   [
+    "legalFor",
+    "{{s8, s8}, {s16, s8}, {s32, s8}}"
+   ],
+   [
+    "legalFor",
+    "Is64Bit, {{s64, s8}}"
+   ],
+   [
+    "clampScalar",
+    "0, s8, sMaxScalar"
+   ],
+   [
+    "clampScalar",
+    "1, s8, s8"
+   ]
+  ],
+  "line": 250
+ },
+ {
+  "opcodes": "{G_AND, G_OR, G_XOR}",
+  "chain": [
+   [
+    "legalFor",
+    "{s8, s16, s32}"
+   ],
+   [
+    "legalFor",
+    "Is64Bit, {s64}"
+   ],
+   [
+    "legalFor",
+    "HasSSE2, {v16s8, v8s16, v4s32, v2s64}"
+   ],
+   [
+    "legalFor",
+    "HasAVX, {v32s8, v16s16, v8s32, v4s64}"
+   ],
+   [
+    "legalFor",
+    "HasAVX512, {v64s8, v32s16, v16s32, v8s64}"
+   ],
+   [
+    "clampNumElements",
+    "0, v16s8, s8MaxVector"
+   ],
+   [
+    "clampNumElements",
+    "0, v8s16, s16MaxVector"
+   ],
+   [
+    "clampNumElements",
+    "0, v4s32, s32MaxVector"
+   ],
+   [
+    "clampNumElements",
+    "0, v2s64, s64MaxVector"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "0, /*Min=*/32"
+   ],
+   [
+    "clampScalar",
+    "0, s8, sMaxScalar"
+   ],
+   [
+    "scalarize",
+    "0"
+   ]
+  ],
+  "line": 257
+ },
+ {
+  "opcodes": "G_ICMP",
+  "chain": [
+   [
+    "legalForCartesianProduct",
+    "{s8}, Is64Bit ? IntTypes64 : IntTypes32"
+   ],
+   [
+    "clampScalar",
+    "0, s8, s8"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "1, /*Min=*/8"
+   ],
+   [
+    "clampScalar",
+    "1, s8, sMaxScalar"
+   ]
+  ],
+  "line": 275
+ },
+ {
+  "opcodes": "G_BSWAP",
+  "chain": [
+   [
+    "legalFor",
+    "{s32}"
+   ],
+   [
+    "legalFor",
+    "Is64Bit, {s64}"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "0, /*Min=*/32"
+   ],
+   [
+    "clampScalar",
+    "0, s32, sMaxScalar"
+   ]
+  ],
+  "line": 282
+ },
+ {
+  "opcodes": "G_CTPOP",
+  "chain": [
+   [
+    "legalFor",
+    "HasPOPCNT, {{s16, s16}, {s32, s32}}"
+   ],
+   [
+    "legalFor",
+    "HasPOPCNT && Is64Bit, {{s64, s64}}"
+   ],
+   [
+    "legalFor",
+    "HasVPOPCNTDQ, {{v4s32, v4s32}, {v8s32, v8s32}, {v2s64, v2s64}, {v4s64, v4s64}}"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "1, /*Min=*/16"
+   ],
+   [
+    "clampScalar",
+    "1, s16, sMaxScalar"
+   ],
+   [
+    "scalarSameSizeAs",
+    "0, 1"
+   ]
+  ],
+  "line": 293
+ },
+ {
+  "opcodes": "G_CTLZ",
+  "chain": [
+   [
+    "legalFor",
+    "HasLZCNT, {{s16, s16}, {s32, s32}}"
+   ],
+   [
+    "legalFor",
+    "HasLZCNT && Is64Bit, {{s64, s64}}"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "1, /*Min=*/16"
+   ],
+   [
+    "clampScalar",
+    "1, s16, sMaxScalar"
+   ],
+   [
+    "scalarSameSizeAs",
+    "0, 1"
+   ]
+  ],
+  "line": 297
+ },
+ {
+  "opcodes": "G_CTTZ_ZERO_POISON",
+  "chain": [
+   [
+    "legalFor",
+    "{{s16, s16}, {s32, s32}}"
+   ],
+   [
+    "legalFor",
+    "Is64Bit, {{s64, s64}}"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "1, /*Min=*/16"
+   ],
+   [
+    "clampScalar",
+    "1, s16, sMaxScalar"
+   ],
+   [
+    "scalarSameSizeAs",
+    "0, 1"
+   ]
+  ],
+  "line": 305
+ },
+ {
+  "opcodes": "G_CTTZ",
+  "chain": [
+   [
+    "legalFor",
+    "HasBMI, {{s16, s16}, {s32, s32}}"
+   ],
+   [
+    "legalFor",
+    "HasBMI && Is64Bit, {{s64, s64}}"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "1, /*Min=*/16"
+   ],
+   [
+    "clampScalar",
+    "1, s16, sMaxScalar"
+   ],
+   [
+    "scalarSameSizeAs",
+    "0, 1"
+   ]
+  ],
+  "line": 312
+ },
+ {
+  "opcodes": "G_BR",
+  "chain": [
+   [
+    "alwaysLegal",
+    ""
+   ]
+  ],
+  "line": 319
+ },
+ {
+  "opcodes": "G_BRCOND",
+  "chain": [
+   [
+    "legalFor",
+    "{s1}"
+   ]
+  ],
+  "line": 320
+ },
+ {
+  "opcodes": "G_PTRTOINT",
+  "chain": [
+   [
+    "legalForCartesianProduct",
+    "Is64Bit ? PtrTypes64 : PtrTypes32, {p0}"
+   ],
+   [
+    "maxScalar",
+    "0, sMaxScalar"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "0, /*Min*/ 8"
+   ]
+  ],
+  "line": 326
+ },
+ {
+  "opcodes": "G_INTTOPTR",
+  "chain": [
+   [
+    "legalFor",
+    "{{p0, sMaxScalar}}"
+   ]
+  ],
+  "line": 331
+ },
+ {
+  "opcodes": "G_CONSTANT_POOL",
+  "chain": [
+   [
+    "legalFor",
+    "{p0}"
+   ]
+  ],
+  "line": 333
+ },
+ {
+  "opcodes": "G_PTR_ADD",
+  "chain": [
+   [
+    "legalFor",
+    "{{p0, s32}}"
+   ],
+   [
+    "legalFor",
+    "Is64Bit, {{p0, s64}}"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "1, /*Min*/ 32"
+   ],
+   [
+    "clampScalar",
+    "1, s32, sMaxScalar"
+   ]
+  ],
+  "line": 335
+ },
+ {
+  "opcodes": "G_FRAME_INDEX",
+  "chain": [
+   [
+    "legalFor",
+    "{p0}"
+   ]
+  ],
+  "line": 341
+ },
+ {
+  "opcodes": "G_GLOBAL_VALUE",
+  "chain": [
+   [
+    "customFor",
+    "{p0}"
+   ]
+  ],
+  "line": 343
+ },
+ {
+  "opcodes": "G_ANYEXT",
+  "chain": [
+   [
+    "legalFor",
+    "{s8, s16, s32, s128}"
+   ],
+   [
+    "legalFor",
+    "Is64Bit, {s64}"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "0, /*Min=*/8"
+   ],
+   [
+    "clampScalar",
+    "0, s8, sMaxScalar"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "1, /*Min=*/8"
+   ],
+   [
+    "clampScalar",
+    "1, s8, sMaxScalar"
+   ],
+   [
+    "scalarize",
+    "0"
+   ]
+  ],
+  "line": 413
+ },
+ {
+  "opcodes": "{G_SEXT, G_ZEXT}",
+  "chain": [
+   [
+    "legalFor",
+    "{s8, s16, s32}"
+   ],
+   [
+    "legalFor",
+    "Is64Bit, {s64}"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "0, /*Min=*/8"
+   ],
+   [
+    "clampScalar",
+    "0, s8, sMaxScalar"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "1, /*Min=*/8"
+   ],
+   [
+    "clampScalar",
+    "1, s8, sMaxScalar"
+   ],
+   [
+    "scalarize",
+    "0"
+   ]
+  ],
+  "line": 422
+ },
+ {
+  "opcodes": "G_TRUNC",
+  "chain": [
+   [
+    "legalForCartesianProduct",
+    "{s1, s8, s16, s32, s64}, {s8, s16, s32, s64, s128}"
+   ]
+  ],
+  "line": 431
+ },
+ {
+  "opcodes": "G_SEXT_INREG",
+  "chain": [
+   [
+    "lower",
+    ""
+   ]
+  ],
+  "line": 434
+ },
+ {
+  "opcodes": "G_FCONSTANT",
+  "chain": [
+   [
+    "legalFor",
+    "{s32, s64}"
+   ],
+   [
+    "legalFor",
+    "UseX87, {s80}"
+   ]
+  ],
+  "line": 437
+ },
+ {
+  "opcodes": "{G_FADD, G_FSUB, G_FMUL, G_FDIV}",
+  "chain": [
+   [
+    "legalFor",
+    "{s32, s64}"
+   ],
+   [
+    "legalFor",
+    "HasSSE1, {v4s32}"
+   ],
+   [
+    "legalFor",
+    "HasSSE2, {v2s64}"
+   ],
+   [
+    "legalFor",
+    "HasAVX, {v8s32, v4s64}"
+   ],
+   [
+    "legalFor",
+    "HasAVX512, {v16s32, v8s64}"
+   ],
+   [
+    "legalFor",
+    "UseX87, {s80}"
+   ]
+  ],
+  "line": 442
+ },
+ {
+  "opcodes": "G_FABS",
+  "chain": [
+   [
+    "legalFor",
+    "UseX87, {s80}"
+   ],
+   [
+    "legalFor",
+    "UseX87 && !Is64Bit, {s64}"
+   ],
+   [
+    "lower",
+    ""
+   ]
+  ],
+  "line": 450
+ },
+ {
+  "opcodes": "G_FCMP",
+  "chain": [
+   [
+    "legalFor",
+    "HasSSE1 || UseX87, {s8, s32}"
+   ],
+   [
+    "legalFor",
+    "HasSSE2 || UseX87, {s8, s64}"
+   ],
+   [
+    "legalFor",
+    "UseX87, {s8, s80}"
+   ],
+   [
+    "clampScalar",
+    "0, s8, s8"
+   ],
+   [
+    "clampScalar",
+    "1, s32, HasSSE2 ? s64 : s32"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "1"
+   ]
+  ],
+  "line": 456
+ },
+ {
+  "opcodes": "G_FPEXT",
+  "chain": [
+   [
+    "legalFor",
+    "HasSSE2, {{s64, s32}}"
+   ],
+   [
+    "legalFor",
+    "HasAVX, {{v4s64, v4s32}}"
+   ],
+   [
+    "legalFor",
+    "HasAVX512, {{v8s64, v8s32}}"
+   ],
+   [
+    "lowerFor",
+    "UseX87, {{s64, s32}, {s80, s32}, {s80, s64}}"
+   ],
+   [
+    "libcall",
+    ""
+   ]
+  ],
+  "line": 465
+ },
+ {
+  "opcodes": "G_FPTRUNC",
+  "chain": [
+   [
+    "legalFor",
+    "HasSSE2, {{s32, s64}}"
+   ],
+   [
+    "legalFor",
+    "HasAVX, {{v4s32, v4s64}}"
+   ],
+   [
+    "legalFor",
+    "HasAVX512, {{v8s32, v8s64}}"
+   ],
+   [
+    "lowerFor",
+    "UseX87, {{s32, s64}, {s32, s80}, {s64, s80}}"
+   ]
+  ],
+  "line": 472
+ },
+ {
+  "opcodes": "G_SITOFP",
+  "chain": [
+   [
+    "legalFor",
+    "HasSSE1, {{s32, s32}}"
+   ],
+   [
+    "legalFor",
+    "HasSSE1 && Is64Bit, {{s32, s64}}"
+   ],
+   [
+    "legalFor",
+    "HasSSE2, {{s64, s32}}"
+   ],
+   [
+    "legalFor",
+    "HasSSE2 && Is64Bit, {{s64, s64}}"
+   ],
+   [
+    "clampScalar",
+    "1, (UseX87 && !HasSSE1) ? s16 : s32, sMaxScalar"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "1"
+   ],
+   [
+    "customForCartesianProduct",
+    "UseX87, {s32, s64, s80}, {s16, s32, s64}"
+   ],
+   [
+    "clampScalar",
+    "0, s32, HasSSE2 ? s64 : s32"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "0"
+   ]
+  ],
+  "line": 478
+ },
+ {
+  "opcodes": "G_FPTOSI",
+  "chain": [
+   [
+    "legalFor",
+    "HasSSE1, {{s32, s32}}"
+   ],
+   [
+    "legalFor",
+    "HasSSE1 && Is64Bit, {{s64, s32}}"
+   ],
+   [
+    "legalFor",
+    "HasSSE2, {{s32, s64}}"
+   ],
+   [
+    "legalFor",
+    "HasSSE2 && Is64Bit, {{s64, s64}}"
+   ],
+   [
+    "clampScalar",
+    "0, (UseX87 && !HasSSE1) ? s16 : s32, sMaxScalar"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "0"
+   ],
+   [
+    "customForCartesianProduct",
+    "UseX87, {s16, s32, s64}, {s32, s64, s80}"
+   ],
+   [
+    "clampScalar",
+    "1, s32, HasSSE2 ? s64 : s32"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "1"
+   ]
+  ],
+  "line": 489
+ },
+ {
+  "opcodes": "G_UITOFP",
+  "chain": [
+   [
+    "legalFor",
+    "HasAVX512, {{s32, s32}, {s32, s64}, {s64, s32}, {s64, s64}}"
+   ],
+   [
+    "customIf",
+    "[=](const LegalityQuery &Query) { return !HasAVX512 && ((HasSSE1 && typeIs(0, s32)(Query)) || (HasSSE2 && typeIs(0, s64)(Query))) && scalarNarrowerThan(1, Is64Bit ? 64 : 32)(Query); }"
+   ],
+   [
+    "lowerIf",
+    "[=](const LegalityQuery &Query) { // Lower conversions from s64 return !HasAVX512 && ((HasSSE1 && typeIs(0, s32)(Query)) || (HasSSE2 && typeIs(0, s64)(Query))) && (Is64Bit && typeIs(1, s64)(Query)); }"
+   ],
+   [
+    "clampScalar",
+    "0, s32, HasSSE2 ? s64 : s32"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "0"
+   ],
+   [
+    "clampScalar",
+    "1, s32, sMaxScalar"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "1"
+   ]
+  ],
+  "line": 507
+ },
+ {
+  "opcodes": "G_FPTOUI",
+  "chain": [
+   [
+    "legalFor",
+    "HasAVX512, {{s32, s32}, {s32, s64}, {s64, s32}, {s64, s64}}"
+   ],
+   [
+    "customIf",
+    "[=](const LegalityQuery &Query) { return !HasAVX512 && ((HasSSE1 && typeIs(1, s32)(Query)) || (HasSSE2 && typeIs(1, s64)(Query))) && scalarNarrowerThan(0, Is64Bit ? 64 : 32)(Query); }"
+   ],
+   [
+    "lowerIf",
+    "[=](const LegalityQuery &Query) { return !HasAVX512 && ((HasSSE1 && typeIs(1, s32)(Query)) || (HasSSE2 && typeIs(1, s64)(Query))) && (Is64Bit && typeIs(0, s64)(Query)); }"
+   ],
+   [
+    "clampScalar",
+    "0, s32, sMaxScalar"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "0"
+   ],
+   [
+    "clampScalar",
+    "1, s32, HasSSE2 ? s64 : s32"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "1"
+   ]
+  ],
+  "line": 527
+ },
+ {
+  "opcodes": "G_BUILD_VECTOR",
+  "chain": [
+   [
+    "customIf",
+    "[=](const LegalityQuery &Query) { return (HasSSE1 && typeInSet(0, {v4s32})(Query)) || (HasSSE2 && typeInSet(0, {v2s64, v8s16, v16s8})(Query)) || (HasAVX && typeInSet(0, {v4s64, v8s32, v16s16, v32s8})(Query)) || (HasAVX512 && typeInSet(0, {v8s64, v16s32, v32s16, v64s8})(Query)); }"
+   ],
+   [
+    "clampNumElements",
+    "0, v16s8, s8MaxVector"
+   ],
+   [
+    "clampNumElements",
+    "0, v8s16, s16MaxVector"
+   ],
+   [
+    "clampNumElements",
+    "0, v4s32, s32MaxVector"
+   ],
+   [
+    "clampNumElements",
+    "0, v2s64, s64MaxVector"
+   ],
+   [
+    "moreElementsToNextPow2",
+    "0"
+   ]
+  ],
+  "line": 551
+ },
+ {
+  "opcodes": "{G_EXTRACT, G_INSERT}",
+  "chain": [
+   [
+    "legalIf",
+    "[=](const LegalityQuery &Query) { unsigned SubIdx = Query.Opcode == G_EXTRACT ? 0 : 1; unsigned FullIdx = Query.Opcode == G_EXTRACT ? 1 : 0; return (HasAVX && typePairInSet(SubIdx, FullIdx, {{v16s8, v32s8}, {v8s16, v16s16}, {v4s32, v8s32}, {v2s64, v4s64}})(Query)) || (HasAVX512 && typePairInSet(SubIdx, FullIdx, {{v16s8, v64s8}, {v32s8, v64s8}, {v8s16, v32s16}, {v16s16, v32s16}, {v4s32, v16s32}, {v8s32, v16s32}, {v2s64, v8s64}, {v4s64, v8s64}})(Query)); }"
+   ]
+  ],
+  "line": 565
+ },
+ {
+  "opcodes": "G_CONCAT_VECTORS",
+  "chain": [
+   [
+    "legalFor",
+    "HasSSE1, {{v32s8, v16s8}, {v16s16, v8s16}, {v8s32, v4s32}, {v4s64, v2s64}}"
+   ],
+   [
+    "legalFor",
+    "HasAVX, {{v64s8, v16s8}, {v64s8, v32s8}, {v32s16, v8s16}, {v32s16, v16s16}, {v16s32, v4s32}, {v16s32, v8s32}, {v8s64, v2s64}, {v8s64, v4s64}}"
+   ]
+  ],
+  "line": 586
+ },
+ {
+  "opcodes": "G_SELECT",
+  "chain": [
+   [
+    "legalFor",
+    "{{s16, s32}, {s32, s32}, {p0, s32}}"
+   ],
+   [
+    "legalFor",
+    "!HasCMOV, {{s8, s32}}"
+   ],
+   [
+    "legalFor",
+    "Is64Bit, {{s64, s32}}"
+   ],
+   [
+    "legalFor",
+    "UseX87, {{s80, s32}}"
+   ],
+   [
+    "clampScalar",
+    "1, s32, s32"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "0, /*Min=*/8"
+   ],
+   [
+    "clampScalar",
+    "0, HasCMOV ? s16 : s8, sMaxScalar"
+   ]
+  ],
+  "line": 600
+ },
+ {
+  "opcodes": "G_LOAD",
+  "chain": [
+   [
+    "legalForMemDesc",
+    ""
+   ],
+   [
+    "legalForMemDescIf",
+    "Is64Bit"
+   ],
+   [
+    "legalForMemDescIf",
+    "HasSSE1"
+   ],
+   [
+    "legalForMemDescIf",
+    "HasSSE2"
+   ],
+   [
+    "legalForMemDescIf",
+    "HasAVX"
+   ],
+   [
+    "legalForMemDescIf",
+    "HasAVX512"
+   ],
+   [
+    "legalForMemDesc",
+    ""
+   ],
+   [
+    "legalForMemDescIf",
+    "Is64Bit"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "0, /*Min=*/8"
+   ],
+   [
+    "clampScalar",
+    "0, s8, sMaxScalar"
+   ],
+   [
+    "scalarize",
+    "0"
+   ]
+  ],
+  "line": 605,
+  "note": "reconstructed from X86LegalizerInfo.td (X86_MemOp + the defm tail): the former C++ built this set through the multiclass helper, so x86_rule_inventory never saw it and the .decl shipped without any prefer.  The legal entries carry no args; they exist so the prefer lines keep their chain index."
+ },
+ {
+  "opcodes": "{G_MEMCPY, G_MEMMOVE, G_MEMSET}",
+  "chain": [
+   [
+    "libcall",
+    ""
+   ]
+  ],
+  "line": 610
+ },
+ {
+  "opcodes": "{G_DYN_STACKALLOC, G_STACKSAVE, G_STACKRESTORE}",
+  "chain": [
+   [
+    "lower",
+    ""
+   ]
+  ],
+  "line": 612
+ },
+ {
+  "opcodes": "G_IS_FPCLASS",
+  "chain": [
+   [
+    "lowerFor",
+    "Is64Bit, {{s1, s32}, {s1, s64}, {s1, s80}}"
+   ]
+  ],
+  "line": 617
+ },
+ {
+  "opcodes": "G_STORE",
+  "chain": [
+   [
+    "legalForMemDesc",
+    ""
+   ],
+   [
+    "legalForMemDescIf",
+    "Is64Bit"
+   ],
+   [
+    "legalForMemDescIf",
+    "HasSSE1"
+   ],
+   [
+    "legalForMemDescIf",
+    "HasSSE2"
+   ],
+   [
+    "legalForMemDescIf",
+    "HasAVX"
+   ],
+   [
+    "legalForMemDescIf",
+    "HasAVX512"
+   ],
+   [
+    "customIf",
+    "ValueDiffersFromMem0"
+   ],
+   [
+    "widenScalarToNextPow2",
+    "0, /*Min=*/8"
+   ],
+   [
+    "clampScalar",
+    "0, s8, sMaxScalar"
+   ],
+   [
+    "scalarize",
+    "0"
+   ]
+  ],
+  "line": 617,
+  "note": "reconstructed from X86LegalizerInfo.td (X86_MemOp + defm X86_STORE); see the G_LOAD note.  customIf is the value-differs-from-memdesc escape, which core.json already carries."
+ },
+ {
+  "opcodes": "{G_INTRINSIC_ROUNDEVEN, G_INTRINSIC_TRUNC}",
+  "chain": [
+   [
+    "scalarize",
+    "0"
+   ],
+   [
+    "minScalar",
+    "0, LLT::scalar(32)"
+   ],
+   [
+    "libcall",
+    ""
+   ]
+  ],
+  "line": 620
+ },
+ {
+  "opcodes": "{G_INTRINSIC, G_INTRINSIC_W_SIDE_EFFECTS}",
+  "chain": [
+   [
+    "alwaysLegal",
+    ""
+   ]
+  ],
+  "line": 625
+ },
+ {
+  "opcodes": "{G_TRAP, G_DEBUGTRAP, G_UBSANTRAP}",
+  "chain": [
+   [
+    "alwaysLegal",
+    ""
+   ]
+  ],
+  "line": 627
+ },
+ {
+  "opcodes": "G_INVOKE_REGION_START",
+  "chain": [
+   [
+    "alwaysLegal",
+    ""
+   ]
+  ],
+  "line": 628
+ }
+]

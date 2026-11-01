@@ -1,0 +1,207 @@
+{
+ "features": {
+  "HasAES": [
+   "HasSSE2"
+  ],
+  "HasAMXAVX512": [
+   "HasAMXTILE"
+  ],
+  "HasAMXBF16": [
+   "HasAMXTILE"
+  ],
+  "HasAMXCOMPLEX": [
+   "HasAMXTILE"
+  ],
+  "HasAMXFP16": [
+   "HasAMXTILE"
+  ],
+  "HasAMXFP8": [
+   "HasAMXTILE"
+  ],
+  "HasAMXINT8": [
+   "HasAMXTILE"
+  ],
+  "HasAMXMOVRS": [
+   "HasAMXTILE"
+  ],
+  "HasAVX": [
+   "HasSSE42"
+  ],
+  "HasAVX10_1": [
+   "HasBF16",
+   "HasBITALG",
+   "HasCDI",
+   "HasDQI",
+   "HasFP16",
+   "HasIFMA",
+   "HasVBMI",
+   "HasVBMI2",
+   "HasVLX",
+   "HasVNNI",
+   "HasVPOPCNTDQ"
+  ],
+  "HasAVX10_1_512": [
+   "HasAVX10_1"
+  ],
+  "HasAVX10_2": [
+   "HasAVX10_1"
+  ],
+  "HasAVX10_2_512": [
+   "HasAVX10_2"
+  ],
+  "HasAVX10_V2_AUX": [
+   "HasAVX10_1"
+  ],
+  "HasAVX2": [
+   "HasAVX"
+  ],
+  "HasAVX512": [
+   "HasAVX2",
+   "HasF16C",
+   "HasFMA"
+  ],
+  "HasAVXIFMA": [
+   "HasAVX2"
+  ],
+  "HasAVXNECONVERT": [
+   "HasAVX2"
+  ],
+  "HasAVXVNNI": [
+   "HasAVX2"
+  ],
+  "HasAVXVNNIINT16": [
+   "HasAVX2"
+  ],
+  "HasAVXVNNIINT8": [
+   "HasAVX2"
+  ],
+  "HasBF16": [
+   "HasBWI"
+  ],
+  "HasBITALG": [
+   "HasBWI"
+  ],
+  "HasBMM": [
+   "HasBWI"
+  ],
+  "HasBWI": [
+   "HasAVX512"
+  ],
+  "HasCDI": [
+   "HasAVX512"
+  ],
+  "HasCX16": [
+   "HasCX8"
+  ],
+  "HasDQI": [
+   "HasAVX512"
+  ],
+  "HasF16C": [
+   "HasAVX"
+  ],
+  "HasFMA": [
+   "HasAVX"
+  ],
+  "HasFMA4": [
+   "HasAVX",
+   "HasSSE4A"
+  ],
+  "HasFP16": [
+   "HasBWI"
+  ],
+  "HasGFNI": [
+   "HasSSE2"
+  ],
+  "HasIFMA": [
+   "HasAVX512"
+  ],
+  "HasKL": [
+   "HasSSE2"
+  ],
+  "HasPCLMUL": [
+   "HasSSE2"
+  ],
+  "HasRetpoline": [
+   "HasRetpolineIndirectBranches",
+   "HasRetpolineIndirectCalls"
+  ],
+  "HasRetpolineExternalThunk": [
+   "HasRetpolineIndirectCalls"
+  ],
+  "HasSHA": [
+   "HasSSE2"
+  ],
+  "HasSHA512": [
+   "HasAVX2"
+  ],
+  "HasSM3": [
+   "HasAVX"
+  ],
+  "HasSM4": [
+   "HasAVX2"
+  ],
+  "HasSSE2": [
+   "HasSSE1"
+  ],
+  "HasSSE3": [
+   "HasSSE2"
+  ],
+  "HasSSE41": [
+   "HasSSSE3"
+  ],
+  "HasSSE42": [
+   "HasSSE41"
+  ],
+  "HasSSE4A": [
+   "HasSSE3"
+  ],
+  "HasSSSE3": [
+   "HasSSE3"
+  ],
+  "HasSpeculativeExecutionSideEffectSuppression": [
+   "HasLVIControlFlowIntegrity"
+  ],
+  "HasVAES": [
+   "HasAES",
+   "HasAVX2"
+  ],
+  "HasVBMI": [
+   "HasBWI"
+  ],
+  "HasVBMI2": [
+   "HasBWI"
+  ],
+  "HasVLX": [
+   "HasAVX512"
+  ],
+  "HasVNNI": [
+   "HasAVX512"
+  ],
+  "HasVP2INTERSECT": [
+   "HasAVX512"
+  ],
+  "HasVPCLMULQDQ": [
+   "HasAVX",
+   "HasPCLMUL"
+  ],
+  "HasVPOPCNTDQ": [
+   "HasAVX512"
+  ],
+  "HasWIDEKL": [
+   "HasKL"
+  ],
+  "HasXOP": [
+   "HasFMA4"
+  ],
+  "HasXSAVEC": [
+   "HasXSAVE"
+  ],
+  "HasXSAVEOPT": [
+   "HasXSAVE"
+  ],
+  "HasXSAVES": [
+   "HasXSAVE"
+  ]
+ },
+ "source": "/home/ubuntu/llvm/llvm-project/llvm/lib/Target/X86/X86.td"
+}

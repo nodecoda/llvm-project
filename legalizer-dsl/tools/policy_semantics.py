@@ -102,6 +102,10 @@ def step(t, legal, pol):
         lo, hi = hull_of(legal, k)
     else:
         lo, hi = pol.lo, pol.hi
+        if lo == 'hull' or hi == 'hull':
+            hlo, hhi = hull_of(legal, k)
+            lo = hlo if lo == 'hull' else lo
+            hi = hhi if hi == 'hull' else hi
 
     if k == 'scalar':
         b = bits(t)

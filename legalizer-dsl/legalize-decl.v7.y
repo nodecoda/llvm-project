@@ -70,6 +70,7 @@ void yyerror(const char *);
 
 /* --- v7 additions ------------------------------------------------------ */
 %token QUERY VARIADIC POLICY IMM TO HULL LBRACKET RBRACKET
+%token WITH GROUP
 %token PROMOTE TRUNCATE
 
 %left OROR
@@ -99,6 +100,24 @@ coord     : TY INT | MEM INT | IMM INT ;
  * `variadic 1;` is what `variadicOpsType = type1` means in the opcode record. */
 variadic  : VARIADIC INT SEMI ;
 
+/* v7: slot groups.  A group is a *slot set*, not a rule set: it changes what
+ * an omitted slot means inside its braces, nothing else.
+ *
+ *   group elem = 0, 1;
+ *   with elem {
+ *     policy: scalar hull;          -- policy 0 and policy 1
+ *     prefer s32 on 1;              -- explicit: wins over the general one
+ *   }
+ *
+ * `with` bodies nest; an inner set must be a subset of the outer one (checked
+ * in check_decl, `13-with-nested`).  Only slot-scoped statements may appear
+ * inside (`policy`, `prefer`, `shapes`); a `legal` clause is positional and
+ * has no slot to group, so it is an error there (`13-with-non-slot`). */
+groupdef  : GROUP IDENT EQ slot_list SEMI ;
+with_decl : WITH slot_set LBRACE body RBRACE ;
+slot_set  : slot_list | IDENT ;
+slot_list : INT | slot_list COMMA INT ;
+
 /* A type class is the one thing LLT cannot tell us: `s32` is i32 or float.
  * The membership is a set of concrete types, and `class int;` inside a block
  * means "apply the width policy to slot 0 types in this class". */
@@ -115,6 +134,7 @@ body      : %empty | body item ;
 item      : legal_decl | prefer_decl | follow_decl | except_decl
           | class_decl | elemwise_decl | shapes_decl
           | query | variadic | policy_decl
+          | groupdef | with_decl
           | expr SEMI ;   /* macro_use: macro applying a block */
 
 /* --- FACT ------------------------------------------------------------ */
@@ -123,8 +143,23 @@ legal_decl : LEGAL exprs SEMI
 exprs      : expr | exprs COMMA expr ;          /* 逗号 = 并 */
 
 /* --- PREFERENCE ------------------------------------------------------ */
-prefer_decl: PREFER preference ON INT SEMI
-           | PREFER preference ON INT WHEN expr SEMI ;
+/* A statement without a slot is the **default rule**; a statement with one
+ * is a specific rule, and a specific rule beats the default on its slot.
+ * The shape is borrowed from the tools this grammar sits next to: `with` is
+ * a lex start condition (a scope, not a macro), a `group` is a named
+ * definition, and two declarations competing for one slot are `%nonassoc`
+ * (an error), not "the last one wins".
+ *
+ *   prefer s8;               -- default: the slots nothing specific claims
+ *   prefer s32 on 1;         -- specific: slot 1, and it wins over the default
+ *
+ * The default never lands on a slot that has a specific declaration of the
+ * same kind (`target` / `pow2` / `elem`): different kinds are different
+ * rewrites, so `prefer pow2;` and `prefer s32 on 1;` both stay live on slot 1.
+ * Textual order does not matter -- specificity does. */
+prefer_decl: PREFER preference on_clause SEMI
+           | PREFER preference on_clause WHEN expr SEMI ;
+on_clause  : %empty | ON INT ;
 
 /* `pow2` 可以带 MinSize：.td 的 WidenScalar*ToNextPow2<0,32> 是
  * max(nextPow2(elt), 32)，把 32 丢掉就只能靠一条 `&& !pow2` 的伴生规则
@@ -135,8 +170,9 @@ preference : expr
            | ELEM ;
 
 /* --- DEFAULT --------------------------------------------------------- */
-/* v7.2: the default for one slot.
+/* v7.2: the policy for one slot.
  *
+ *   policy: scalar hull;                       -- default rule: every ty coordinate
  *   policy 0: scalar to s8;                    -- both ends s8: clamp everything
  *   policy 1: scalar [s8, MaxScalar] pow2;     -- nominal interval + pow2 floor
  *   policy 0: scalar promote s32 pow2 16;      -- one-sided: no upper bound
@@ -152,15 +188,24 @@ preference : expr
  *
  * `when` is evaluated once per feature assignment (like a legal guard), not
  * per query: a policy is a property of the target configuration.
+ *
+ * A `policy` without a slot is the default and fills only the slots that no
+ * `policy i:` (or `with`-scoped) policy covers.  `policy: A` plus
+ * `policy 1: B` gives slot 0 = A and slot 1 = B, whatever the order.
  */
-policy_decl: POLICY INT COLON pkind pbound pmods pguard SEMI ;
+policy_decl: POLICY on_slot COLON pkind pbound pmods pguard SEMI ;
+on_slot   : %empty | INT ;
 
 pkind      : SCALAR | VECTOR ;
 pbound     : TO expr                       /* both ends */
            | PROMOTE expr                  /* lower bound only */
            | TRUNCATE expr                 /* upper bound only */
-           | LBRACKET expr COMMA expr RBRACKET
+           | LBRACKET pend COMMA pend RBRACKET
            | HULL ;                        /* read both off the legal projection */
+/* `hull` is a *value* on either end, not a mode: G_SELECT takes its lower
+ * bound from the legal set and its upper bound from a constant.  It is not in
+ * `expr` because it is only meaningful where a bound is expected. */
+pend       : HULL | expr ;
 pmods      : %empty | POW2 | POW2 INT ;
 pguard     : %empty | WHEN expr ;
 
@@ -188,7 +233,7 @@ elemwise_decl : ELEMWISE SEMI ;
  * clauses and the shapes its `custom` lowering handles).  It replaces the
  * 2-8 `prefer v<lo><e> / prefer v<hi><e>` pairs the generator used to write.
  * v7: this is `policy i: vector hull;`; the old spelling is kept. */
-shapes_decl : SHAPES ON INT SEMI ;
+shapes_decl : SHAPES on_clause SEMI ;
 
 /* --- COUPLING -------------------------------------------------------- */
 follow_decl: FOLLOW INT FROM INT BY ELEM SEMI ;

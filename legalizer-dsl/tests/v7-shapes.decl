@@ -34,6 +34,28 @@ op G_INSERT {
   except imm(0) = 0 -> unsupported;
 }
 
+op G_ADD {
+  query ty 0;
+  legal s8, s16, s32;
+  prefer s8;
+  policy: scalar hull pow2 8;
+  elemwise;
+}
+
+/* A group is a slot set, not a rule set: the omitted slot inside the braces
+ * means the group's slots.  `policy 1:` inside is still a specific rule and
+ * wins over the group's default. */
+op G_SELECT {
+  query ty 0, ty 1;
+  group pair = 0, 1;
+  legal (p0:64 + s16 + s32) * s32;
+  with pair {
+    policy: scalar [hull, MaxScalar] pow2;
+    prefer pow2;
+  }
+  policy 1: scalar to s32;
+}
+
 op G_LOAD {
   query ty 0, ty 1, mem 0;
   legal any when ty(1) = p0:64 && bits(ty(0)) = bits(mem(0).ty);
