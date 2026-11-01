@@ -689,6 +689,17 @@ class MinScalar<int Idx, LegalizeArgType Ty>
 class MaxScalar<int Idx, LegalizeArgType Ty>
     : LegalizeCall<BuilderMaxScalar, [LegalizeArgIndex<Idx>, Ty]>;
 
+/// minScalar() under a query-time guard.
+///
+/// A guarded widen used to have to be an opaque rule: widenScalarIf() takes a
+/// mutation lambda, which this schema cannot spell, and an opaque rule keeps
+/// its whole rule set out of the table.  minScalarIf() takes (predicate,
+/// index, type) instead -- the same statement whenever the predicate already
+/// pins the type, since then the "narrower than Ty" half is redundant.
+class MinScalarIf<LegalizeQueryPredicateBase P, int Idx, LegalizeArgType Ty>
+    : LegalizeQueryGuardedCall<BuilderMinScalarIf, P,
+                               [LegalizeArgIndex<Idx>, Ty]>;
+
 class ScalarSameSizeAs<int Idx, int OtherIdx>
     : LegalizeCall<BuilderScalarSameSizeAs,
                    [LegalizeArgIndex<Idx>, LegalizeArgIndex<OtherIdx>]>;

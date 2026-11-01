@@ -88,6 +88,7 @@ def NarrowerIn1 : LegalizeTypePredicate<"scalarNarrowerThan(1, Is64Bit ? 64 : 32
 
 // !HasAVX512 && ((HasSSE1 && typeIs(0, s32)) || (HasSSE2 && typeIs(0, s64)))
 //   && scalarNarrowerThan(1, Is64Bit ? 64 : 32)
+def IsS16In1 : LegalizeTypePredicate<"typeIs(1, X86_s16)">;
 def IsS32In1 : LegalizeTypePredicate<"typeIs(1, X86_s32)">;
 def IsS64In1 : LegalizeTypePredicate<"typeIs(1, X86_s64)">;
 def NarrowerIn0 : LegalizeTypePredicate<"scalarNarrowerThan(0, Is64Bit ? 64 : 32)">;
@@ -272,11 +273,15 @@ def X86_CONSTANT : LegalizeRuleSet<["G_CONSTANT"]> {
 
 def X86_LROUND : LegalizeRuleSet<["G_LROUND", "G_LLROUND"]> {
   let Rules = [
-    // f16 has no lround libcall, so promote sub-32-bit scalars to f32.
-    // Keep this a core rule: it puts slot 1 in the table key.  An opaque
-    // typeIs(1, s16) rule left the table keyless, so one cached answer was
-    // reused for every source type.
-    MinScalar<1, X86_s32>,
+    // f16 has no lround libcall, so promote an f16 source to f32.  Only f16:
+    // the chain's rule is typeIs(1, s16), and "anything narrower than 32 bits"
+    // is a different statement -- it also fires on s1/s8, where the widen
+    // would ask for a G_FPEXT from a type that is not floating point.
+    //
+    // The guard is what keeps slot 1 in the table key.  It has to be a typed
+    // predicate: an opaque typeIs(1, s16) rule contributed no slot at all, so
+    // X86_LROUND ended up with one cached answer for every source type.
+    MinScalarIf<IsS16In1, 1, X86_s32>,
     Libcall,
   ];
 }

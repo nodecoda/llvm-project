@@ -2465,7 +2465,12 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
            mutationJson(Idx, "set_elem_type", T.Type)});
     return;
   }
-  if (Builder == "BuilderMinScalar") {
+  // minScalarIf(guard, idx, Ty) is minScalar() with one more conjunct, and
+  // WithPred() is where that conjunct goes: the rule carries the guard, this
+  // branch carries the bound.  Keeping them apart is what lets a guarded widen
+  // stay in the table -- the opaque form it replaced took the whole rule set
+  // out of it.
+  if (Builder == "BuilderMinScalar" || Builder == "BuilderMinScalarIf") {
     unsigned Idx = Int(0);
     std::vector<TypeAlt> Bounds;
     std::string Why1;
