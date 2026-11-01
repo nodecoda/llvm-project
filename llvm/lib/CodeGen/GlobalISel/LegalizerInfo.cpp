@@ -191,24 +191,46 @@ static bool mutationIsSane(const LegalizeRule &Rule,
 }
 #endif
 
+int64_t LegalizeRuleSet::findRule(const LegalityQuery &Query) const {
+  for (unsigned I = 0, E = Rules.size(); I != E; ++I) {
+    if (Rules[I].match(Query))
+      return static_cast<int64_t>(I);
+    LLVM_DEBUG(dbgs() << ".. no match\n");
+  }
+  return -1;
+}
+
+bool LegalizeRuleSet::ruleMatches(int64_t RuleIdx,
+                                  const LegalityQuery &Query) const {
+  return RuleIdx >= 0 && static_cast<size_t>(RuleIdx) < Rules.size() &&
+         Rules[RuleIdx].match(Query);
+}
+
+LegalizeActionStep LegalizeRuleSet::applyRule(int64_t RuleIdx,
+                                              const LegalityQuery &Query) const {
+  assert(RuleIdx >= 0 && static_cast<size_t>(RuleIdx) < Rules.size() &&
+         "no such rule");
+  const LegalizeRule &Rule = Rules[RuleIdx];
+  assert(Rule.match(Query) && "the rule does not answer this query");
+  std::pair<unsigned, LLT> Mutation = Rule.determineMutation(Query);
+  LLVM_DEBUG(dbgs() << ".. .. " << Rule.getAction() << ", " << Mutation.first
+                    << ", " << Mutation.second << "\n");
+  assert(mutationIsSane(Rule, Query, Mutation) &&
+         "legality mutation invalid for match");
+  assert(hasNoSimpleLoops(Rule, Query, Mutation) && "Simple loop detected");
+  return {Rule.getAction(), Mutation.first, Mutation.second};
+}
+
 LegalizeActionStep LegalizeRuleSet::apply(const LegalityQuery &Query) const {
   LLVM_DEBUG(dbgs() << "Applying legalizer ruleset to: "; Query.print(dbgs());
              dbgs() << "\n");
-  for (const LegalizeRule &Rule : Rules) {
-    if (Rule.match(Query)) {
-      LLVM_DEBUG(dbgs() << ".. match\n");
-      std::pair<unsigned, LLT> Mutation = Rule.determineMutation(Query);
-      LLVM_DEBUG(dbgs() << ".. .. " << Rule.getAction() << ", "
-                        << Mutation.first << ", " << Mutation.second << "\n");
-      assert(mutationIsSane(Rule, Query, Mutation) &&
-             "legality mutation invalid for match");
-      assert(hasNoSimpleLoops(Rule, Query, Mutation) && "Simple loop detected");
-      return {Rule.getAction(), Mutation.first, Mutation.second};
-    } else
-      LLVM_DEBUG(dbgs() << ".. no match\n");
+  const int64_t RuleIdx = findRule(Query);
+  if (RuleIdx < 0) {
+    LLVM_DEBUG(dbgs() << ".. unsupported\n");
+    return {LegalizeAction::Unsupported, 0, LLT{}};
   }
-  LLVM_DEBUG(dbgs() << ".. unsupported\n");
-  return {LegalizeAction::Unsupported, 0, LLT{}};
+  LLVM_DEBUG(dbgs() << ".. match\n");
+  return applyRule(RuleIdx, Query);
 }
 
 bool LegalizeRuleSet::verifyTypeIdxsCoverage(unsigned NumTypeIdxs) const {

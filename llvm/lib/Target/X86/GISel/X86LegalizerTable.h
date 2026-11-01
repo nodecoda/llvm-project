@@ -48,6 +48,10 @@ public:
     /// The query carries an input the key does not observe yet (a memdesc or
     /// an immediate).  Answering it from a types-only cell would be a guess.
     Declined,
+    /// The cell's rule does not answer this query: the cell merges two
+    /// questions the rules tell apart.  Refused rather than answered with
+    /// another shape's rule.
+    Split,
   };
 
   struct Result {
@@ -82,6 +86,7 @@ public:
   uint64_t addressSpaces() const { return AddressSpaces; }
   uint64_t untabulated() const { return Untabulated; }
   uint64_t declined() const { return Declined; }
+  uint64_t splits() const { return Splits; }
   uint64_t fills() const { return Fills; }
 
 private:
@@ -94,9 +99,17 @@ private:
   const LegalizerInfo &LI;
   const unsigned PointerBits;
   mutable std::vector<std::vector<uint32_t>> Cells;
-  mutable std::vector<LegalizeActionStep> Steps;
+  /// Per cell, the rule that answered it -- see LegalizeRuleSet::findRule.
+  ///
+  /// A cell caches *which rule wins*, not the answer that rule gave.  One rule
+  /// answers many queries ("widen slot 0 to 64 bits" answers both i128 and
+  /// s128) and its answers differ in spelling, so a cached answer would carry
+  /// whichever type happened to fill the cell first.  A cached rule is replayed
+  /// against the real query, and each query gets its own answer back.
+  mutable std::vector<int64_t> RulesOfCell;
   mutable uint64_t Hits = 0, Outsides = 0, PointerVectors = 0,
-                   AddressSpaces = 0, Untabulated = 0, Declined = 0, Fills = 0;
+                   AddressSpaces = 0, Untabulated = 0, Declined = 0,
+                   Splits = 0, Fills = 0;
   // Off unless -x86-gisel-table-outsides.  A count says how often the table
   // refused; the log says which shapes it refused, which is what turns "41
   // outside" into "41 of these, and here is the one that is a gap".

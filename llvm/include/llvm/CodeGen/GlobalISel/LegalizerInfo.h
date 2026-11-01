@@ -1354,6 +1354,26 @@ public:
 
   /// Apply the ruleset to the given LegalityQuery.
   LLVM_ABI LegalizeActionStep apply(const LegalityQuery &Query) const;
+
+  /// The index of the first rule that answers \p Query, or -1 when none does.
+  ///
+  /// Rule indices are stable for the lifetime of the rule set: rules are
+  /// appended while the target builds it and never removed.  A caller that
+  /// remembers which rule answered one query can therefore re-ask that rule
+  /// about a different query instead of remembering the *answer*, and the two
+  /// are not the same thing: the rule "widen slot 0 to 64 bits" answers both
+  /// `i128` and `s128`, but its answer is `i64` for one and `s64` for the
+  /// other.  A cached answer would have to pick one spelling; a cached rule
+  /// index replays and gets each query's own.
+  LLVM_ABI int64_t findRule(const LegalityQuery &Query) const;
+
+  /// Whether the rule at \p RuleIdx answers \p Query.
+  LLVM_ABI bool ruleMatches(int64_t RuleIdx, const LegalityQuery &Query) const;
+
+  /// Apply the rule at \p RuleIdx to \p Query.  \p RuleIdx must come from
+  /// findRule() and ruleMatches() must hold for \p Query.
+  LLVM_ABI LegalizeActionStep applyRule(int64_t RuleIdx,
+                                        const LegalityQuery &Query) const;
 };
 
 class LLVM_ABI LegalizerInfo {

@@ -197,17 +197,18 @@ uint32_t X86LegalizerTable::fill(unsigned Table, const LegalityQuery &Q,
   }
 
   // Same question, asked with the class representatives instead of the actual
-  // types: that is what makes one cell stand for the whole class pair.  The
-  // rules are asked directly -- going through LI.getAction() would re-enter
-  // this table and recurse.
-  LegalizeActionStep Step =
+  // types: that is what makes one cell stand for the whole class pair.  Only
+  // the identity of the winning rule is kept, not the answer it gave -- see
+  // RulesOfCell.  The rules are asked directly -- going through LI.getAction()
+  // would re-enter this table and recurse.
+  const int64_t RuleIdx =
       LI.getActionDefinitions(Q.Opcode)
-          .apply(LegalityQuery(Q.Opcode, Types, MemDescs, Q.Immediates));
-  if (Steps.size() >= kCellLimit)
+          .findRule(LegalityQuery(Q.Opcode, Types, MemDescs, Q.Immediates));
+  if (RulesOfCell.size() >= kCellLimit)
     report_fatal_error("X86 legalizer table has too many filled cells");
   ++Fills;
-  Steps.push_back(Step);
-  return static_cast<uint32_t>(Steps.size());
+  RulesOfCell.push_back(RuleIdx);
+  return static_cast<uint32_t>(RulesOfCell.size());
 }
 
 void X86LegalizerTable::noteOutside(unsigned Why, unsigned Table,
@@ -347,7 +348,24 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
   if (!Cell)
     Cell = fill(Table, Q, L);
 
-  const LegalizeActionStep &S = Steps[Cell - 1];
+  // Replay the winning rule on *this* query.  The cell was filled from the
+  // class representatives, so anything the answer derives from the actual type
+  // -- the element type a scalar change lands on, the spelling of a scalar --
+  // is recomputed here instead of being copied out of the fill.
+  const LegalizeRuleSet &RS = LI.getActionDefinitions(Q.Opcode);
+  const int64_t RuleIdx = RulesOfCell[Cell - 1];
+  if (RuleIdx >= 0 && !RS.ruleMatches(RuleIdx, Q)) {
+    // The rule that answered the representative does not answer this query:
+    // the cell merges two questions, so answering would be answering one with
+    // the other's rule.  Refuse; the count is the size of the key's gap.
+    ++Splits;
+    noteOutside(9, Table, Q);
+    R.Kind = Answer::Split;
+    return R;
+  }
+  const LegalizeActionStep S =
+      RuleIdx < 0 ? LegalizeActionStep(LegalizeAction::Unsupported, 0, LLT{})
+                  : RS.applyRule(RuleIdx, Q);
   ++Hits;
   R.Kind = Answer::Hit;
   R.Action = S.Action;
@@ -370,7 +388,7 @@ X86LegalizerTable::~X86LegalizerTable() {
     return;
   errs() << "x86-gisel-table: hit " << Hits << " outside " << Outsides
          << " ptrvec " << PointerVectors << " addrspace " << AddressSpaces
-         << " untabulated " << Untabulated << " declined " << Declined
+         << " untabulated " << Untabulated << " splits " << Splits << " declined " << Declined
          << " fills " << Fills << "\n";
   for (const std::string &S : OutsideLog)
     errs() << S << "\n";
@@ -471,6 +489,21 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
             const LegalizeActionStep ChainStep =
                 LI.getActionDefinitions(Q.Opcode).apply(Q);
             const Result R = query(Q);
+            if (R.Kind == Answer::Split) {
+              // The cell the key named does not hold this question: that is a
+              // defect in the key, not a table that answered wrongly.
+              ++Mismatches;
+              if (Mismatches <= 20) {
+                OS << "x86-gisel-table-check: SPLIT " << Entry.Name << "(";
+                for (unsigned I = 0; I != Types.size(); ++I) {
+                  if (I)
+                    OS << ", ";
+                  Types[I].print(OS);
+                }
+                OS << "): the cell's rule does not answer this query\n";
+              }
+              continue;
+            }
             if (R.Kind != Answer::Hit) {
               ++Skipped;
               continue;
@@ -510,7 +543,7 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
   OS << "x86-gisel-table-check: points " << Points << " compared " << Compared
      << " mismatches " << Mismatches << " skipped " << Skipped << " outside "
      << Outsides << " ptrvec " << PointerVectors << " addrspace "
-     << AddressSpaces << " untabulated " << Untabulated << " declined "
+     << AddressSpaces << " untabulated " << Untabulated << " splits " << Splits << " declined "
      << Declined << " fills " << Fills << "\n";
   if (Mismatches)
     report_fatal_error(
