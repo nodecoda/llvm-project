@@ -116,6 +116,16 @@ class LegalizeTypePredicate<string call> : LegalizeQueryPredicateBase {
   string Call = call;
 }
 
+/// A query predicate that is constant true.  AArch64 writes
+/// `.minScalarEltSameAsIf(always, 1, 0)` with `always` a lambda: the builder
+/// demands a LegalityPredicate, but "always" is not a guard.  The Core IR
+/// already has a literal `true` leaf, so this is a literal fact rather than an
+/// escape -- and without it a rule set written with `always` could never be
+/// tabulated, because an opaque predicate hides the slots the key needs.
+class LegalizeAlwaysTrue<string expr> : LegalizeQueryPredicateBase {
+  string Expr = expr;
+}
+
 
 //===----------------------------------------------------------------------===//
 // Rule arguments
@@ -390,7 +400,7 @@ def BuilderLibcallFor                    : LegalizeBuilder<"libcallFor", ActionL
 
 def BuilderCustomFor                     : LegalizeBuilder<"customFor", ActionCustom> {
   let Guards = [GuardBool];
-  let Formals = [[ShapeType]];
+  let Formals = [[ShapeType], [ShapeTypePairList]];
 }
 
 def BuilderCustomForCartesianProduct     : LegalizeBuilder<"customForCartesianProduct", ActionCustom> {
@@ -415,6 +425,10 @@ def BuilderWidenScalarToNextPow2         : LegalizeBuilder<"widenScalarToNextPow
   let Guards = [];
   let Formals = [[ShapeIndex], [ShapeIndex, ShapeBits]];
 }
+def BuilderWidenScalarOrEltToNextPow2OrMinSize : LegalizeBuilder<"widenScalarOrEltToNextPow2OrMinSize", ActionWidenScalar> {
+  let Guards = [];
+  let Formals = [[ShapeIndex, ShapeBits]];
+}
 def BuilderWidenScalarOrEltToNextPow2    : LegalizeBuilder<"widenScalarOrEltToNextPow2", ActionWidenScalar> {
   let Guards = [];
   let Formals = [[ShapeIndex], [ShapeIndex, ShapeBits]];
@@ -427,6 +441,14 @@ def BuilderMinScalar                     : LegalizeBuilder<"minScalar", ActionWi
 def BuilderMaxScalar                     : LegalizeBuilder<"maxScalar", ActionNarrowScalar> {
   let Guards = [];
   let Formals = [[ShapeIndex, ShapeType]];
+}
+def BuilderMinScalarEltSameAsIf          : LegalizeBuilder<"minScalarEltSameAsIf", ActionWidenScalar> {
+  let Guards = [GuardQuery];
+  let Formals = [[ShapeIndex, ShapeIndex]];
+}
+def BuilderMaxScalarEltSameAsIf          : LegalizeBuilder<"maxScalarEltSameAsIf", ActionNarrowScalar> {
+  let Guards = [GuardQuery];
+  let Formals = [[ShapeIndex, ShapeIndex]];
 }
 def BuilderScalarSameSizeAs              : LegalizeBuilder<"scalarSameSizeAs", ActionScalarSameSizeAs> {
   let Guards = [];
@@ -629,6 +651,12 @@ class LegalForMemDescIf<LegalizeBoolPredicate P, list<LegalizeMemDesc> Descs>
 
 def Lower : LegalizeCall<BuilderLower, []>;
 
+/// lowerIf(guard): the AArch64 G_CTTZ rule set starts with "vectors lower".
+/// The builder and the Core IR path already knew it; only the .td could not
+/// say it, so a rule set written with it had to escape.
+class LowerIf<LegalizeQueryPredicateBase P>
+    : LegalizeQueryGuardedCall<BuilderLowerIf, P, []>;
+
 def Libcall : LegalizeCall<BuilderLibcall, []>;
 
 class LibcallFor<list<LegalizeArgType> Types>
@@ -636,6 +664,17 @@ class LibcallFor<list<LegalizeArgType> Types>
 
 class CustomFor<list<LegalizeArgType> Types>
     : LegalizeCall<BuilderCustomFor, Types>;
+
+/// The pair form: `customFor({{s32, s32}, {s64, s64}})`.  AArch64 writes its
+/// custom rule sets this way; X86 never did, so the shape was missing.
+class CustomForPairs<list<LegalizeTypePair> Pairs>
+    : LegalizeCall<BuilderCustomFor, Pairs>;
+
+class CustomForIf<LegalizeBoolPredicate P, list<LegalizeArgType> Types>
+    : LegalizeGuardedCall<BuilderCustomFor, P, Types>;
+
+class CustomForPairsIf<LegalizeBoolPredicate P, list<LegalizeTypePair> Pairs>
+    : LegalizeGuardedCall<BuilderCustomFor, P, Pairs>;
 
 class CustomForCartesianProductIf<LegalizeBoolPredicate P,
                                   LegalizeArgTypeList T0,
@@ -688,6 +727,20 @@ class MinScalar<int Idx, LegalizeArgType Ty>
 
 class MaxScalar<int Idx, LegalizeArgType Ty>
     : LegalizeCall<BuilderMaxScalar, [LegalizeArgIndex<Idx>, Ty]>;
+
+class WidenScalarOrEltToNextPow2OrMinSize<int Idx, int Min>
+    : LegalizeCall<BuilderWidenScalarOrEltToNextPow2OrMinSize,
+                   [LegalizeArgIndex<Idx>, LegalizeArgBits<Min>]>;
+
+/// minScalarEltSameAsIf / maxScalarEltSameAsIf take a LegalityPredicate, so
+/// the guard is a query predicate, not a cached bool.
+class MinScalarEltSameAsIf<LegalizeQueryPredicateBase P, int Idx, int OtherIdx>
+    : LegalizeQueryGuardedCall<BuilderMinScalarEltSameAsIf, P,
+                               [LegalizeArgIndex<Idx>, LegalizeArgIndex<OtherIdx>]>;
+
+class MaxScalarEltSameAsIf<LegalizeQueryPredicateBase P, int Idx, int OtherIdx>
+    : LegalizeQueryGuardedCall<BuilderMaxScalarEltSameAsIf, P,
+                               [LegalizeArgIndex<Idx>, LegalizeArgIndex<OtherIdx>]>;
 
 class ScalarSameSizeAs<int Idx, int OtherIdx>
     : LegalizeCall<BuilderScalarSameSizeAs,

@@ -361,6 +361,11 @@ void LegalizerInfoEmitter::emitPredicate(const Record &P, raw_ostream &OS) {
        << P.getValueAsString("Call") << "(Query); }";
     return;
   }
+  if (P.isSubClassOf("LegalizeAlwaysTrue")) {
+    // Still a lambda in C++: the builder's signature wants one.
+    OS << squashSpace(P.getValueAsString("Expr"));
+    return;
+  }
   if (P.isSubClassOf("LegalizeOpaqueBool") ||
       P.isSubClassOf("LegalizeQueryPredicate")) {
     OS << squashSpace(P.getValueAsString("Expr"));
@@ -728,7 +733,8 @@ void LegalizerInfoEmitter::verifyLattices() {
     // checked against the widths the chains hold.  With no minimum the default
     // is the narrowest width and there is nothing to check.
     if ((BuilderRec == "BuilderWidenScalarToNextPow2" ||
-         BuilderRec == "BuilderWidenScalarOrEltToNextPow2") &&
+         BuilderRec == "BuilderWidenScalarOrEltToNextPow2" ||
+         BuilderRec == "BuilderWidenScalarOrEltToNextPow2OrMinSize") &&
         Args.size() > 1) {
       unsigned Min = (unsigned)Args[1]->getValueAsInt("Value");
       if (!Widths.contains(Min))
@@ -1979,7 +1985,14 @@ void predicateJson(const RecordKeeper &Records, const Record &P,
     };
     Out = Walk(*D);
     return;
-  }  if (P.isSubClassOf("LegalizeOpaqueBool") ||
+  }
+  if (P.isSubClassOf("LegalizeAlwaysTrue")) {
+    // Constant true is a literal the Core IR already has.  Treating it as an
+    // escape hid every slot of the rule sets that write `always`.
+    Out = "{\"kind\":\"leaf\",\"name\":\"true\",\"args\":[]}";
+    return;
+  }
+  if (P.isSubClassOf("LegalizeOpaqueBool") ||
       P.isSubClassOf("LegalizeQueryPredicate")) {
     // Escape: raw C++.  It has no Core IR form by construction.
     Out = "{\"kind\":\"leaf\",\"name\":\"opaque\",\"args\":[\"" +
@@ -2360,6 +2373,24 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
   if (Builder == "BuilderLibcallFor" || Builder == "BuilderCustomFor") {
     StringRef Action = Builder == "BuilderLibcallFor" ? "Libcall" : "Custom";
     for (const Record *A : Args) {
+      // The pair form, `customFor({{s32, s32}, {s64, s64}})`: two slots have
+      // to match together, so one Core IR rule per pair, not per type.
+      if (A->isSubClassOf("LegalizeTypePair")) {
+        std::vector<TypeAlt> T0, T1;
+        std::string Why0, Why1;
+        if (!typeAlternatives(Records, *A->getValueAsDef("Type0"), T0, Why0) ||
+            !typeAlternatives(Records, *A->getValueAsDef("Type1"), T1, Why1))
+          PrintFatalError(Rule.getLoc(), "customFor pair names a type with no "
+                                         "literal Core IR form");
+        for (const TypeAlt &X : T0)
+          for (const TypeAlt &Y : T1)
+            Out.push_back({Action.str(), 0,
+                           WithPred(guardAnd(conjoin(X.G, Y.G),
+                                             allOf({typeIs(0, X.Type),
+                                                    typeIs(1, Y.Type)}))),
+                           ""});
+        continue;
+      }
       std::vector<std::string> Ts;
       collectTypes(*A, Ts);
       for (const std::string &T : Ts)
@@ -2431,7 +2462,8 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
     return;
   }
   if (Builder == "BuilderWidenScalarToNextPow2" ||
-      Builder == "BuilderWidenScalarOrEltToNextPow2") {
+      Builder == "BuilderWidenScalarOrEltToNextPow2" ||
+      Builder == "BuilderWidenScalarOrEltToNextPow2OrMinSize") {
     unsigned Idx = Int(0);
     // The floor is part of the rule: nextPow2OrMin without its Min cannot be
     // evaluated, so the value carries it.
@@ -2444,8 +2476,26 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
     std::string Guard = Builder == "BuilderWidenScalarToNextPow2"
                             ? sizeNotPow2(Idx)
                             : scalarOrEltSizeNotPow2(Idx);
+    // OrMinSize always carries its floor, so the OrMin form is the same rule
+    // with the bound the .td wrote down.
+    if (Builder == "BuilderWidenScalarOrEltToNextPow2OrMinSize" &&
+        Args.size() < 2)
+      PrintFatalError(Rule.getLoc(),
+                      "widenScalarOrEltToNextPow2OrMinSize needs a minimum");
     Out.push_back({"WidenScalar", Idx, WithPred(Guard),
                    mutationJson(Idx, "set_elem_bits", Target)});
+    return;
+  }
+  if (Builder == "BuilderMinScalarEltSameAsIf" ||
+      Builder == "BuilderMaxScalarEltSameAsIf") {
+    unsigned Idx = Int(0);
+    unsigned Other = Int(1);
+    std::string Ref = "sameAsSlot" + std::to_string(Other);
+    bool Widen = Builder == "BuilderMinScalarEltSameAsIf";
+    Out.push_back({Widen ? "WidenScalar" : "NarrowScalar", Idx,
+                   WithPred(Widen ? scalarSizeLargerThanSlot(Other, Idx)
+                                  : scalarSizeSmallerThanSlot(Other, Idx)),
+                   mutationJson(Idx, "set_elem_bits", Ref)});
     return;
   }
   if (Builder == "BuilderScalarSameSizeAs") {

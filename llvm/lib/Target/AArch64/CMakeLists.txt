@@ -28,6 +28,12 @@ tablegen(LLVM AArch64GenSubtargetInfo.inc -gen-subtarget)
 tablegen(LLVM AArch64GenSystemOperands.inc -gen-searchable-tables)
 tablegen(LLVM AArch64GenExegesis.inc -gen-exegesis)
 
+# The key partition for the AArch64 legalizer, read from a .td that restates
+# the rule sets the C++ chain builds.  The cells stay empty: the consumer fills
+# them from that chain, which is what makes it the oracle.
+set(LLVM_TARGET_DEFINITIONS GISel/AArch64LegalizerInfo.td)
+tablegen(LLVM AArch64LegalizerTable.inc -gen-legalizer-table)
+
 set(LLVM_TARGET_DEFINITIONS AArch64Options.td)
 tablegen(LLVM AArch64Options.inc -gen-opt-parser-defs)
 
@@ -41,6 +47,7 @@ add_llvm_target(AArch64CodeGen
   GISel/AArch64GlobalISelUtils.cpp
   GISel/AArch64InstructionSelector.cpp
   GISel/AArch64LegalizerInfo.cpp
+  GISel/AArch64LegalizerTable.cpp
   GISel/AArch64O0PreLegalizerCombiner.cpp
   GISel/AArch64PreLegalizerCombiner.cpp
   GISel/AArch64PostLegalizerCombiner.cpp

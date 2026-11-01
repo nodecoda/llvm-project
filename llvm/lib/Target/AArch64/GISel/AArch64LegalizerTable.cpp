@@ -1,0 +1,619 @@
+//===-- AArch64LegalizerTable.cpp -----------------------------------*- C++ -*-===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+#include "AArch64LegalizerTable.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
+
+using namespace llvm;
+
+static cl::opt<bool> AArch64GISelTableStats(
+    "aarch64-gisel-table-stats", cl::Hidden, cl::init(false),
+    cl::desc("Report how the AArch64 legalizer table answered"));
+
+static cl::opt<bool> AArch64GISelTableVerify(
+    "aarch64-gisel-table-verify", cl::Hidden, cl::init(false),
+    cl::desc("Compare every table hit with the rule chain and report "
+             "disagreements (a per-query differential)"));
+
+static cl::opt<bool> AArch64GISelTableOutsides(
+    "aarch64-gisel-table-outsides", cl::Hidden, cl::init(false),
+    cl::desc("List every query the AArch64 legalizer table refused, with the reason"));
+
+namespace {
+
+enum LegalizerTypeClassKind : uint8_t {
+  Kind_Pointer = 0,
+  Kind_Scalar = 1,
+  Kind_Vector = 2,
+  // A vector of pointers is its own kind: LLT::fixed_vector(2, p0) and
+  // LLT::fixed_vector(2, 64) are different types, so they cannot share a class.
+  Kind_PointerVector = 3,
+};
+
+struct LegalizerTypeClass {
+  uint8_t Kind;
+  uint16_t ElemBits;
+  uint16_t Lanes;
+};
+
+} // namespace
+
+#include "AArch64LegalizerTable.inc"
+
+namespace {
+
+constexpr int kUnknownClass = -1;
+constexpr int kPointerVectorClass = -2;
+// A pointer in an address space the table does not model.  The class list is
+// built from the named LLT constants, and every one of them names p0.
+constexpr int kPointerAddressSpaceClass = -3;
+/// Cell indices start at 1, so 0 stays "not filled in".  Keeping the step
+/// count below this reserved value means a real index can never alias the
+/// empty marker.  The table only ever gets here for rule sets the Core IR can
+/// express in full; a rule set with an escape is not tabulated at all, so
+/// there is no opaque cell to represent.
+constexpr uint32_t kCellLimit = 0xFFFFFFFF;
+
+/// Class of a type, or one of the negative class ids above.
+int classifyType(LLT T) {
+  if (!T.isValid())
+    return kUnknownClass;
+  // The address space is part of LLT identity: LLT::pointer(272, 64) and
+  // LLT::pointer(0, 64) are different types, and the rules only spell p0.
+  // The class list has no address-space axis, so folding the two would let the
+  // table answer a query the chain refuses (a p272 load, for example).
+  if (T.isPointerOrPointerVector() && T.getAddressSpace() != 0)
+    return kPointerAddressSpaceClass;
+  // A vector of pointers is a different LLT from a vector of integers of the
+  // same shape, and the class list cannot tell them apart yet.  Refuse rather
+  // than merge two types the rules distinguish.
+  const bool IsPointerVector = T.isPointerVector();
+  uint8_t Kind;
+  unsigned Bits;
+  unsigned Lanes = 1;
+  if (IsPointerVector) {
+    Kind = Kind_PointerVector;
+    Bits = T.getScalarSizeInBits();
+    Lanes = T.getNumElements();
+  } else if (T.isPointer()) {
+    Kind = Kind_Pointer;
+    Bits = T.getSizeInBits().getFixedValue();
+  } else if (T.isVector()) {
+    if (T.isScalableVector())
+      return kUnknownClass;
+    Kind = Kind_Vector;
+    Bits = T.getScalarSizeInBits();
+    Lanes = T.getNumElements();
+  } else if (T.isScalar()) {
+    Kind = Kind_Scalar;
+    Bits = T.getSizeInBits().getFixedValue();
+  } else {
+    return kUnknownClass;
+  }
+  // The class set and the mapping onto it are one generated fact, so this is a
+  // single switch rather than a scan over the class list.
+  const int Class = AArch64ClassifyType(Kind, Bits, Lanes);
+  if (Class >= 0)
+    return Class;
+  // A pointer vector that has no class of its own is a gap, not an unknown:
+  // say so, so the count points at the missing class instead of at the type.
+  return IsPointerVector ? kPointerVectorClass : kUnknownClass;
+}
+
+/// Every type a size-keyed mem cell stands for.  The fiber of an access size
+/// is all LLTs of that size; lanes and address spaces are unbounded, so this is
+/// the bounded sample the self-check asks about.  Two members of one cell that
+/// disagree are two queries the key merged and the chain did not.
+static void memFiber(unsigned Bits, SmallVectorImpl<LLT> &Out) {
+  Out.push_back(LLT::scalar(Bits));
+  for (unsigned Elem = 1; Elem <= 128; Elem *= 2) {
+    if (Bits % Elem)
+      continue;
+    const unsigned Lanes = Bits / Elem;
+    if (Lanes < 2 || Lanes > 64)
+      continue;
+    Out.push_back(LLT::fixed_vector(Lanes, LLT::scalar(Elem)));
+  }
+  // A vector of pointers has exactly one element type, the pointer, so its
+  // total size is Lanes * PtrBits.  Asking for "size Bits" therefore fixes the
+  // lane count from Bits and the pointer width; it does not let the lane count
+  // pick the size.  Emitting <2..4 x pN:Bits> instead made the members 2..4
+  // times as wide as the cell they stood for, and because a member the table
+  // refuses is counted as `skipped` rather than as a failure, the fiber kept
+  // checking other cells under this cell's name.  The caller now proves every
+  // member is in its cell before asking anything.
+  for (unsigned AS : {0u, 1u, 270u, 271u, 272u}) {
+    for (unsigned PtrBits : {32u, 64u}) {
+      if (Bits == PtrBits) {
+        Out.push_back(LLT::pointer(AS, PtrBits));
+        continue;
+      }
+      if (Bits % PtrBits)
+        continue;
+      const unsigned Lanes = Bits / PtrBits;
+      if (Lanes < 2 || Lanes > 4)
+        continue;
+      Out.push_back(LLT::fixed_vector(Lanes, LLT::pointer(AS, PtrBits)));
+    }
+  }
+}
+
+/// Inverse of a table's global -> local map.  Local classes are a partition of
+/// the global ones, so the first hit is the only hit.
+unsigned localToGlobal(const LegalizerTableDesc &D, unsigned Slot,
+                       unsigned Local) {
+  for (unsigned G = 0; G < AArch64NumTypeClasses; ++G)
+    if (D.Local[Slot][G] == Local)
+      return G;
+  llvm_unreachable("local class has no global representative");
+}
+
+} // namespace
+
+AArch64LegalizerTable::AArch64LegalizerTable(const LegalizerInfo &LI,
+                                     unsigned PointerBits)
+    : LI(LI), PointerBits(PointerBits), Cells(AArch64NumTables),
+      LogOutsides(AArch64GISelTableOutsides) {}
+
+LLT AArch64LegalizerTable::representative(unsigned ClassID) const {
+  const LegalizerTypeClass &C = AArch64TypeClasses[ClassID];
+  switch (C.Kind) {
+  case Kind_Pointer:
+    return LLT::pointer(0, PointerBits);
+  case Kind_Vector:
+    return LLT::fixed_vector(C.Lanes, C.ElemBits);
+  case Kind_PointerVector:
+    return LLT::fixed_vector(C.Lanes, LLT::pointer(0, PointerBits));
+  default:
+    return LLT::scalar(C.ElemBits);
+  }
+}
+
+uint32_t AArch64LegalizerTable::fill(unsigned Table, const LegalityQuery &Q,
+                                 ArrayRef<unsigned> Local) const {
+  const LegalizerTableDesc &D = AArch64Tables[Table];
+  SmallVector<LLT, 4> Types(Q.Types.begin(), Q.Types.end());
+  SmallVector<LegalityQuery::MemDesc, 1> MemDescs(Q.MMODescrs.begin(),
+                                                  Q.MMODescrs.end());
+  for (unsigned K = 0; K != D.NumSlots; ++K) {
+    const int Slot = D.Slots[K];
+    if (Slot < 0) {
+      // A size-keyed axis stands for one access size, so a scalar of exactly
+      // that size answers for the cell.  A class-keyed axis stands for one
+      // type, and the class's own representative is the type the rules wrote
+      // down.  Alignment is not in the key: every rule asks for "at least"
+      // alignment, so the weakest alignment answers for all of them, which is
+      // also what the key generator asserts.
+      const unsigned Key = static_cast<unsigned>(D.Mem[Local[K]]);
+      const LLT MemTy = D.MemIsClass ? representative(Key) : LLT::scalar(Key);
+      MemDescs.assign(1, LegalityQuery::MemDesc(MemTy, /*AlignInBits=*/1,
+                                                AtomicOrdering::NotAtomic,
+                                                AtomicOrdering::NotAtomic));
+      continue;
+    }
+    Types[Slot] = representative(localToGlobal(D, K, Local[K]));
+  }
+
+  // Same question, asked with the class representatives instead of the actual
+  // types: that is what makes one cell stand for the whole class pair.  Only
+  // the identity of the winning rule is kept, not the answer it gave -- see
+  // RulesOfCell.  The rules are asked directly -- going through LI.getAction()
+  // would re-enter this table and recurse.
+  const int64_t RuleIdx =
+      LI.getActionDefinitions(Q.Opcode)
+          .findRule(LegalityQuery(Q.Opcode, Types, MemDescs, Q.Immediates));
+  if (RulesOfCell.size() >= kCellLimit)
+    report_fatal_error("AArch64 legalizer table has too many filled cells");
+  ++Fills;
+  RulesOfCell.push_back(RuleIdx);
+  return static_cast<uint32_t>(RulesOfCell.size());
+}
+
+void AArch64LegalizerTable::noteOutside(unsigned Why, unsigned Table,
+                                      const LegalityQuery &Q) const {
+  if (!LogOutsides || OutsideLog.size() >= 4096)
+    return;
+  std::string S;
+  raw_string_ostream OS(S);
+  OS << "aarch64-gisel-table: outside why=" << Why << " table=" << Table
+     << " opcode=" << Q.Opcode << " types=(";
+  for (unsigned I = 0; I < Q.Types.size(); ++I) {
+    if (I)
+      OS << ", ";
+    Q.Types[I].print(OS);
+  }
+  OS << ") imms=" << Q.Immediates.size() << " mems=" << Q.MMODescrs.size();
+  if (!Q.MMODescrs.empty())
+    OS << " mem=" << Q.MMODescrs[0].MemoryTy.getSizeInBits().getKnownMinValue();
+  OutsideLog.push_back(OS.str());
+}
+
+AArch64LegalizerTable::Result
+AArch64LegalizerTable::query(const LegalityQuery &Q) const {
+  Result R;
+  const int Table = aarch64TableForOpcode(Q.Opcode);
+  if (Table < 0) {
+    ++Untabulated;
+    return R;
+  }
+  const LegalizerTableDesc &D = AArch64Tables[Table];
+  // The keyed axes are the type slots and, where the rule set reads one, the
+  // access size of MMO 0.  A query that carries an axis the key does not
+  // observe -- an immediate anywhere, a second memdesc, or a memdesc on a
+  // types-only table -- is a different question with the same key, so the
+  // table must not answer it.  The count says how often that happens.
+  const bool HasMemAxis = D.Mem != nullptr;
+  if (!Q.Immediates.empty() ||
+      Q.MMODescrs.size() != (HasMemAxis ? 1u : 0u)) {
+    ++Declined;
+    // 7 = an immediate the key cannot see, 8 = a memdesc count this table's
+    // shape does not match.  Both mean "the key would answer a different
+    // question"; the log says which one so the count can be explained.
+    noteOutside(Q.Immediates.empty() ? 8u : 7u, Table, Q);
+    R.Kind = Answer::Declined;
+    return R;
+  }
+
+  // A table with no keyed axis (NumSlots == 0) answers the same thing for
+  // every type, so it must not read one: G_BR carries no types at all.
+  const int C0 = D.NumSlots == 0
+                     ? 0
+                     : (Q.Types.size() > D.Slots[0]
+                            ? classifyType(Q.Types[D.Slots[0]])
+                            : kUnknownClass);
+  int C1 = 0;
+  if (D.Dims[1] > 1)
+    C1 = Q.Types.size() > D.Slots[1] ? classifyType(Q.Types[D.Slots[1]])
+                                     : kUnknownClass;
+
+  if (C0 == kPointerVectorClass || C1 == kPointerVectorClass) {
+    ++PointerVectors;
+    R.Kind = Answer::PointerVector;
+    return R;
+  }
+  if (C0 == kPointerAddressSpaceClass || C1 == kPointerAddressSpaceClass) {
+    ++AddressSpaces;
+    noteOutside(6, Table, Q);
+    R.Kind = Answer::Outside;
+    return R;
+  }
+  if (C0 < 0 || C1 < 0) {
+    ++Outsides;
+    noteOutside(1, Table, Q);
+    R.Kind = Answer::Outside;
+    return R;
+  }
+
+  unsigned L[3] = {0, 0, 0};
+  L[0] = D.Local[0][C0];
+  if (L[0] == 0xFF) {
+    ++Outsides;
+    noteOutside(2, Table, Q);
+    R.Kind = Answer::Outside;
+    return R;
+  }
+  if (D.Dims[1] > 1) {
+    L[1] = D.Local[1][C1];
+    if (L[1] == 0xFF) {
+      ++Outsides;
+      noteOutside(3, Table, Q);
+      R.Kind = Answer::Outside;
+      return R;
+    }
+  }
+  if (HasMemAxis) {
+    // Two ways to cut the axis, and the rule set says which one it needs.  A
+    // rule that only compares getSizeInBits() (isCompatible) is answered
+    // exactly by the access size.  A rule that compares the whole memory type
+    // needs the type, because two memory types of the same size can still
+    // differ: G_STORE's ValueDiffersFromMem0 is the one that does.
+    int MemKey = -1;
+    if (D.MemIsClass) {
+      MemKey = classifyType(Q.MMODescrs[0].MemoryTy);
+      if (MemKey < 0) {
+        ++Outsides;
+        noteOutside(4, Table, Q);
+        R.Kind = Answer::Outside;
+        return R;
+      }
+    } else {
+      const TypeSize MemSize = Q.MMODescrs[0].MemoryTy.getSizeInBits();
+      if (MemSize.isScalable()) {
+        ++Outsides;
+        noteOutside(4, Table, Q);
+        R.Kind = Answer::Outside;
+        return R;
+      }
+      MemKey = static_cast<int>(MemSize.getFixedValue());
+    }
+    // The axis is a generated switch over the values the rules name, so this
+    // is one lookup rather than a scan; -1 is a value no rule names.
+    const int MemLocal = aarch64MemIndex(Table, MemKey);
+    if (MemLocal < 0) {
+      ++Outsides;
+      noteOutside(5, Table, Q);
+      R.Kind = Answer::Outside;
+      return R;
+    }
+    L[2] = static_cast<unsigned>(MemLocal);
+  }
+
+  std::vector<uint32_t> &Row = Cells[Table];
+  if (Row.empty())
+    Row.assign(static_cast<size_t>(D.Dims[0]) * D.Dims[1] * D.Dims[2], 0);
+  uint32_t &Cell =
+      Row[(static_cast<size_t>(L[0]) * D.Dims[1] + L[1]) * D.Dims[2] + L[2]];
+  if (!Cell)
+    Cell = fill(Table, Q, L);
+
+  // Replay the winning rule on *this* query.  The cell was filled from the
+  // class representatives, so anything the answer derives from the actual type
+  // -- the element type a scalar change lands on, the spelling of a scalar --
+  // is recomputed here instead of being copied out of the fill.
+  const LegalizeRuleSet &RS = LI.getActionDefinitions(Q.Opcode);
+  const int64_t RuleIdx = RulesOfCell[Cell - 1];
+  if (RuleIdx >= 0 && !RS.ruleMatches(RuleIdx, Q)) {
+    // The rule that answered the representative does not answer this query:
+    // the cell merges two questions, so answering would be answering one with
+    // the other's rule.  Refuse; the count is the size of the key's gap.
+    ++Splits;
+    noteOutside(9, Table, Q);
+    R.Kind = Answer::Split;
+    return R;
+  }
+  const LegalizeActionStep S =
+      RuleIdx < 0 ? LegalizeActionStep(LegalizeAction::Unsupported, 0, LLT{})
+                  : RS.applyRule(RuleIdx, Q);
+  ++Hits;
+  R.Kind = Answer::Hit;
+  R.Action = S.Action;
+  R.TypeIdx = S.TypeIdx;
+  R.NewType = S.NewType;
+  return R;
+}
+
+bool AArch64LegalizerTable::lookup(const LegalityQuery &Q,
+                               LegalizeActionStep &Step) const {
+  const Result R = query(Q);
+  if (R.Kind != Answer::Hit)
+    return false;
+  Step = LegalizeActionStep(R.Action, R.TypeIdx, R.NewType);
+  if (AArch64GISelTableVerify) {
+    // The self-check proves the key on the domain it enumerates.  This asks
+    // the question for a query the legalizer actually produced, which is the
+    // only way to see a cell that merged two types the chain tells apart
+    // outside that domain.
+    const LegalizeActionStep Chain =
+        LI.getActionDefinitions(Q.Opcode).apply(Q);
+    if (Chain.Action != Step.Action || Chain.TypeIdx != Step.TypeIdx ||
+        Chain.NewType != Step.NewType) {
+      errs() << "aarch64-gisel-table: MISMATCH opcode=" << Q.Opcode << " (";
+      for (unsigned I = 0; I != Q.Types.size(); ++I) {
+        if (I)
+          errs() << ", ";
+        Q.Types[I].print(errs());
+      }
+      errs() << "): table " << static_cast<unsigned>(Step.Action) << "/"
+             << Step.TypeIdx << "/";
+      Step.NewType.print(errs());
+      errs() << " chain " << static_cast<unsigned>(Chain.Action) << "/"
+             << Chain.TypeIdx << "/";
+      Chain.NewType.print(errs());
+      errs() << "\n";
+    }
+  }
+  return true;
+}
+
+AArch64LegalizerTable::~AArch64LegalizerTable() {
+  if (!AArch64GISelTableStats)
+    return;
+  errs() << "aarch64-gisel-table: hit " << Hits << " outside " << Outsides
+         << " ptrvec " << PointerVectors << " addrspace " << AddressSpaces
+         << " untabulated " << Untabulated << " splits " << Splits << " declined " << Declined
+         << " fills " << Fills << "\n";
+  for (const std::string &S : OutsideLog)
+    errs() << S << "\n";
+}
+
+void AArch64LegalizerTable::selfCheck(raw_ostream &OS) {
+  // The domain is generated with the tables: each keyed slot lists the classes
+  // its rules name for it, so the check asks the questions the IR can produce.
+  // Iterating the full class set instead would crash the chain on queries it
+  // is not written for (a pointer in a scalar slot, for one), which measures
+  // nothing about the table.
+  uint64_t Points = 0;
+  uint64_t Compared = 0;
+  uint64_t Skipped = 0;
+  uint64_t Unasked = 0;
+  unsigned Mismatches = 0;
+
+  static_assert(AArch64NumTableDomains == AArch64NumTables,
+                "every table needs a self-check domain");
+
+  for (unsigned EntryIdx = 0; EntryIdx != AArch64NumTableOpcodes; ++EntryIdx) {
+    const auto &Entry = AArch64TableOpcodes[EntryIdx];
+    const LegalizerTableDesc &D = AArch64Tables[Entry.Table];
+    const LegalizerTableDomain &Domain = AArch64TableDomains[Entry.Table];
+    const unsigned N0 = D.NumSlots > 0 ? Domain.Counts[0] : 1;
+    const unsigned N1 = D.NumSlots > 1 ? Domain.Counts[1] : 1;
+    const unsigned N2 = D.NumSlots > 2 ? Domain.Counts[2] : 1;
+
+    // A tabulated table reads no type slot outside its key, so an unkeyed
+    // slot can use any representative; it is the same one fill() saw.
+    int MaxSlot = -1;
+    for (unsigned K = 0; K != D.NumSlots; ++K)
+      if (D.Slots[K] > MaxSlot)
+        MaxSlot = D.Slots[K];
+
+    for (unsigned I0 = 0; I0 != N0; ++I0) {
+      for (unsigned I1 = 0; I1 != N1; ++I1) {
+        for (unsigned I2 = 0; I2 != N2; ++I2) {
+          const unsigned Local[3] = {I0, I1, I2};
+          SmallVector<LLT, 3> Types(static_cast<size_t>(MaxSlot + 1),
+                                    representative(0));
+          unsigned MemBits = 0;
+          LLT MemClassTy;
+          for (unsigned K = 0; K != D.NumSlots; ++K) {
+            if (D.Slots[K] < 0) {
+              // A class-keyed cell is exactly one type, so it needs no fiber.
+              const unsigned Key = static_cast<unsigned>(D.Mem[Local[K]]);
+              if (D.MemIsClass)
+                MemClassTy = representative(Key);
+              else
+                MemBits = Key;
+            } else {
+              Types[D.Slots[K]] = representative(Domain.Classes[K][Local[K]]);
+            }
+          }
+
+          // A type slot's class is exactly one type, so its representative is
+          // the whole cell.  The mem axis is keyed by access size, so its cell
+          // holds every LLT of that size: asking only the scalar would leave
+          // the half of the cell the key actually merges untested.
+          SmallVector<LLT, 16> MemTypes;
+          if (MemClassTy.isValid())
+            MemTypes.push_back(MemClassTy);
+          else if (MemBits)
+            memFiber(MemBits, MemTypes);
+          else
+            MemTypes.push_back(LLT());
+
+          for (LLT MemTy : MemTypes) {
+            // A fiber member is supposed to be another spelling of this
+            // cell's key.  One that is not is a defect in this file, not a
+            // question about the table: `query` would answer it from the cell
+            // its own size names (or refuse it), and the comparison would
+            // then be filed under the wrong cell or dropped into `skipped`.
+            if (MemTy.isValid() && !MemClassTy.isValid()) {
+              const TypeSize MemberSize = MemTy.getSizeInBits();
+              if (MemberSize.isScalable() ||
+                  MemberSize.getFixedValue() != MemBits) {
+                std::string S;
+                raw_string_ostream OS(S);
+                OS << "aarch64-gisel-table-check: " << Entry.Name
+                   << ": a fiber member for access " << MemBits
+                   << " bits is not that size: ";
+                MemTy.print(OS);
+                report_fatal_error(StringRef(S));
+              }
+            }
+            SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+            if (MemTy.isValid())
+              MemDescs.emplace_back(MemTy, /*AlignInBits=*/1,
+                                    AtomicOrdering::NotAtomic,
+                                    AtomicOrdering::NotAtomic);
+
+            // Gate: a two-slot rule set is a question about one instruction,
+            // and for every opcode tabulated here the two slots have the same
+            // shape in any query the IR can produce (G_CTPOP, G_CTLZ/CTLS and
+            // G_CTTZ all relate a result slot to a source slot of the same
+            // kind).  The product of the two per-slot domains also contains
+            // pairs no user can write, and the chain is not total on those:
+            // (v8s8, s32) makes scalarSameSizeAs return NarrowScalar towards
+            // <8 x s32>, which is not a narrowing at all, and the assert in
+            // LegalizeRuleSet::apply fires.  Those points are counted, not
+            // asked.
+            if (D.NumSlots > 1 && D.Slots[0] >= 0 && D.Slots[1] >= 0 &&
+                Types[D.Slots[0]].isVector() != Types[D.Slots[1]].isVector()) {
+              ++Unasked;
+              continue;
+            }
+            // Which pairs to ask.  The key is a product, so the obvious
+            // domain is the product of the two slots' class lists -- and for
+            // X86 that works.  It does not work here: AArch64's
+            // clampScalar/widenScalar rules apply to a vector by element
+            // width, so a query that mixes a vector into slot 1 of G_CTLZ (a
+            // pair no rule declares and no IR can produce) makes the chain
+            // return WidenScalar towards a *scalar*, which is not a legal
+            // mutation for a vector and asserts inside the chain.
+            //
+            // The pairs these rule sets declare are all diagonal (the result
+            // and the operand are the same LLT), and the scalar cross pairs
+            // are the ones the widening rules are written for.  Asking those
+            // two sets covers every declared pair and every widening
+            // neighbourhood, and asks nothing else.  The rest is counted.
+            if (D.NumSlots > 1 && D.Slots[0] >= 0 && D.Slots[1] >= 0) {
+              const LLT T0 = Types[D.Slots[0]];
+              const LLT T1 = Types[D.Slots[1]];
+              if (T0 != T1 && !(T0.isScalar() && T1.isScalar())) {
+                ++Unasked;
+                continue;
+              }
+            }
+            ++Points;
+            const LegalityQuery Q(Entry.Opcode, Types, MemDescs);
+            // Ask the rules directly.  LI.getAction() consults the installed
+            // table first, which would compare the table against itself; the
+            // point of this check is the chain.
+            const LegalizeActionStep ChainStep =
+                LI.getActionDefinitions(Q.Opcode).apply(Q);
+            const Result R = query(Q);
+            if (R.Kind == Answer::Split) {
+              // The cell the key named does not hold this question: that is a
+              // defect in the key, not a table that answered wrongly.
+              ++Mismatches;
+              if (Mismatches <= 20) {
+                OS << "aarch64-gisel-table-check: SPLIT " << Entry.Name << "(";
+                for (unsigned I = 0; I != Types.size(); ++I) {
+                  if (I)
+                    OS << ", ";
+                  Types[I].print(OS);
+                }
+                OS << "): the cell's rule does not answer this query\n";
+              }
+              continue;
+            }
+            if (R.Kind != Answer::Hit) {
+              ++Skipped;
+              continue;
+            }
+            ++Compared;
+            if (R.Action == ChainStep.Action &&
+                R.TypeIdx == ChainStep.TypeIdx &&
+                R.NewType == ChainStep.NewType)
+              continue;
+            ++Mismatches;
+            if (Mismatches <= 20) {
+              OS << "aarch64-gisel-table-check: MISMATCH " << Entry.Name << "(";
+              for (unsigned I = 0; I != Types.size(); ++I) {
+                if (I)
+                  OS << ", ";
+                Types[I].print(OS);
+              }
+              if (MemTy.isValid()) {
+                OS << " mem ";
+                MemTy.print(OS);
+              }
+              OS << "): table ";
+              OS << static_cast<unsigned>(R.Action) << "/" << R.TypeIdx << "/";
+              R.NewType.print(OS);
+              OS << " chain ";
+              OS << static_cast<unsigned>(ChainStep.Action) << "/"
+                 << ChainStep.TypeIdx << "/";
+              ChainStep.NewType.print(OS);
+              OS << "\n";
+            }
+          }
+        }
+      }
+    }
+  }
+
+  OS << "aarch64-gisel-table-check: points " << Points << " compared " << Compared
+     << " mismatches " << Mismatches << " skipped " << Skipped
+     << " unasked " << Unasked << " outside "
+     << Outsides << " ptrvec " << PointerVectors << " addrspace "
+     << AddressSpaces << " untabulated " << Untabulated << " splits " << Splits << " declined "
+     << Declined << " fills " << Fills << "\n";
+  if (Mismatches)
+    report_fatal_error(
+        "aarch64-gisel-table-check: the table and the chain disagree");
+}

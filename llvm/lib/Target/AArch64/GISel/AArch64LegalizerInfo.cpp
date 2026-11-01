@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "AArch64LegalizerInfo.h"
+#include "AArch64LegalizerTable.h"
 #include "AArch64Subtarget.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/CodeGen/GlobalISel/GenericMachineInstrs.h"
@@ -38,6 +39,16 @@ using namespace LegalizeActions;
 using namespace LegalizeMutations;
 using namespace LegalityPredicates;
 using namespace MIPatternMatch;
+
+static cl::opt<bool> AArch64GISelTable(
+    "aarch64-gisel-table", cl::Hidden, cl::init(true),
+    cl::desc("Answer AArch64 legalizer queries from a table for the rule sets "
+             "the .td describes (-aarch64-gisel-table=false uses only the "
+             "chains)"));
+
+static cl::opt<bool> AArch64GISelTableCheck(
+    "aarch64-gisel-table-check", cl::Hidden, cl::init(false),
+    cl::desc("Check the AArch64 legalizer table against the C++ rule chains"));
 
 AArch64LegalizerInfo::AArch64LegalizerInfo(const AArch64Subtarget &ST)
     : ST(&ST) {
@@ -1584,6 +1595,20 @@ AArch64LegalizerInfo::AArch64LegalizerInfo(const AArch64Subtarget &ST)
       .alwaysLegal();
   getActionDefinitionsBuilder(G_FENCE).alwaysLegal();
   getActionDefinitionsBuilder(G_INVOKE_REGION_START).alwaysLegal();
+
+  // The table only restates the rule sets AArch64LegalizerInfo.td covers; every
+  // other opcode is untabulated and the chain answers it as before.  Cells are
+  // filled from these same chains, so the C++ stays the oracle: the self-check
+  // compares the table's answer with the chain's answer for every key the .td
+  // produces, and a mismatch means the key merged two types the chain tells
+  // apart.
+  if (AArch64GISelTable)
+    setTable(std::make_unique<AArch64LegalizerTable>(*this, /*PointerBits=*/64));
+
+  if (AArch64GISelTableCheck) {
+    AArch64LegalizerTable Table(*this, /*PointerBits=*/64);
+    Table.selfCheck(errs());
+  }
 
   verify(*ST.getInstrInfo());
 }

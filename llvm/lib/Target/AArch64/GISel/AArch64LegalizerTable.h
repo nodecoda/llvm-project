@@ -1,0 +1,123 @@
+//===-- AArch64LegalizerTable.h -------------------------------------*- C++ -*-===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+/// \file
+/// A table-driven view of the AArch64 legalizer rules.
+///
+/// The chain stays in AArch64LegalizerInfo.cpp and AArch64LegalizerInfo.td
+/// restates the same rule sets for the generator.  This class only answers "which rule
+/// wins for this shape" by indexing a table instead of walking the comparison
+/// chain: one classify per keyed slot and one array load per query.
+///
+/// The table is filled lazily, one cell at a time, from whatever the rule
+/// chain answers for that cell's key.  Filling from the chain means the table
+/// cannot invent an answer the chain would not give; what it *can* expose is
+/// a key that merges two types the rules treat differently, which is exactly
+/// what selfCheck() is for.
+//===----------------------------------------------------------------------===//
+
+#ifndef LLVM_LIB_TARGET_AARCH64_GISEL_AARCH64LEGALIZERTABLE_H
+#define LLVM_LIB_TARGET_AARCH64_GISEL_AARCH64LEGALIZERTABLE_H
+
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/CodeGen/GlobalISel/LegalizerInfo.h"
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace llvm {
+
+class raw_ostream;
+
+class AArch64LegalizerTable : public LegalizerInfo::LegalizeTable {
+public:
+  /// What the table could say about a query.
+  enum class Answer : uint8_t {
+    /// The cell held an answer; the result carries it.
+    Hit,
+    /// A keyed type is not one of the classes the table was built for.
+    Outside,
+    /// A keyed type is a vector of pointers, which the class list cannot
+    /// express yet.  Kept apart from Outside so the gap is counted, not hidden.
+    PointerVector,
+    /// The table has no entry for this opcode at all.
+    Untabulated,
+    /// The query carries an input the key does not observe yet (a memdesc or
+    /// an immediate).  Answering it from a types-only cell would be a guess.
+    Declined,
+    /// The cell's rule does not answer this query: the cell merges two
+    /// questions the rules tell apart.  Refused rather than answered with
+    /// another shape's rule.
+    Split,
+  };
+
+  struct Result {
+    Answer Kind = Answer::Untabulated;
+    LegalizeAction Action = LegalizeAction::Unsupported;
+    unsigned TypeIdx = 0;
+    LLT NewType;
+  };
+
+  /// \p PointerBits is the width the current subtarget gives LLT::pointer(0),
+  /// which AArch64_p0 denotes.  AArch64 pointers are always 64 bits, so the pin
+  /// holds everywhere; the self-check still takes the width as a parameter
+  /// because it also runs where the table is not installed, and there the
+  /// representatives have to be types the chain knows.
+  explicit AArch64LegalizerTable(const LegalizerInfo &LI, unsigned PointerBits);
+  ~AArch64LegalizerTable() override;
+
+  /// LegalizerInfo::LegalizeTable.  Returns false when the cell is missing,
+  /// declined, or out of the table's domain; the caller then uses the rules.
+  bool lookup(const LegalityQuery &Query, LegalizeActionStep &Step) const override;
+
+  Result query(const LegalityQuery &Q) const;
+
+  /// Run every tabulated table's key domain through both paths and report.
+  /// Fatal on a mismatch: a table that disagrees with the chain is a bug in
+  /// the key, not a number to look at.
+  void selfCheck(raw_ostream &OS);
+
+  uint64_t hits() const { return Hits; }
+  uint64_t outside() const { return Outsides; }
+  uint64_t pointerVectors() const { return PointerVectors; }
+  uint64_t addressSpaces() const { return AddressSpaces; }
+  uint64_t untabulated() const { return Untabulated; }
+  uint64_t declined() const { return Declined; }
+  uint64_t splits() const { return Splits; }
+  uint64_t fills() const { return Fills; }
+
+private:
+  uint32_t fill(unsigned Table, const LegalityQuery &Q,
+                ArrayRef<unsigned> Local) const;
+  /// Record one refused query, with the reason, when asked to.
+  void noteOutside(unsigned Why, unsigned Table, const LegalityQuery &Q) const;
+  LLT representative(unsigned ClassID) const;
+
+  const LegalizerInfo &LI;
+  const unsigned PointerBits;
+  mutable std::vector<std::vector<uint32_t>> Cells;
+  /// Per cell, the rule that answered it -- see LegalizeRuleSet::findRule.
+  ///
+  /// A cell caches *which rule wins*, not the answer that rule gave.  One rule
+  /// answers many queries ("widen slot 0 to 64 bits" answers both i128 and
+  /// s128) and its answers differ in spelling, so a cached answer would carry
+  /// whichever type happened to fill the cell first.  A cached rule is replayed
+  /// against the real query, and each query gets its own answer back.
+  mutable std::vector<int64_t> RulesOfCell;
+  mutable uint64_t Hits = 0, Outsides = 0, PointerVectors = 0,
+                   AddressSpaces = 0, Untabulated = 0, Declined = 0,
+                   Splits = 0, Fills = 0;
+  // Off unless -aarch64-gisel-table-outsides.  A count says how often the table
+  // refused; the log says which shapes it refused, which is what turns "41
+  // outside" into "41 of these, and here is the one that is a gap".
+  bool LogOutsides = false;
+  mutable std::vector<std::string> OutsideLog;
+};
+
+} // namespace llvm
+
+#endif // LLVM_LIB_TARGET_AARCH64_GISEL_AARCH64LEGALIZERTABLE_H
