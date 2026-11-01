@@ -18,7 +18,14 @@
 ; treat differently, which is the only way this table can be wrong: it cannot
 ; invent an answer the chain would not give.
 ;
-; CHECK: x86-gisel-table-check: points [[P:[0-9]+]] compared [[P]] mismatches 0 skipped 0
+; CHECK: x86-gisel-table-check: points [[P:[0-9]+]] compared [[P]] mismatches 0 skipped 0 {{.*}} fiber [[F:[0-9]+]] fiber_refused 0 fiber_max 1
+
+; fiber_max 1 is the honest number for this configuration, not a coverage
+; claim.  A class stands for every LLT spelling that classifies to it, and
+; without extended LLTs there is only one: LLT::integer() returns
+; LLT::scalar(), so i32 and s32 are the same value and the key folds nothing.
+; The expansion that asks the second spelling only has a subject under
+; -x86-gisel-extended-llt, and table-extended-llt.ll is where it runs.
 
 ; Every point the domain enumerates must be compared, not skipped.  On LP64
 ; every class representative and every memory-type fiber member is a shape the

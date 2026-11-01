@@ -5,6 +5,10 @@
 ; RUN: llc < %s -mtriple=x86_64-unknown-linux-gnu -global-isel -O0 \
 ; RUN:     -stop-after=legalizer -x86-gisel-extended-llt -o - 2>/dev/null \
 ; RUN:     | FileCheck %s --check-prefix=KIND
+; RUN: not --crash llc < %s -mtriple=x86_64-unknown-linux-gnu -global-isel -O0 \
+; RUN:     -stop-after=legalizer -x86-gisel-extended-llt -x86-gisel-table-check \
+; RUN:     -x86-gisel-table-cache-extended -o /dev/null 2>&1 \
+; RUN:     | FileCheck %s --check-prefix=CACHE-IS-WRONG
 
 ; A cell of a one-question table stores the chain's answer for the cell's
 ; *representative*.  That is only the answer for every query in the cell if the
@@ -24,11 +28,24 @@
 ;    !LLT::getUseExtended() gate in queryImpl() makes this non-zero.
 ;  - `i64`/`f64` in the MIR below: with the gate removed the same queries are
 ;    handed s64/s8, i.e. the representative's spelling.
-; The domain check alone cannot see any of this: it asks the key's
-; representatives, whose answer is the one that was stored.
+; The domain check's *representative* points cannot see any of this -- that is
+; one point per cell, and the stored answer is that point's own answer.  What
+; can see it is the fiber expansion: under -x86-gisel-extended-llt every class
+; whose keyed slot can hold an integer is asked twice, s128 and i128, so a cell
+; that answers both with s64 disagrees with the chain on the second.  `fiber`
+; counts those extra points and `fiber_max 2` is the size of the largest
+; expansion; both are matched below so a run that stopped expanding cannot look
+; like a run that found nothing.
+;
+; The third RUN line is the negative control, made permanent:
+; -x86-gisel-table-cache-extended ignores the !LLT::getUseExtended() gate, and
+; the check must then report CACHED-VS-REPLAY.  Without that line, "mismatches
+; 0" above would also be produced by a check that cannot fail this way.
 
-; VERIFY: x86-gisel-table-check: points [[P:[0-9]+]] compared [[P]] mismatches 0 skipped 0
+; VERIFY: x86-gisel-table-check: points [[P:[0-9]+]] compared [[P]] mismatches 0 skipped 0 {{.*}} fiber [[F:[1-9][0-9]*]] fiber_refused 0 fiber_max 2
 ; VERIFY: x86-gisel-table: hit {{[1-9][0-9]*}} {{.*}} cached 0 checked {{[1-9][0-9]*}}
+
+; CACHE-IS-WRONG: CACHED-VS-REPLAY G_ADD(i128): replay {{.*}}i64 cached {{.*}}s64
 
 ; KIND: %{{[0-9]+}}:_(i32) = G_ADD
 ; KIND: %{{[0-9]+}}:_(i64) = G_MUL

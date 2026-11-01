@@ -27,6 +27,14 @@ static cl::opt<bool> X86GISelTableOnce(
              "harness that cannot tell this from -x86-gisel-table=false cannot "
              "see the table's contribution at all"));
 
+static cl::opt<bool> X86GISelTableCacheExtended(
+    "x86-gisel-table-cache-extended", cl::Hidden, cl::init(false),
+    cl::desc(
+        "Serve answers from a cell even when the target's LLTs are extended, "
+        "where the key already folds different spellings of one type together. "
+        "Negative control for -x86-gisel-table-check: with this on the check "
+        "must report CACHED-VS-REPLAY, which is the a076fbbf9e72 shape"));
+
 static cl::opt<bool> X86GISelTableOutsides(
     "x86-gisel-table-outsides", cl::Hidden, cl::init(false),
     cl::desc("List every query the X86 legalizer table refused, with the reason"));
@@ -183,6 +191,53 @@ static void memFiber(unsigned Bits, SmallVectorImpl<LLT> &Out) {
         continue;
       Out.push_back(LLT::fixed_vector(Lanes, LLT::pointer(AS, PtrBits)));
     }
+  }
+}
+
+/// Every LLT spelling of one scalar width that both implementations are
+/// defined on.  classifyType() files ANY_SCALAR and INTEGER and FLOAT of the
+/// same width into one class, so the key cannot tell them apart, while the
+/// answer can: a mutation keeps the kind it was given, so the widened type
+/// comes out spelled i64 or s64 depending on which spelling asked.
+///
+/// Only ANY_SCALAR and INTEGER are enumerated.  The float spelling is left out
+/// on purpose: X86's rules narrow a scalar through LLT::changeElementSize(),
+/// which for a FLOAT has to name an IEEE semantics and hits "Wrong SizeInBits"
+/// at 8.  Asking G_FCMP(f16) or G_ASHR(s8, f16) therefore aborts inside the
+/// chain, before the table is asked anything -- the two are not comparable on
+/// that question, and a check that compares them would report a limitation of
+/// the rules as a defect of the table.  The float spelling is covered where
+/// both sides are defined: table-extended-llt.ll runs f64 through G_FADD and
+/// matches the MIR.
+///
+/// Without extended LLTs there is nothing to enumerate: LLT::integer() returns
+/// LLT::scalar(), so the fiber really is one type and this returns one.  That
+/// is also the configuration the answer cache is live in, which is why the
+/// fiber test has to be run with -x86-gisel-extended-llt to say anything.
+static void scalarFiber(unsigned Bits, SmallVectorImpl<LLT> &Out) {
+  Out.push_back(LLT::scalar(Bits));
+  if (LLT::getUseExtended())
+    Out.push_back(LLT::integer(Bits));
+}
+
+/// Every type a class stands for.  A pointer has one spelling at address space
+/// 0 (classifyType() refuses the others, and that refusal is counted
+/// separately), and a vector stands for the vector of each spelling of its
+/// element.
+static void typeFiber(const LegalizerTypeClass &C, SmallVectorImpl<LLT> &Out) {
+  if (C.Kind == Kind_Pointer || C.Kind == Kind_PointerVector) {
+    const LLT P = LLT::pointer(0, C.ElemBits);
+    Out.push_back(C.Kind == Kind_Pointer ? P
+                                         : LLT::fixed_vector(C.Lanes, P));
+    return;
+  }
+  SmallVector<LLT, 4> Elems;
+  scalarFiber(C.ElemBits, Elems);
+  for (LLT E : Elems) {
+    if (C.Lanes == 1)
+      Out.push_back(E);
+    else
+      Out.push_back(LLT::fixed_vector(C.Lanes, E));
   }
 }
 
@@ -467,7 +522,8 @@ X86LegalizerTable::queryImpl(const LegalityQuery &Q,
   // X86 never enables extended LLTs, so this is a relaxed load of a global
   // that is constant for the process; -x86-gisel-extended-llt exists to make
   // the closed path reachable in a test.
-  if (D.OneQuestion && AllowCachedAnswer && !LLT::getUseExtended()) {
+  if (D.OneQuestion && AllowCachedAnswer &&
+      (!LLT::getUseExtended() || X86GISelTableCacheExtended)) {
     const int64_t RuleIdx = RulesOfCell[Cell - 1];
     if (RuleIdx >= 0) {
       RuleIdxSum += static_cast<uint64_t>(RuleIdx);
@@ -608,9 +664,6 @@ void X86LegalizerTable::collectDomain(std::vector<DomainPoint> &Out) const {
     const auto &Entry = X86TableOpcodes[EntryIdx];
     const LegalizerTableDesc &D = X86Tables[Entry.Table];
     const LegalizerTableDomain &Domain = X86TableDomains[Entry.Table];
-    const unsigned N0 = D.NumSlots > 0 ? Domain.Counts[0] : 1;
-    const unsigned N1 = D.NumSlots > 1 ? Domain.Counts[1] : 1;
-    const unsigned N2 = D.NumSlots > 2 ? Domain.Counts[2] : 1;
 
     // A tabulated table reads no type slot outside its key, so an unkeyed
     // slot can use any representative; it is the same one fill() saw.
@@ -619,72 +672,93 @@ void X86LegalizerTable::collectDomain(std::vector<DomainPoint> &Out) const {
       if (D.Slots[K] > MaxSlot)
         MaxSlot = D.Slots[K];
 
-    for (unsigned I0 = 0; I0 != N0; ++I0) {
-      for (unsigned I1 = 0; I1 != N1; ++I1) {
-        for (unsigned I2 = 0; I2 != N2; ++I2) {
-          const unsigned Local[3] = {I0, I1, I2};
-          SmallVector<LLT, 3> Types(static_cast<size_t>(MaxSlot + 1),
-                                    representative(0));
-          unsigned MemBits = 0;
-          LLT MemClassTy;
-          for (unsigned K = 0; K != D.NumSlots; ++K) {
-            if (D.Slots[K] < 0) {
-              // A class-keyed cell is exactly one type, so it needs no fiber.
-              const unsigned Key = static_cast<unsigned>(D.Mem[Local[K]]);
-              if (D.MemIsClass)
-                MemClassTy = representative(Key);
-              else
-                MemBits = Key;
-            } else {
-              Types[D.Slots[K]] = representative(Domain.Classes[K][Local[K]]);
+    // Per keyed axis, every spelling its cells stand for.  A type-slot cell is
+    // one *class*, and a class is not one type: classifyType() files s128,
+    // i128 and f128 together, so asking only the class representative would
+    // ask one member of a fiber and call the fiber covered -- which is how a
+    // cached answer carrying the representative's spelling goes unseen
+    // (a076fbbf9e72).  The mem axis keeps memFiber()'s bounded sample, because
+    // lanes and address spaces are unbounded there; the kind axis does not
+    // need a sample, because it is a closed set.
+    SmallVector<SmallVector<LLT, 4>, 3> Axes;
+    unsigned TypeFiberHere = 1;
+    for (unsigned K = 0; K != D.NumSlots; ++K) {
+      SmallVector<LLT, 4> Members;
+      const unsigned Count = Domain.Counts[K];
+      for (unsigned I = 0; I != Count; ++I) {
+        if (D.Slots[K] < 0) {
+          const unsigned Key = static_cast<unsigned>(D.Mem[I]);
+          if (D.MemIsClass) {
+            // A class-keyed cell is exactly one type, so it needs no fiber.
+            Members.push_back(representative(Key));
+            continue;
+          }
+          const size_t Before = Members.size();
+          memFiber(Key, Members);
+          // A fiber member is supposed to be another spelling of this cell's
+          // key.  One that is not is a defect in this file, not a question
+          // about the table: `query` would answer it from the cell its own
+          // size names (or refuse it), and the comparison would then be filed
+          // under the wrong cell or dropped into `skipped`.
+          for (size_t M = Before; M != Members.size(); ++M) {
+            const TypeSize Size = Members[M].getSizeInBits();
+            if (Size.isScalable() || Size.getFixedValue() != Key) {
+              std::string S;
+              raw_string_ostream OS(S);
+              OS << "x86-gisel-table-check: " << Entry.Name
+                 << ": a fiber member for access " << Key
+                 << " bits is not that size: ";
+              Members[M].print(OS);
+              report_fatal_error(StringRef(S));
             }
           }
-
-          // A type slot's class is exactly one type, so its representative is
-          // the whole cell.  The mem axis is keyed by access size, so its cell
-          // holds every LLT of that size: asking only the scalar would leave
-          // the half of the cell the key actually merges untested.
-          SmallVector<LLT, 16> MemTypes;
-          if (MemClassTy.isValid())
-            MemTypes.push_back(MemClassTy);
-          else if (MemBits)
-            memFiber(MemBits, MemTypes);
-          else
-            MemTypes.push_back(LLT());
-
-          for (LLT MemTy : MemTypes) {
-            // A fiber member is supposed to be another spelling of this cell's
-            // key.  One that is not is a defect in this file, not a question
-            // about the table: `query` would answer it from the cell its own
-            // size names (or refuse it), and the comparison would then be
-            // filed under the wrong cell or dropped into `skipped`.
-            if (MemTy.isValid() && !MemClassTy.isValid()) {
-              const TypeSize MemberSize = MemTy.getSizeInBits();
-              if (MemberSize.isScalable() ||
-                  MemberSize.getFixedValue() != MemBits) {
-                std::string S;
-                raw_string_ostream OS(S);
-                OS << "x86-gisel-table-check: " << Entry.Name
-                   << ": a fiber member for access " << MemBits
-                   << " bits is not that size: ";
-                MemTy.print(OS);
-                report_fatal_error(StringRef(S));
-              }
-            }
-            DomainPoint P;
-            P.Opcode = Entry.Opcode;
-            P.Name = Entry.Name;
-            P.Types = Types;
-            P.MemDescs.clear();
-            if (MemTy.isValid())
-              P.MemDescs.emplace_back(MemTy, /*AlignInBits=*/1,
-                                      AtomicOrdering::NotAtomic,
-                                      AtomicOrdering::NotAtomic);
-            Out.push_back(std::move(P));
-          }
+        } else {
+          // Domain.Classes[K][I] is a *global* class id, not a local index:
+          // the domain arrays are emitted from the class set, and only the
+          // cell arrays go through the local map.
+          const unsigned Class = Domain.Classes[K][I];
+          const size_t Before = Members.size();
+          typeFiber(X86TypeClasses[Class], Members);
+          TypeFiberHere = std::max<unsigned>(
+              TypeFiberHere, static_cast<unsigned>(Members.size() - Before));
         }
       }
+      Axes.push_back(std::move(Members));
     }
+    FiberMax = std::max(FiberMax, TypeFiberHere);
+
+    SmallVector<LLT, 3> Types(static_cast<size_t>(MaxSlot + 1),
+                              representative(0));
+    LLT MemTy;
+    // Walk the axes.  `Rep` is true exactly for the combination that picks each
+    // axis's first member, i.e. the class representatives: the single point
+    // per cell the earlier domain asked, kept tagged so that a refusal there
+    // stays a failure while a refusal elsewhere stays legal.
+    auto Walk = [&](auto &&Self, unsigned K, bool Rep) -> void {
+      if (K == D.NumSlots) {
+        DomainPoint P;
+        P.Opcode = Entry.Opcode;
+        P.Name = Entry.Name;
+        P.Types = Types;
+        if (MemTy.isValid())
+          P.MemDescs.emplace_back(MemTy, /*AlignInBits=*/1,
+                                  AtomicOrdering::NotAtomic,
+                                  AtomicOrdering::NotAtomic);
+        P.IsRepresentative = Rep;
+        Out.push_back(std::move(P));
+        return;
+      }
+      bool First = true;
+      for (LLT Ty : Axes[K]) {
+        if (D.Slots[K] < 0)
+          MemTy = Ty;
+        else
+          Types[D.Slots[K]] = Ty;
+        Self(Self, K + 1, Rep && First);
+        First = false;
+      }
+    };
+    Walk(Walk, 0, true);
   }
 }
 
@@ -695,35 +769,103 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
   uint64_t Points = 0;
   uint64_t Compared = 0;
   uint64_t Skipped = 0;
+  uint64_t FiberPoints = 0;
+  uint64_t FiberRefused = 0;
   unsigned Mismatches = 0;
+
+  // One message budget for every kind of disagreement: the first twenty are
+  // printed, the rest only counted.
+  const auto Report = [&](StringRef Kind, const DomainPoint &P) {
+    OS << "x86-gisel-table-check: " << Kind << " " << P.Name << "(";
+    for (unsigned I = 0; I != P.Types.size(); ++I) {
+      if (I)
+        OS << ", ";
+      P.Types[I].print(OS);
+    }
+    if (!P.MemDescs.empty()) {
+      OS << " mem ";
+      P.MemDescs[0].MemoryTy.print(OS);
+    }
+  };
 
   for (const DomainPoint &P : Domain) {
     const LegalityQuery Q = P.query();
     ++Points;
+    if (!P.IsRepresentative)
+      ++FiberPoints;
     // Ask the rules directly.  LI.getAction() consults the installed table
     // first, which would compare the table against itself; the point of this
     // check is the chain.
+    if (::getenv("X86_TABLE_TRACE")) {
+      errs() << "POINT " << P.Name << " ";
+      for (LLT T : P.Types) {
+        T.print(errs());
+        errs() << " ";
+      }
+      errs() << "rep=" << P.IsRepresentative << "\n";
+    }
+    if (::getenv("X86_TABLE_TRACE")) {
+      errs() << "POINT " << P.Name << " ";
+      for (LLT T : P.Types) {
+        T.print(errs());
+        errs() << " ";
+      }
+      errs() << "rep=" << P.IsRepresentative << "\n";
+    }
     const LegalizeActionStep ChainStep =
         LI.getActionDefinitions(Q.Opcode).apply(Q);
     // Uncached: the point of the check is that the table's key and the chain
     // agree, which a stored answer would state about itself.
     const Result R = queryUncached(Q);
-    if (R.Kind == Answer::Split) {
-      // The cell the key named does not hold this question: that is a defect
-      // in the key, not a table that answered wrongly.
+    // And the path a compilation takes, which may answer from a cell.  Asking
+    // only the uncached path would leave the cache untested by construction:
+    // a cached answer is the representative's, so a comparison that never
+    // allows it cannot disagree with it.  This is the second half of
+    // a076fbbf9e72 -- the cell answers the fiber member with the
+    // representative's spelling.
+    const Result Cached = query(Q);
+    const LegalizeActionStep Replayed(R.Action, R.TypeIdx, R.NewType);
+    if (Cached.Kind != R.Kind ||
+        (R.Kind == Answer::Hit &&
+         !sameAnswer(Cached.Action, Cached.TypeIdx, Cached.NewType,
+                     Replayed))) {
       ++Mismatches;
       if (Mismatches <= 20) {
-        OS << "x86-gisel-table-check: SPLIT " << P.Name << "(";
-        for (unsigned I = 0; I != P.Types.size(); ++I) {
-          if (I)
-            OS << ", ";
-          P.Types[I].print(OS);
-        }
+        Report("CACHED-VS-REPLAY", P);
+        OS << "): replay ";
+        OS << static_cast<unsigned>(R.Action) << "/" << R.TypeIdx << "/";
+        R.NewType.print(OS);
+        OS << " cached ";
+        OS << static_cast<unsigned>(Cached.Action) << "/" << Cached.TypeIdx
+           << "/";
+        Cached.NewType.print(OS);
+        OS << "\n";
+      }
+      continue;
+    }
+    if (R.Kind == Answer::Split) {
+      if (!P.IsRepresentative) {
+        // The cell refused a member of its own fiber.  That is the table
+        // declining to answer a question the key merged with the one it was
+        // filled from, and the chain answers it: legal, and counted so a key
+        // that merges everything cannot look clean.
+        ++FiberRefused;
+        continue;
+      }
+      // For the representative it is a defect: the key named a cell whose own
+      // rule does not match the question that filled it.
+      ++Mismatches;
+      if (Mismatches <= 20) {
+        Report("SPLIT", P);
         OS << "): the cell's rule does not answer this query\n";
       }
       continue;
     }
     if (R.Kind != Answer::Hit) {
+      // Outside, declined or untabulated: the chain answers, so there is
+      // nothing to compare.  Reaching this with a point in the table's own
+      // domain means the generator produced a question the key cannot ask,
+      // which is why `skipped` is matched as zero rather than merely printed.
       ++Skipped;
       continue;
     }
@@ -732,16 +874,7 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
       continue;
     ++Mismatches;
     if (Mismatches <= 20) {
-      OS << "x86-gisel-table-check: MISMATCH " << P.Name << "(";
-      for (unsigned I = 0; I != P.Types.size(); ++I) {
-        if (I)
-          OS << ", ";
-        P.Types[I].print(OS);
-      }
-      if (!P.MemDescs.empty()) {
-        OS << " mem ";
-        P.MemDescs[0].MemoryTy.print(OS);
-      }
+      Report("MISMATCH", P);
       OS << "): table ";
       OS << static_cast<unsigned>(R.Action) << "/" << R.TypeIdx << "/";
       R.NewType.print(OS);
@@ -756,10 +889,20 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
      << " mismatches " << Mismatches << " skipped " << Skipped << " outside "
      << Outsides << " ptrvec " << PointerVectors << " addrspace "
      << AddressSpaces << " untabulated " << Untabulated << " splits " << Splits
-     << " declined " << Declined << " fills " << Fills << "\n";
+     << " declined " << Declined << " fills " << Fills << " fiber "
+     << FiberPoints << " fiber_refused " << FiberRefused << " fiber_max "
+     << FiberMax << "\n";
   if (Mismatches)
     report_fatal_error(
         "x86-gisel-table-check: the table and the chain disagree");
+  // A run that expands no fiber asks the key's representatives and nothing
+  // else, and would pass on a table that folds every LLT kind together.  With
+  // extended LLTs on there is always at least one class with several
+  // spellings, so zero here means the expansion stopped working.
+  if (LLT::getUseExtended() && FiberPoints == 0)
+    report_fatal_error(
+        "x86-gisel-table-check: extended LLTs are on but no class expanded to "
+        "more than one spelling; the fiber test is vacuous");
 }
 
 namespace {

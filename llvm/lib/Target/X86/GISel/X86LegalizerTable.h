@@ -119,6 +119,12 @@ private:
     const char *Name;
     SmallVector<LLT, 3> Types;
     SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+    /// True for the point that picks each keyed axis's class representative.
+    /// A cell has exactly one of these and possibly several other members of
+    /// its fiber; refusing a fiber member is the table saying "the key merged
+    /// two questions", which is legal, and refusing the representative is the
+    /// key naming a cell its own rule does not match, which is not.
+    bool IsRepresentative = true;
     LegalityQuery query() const {
       return LegalityQuery(Opcode, Types, MemDescs);
     }
@@ -135,6 +141,12 @@ private:
   LLT representative(unsigned ClassID) const;
 
   const LegalizerInfo &LI;
+
+  /// The largest number of spellings any one type class expanded to.  One
+  /// means the fiber is the class representative alone, which is the case
+  /// without extended LLTs: the check is then a cover of the quotients, not of
+  /// what the quotients merged.  Reported rather than assumed.
+  mutable unsigned FiberMax = 0;
   mutable std::vector<std::vector<uint32_t>> Cells;
   /// Per cell, the rule that answered it -- see LegalizeRuleSet::findRule.
   ///
