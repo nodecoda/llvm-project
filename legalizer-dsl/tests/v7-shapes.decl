@@ -1,0 +1,42 @@
+/* v7 acceptance corpus: one block per new production.
+ * Parsed by tools/parse_check.cc; semantics are NOT checked here. */
+
+class int = s8, s16, s32, s64;
+
+op G_FCMP {
+  query ty 0, ty 1;
+  legal s8, s32 when HasSSE1 || UseX87;
+  legal s8, s64 when HasSSE2 || UseX87;
+  policy 0: scalar to s8 when HasSSE1 || UseX87;
+  policy 1: scalar [s32, cond(HasSSE2, s64, s32)] pow2;
+}
+
+op G_ANYEXT {
+  query ty 0, ty 1;
+  legal s8, s16, s32, s128;
+  legal s64 when Is64Bit;
+  policy 0: scalar hull pow2 8;
+  policy 1: scalar [s8, MaxScalar] pow2;
+  elemwise;
+}
+
+op G_MERGE_VALUES {
+  query ty 0, ty 1;
+  variadic 1;
+  policy 1: scalar promote s8 pow2 8;
+  policy 0: scalar promote s32 pow2 16;
+  legal (size(16) + size(32), size(8) + size(16));
+}
+
+op G_INSERT {
+  query ty 0, ty 1, imm 0;
+  legal (v32s8, v16s8) when HasAVX;
+  except imm(0) = 0 -> unsupported;
+}
+
+op G_LOAD {
+  query ty 0, ty 1, mem 0;
+  legal any when ty(1) = p0:64 && bits(ty(0)) = bits(mem(0).ty);
+  legal (s8, p0:64, mem(1, 1));
+  policy 0: vector hull;
+}

@@ -1,0 +1,5 @@
+/* Must NOT parse: a policy bound that is not closed.  The gate asserts a
+ * non-zero exit, otherwise "the parser accepts everything" would pass. */
+op G_BROKEN {
+  policy 0: scalar [s8;
+}
