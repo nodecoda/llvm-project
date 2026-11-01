@@ -80,6 +80,11 @@ public:
   /// the key, not a number to look at.
   void selfCheck(raw_ostream &OS);
 
+  /// Time the same questions through the two paths getAction() can take: the
+  /// rule chain, and table-then-chain-fallback.  \p Reps passes over the
+  /// check domain; a warm-up pass fills every cell first and is not timed.
+  void benchmark(raw_ostream &OS, unsigned Reps);
+
   uint64_t hits() const { return Hits; }
   uint64_t outside() const { return Outsides; }
   uint64_t pointerVectors() const { return PointerVectors; }
@@ -90,6 +95,21 @@ public:
   uint64_t fills() const { return Fills; }
 
 private:
+  /// One question in the check domain, owning the storage its query points at:
+  /// LegalityQuery holds ArrayRefs and cannot outlive what they name.
+  struct DomainPoint {
+    unsigned Opcode;
+    const char *Name;
+    SmallVector<LLT, 3> Types;
+    SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+    LegalityQuery query() const {
+      return LegalityQuery(Opcode, Types, MemDescs);
+    }
+  };
+
+  /// Enumerate every question selfCheck() and benchmark() must ask, once.
+  void collectDomain(std::vector<DomainPoint> &Out) const;
+
   uint32_t fill(unsigned Table, const LegalityQuery &Q,
                 ArrayRef<unsigned> Local) const;
   /// Record one refused query, with the reason, when asked to.
@@ -110,6 +130,13 @@ private:
   mutable uint64_t Hits = 0, Outsides = 0, PointerVectors = 0,
                    AddressSpaces = 0, Untabulated = 0, Declined = 0,
                    Splits = 0, Fills = 0;
+  /// How deep the winning rule sits on the queries a compilation actually
+  /// asks.  The check domain is uniform over type classes; real code is not,
+  /// and this is what connects the two measurements.
+  mutable uint64_t RuleIdxSum = 0, RuleIdxCount = 0;
+  mutable unsigned RuleIdxMax = 0;
+  /// Set by -x86-gisel-table-once after the one query it answers.
+  mutable bool OnceServed = false;
   // Off unless -x86-gisel-table-outsides.  A count says how often the table
   // refused; the log says which shapes it refused, which is what turns "41
   // outside" into "41 of these, and here is the one that is a gap".

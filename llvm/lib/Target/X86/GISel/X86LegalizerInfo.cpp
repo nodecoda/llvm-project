@@ -45,6 +45,12 @@ static cl::opt<bool> X86GISelTableCheck(
     "x86-gisel-table-check", cl::Hidden, cl::init(false),
     cl::desc("Check the X86 legalizer table against the rule chains"));
 
+static cl::opt<unsigned> X86GISelTableBench(
+    "x86-gisel-table-bench", cl::Hidden, cl::init(0),
+    cl::desc("Time the X86 legalizer table against the rule chains over the "
+             "check domain, N repetitions (0 = off).  Do not combine with "
+             "-x86-gisel-table-once, which changes what the table answers"));
+
 X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI,
                                    const X86TargetMachine &TM)
     : Subtarget(STI) {
@@ -72,6 +78,14 @@ X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI,
   if (X86GISelTableCheck) {
     X86LegalizerTable Table(*this, PointerBits);
     Table.selfCheck(errs());
+  }
+
+  // Same table, same questions, timed through the two paths getAction() can
+  // take.  Kept out of the pass so the numbers do not depend on what the
+  // legalizer happens to ask.
+  if (X86GISelTableBench) {
+    X86LegalizerTable Table(*this, PointerBits);
+    Table.benchmark(errs(), X86GISelTableBench);
   }
 }
 

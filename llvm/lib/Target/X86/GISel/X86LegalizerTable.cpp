@@ -9,13 +9,23 @@
 #include "X86LegalizerTable.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
+#include <chrono>
 
 using namespace llvm;
 
 static cl::opt<bool> X86GISelTableStats(
     "x86-gisel-table-stats", cl::Hidden, cl::init(false),
     cl::desc("Report how the X86 legalizer table answered"));
+
+static cl::opt<bool> X86GISelTableOnce(
+    "x86-gisel-table-once", cl::Hidden, cl::init(false),
+    cl::desc("Answer one query from the X86 legalizer table and then fall back "
+             "to the rule chains.  Negative control for the table's timing: a "
+             "harness that cannot tell this from -x86-gisel-table=false cannot "
+             "see the table's contribution at all"));
 
 static cl::opt<bool> X86GISelTableOutsides(
     "x86-gisel-table-outsides", cl::Hidden, cl::init(false),
@@ -372,6 +382,11 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
     R.Kind = Answer::Split;
     return R;
   }
+  if (RuleIdx >= 0) {
+    RuleIdxSum += static_cast<uint64_t>(RuleIdx);
+    ++RuleIdxCount;
+    RuleIdxMax = std::max(RuleIdxMax, static_cast<unsigned>(RuleIdx));
+  }
   const LegalizeActionStep S =
       RuleIdx < 0 ? LegalizeActionStep(LegalizeAction::Unsupported, 0, LLT{})
                   : RS.applyRule(RuleIdx, Q);
@@ -385,9 +400,17 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
 
 bool X86LegalizerTable::lookup(const LegalityQuery &Q,
                                LegalizeActionStep &Step) const {
+  // -x86-gisel-table-once serves one query and then stands aside, leaving the
+  // chain to answer everything else.  That is the chain-only cost plus a
+  // constant, so a timing run that cannot separate it from
+  // -x86-gisel-table=false is not resolving the table at all.
+  if (X86GISelTableOnce && OnceServed)
+    return false;
   const Result R = query(Q);
   if (R.Kind != Answer::Hit)
     return false;
+  if (X86GISelTableOnce)
+    OnceServed = true;
   Step = LegalizeActionStep(R.Action, R.TypeIdx, R.NewType);
   return true;
 }
@@ -397,23 +420,21 @@ X86LegalizerTable::~X86LegalizerTable() {
     return;
   errs() << "x86-gisel-table: hit " << Hits << " outside " << Outsides
          << " ptrvec " << PointerVectors << " addrspace " << AddressSpaces
-         << " untabulated " << Untabulated << " splits " << Splits << " declined " << Declined
-         << " fills " << Fills << "\n";
+         << " untabulated " << Untabulated << " splits " << Splits
+         << " declined " << Declined << " fills " << Fills << " rule_mean "
+         << format("%.2f",
+                   RuleIdxCount ? double(RuleIdxSum) / RuleIdxCount : 0.0)
+         << " rule_max " << RuleIdxMax << "\n";
   for (const std::string &S : OutsideLog)
     errs() << S << "\n";
 }
 
-void X86LegalizerTable::selfCheck(raw_ostream &OS) {
+void X86LegalizerTable::collectDomain(std::vector<DomainPoint> &Out) const {
   // The domain is generated with the tables: each keyed slot lists the classes
-  // its rules name for it, so the check asks the questions the IR can produce.
-  // Iterating the full class set instead would crash the chain on queries it
-  // is not written for (a pointer in a scalar slot, for one), which measures
+  // its rules name for it, so these are the questions the IR can produce.
+  // Iterating the full class set instead would ask the chain about types it is
+  // not written for (a pointer in a scalar slot, for one), which measures
   // nothing about the table.
-  uint64_t Points = 0;
-  uint64_t Compared = 0;
-  uint64_t Skipped = 0;
-  unsigned Mismatches = 0;
-
   static_assert(X86NumTableDomains == X86NumTables,
                 "every table needs a self-check domain");
 
@@ -466,11 +487,11 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
             MemTypes.push_back(LLT());
 
           for (LLT MemTy : MemTypes) {
-            // A fiber member is supposed to be another spelling of this
-            // cell's key.  One that is not is a defect in this file, not a
-            // question about the table: `query` would answer it from the cell
-            // its own size names (or refuse it), and the comparison would
-            // then be filed under the wrong cell or dropped into `skipped`.
+            // A fiber member is supposed to be another spelling of this cell's
+            // key.  One that is not is a defect in this file, not a question
+            // about the table: `query` would answer it from the cell its own
+            // size names (or refuse it), and the comparison would then be
+            // filed under the wrong cell or dropped into `skipped`.
             if (MemTy.isValid() && !MemClassTy.isValid()) {
               const TypeSize MemberSize = MemTy.getSizeInBits();
               if (MemberSize.isScalable() ||
@@ -484,77 +505,185 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
                 report_fatal_error(StringRef(S));
               }
             }
-            SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+            DomainPoint P;
+            P.Opcode = Entry.Opcode;
+            P.Name = Entry.Name;
+            P.Types = Types;
+            P.MemDescs.clear();
             if (MemTy.isValid())
-              MemDescs.emplace_back(MemTy, /*AlignInBits=*/1,
-                                    AtomicOrdering::NotAtomic,
-                                    AtomicOrdering::NotAtomic);
-
-            ++Points;
-            const LegalityQuery Q(Entry.Opcode, Types, MemDescs);
-            // Ask the rules directly.  LI.getAction() consults the installed
-            // table first, which would compare the table against itself; the
-            // point of this check is the chain.
-            const LegalizeActionStep ChainStep =
-                LI.getActionDefinitions(Q.Opcode).apply(Q);
-            const Result R = query(Q);
-            if (R.Kind == Answer::Split) {
-              // The cell the key named does not hold this question: that is a
-              // defect in the key, not a table that answered wrongly.
-              ++Mismatches;
-              if (Mismatches <= 20) {
-                OS << "x86-gisel-table-check: SPLIT " << Entry.Name << "(";
-                for (unsigned I = 0; I != Types.size(); ++I) {
-                  if (I)
-                    OS << ", ";
-                  Types[I].print(OS);
-                }
-                OS << "): the cell's rule does not answer this query\n";
-              }
-              continue;
-            }
-            if (R.Kind != Answer::Hit) {
-              ++Skipped;
-              continue;
-            }
-            ++Compared;
-            if (R.Action == ChainStep.Action &&
-                R.TypeIdx == ChainStep.TypeIdx &&
-                R.NewType == ChainStep.NewType)
-              continue;
-            ++Mismatches;
-            if (Mismatches <= 20) {
-              OS << "x86-gisel-table-check: MISMATCH " << Entry.Name << "(";
-              for (unsigned I = 0; I != Types.size(); ++I) {
-                if (I)
-                  OS << ", ";
-                Types[I].print(OS);
-              }
-              if (MemTy.isValid()) {
-                OS << " mem ";
-                MemTy.print(OS);
-              }
-              OS << "): table ";
-              OS << static_cast<unsigned>(R.Action) << "/" << R.TypeIdx << "/";
-              R.NewType.print(OS);
-              OS << " chain ";
-              OS << static_cast<unsigned>(ChainStep.Action) << "/"
-                 << ChainStep.TypeIdx << "/";
-              ChainStep.NewType.print(OS);
-              OS << "\n";
-            }
+              P.MemDescs.emplace_back(MemTy, /*AlignInBits=*/1,
+                                      AtomicOrdering::NotAtomic,
+                                      AtomicOrdering::NotAtomic);
+            Out.push_back(std::move(P));
           }
         }
       }
+    }
+  }
+}
+
+void X86LegalizerTable::selfCheck(raw_ostream &OS) {
+  std::vector<DomainPoint> Domain;
+  collectDomain(Domain);
+
+  uint64_t Points = 0;
+  uint64_t Compared = 0;
+  uint64_t Skipped = 0;
+  unsigned Mismatches = 0;
+
+  for (const DomainPoint &P : Domain) {
+    const LegalityQuery Q = P.query();
+    ++Points;
+    // Ask the rules directly.  LI.getAction() consults the installed table
+    // first, which would compare the table against itself; the point of this
+    // check is the chain.
+    const LegalizeActionStep ChainStep =
+        LI.getActionDefinitions(Q.Opcode).apply(Q);
+    const Result R = query(Q);
+    if (R.Kind == Answer::Split) {
+      // The cell the key named does not hold this question: that is a defect
+      // in the key, not a table that answered wrongly.
+      ++Mismatches;
+      if (Mismatches <= 20) {
+        OS << "x86-gisel-table-check: SPLIT " << P.Name << "(";
+        for (unsigned I = 0; I != P.Types.size(); ++I) {
+          if (I)
+            OS << ", ";
+          P.Types[I].print(OS);
+        }
+        OS << "): the cell's rule does not answer this query\n";
+      }
+      continue;
+    }
+    if (R.Kind != Answer::Hit) {
+      ++Skipped;
+      continue;
+    }
+    ++Compared;
+    if (R.Action == ChainStep.Action && R.TypeIdx == ChainStep.TypeIdx &&
+        R.NewType == ChainStep.NewType)
+      continue;
+    ++Mismatches;
+    if (Mismatches <= 20) {
+      OS << "x86-gisel-table-check: MISMATCH " << P.Name << "(";
+      for (unsigned I = 0; I != P.Types.size(); ++I) {
+        if (I)
+          OS << ", ";
+        P.Types[I].print(OS);
+      }
+      if (!P.MemDescs.empty()) {
+        OS << " mem ";
+        P.MemDescs[0].MemoryTy.print(OS);
+      }
+      OS << "): table ";
+      OS << static_cast<unsigned>(R.Action) << "/" << R.TypeIdx << "/";
+      R.NewType.print(OS);
+      OS << " chain " << static_cast<unsigned>(ChainStep.Action) << "/"
+         << ChainStep.TypeIdx << "/";
+      ChainStep.NewType.print(OS);
+      OS << "\n";
     }
   }
 
   OS << "x86-gisel-table-check: points " << Points << " compared " << Compared
      << " mismatches " << Mismatches << " skipped " << Skipped << " outside "
      << Outsides << " ptrvec " << PointerVectors << " addrspace "
-     << AddressSpaces << " untabulated " << Untabulated << " splits " << Splits << " declined "
-     << Declined << " fills " << Fills << "\n";
+     << AddressSpaces << " untabulated " << Untabulated << " splits " << Splits
+     << " declined " << Declined << " fills " << Fills << "\n";
   if (Mismatches)
     report_fatal_error(
         "x86-gisel-table-check: the table and the chain disagree");
+}
+
+namespace {
+/// Call the table the way a compilation does: through the base class and out
+/// of line, so this stays a virtual call.  Calling lookup() on the concrete
+/// object would let the compiler devirtualize and inline the classify, which
+/// would time a table that never exists in a compilation.
+LLVM_ATTRIBUTE_NOINLINE bool
+lookupThroughBase(const LegalizerInfo::LegalizeTable &T, const LegalityQuery &Q,
+                  LegalizeActionStep &Step) {
+  return T.lookup(Q, Step);
+}
+} // namespace
+
+void X86LegalizerTable::benchmark(raw_ostream &OS, unsigned Reps) {
+  std::vector<DomainPoint> Domain;
+  collectDomain(Domain);
+
+  using Clock = std::chrono::steady_clock;
+  const auto ElapsedNs = [](Clock::time_point A, Clock::time_point B) {
+    return std::chrono::duration<double, std::nano>(B - A).count();
+  };
+
+  // Warm up: fill every cell and check that the path production takes (table
+  // first, chain on a decline) says exactly what the chain alone says.  The
+  // first pass is also where the table pays a cost the chain does not have, one
+  // fill per key; a compilation pays that once and the pass-level measurement
+  // keeps it, so it is warm-up here rather than charged Reps times.
+  uint64_t Sink = 0;
+  unsigned Hits = 0;
+  unsigned Mismatches = 0;
+  uint64_t RuleIdxSum = 0;
+  unsigned RuleIdxSeen = 0;
+  unsigned RuleIdxMax = 0;
+  const LegalizerInfo::LegalizeTable &Base = *this;
+  for (const DomainPoint &P : Domain) {
+    const LegalityQuery Q = P.query();
+    const LegalizeActionStep Chain = LI.getActionDefinitions(Q.Opcode).apply(Q);
+    LegalizeActionStep Mixed(LegalizeAction::Unsupported, 0, LLT{});
+    if (lookupThroughBase(Base, Q, Mixed))
+      ++Hits;
+    else
+      Mixed = Chain;
+    if (Mixed.Action != Chain.Action || Mixed.TypeIdx != Chain.TypeIdx ||
+        Mixed.NewType != Chain.NewType)
+      ++Mismatches;
+    Sink += static_cast<unsigned>(Mixed.Action) + Mixed.TypeIdx;
+
+    // How deep the winning rule sits is how many indirect predicate calls the
+    // chain makes before it answers, and what one classify plus one cell load
+    // replaces.  Reporting it keeps the timings explainable.
+    const int64_t RuleIdx = LI.getActionDefinitions(Q.Opcode).findRule(Q);
+    if (RuleIdx >= 0) {
+      RuleIdxSum += static_cast<uint64_t>(RuleIdx);
+      ++RuleIdxSeen;
+      RuleIdxMax = std::max(RuleIdxMax, static_cast<unsigned>(RuleIdx));
+    }
+  }
+  if (Mismatches)
+    report_fatal_error(
+        "x86-gisel-table-bench: the table and the chain disagree");
+
+  double ChainNs = 0, MixedNs = 0;
+  {
+    const Clock::time_point T0 = Clock::now();
+    for (unsigned R = 0; R != Reps; ++R)
+      for (const DomainPoint &P : Domain) {
+        const LegalityQuery Q = P.query();
+        const LegalizeActionStep S = LI.getActionDefinitions(Q.Opcode).apply(Q);
+        Sink += static_cast<unsigned>(S.Action) + S.TypeIdx;
+      }
+    ChainNs = ElapsedNs(T0, Clock::now());
+  }
+  {
+    const Clock::time_point T0 = Clock::now();
+    for (unsigned R = 0; R != Reps; ++R)
+      for (const DomainPoint &P : Domain) {
+        const LegalityQuery Q = P.query();
+        LegalizeActionStep S(LegalizeAction::Unsupported, 0, LLT{});
+        if (!lookupThroughBase(Base, Q, S))
+          S = LI.getActionDefinitions(Q.Opcode).apply(Q);
+        Sink += static_cast<unsigned>(S.Action) + S.TypeIdx;
+      }
+    MixedNs = ElapsedNs(T0, Clock::now());
+  }
+
+  const double Queries = static_cast<double>(Reps) * Domain.size();
+  OS << "x86-gisel-table-bench: points " << Domain.size() << " hits " << Hits
+     << " reps " << Reps << " chain_ns " << format("%.2f", ChainNs / Queries)
+     << " mixed_ns " << format("%.2f", MixedNs / Queries) << " speedup "
+     << format("%.3f", ChainNs / MixedNs) << " mean_rule "
+     << format("%.2f", RuleIdxSeen ? double(RuleIdxSum) / RuleIdxSeen : 0.0)
+     << " max_rule " << RuleIdxMax << " sink " << Sink << "\n";
 }
