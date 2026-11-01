@@ -155,16 +155,40 @@ aarch64 -global-isel -stop-after=legalizer  →  %13:_(i64), %19:_(i32) = G_UADD
 "规则不读 immediate"不是独立条件：读 immediate 只能经 opaque 谓词，而
 opaque 整组不表化。
 
-落地状态（`b2b2b62815ba`）：
+落地状态（`b2b2b62815ba` + 本轮）：
 
-- 前四条已由生成器/运行时强制；
-- 第五条**没有**运行时门控：`queryImpl` 只判断 `D.OneQuestion &&
-  AllowCachedAnswer`。要修只有两条路：
-  1. 运行时门控：`&& !LLT::getUseExtended()`（零成本，X86 永远为真）；
+- 前四条由生成器/运行时强制；
+- 第五条原来**没有**运行时门控（`queryImpl` 只判断 `D.OneQuestion &&
+  AllowCachedAnswer`）。两条路：
+  1. 运行时门控：`&& !LLT::getUseExtended()`；
   2. 让 kind 进键：classify 区分 ANY_SCALAR / INTEGER / FLOAT，类表同时
-     生成三种 kind 的类（AArch64 的查询才会命中，X86 上不可达）。
-  路 1 便宜但把"目标 LLT 模式"留成运行时条件；路 2 彻底，但类表变大、
-     AArch64 的自检域要跟着扩。AArch64 线开工前必须先选一条。
+     生成三种 kind 的类。
+  本轮选了路 1，理由是 X86 上 flag 恒为 false，门控只多一次 relaxed load；
+  路 2 更彻底，但它改变类表的形状，属于 AArch64 线开工时要付的成本。路 1
+  不排除路 2：等 kind 进键之后，门控可以删掉，答案缓存对 AArch64 重新可用。
+
+本轮真正落地的三件事（`X86LegalizerTable.cpp` / `X86TargetMachine.cpp`）：
+
+| 改动 | 目的 | 可红的证据 |
+|---|---|---|
+| `queryImpl` 的答案缓存加 `!LLT::getUseExtended()` | extended LLT 目标上自动退回重放，不再把代表元的拼写发给别的 kind | `table-extended-llt.ll` 的 `cached 0` |
+| 检查模式的比较改成**按拼写**（`sameSpelling` / `sameAnswer`） | `LLT::operator==` 对 ANY_SCALAR 通配，看不见 `s64` vs `i64`；`print()` 看得见 | 同测试的 `i64` / `f64` MIR；去掉门控即 fatal（见下） |
+| `-x86-gisel-extended-llt`（hidden，默认关） | 让"目标有 extended LLT"这个前提在 X86 上可复现，否则门控是死代码 | 打开后 `cached 0`、MIR 里 `i32`/`i64`/`f64` |
+
+数字（本树实测，`-stop-after=legalizer`）：
+
+- 打开 hook：自检 `points 2866 compared 2866 mismatches 0 skipped 0`，
+  真实查询 `hit 14 … cached 0 checked 14`；i128 的 `G_UADDO` 产出
+  `%13:_(i64), %19:_(i8)` —— 重放保住了 kind。
+- 只删门控（保留新比较器）：立刻
+  `table 1/0/s64, chain 1/0/i64 for Opcode=55, Tys={i128}`；
+  这正是 a076 的现场，在 X86 上复现出来了。
+- 删门控**且**把比较器换回 `operator==`：检查全绿（`mismatches 0`），
+  而 MIR 是 `%13:_(s64), %19:_(s8)`。旧检查确实瞎。
+- 门控的代价：`-x86-gisel-table-bench=200` 三跑，有门控
+  `mixed_ns 43.95–44.42`，无门控 `43.80–44.33`，区间重叠；relaxed load
+  在测量分辨率以下。默认路径的 `cached` 计数（语料 8256 函数）：
+  `hit 92352 … cached 86880 checked 92352`，剩下 5472 是 7 张重放表的。
 
 ## 7. AArch64 的现状与风险
 
@@ -209,12 +233,38 @@ IR
     -stop-after=legalizer /tmp/i128.ll -o - | grep G_UADDO     # i64
 ```
 
+在 X86 上复现 extended LLT 现场（本轮加的 hook，默认关闭）：
+
+```bash
+cd /home/ubuntu/llvm/builds/table-classify
+T=/home/ubuntu/llvm/trees/table-classify/llvm/test/CodeGen/X86/GlobalISel/table-extended-llt.ll
+
+# 门控在位：答案缓存被关掉，规则号重放，kind 保住。
+./bin/llc -mtriple=x86_64 -global-isel -O0 -stop-after=legalizer \
+    -x86-gisel-extended-llt -x86-gisel-table-check \
+    -x86-gisel-table-stats $T -o /dev/null 2>&1 | grep -E 'cached|mismatch'
+#   x86-gisel-table-check: points 2866 compared 2866 mismatches 0 skipped 0 ...
+#   x86-gisel-table: hit 14 ... cached 0 checked 14 ...
+
+./bin/llc -mtriple=x86_64 -global-isel -O0 -stop-after=legalizer \
+    -x86-gisel-extended-llt $T -o - | grep -E 'G_UADDO|G_FADD'
+#   %13:_(i64), %19:_(i8) = G_UADDO ...   (kind 保住了)
+
+# 负控 1：删掉 queryImpl() 里的 !LLT::getUseExtended()，重编译，同一条命令
+#   LLVM ERROR: ... table 1/0/s64, chain 1/0/i64 for Opcode=55, Tys={i128, }
+
+# 负控 2：再把 sameSpelling() 换回 LLT::operator==，检查会全绿，
+# 而 MIR 是 s64/s8 —— 旧比较器看不见拼写。
+```
+
 ## 10. 未验证 / 待办
 
 - D-71 §5 和 12-ast-analysis §7 的原文未读，本文只核对它们概括的判据；
-- "AArch64 开答案缓存会重现 a076" 是读代码得出的结论，没有做实验；
-- `f64` 与 `s64` 在 extended LLT 下共用 scalar 类的现象没有单独写测试；
-- AArch64 的 7 张表没有 lit 级自检。
+- "AArch64 开答案缓存会重现 a076" 仍然是从 X86 的实验 + 共用代码推出来的：
+  X86 打开 extended LLT 后确实复现（见第 6 节），但 AArch64 本身没跑过；
+- `f64`/`s64` 现在由 `table-extended-llt.ll` 的 `f64`/`i64` MIR 覆盖；
+- AArch64 的 7 张表仍然没有 lit 级自检；
+- 路 2（kind 进键）没做，AArch64 开工前要决定是否用它替掉门控。
 
 ## 11. 人话版（先读这一节也可以）
 

@@ -18,6 +18,10 @@
   `llvm/lib/Target/AArch64/GISel/AArch64LegalizerTable.{h,cpp}`
 - 测量脚本：`llvm/utils/gisel-table-bench/`（`bench.py`、`gen_ir.py`）
 - 门禁：`llvm/test/CodeGen/X86/GlobalISel/table-check.ll`、
-  `table-addrspace.ll`、`table-check-32bit.ll`
+  `table-addrspace.ll`、`table-check-32bit.ll`、`table-extended-llt.ll`
+  （最后一个是答案缓存门控的正反两面：`cached 0` + MIR 里的 `i64`/`f64`）
+- extended LLT 的测试开关：`-x86-gisel-extended-llt`（hidden，默认关；
+  只到 `-stop-after=legalizer`，X86 的选择器不支持）
 
-版本：写于 `sync/table-classify` @ `b2b2b62815ba`（2026-11-01）。
+版本：写于 `sync/table-classify` @ `b2b2b62815ba`（2026-11-01）；
+第 6、9、10 节在门控落地后更新于 `233c198b5c10`。
