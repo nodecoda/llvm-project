@@ -226,6 +226,21 @@ static const Config Configs[] = {
      true},
 };
 
+// The four fixed full-corpus configurations from the test spec.  They are a
+// separate axis from the CTPOP sigma configurations above: the ledger needs
+// the negative guards (x87 without SSE, no CMOV) and the AVX-512 extensions
+// (DQI/BWI/LZCNT/BMI) that the sigma array does not vary.
+static const Config FullConfigs[] = {
+    {"C0", "i386", "-x87", false, false, false, false, false},
+    {"C1", "x86_64", "", true, false, false, false, false},
+    {"C2", "x86_64",
+     "+sse,+sse2,+sse4.1,+avx,+avx2,+avx512f,+avx512dq,+avx512bw,+avx512vl,"
+     "+popcnt,+avx512vpopcntdq,+lzcnt,+bmi,+cmov",
+     true, true, true, true, true},
+    {"C3", "i386", "+x87,+popcnt,+lzcnt,+bmi,+cmov", false, false, false, false,
+     true},
+};
+
 struct TypeClass {
   const char *ID;
   LLT Dst;
@@ -710,46 +725,34 @@ TEST_F(X86LegalizerDifferentialTest, DomainCountsMatchSpec) {
                << "  slot shape: single=" << SingleSlot
                << " double-nonmem=" << DoubleSlot << " mem=" << MemTables
                << " slot1-readers=" << Slot1Readers << "\n"
-               << "  classPair=" << ClassPair << " (spec 179952)\n"
-               << "  boundary=" << Boundary << " (spec 20568)\n"
+               << "  classPair=" << ClassPair << " (spec 182712)\n"
+               << "  boundary=" << Boundary << " (spec 23388)\n"
                << "  AS scalar=" << AScalar << " vector=" << ASVector
-               << " total=" << AS << " (spec 220/196/416)\n"
-               << "  per-config=" << PerConfig << " (spec 200936)\n"
-               << "  4 configs=" << FourConfigs << " (spec 803744)\n"
-               << "  deep 60-atom formula=" << Deep60 << " (spec 849624)\n";
+               << " total=" << AS << " (spec 230/206/436)\n"
+               << "  per-config=" << PerConfig << " (spec 206536)\n"
+               << "  4 configs=" << FourConfigs << " (spec 826144)\n"
+               << "  deep 60-atom formula=" << Deep60 << " (spec 900264)\n";
 
-  const bool SpecMatches =
-      SingleSlot == 34 && DoubleSlot == 23 && MemTables == 6 &&
-      Slot1Readers == 29 && ClassPair == 179952 && Boundary == 20568 &&
-      AScalar == 220 && ASVector == 196 && PerConfig == 200936 &&
-      FourConfigs == 803744 && Deep60 == 849624;
-  if (!SpecMatches) {
-    // The spec's 34/23 split counts a slot-1 read only when the rule text says
-    // typeIs(1, ...) or Q.Types[1].  X86_MERGE_VALUES, X86_UNMERGE_VALUES,
-    // X86_ANYEXT, X86_SEXT and X86_FCMP read slot 1 through sizeNotPow2(1) /
-    // scalarNarrowerThan(1, ...) / scalarWiderThan(1, ...), which are just as
-    // much Q.Types[1] accesses; a one-slot query would read past the end of
-    // LegalityQuery::Types.
-    GTEST_SKIP() << "domain counts differ from the spec; the actual values "
-                    "are printed above.  The spec's 34/23 split omits the "
-                    "five non-memory rule sets whose only Q.Types[1] reads go "
-                    "through slot-indexed predicates or mutations.";
-  }
-
-  EXPECT_EQ(SingleSlot, 34u);
-  EXPECT_EQ(DoubleSlot, 23u);
+  // v9 corrects the slot shape.  v8 counted a slot-1 read only when the rule
+  // text said typeIs(1, ...) or Q.Types[1].  X86_MERGE_VALUES,
+  // X86_UNMERGE_VALUES, X86_ANYEXT, X86_SEXT and X86_FCMP read slot 1 through
+  // sizeNotPow2(1) / scalarNarrowerThan(1, ...) / scalarWiderThan(1, ...),
+  // which are just as much Q.Types[1] accesses; a one-slot query would read
+  // past the end of LegalityQuery::Types.
+  EXPECT_EQ(SingleSlot, 29u);
+  EXPECT_EQ(DoubleSlot, 28u);
   EXPECT_EQ(MemTables, 6u);
-  EXPECT_EQ(Slot1Readers, 29u);
-  EXPECT_EQ(ClassPair, 179952u);
-  EXPECT_EQ(Boundary, 20568u);
-  EXPECT_EQ(AScalar, 220u);
-  EXPECT_EQ(ASVector, 196u);
-  EXPECT_EQ(AS, 416u);
-  EXPECT_EQ(PerConfig, 200936u);
-  EXPECT_EQ(FourConfigs, 803744u);
-  EXPECT_EQ(3 * (179952 + 102840 + 416), 849624);
-  EXPECT_EQ(220u, 63u * 2 + 29u * 2 + 6u * 4 + 6u * 2);
-  EXPECT_EQ(196u, 63u * 2 + 29u * 2 + 6u * 2);
+  EXPECT_EQ(Slot1Readers, 34u);
+  EXPECT_EQ(ClassPair, 182712u);
+  EXPECT_EQ(Boundary, 23388u);
+  EXPECT_EQ(AScalar, 230u);
+  EXPECT_EQ(ASVector, 206u);
+  EXPECT_EQ(AS, 436u);
+  EXPECT_EQ(PerConfig, 206536u);
+  EXPECT_EQ(FourConfigs, 826144u);
+  EXPECT_EQ(3 * (182712 + 116940 + 436), 900264);
+  EXPECT_EQ(230u, 63u * 2 + 34u * 2 + 6u * 4 + 6u * 2);
+  EXPECT_EQ(206u, 63u * 2 + 34u * 2 + 6u * 2);
 }
 
 struct BehaviorQuery {
@@ -1592,6 +1595,234 @@ TEST_F(X86LegalizerDifferentialTest, RuleIndexPinsFirstMatch) {
         << P.Name << ": want " << describe(P.Want) << ", oracle "
         << describe(Oracle.getAction(Q));
   }
+}
+
+// The denominator is the manifest's 189 literal `.td` rules, keyed by the same
+// (ruleSet, ruleIndex) the Core IR records.  The ledger records the first-match
+// witness of every rule the fixed C0-C3 domain can reach and names the rules it
+// cannot, so a new miss is a hard failure rather than a silently reduced
+// denominator.
+TEST_F(X86LegalizerDifferentialTest, LiteralRuleFirstMatchLedger) {
+  auto CoreBuffer = MemoryBuffer::getFile(X86_LEGALIZER_CORE_JSON);
+  ASSERT_TRUE(!!CoreBuffer) << X86_LEGALIZER_CORE_JSON;
+  auto CoreValue = json::parse((*CoreBuffer)->getBuffer());
+  ASSERT_TRUE(!!CoreValue) << toString(CoreValue.takeError());
+  const json::Object *Core = CoreValue->getAsObject();
+  ASSERT_NE(Core, nullptr);
+  const json::Array *Rulesets = Core->getArray("rulesets");
+  ASSERT_NE(Rulesets, nullptr);
+
+  std::map<std::string, unsigned> TableForSet;
+  for (unsigned I = 0; I != X86TestNumTables; ++I)
+    TableForSet.emplace(X86RuleIndexTableNames[I], I);
+
+  struct Target {
+    unsigned Table;
+    unsigned RuleIndex;
+    std::string Set;
+    int64_t Line;
+  };
+  using RuleKey = std::pair<unsigned, unsigned>;
+  std::map<RuleKey, Target> Targets;
+  for (const json::Value &RulesetValue : *Rulesets) {
+    const json::Object *Ruleset = RulesetValue.getAsObject();
+    ASSERT_NE(Ruleset, nullptr);
+    auto Def = Ruleset->getString("def");
+    ASSERT_TRUE(Def.has_value());
+    auto TableIt = TableForSet.find(Def->str());
+    ASSERT_NE(TableIt, TableForSet.end()) << Def->str();
+    const json::Array *Rules = Ruleset->getArray("rules");
+    ASSERT_NE(Rules, nullptr);
+    for (const json::Value &RuleValue : *Rules) {
+      const json::Object *Rule = RuleValue.getAsObject();
+      ASSERT_NE(Rule, nullptr);
+      auto RuleIndex = Rule->getInteger("rule_index");
+      ASSERT_TRUE(RuleIndex.has_value());
+      ASSERT_GE(*RuleIndex, 0);
+      int64_t Line = 0;
+      if (const json::Object *Origin = Rule->getObject("origin"))
+        Line = Origin->getInteger("line").value_or(0);
+      const RuleKey Key{TableIt->second, static_cast<unsigned>(*RuleIndex)};
+      Targets.emplace(Key, Target{Key.first, Key.second, Def->str(), Line});
+    }
+  }
+  ASSERT_EQ(Targets.size(), 189u)
+      << "literal rule denominator must be the manifest's 189 distinct "
+         "(def, rule_index) pairs";
+
+  // Two literal rules cannot be first-match in the fixed domain:
+  //
+  //   X86_IMPLICIT_DEF#14 (ScalarizeIf<scalarOrEltWiderThan(0, 64)>): its
+  //   guard is a strict subset of escaped rule #7's clamp-max guard
+  //   (scalarOrEltWiderThan(0, sMaxScalar), s32/s64), and #7 precedes it.
+  //   A v2s128/v3s128 probe still reports #7.
+  //
+  //   X86_BUILD_VECTOR#5 (MoreElementsToNextPow2): every vector class rep is
+  //   power-of-two-laned and caught by an earlier clamp; the only non-pow2
+  //   panel atom (v3s32) is caught by #3.  The rule is reachable with v3s1 or
+  //   v3p0, but those shapes are outside the fixed 12-atom panel.
+  //
+  // Any other miss fails, and so does one of these becoming reachable: the
+  // manifest and this list must be updated together.
+  auto RuleSetID = [&](StringRef Name) { return TableForSet.at(Name.str()); };
+  const std::set<RuleKey> KnownNotFirstMatch = {
+      {RuleSetID("X86_IMPLICIT_DEF"), 14}, {RuleSetID("X86_BUILD_VECTOR"), 5}};
+
+  std::vector<Sigma> Sigmas;
+  Sigmas.reserve(4);
+  for (unsigned CI = 0; CI != 4; ++CI) {
+    Sigmas.push_back(makeSigma(FullConfigs[CI]));
+    ASSERT_TRUE(Sigmas.back().STI) << FullConfigs[CI].ID;
+  }
+
+  // Only the rule identity is under test here.  The full domain includes
+  // points the chain would never see (a pointer where a scalar mutation is
+  // applied), and evaluating such a mutation asserts inside LLT.
+  struct MutationsOff {
+    bool &Flag;
+    explicit MutationsOff(bool &F) : Flag(F) { Flag = false; }
+    ~MutationsOff() { Flag = true; }
+  } MutationsOffGuard(X86EvalRuleIndexMutations);
+
+  std::vector<std::set<RuleKey>> ConfigHits(4);
+  std::map<RuleKey, unsigned> FirstConfig;
+  std::set<RuleKey> Union;
+  struct Witness {
+    unsigned ConfigIndex;
+    X86TablePoint Point;
+  };
+  std::map<RuleKey, Witness> Witnesses;
+
+  // The test spec assigns each rule to the first configuration that can
+  // first-match it, trying the most capable configuration first: C2, C1, C3,
+  // C0.  The hit sets are order-independent; the first-match distribution is
+  // this order's.
+  static const unsigned ConfigOrder[] = {2, 1, 3, 0};
+  for (unsigned OrderIdx = 0; OrderIdx != 4; ++OrderIdx) {
+    const unsigned CI = ConfigOrder[OrderIdx];
+    const X86Subtarget &STI = *Sigmas[CI].STI;
+    for (unsigned TI = 0; TI != X86TestNumTables; ++TI) {
+      const X86TestTable &T = X86TestTables[TI];
+      const std::optional<unsigned> Opcode = opcodeForName(T.Opcode);
+      ASSERT_TRUE(Opcode.has_value()) << T.Opcode;
+
+      enumerateTableDomain(
+          TI, 64,
+          [&](DomainKind, ArrayRef<LLT> Types, bool HasMem, LLT MemTy,
+              uint64_t Align) {
+            EXPECT_LE(Types.size(), 3u);
+            SmallVector<LLT, 3> TypeVec(Types.begin(), Types.end());
+            SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+            if (HasMem)
+              MemDescs.emplace_back(MemTy, Align, AtomicOrdering::NotAtomic,
+                                    AtomicOrdering::NotAtomic);
+            const LegalityQuery Q(*Opcode, TypeVec, MemDescs);
+            const std::optional<RuleHit> Hit = queryRuleIndex(TI, STI, Q);
+            if (!Hit)
+              return;
+            EXPECT_EQ(Hit->RuleSet, TI);
+            EXPECT_LT(Hit->RuleIndex, X86RuleIndexNumRules[TI]);
+            const RuleKey Key{TI, Hit->RuleIndex};
+            if (!Targets.count(Key))
+              return;
+            ConfigHits[CI].insert(Key);
+            Union.insert(Key);
+            FirstConfig.emplace(Key, CI);
+            if (Witnesses.count(Key))
+              return;
+            Witness W;
+            W.ConfigIndex = CI;
+            W.Point.Opcode = *Opcode;
+            W.Point.Name = T.Opcode;
+            W.Point.NumTypes = static_cast<uint8_t>(Types.size());
+            std::copy(Types.begin(), Types.end(), W.Point.Types);
+            W.Point.MemTy = MemTy;
+            W.Point.Align = Align;
+            W.Point.HasMem = HasMem;
+            Witnesses.emplace(Key, W);
+          });
+    }
+  }
+
+  // Every witness must reproduce the rule number it was recorded for.  This
+  // catches a ledger that remembers a hit the evaluator does not actually make.
+  unsigned RecheckFailures = 0;
+  for (const auto &Entry : Witnesses) {
+    const RuleKey &Key = Entry.first;
+    const Witness &W = Entry.second;
+    const X86Subtarget &STI = *Sigmas[W.ConfigIndex].STI;
+    ArrayRef<LLT> Types(W.Point.Types, W.Point.NumTypes);
+    SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+    if (W.Point.HasMem)
+      MemDescs.emplace_back(W.Point.MemTy, W.Point.Align,
+                            AtomicOrdering::NotAtomic,
+                            AtomicOrdering::NotAtomic);
+    const LegalityQuery Q(W.Point.Opcode, Types, MemDescs);
+    const std::optional<RuleHit> Hit = queryRuleIndex(Key.first, STI, Q);
+    if (!Hit || Hit->RuleSet != Key.first || Hit->RuleIndex != Key.second) {
+      ++RecheckFailures;
+      ADD_FAILURE() << "witness " << X86RuleIndexTableNames[Key.first] << "#"
+                    << Key.second << " (config "
+                    << FullConfigs[W.ConfigIndex].ID
+                    << ") no longer reproduces its rule index";
+    }
+  }
+
+  std::map<unsigned, unsigned> PerSet;
+  for (const RuleKey &Key : Union)
+    ++PerSet[Key.first];
+  unsigned PerSetSum = 0;
+  for (const auto &Entry : PerSet)
+    PerSetSum += Entry.second;
+
+  llvm::outs() << "literal rule first-match ledger:\n";
+  for (unsigned CI = 0; CI != 4; ++CI) {
+    unsigned First = 0;
+    for (const auto &Entry : FirstConfig)
+      if (Entry.second == CI)
+        ++First;
+    std::set<unsigned> HitSets;
+    for (const RuleKey &Key : ConfigHits[CI])
+      HitSets.insert(Key.first);
+    llvm::outs() << "  " << FullConfigs[CI].ID
+                 << " hit=" << ConfigHits[CI].size() << "/" << Targets.size()
+                 << " first-match=" << First << " sets=" << HitSets.size()
+                 << "/" << PerSet.size() << "\n";
+  }
+  llvm::outs() << "  union=" << Union.size() << "/" << Targets.size()
+               << " not-first-match=" << (Targets.size() - Union.size())
+               << " per-set-sum=" << PerSetSum << "\n";
+
+  unsigned UnexpectedMissing = 0;
+  for (const auto &Entry : Targets) {
+    const bool Hit = Union.count(Entry.first) != 0;
+    const bool Known = KnownNotFirstMatch.count(Entry.first) != 0;
+    if (!Hit && !Known) {
+      ++UnexpectedMissing;
+      const Target &T = Entry.second;
+      ADD_FAILURE() << "no first-match witness for " << T.Set << "#"
+                    << T.RuleIndex << " (.td line " << T.Line
+                    << "); no first-match witness over the C0-C3 domain";
+      continue;
+    }
+    if (Hit && Known)
+      ADD_FAILURE() << X86RuleIndexTableNames[Entry.first.first] << "#"
+                    << Entry.first.second
+                    << " is now first-match reachable; update the ledger and "
+                       "the manifest";
+  }
+
+  llvm::outs() << "  not-first-match=" << KnownNotFirstMatch.size() << ":";
+  for (const RuleKey &Key : KnownNotFirstMatch)
+    llvm::outs() << " " << X86RuleIndexTableNames[Key.first] << "#"
+                 << Key.second;
+  llvm::outs() << "\n";
+
+  const size_t Reachable = Targets.size() - KnownNotFirstMatch.size();
+  EXPECT_EQ(Union.size(), Reachable);
+  EXPECT_EQ(PerSetSum, Reachable);
+  EXPECT_EQ(UnexpectedMissing, 0u);
+  EXPECT_EQ(RecheckFailures, 0u);
 }
 
 // F1: the table's key has a single pointer class.  Every pointer collapses to

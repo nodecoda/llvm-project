@@ -2516,7 +2516,8 @@ class LegalizerTableEmitterImpl {
   /// test-only rule-index form (-gen-legalizer-rule-index); the numbering is
   /// the one X86LegalizerInfo.core.json records as rule_index.
   static void emitStep(raw_ostream &OS, StringRef Action, StringRef Indent,
-                       StringRef Mutation, StringRef RuleIdx = "") {
+                       StringRef Mutation, StringRef RuleIdx = "",
+                       StringRef MutationsFlag = "") {
     if (RuleIdx.empty()) {
       if (Mutation.empty()) {
         OS << Indent << "return {LegalizeActions::" << Action
@@ -2530,6 +2531,18 @@ class LegalizerTableEmitterImpl {
     }
     if (Mutation.empty()) {
       OS << Indent << "Out = {LegalizeActions::" << Action << ", 0, LLT{}};\n";
+    } else if (!MutationsFlag.empty()) {
+      // The mutation is what makes the step concrete, but a domain point the
+      // real chain would never see (a pointer in a scalar slot) can assert in
+      // LLT.  A caller that only needs the rule identity clears the flag.
+      OS << Indent << "if (" << MutationsFlag << ") {\n";
+      OS << Indent << "  auto M = (" << Mutation << ")(Q);\n";
+      OS << Indent << "  Out = {LegalizeActions::" << Action
+         << ", M.first, M.second};\n";
+      OS << Indent << "} else {\n";
+      OS << Indent << "  Out = {LegalizeActions::" << Action
+         << ", 0, LLT{}};\n";
+      OS << Indent << "}\n";
     } else {
       OS << Indent << "auto M = (" << Mutation << ")(Q);\n";
       OS << Indent << "Out = {LegalizeActions::" << Action
@@ -2563,6 +2576,8 @@ class LegalizerTableEmitterImpl {
   bool translateRule(const Record &Rule, std::string &Out, std::string &Why,
                      const unsigned *RuleIdx = nullptr) {
     const std::string RuleIdxText = RuleIdx ? std::to_string(*RuleIdx) : "";
+    const std::string MutationsFlag =
+        RuleIdx ? TablePrefix + "EvalRuleIndexMutations" : "";
     StringRef Name = builderName(Rule);
     std::vector<const Record *> Args = Rule.getValueAsListOfDefs("Args");
     const Record *B = Rule.getValueAsDef("Builder");
@@ -2612,7 +2627,7 @@ class LegalizerTableEmitterImpl {
     raw_string_ostream OS(Buf);
     auto EmitIf = [&](StringRef Cond, StringRef Act, StringRef Mut = "") {
       OS << "  if (" << Cond << ") {\n";
-      emitStep(OS, Act, "    ", Mut, RuleIdxText);
+      emitStep(OS, Act, "    ", Mut, RuleIdxText, MutationsFlag);
       OS << "  }\n";
     };
     auto EmitTypedIf = [&](StringRef Cond, StringRef Act, StringRef Idx,
@@ -3097,6 +3112,15 @@ public:
     OS << "//\n//"
           "===-----------------------------------------------------------------"
           "-----===//\n\n";
+
+    OS << "// Test-only switch: a match normally stores its concrete step, "
+          "but\n"
+          "// a domain point the real chain would never see (for example a\n"
+          "// pointer in a scalar mutation slot) can assert while evaluating "
+          "a\n"
+          "// mutation.  A caller that only needs the rule identity clears "
+          "it.\n";
+    OS << "static bool " << P << "EvalRuleIndexMutations = true;\n\n";
 
     // Translate every rule, keeping its position in the rule set.  A rule
     // whose builder has no table translation makes its whole rule set opaque,
