@@ -159,3 +159,6 @@ add_llvm_unittest(X86Tests
   X86LegalizerInfoReference.cpp
   X86SelectionDAGTest.cpp
   )
+
+target_compile_definitions(X86Tests PRIVATE
+  X86_LEGALIZER_TEST_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}")

@@ -29,6 +29,8 @@
 #include "x86-ctpop-atoms.h"
 #include "x86-ctpop-report.h"
 #include "x86-legalizer-pins.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/CodeGen/GlobalISel/LegalizerInfo.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/IR/Function.h"
@@ -36,11 +38,16 @@
 #include "llvm/IR/Module.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/JSON.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/SHA256.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/TargetParser/Triple.h"
 #include "gtest/gtest.h"
+#include <algorithm>
+#include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -274,6 +281,426 @@ static std::string describe(const LegalizeActionStep &S) {
   if (S.Action != Legal && S.Action != Unsupported && S.Action != Custom)
     OS << " idx=" << S.TypeIdx << " to=" << shortLLT(S.NewType);
   return OS.str();
+}
+
+//===----------------------------------------------------------------------===//
+// Reference provenance artifacts
+//===----------------------------------------------------------------------===//
+//
+// The reference's bytes are pinned by x86-ctpop-atoms.json, but a hash of the
+// source says nothing about what the oracle means.  These artifacts pin the
+// vocabulary and a behaviour fingerprint instead: every builder signature, the
+// LLT spellings the source uses, three concrete queries per table descriptor,
+// and the oracle's answer to each of those queries.
+
+static std::optional<std::string> readTestSourceFile(StringRef Name) {
+  std::string Path = std::string(X86_LEGALIZER_TEST_SRC_DIR) + "/" + Name.str();
+  auto Buffer = MemoryBuffer::getFile(Path);
+  if (!Buffer)
+    return std::nullopt;
+  return (*Buffer)->getBuffer().str();
+}
+
+static std::string sha256Hex(StringRef Data) {
+  return toHex(SHA256::hash(arrayRefFromStringRef(Data)), /*LowerCase=*/true);
+}
+
+static const Config *findConfig(StringRef ID) {
+  for (const Config &C : Configs)
+    if (ID == C.ID)
+      return &C;
+  return nullptr;
+}
+
+static std::optional<LLT> parseJSONLLT(StringRef S, unsigned PointerBits) {
+  if (S.consume_front("p")) {
+    unsigned AddressSpace = 0;
+    if (S.getAsInteger(10, AddressSpace))
+      return std::nullopt;
+    return LLT::pointer(AddressSpace, PointerBits);
+  }
+  if (S.consume_front("v")) {
+    const size_t Sep = S.find_first_of("ps");
+    if (Sep == StringRef::npos)
+      return std::nullopt;
+    unsigned Lanes = 0, Elem = 0;
+    if (S.take_front(Sep).getAsInteger(10, Lanes) ||
+        S.drop_front(Sep + 1).getAsInteger(10, Elem))
+      return std::nullopt;
+    if (S[Sep] == 'p')
+      return LLT::fixed_vector(Lanes, LLT::pointer(Elem, PointerBits));
+    return LLT::fixed_vector(Lanes, Elem);
+  }
+  if (S.consume_front("s")) {
+    unsigned Bits = 0;
+    if (S.getAsInteger(10, Bits))
+      return std::nullopt;
+    return LLT::scalar(Bits);
+  }
+  return std::nullopt;
+}
+
+static std::string jsonLLTName(LLT T) {
+  std::string S;
+  raw_string_ostream OS(S);
+  if (T.isPointer())
+    OS << "p" << T.getAddressSpace();
+  else if (T.isPointerVector())
+    OS << "v" << T.getNumElements() << "p"
+       << T.getElementType().getAddressSpace();
+  else if (T.isVector())
+    OS << "v" << T.getNumElements() << "s" << T.getScalarSizeInBits();
+  else
+    OS << "s" << T.getSizeInBits();
+  return OS.str();
+}
+
+static std::optional<unsigned> opcodeForName(StringRef Name) {
+  unsigned Opcode = StringSwitch<unsigned>(Name)
+                        .Case("G_ADD", G_ADD)
+                        .Case("G_AND", G_AND)
+                        .Case("G_ANYEXT", G_ANYEXT)
+                        .Case("G_BR", G_BR)
+                        .Case("G_BRCOND", G_BRCOND)
+                        .Case("G_BSWAP", G_BSWAP)
+                        .Case("G_BUILD_VECTOR", G_BUILD_VECTOR)
+                        .Case("G_CONCAT_VECTORS", G_CONCAT_VECTORS)
+                        .Case("G_CONSTANT", G_CONSTANT)
+                        .Case("G_CONSTANT_POOL", G_CONSTANT_POOL)
+                        .Case("G_CTLZ", G_CTLZ)
+                        .Case("G_CTPOP", G_CTPOP)
+                        .Case("G_CTTZ", G_CTTZ)
+                        .Case("G_CTTZ_ZERO_POISON", G_CTTZ_ZERO_POISON)
+                        .Case("G_DYN_STACKALLOC", G_DYN_STACKALLOC)
+                        .Case("G_EXTRACT", G_EXTRACT)
+                        .Case("G_FABS", G_FABS)
+                        .Case("G_FADD", G_FADD)
+                        .Case("G_FCMP", G_FCMP)
+                        .Case("G_FCONSTANT", G_FCONSTANT)
+                        .Case("G_FCOS", G_FCOS)
+                        .Case("G_FNEG", G_FNEG)
+                        .Case("G_FPEXT", G_FPEXT)
+                        .Case("G_FPEXTLOAD", G_FPEXTLOAD)
+                        .Case("G_FPTOSI", G_FPTOSI)
+                        .Case("G_FPTOUI", G_FPTOUI)
+                        .Case("G_FPTRUNC", G_FPTRUNC)
+                        .Case("G_FPTRUNCSTORE", G_FPTRUNCSTORE)
+                        .Case("G_FRAME_INDEX", G_FRAME_INDEX)
+                        .Case("G_FSQRT", G_FSQRT)
+                        .Case("G_GET_ROUNDING", G_GET_ROUNDING)
+                        .Case("G_GLOBAL_VALUE", G_GLOBAL_VALUE)
+                        .Case("G_ICMP", G_ICMP)
+                        .Case("G_IMPLICIT_DEF", G_IMPLICIT_DEF)
+                        .Case("G_INSERT", G_INSERT)
+                        .Case("G_INTRINSIC", G_INTRINSIC)
+                        .Case("G_INTRINSIC_ROUNDEVEN", G_INTRINSIC_ROUNDEVEN)
+                        .Case("G_INTTOPTR", G_INTTOPTR)
+                        .Case("G_INVOKE_REGION_START", G_INVOKE_REGION_START)
+                        .Case("G_IS_FPCLASS", G_IS_FPCLASS)
+                        .Case("G_LOAD", G_LOAD)
+                        .Case("G_LROUND", G_LROUND)
+                        .Case("G_MEMCPY", G_MEMCPY)
+                        .Case("G_MERGE_VALUES", G_MERGE_VALUES)
+                        .Case("G_MUL", G_MUL)
+                        .Case("G_PTRTOINT", G_PTRTOINT)
+                        .Case("G_PTR_ADD", G_PTR_ADD)
+                        .Case("G_SDIV", G_SDIV)
+                        .Case("G_SELECT", G_SELECT)
+                        .Case("G_SEXT", G_SEXT)
+                        .Case("G_SEXTLOAD", G_SEXTLOAD)
+                        .Case("G_SEXT_INREG", G_SEXT_INREG)
+                        .Case("G_SHL", G_SHL)
+                        .Case("G_SITOFP", G_SITOFP)
+                        .Case("G_SMULH", G_SMULH)
+                        .Case("G_STORE", G_STORE)
+                        .Case("G_TRAP", G_TRAP)
+                        .Case("G_TRUNC", G_TRUNC)
+                        .Case("G_UADDE", G_UADDE)
+                        .Case("G_UITOFP", G_UITOFP)
+                        .Case("G_UMIN", G_UMIN)
+                        .Case("G_UNMERGE_VALUES", G_UNMERGE_VALUES)
+                        .Case("G_ZEXTLOAD", G_ZEXTLOAD)
+                        .Default(~0u);
+  if (Opcode == ~0u)
+    return std::nullopt;
+  return Opcode;
+}
+
+struct BehaviorQuery {
+  std::string Id;
+  std::string Descriptor;
+  std::string Kind;
+  std::string Config;
+  std::string Opcode;
+  SmallVector<std::string, 3> Types;
+  bool HasMemDesc = false;
+  std::string MemTy;
+  uint64_t AlignBits = 0;
+};
+
+static std::optional<BehaviorQuery> parseBehaviorQuery(const json::Object &O) {
+  BehaviorQuery Q;
+  auto Id = O.getString("id");
+  auto Descriptor = O.getString("descriptor");
+  auto Kind = O.getString("kind");
+  auto Config = O.getString("config");
+  auto Opcode = O.getString("opcode");
+  if (!Id || !Descriptor || !Kind || !Config || !Opcode)
+    return std::nullopt;
+  Q.Id = Id->str();
+  Q.Descriptor = Descriptor->str();
+  Q.Kind = Kind->str();
+  Q.Config = Config->str();
+  Q.Opcode = Opcode->str();
+
+  const json::Array *Types = O.getArray("types");
+  if (!Types)
+    return std::nullopt;
+  for (const json::Value &V : *Types) {
+    auto S = V.getAsString();
+    if (!S)
+      return std::nullopt;
+    Q.Types.push_back(S->str());
+  }
+
+  if (const json::Object *MD = O.getObject("memdesc")) {
+    auto MemTy = MD->getString("memory_ty");
+    auto Align = MD->getInteger("align_bits");
+    if (!MemTy || !Align)
+      return std::nullopt;
+    Q.HasMemDesc = true;
+    Q.MemTy = MemTy->str();
+    Q.AlignBits = *Align;
+  } else if (const json::Value *MDV = O.get("memdesc")) {
+    if (!MDV->getAsNull())
+      return std::nullopt;
+  }
+  return Q;
+}
+
+static std::optional<unsigned>
+buildBehaviorQuery(const BehaviorQuery &BQ, unsigned PointerBits,
+                   SmallVectorImpl<LLT> &Types,
+                   SmallVectorImpl<LegalityQuery::MemDesc> &MemDescs) {
+  for (const std::string &Name : BQ.Types) {
+    auto T = parseJSONLLT(Name, PointerBits);
+    if (!T)
+      return std::nullopt;
+    Types.push_back(*T);
+  }
+  if (BQ.HasMemDesc) {
+    auto T = parseJSONLLT(BQ.MemTy, PointerBits);
+    if (!T)
+      return std::nullopt;
+    MemDescs.emplace_back(*T, BQ.AlignBits, AtomicOrdering::NotAtomic,
+                          AtomicOrdering::NotAtomic);
+  }
+  return opcodeForName(BQ.Opcode);
+}
+
+TEST(ReferenceProvenance, ArtifactIsConsistent) {
+  auto ProvText = readTestSourceFile("x86-legalizer-reference-provenance.json");
+  ASSERT_TRUE(ProvText.has_value());
+  auto Prov = json::parse(*ProvText);
+  ASSERT_TRUE(!!Prov) << toString(Prov.takeError());
+  const json::Object *P = Prov->getAsObject();
+  ASSERT_NE(P, nullptr);
+
+  EXPECT_EQ(P->getInteger("version").value_or(-1), 1);
+  EXPECT_EQ(P->getInteger("builder_count").value_or(-1), 58);
+  const json::Array *Builders = P->getArray("builders");
+  ASSERT_NE(Builders, nullptr);
+  EXPECT_EQ(Builders->size(), 58u);
+  std::set<std::string> UniqueBuilders;
+  for (const json::Value &V : *Builders) {
+    auto S = V.getAsString();
+    ASSERT_TRUE(S.has_value());
+    UniqueBuilders.insert(S->str());
+  }
+  EXPECT_EQ(UniqueBuilders.size(), 58u)
+      << "builder signatures must stay unique after sorting";
+
+  auto QueriesText = readTestSourceFile("x86-legalizer-behavior-queries.json");
+  ASSERT_TRUE(QueriesText.has_value());
+  auto QueriesValue = json::parse(*QueriesText);
+  ASSERT_TRUE(!!QueriesValue) << toString(QueriesValue.takeError());
+  const json::Object *Q = QueriesValue->getAsObject();
+  ASSERT_NE(Q, nullptr);
+  EXPECT_EQ(Q->getInteger("count").value_or(-1), 189);
+  EXPECT_EQ(P->getInteger("behavior_query_count").value_or(-1), 189);
+  EXPECT_EQ(Q->getString("config_default").value_or("").str(), "C2");
+  const json::Array *QueryArray = Q->getArray("queries");
+  ASSERT_NE(QueryArray, nullptr);
+  ASSERT_EQ(QueryArray->size(), 189u);
+
+  std::set<std::string> Ids;
+  std::map<std::string, std::set<std::string>> KindsByDescriptor;
+  for (const json::Value &V : *QueryArray) {
+    const json::Object *O = V.getAsObject();
+    ASSERT_NE(O, nullptr);
+    auto Id = O->getString("id");
+    auto Descriptor = O->getString("descriptor");
+    auto Kind = O->getString("kind");
+    ASSERT_TRUE(Id.has_value());
+    ASSERT_TRUE(Descriptor.has_value());
+    ASSERT_TRUE(Kind.has_value());
+    Ids.insert(Id->str());
+    KindsByDescriptor[Descriptor->str()].insert(Kind->str());
+  }
+  EXPECT_EQ(Ids.size(), 189u);
+  ASSERT_EQ(KindsByDescriptor.size(), 63u);
+  for (const auto &Entry : KindsByDescriptor) {
+    EXPECT_EQ(Entry.second.size(), 3u) << Entry.first;
+    for (const char *Kind : {"hit", "boundary", "as"})
+      EXPECT_TRUE(Entry.second.count(Kind)) << Entry.first << "/" << Kind;
+  }
+
+  auto ProvSha = P->getString("behavior_queries_sha256");
+  ASSERT_TRUE(ProvSha.has_value());
+  EXPECT_EQ(ProvSha->str(), sha256Hex(*QueriesText));
+
+  auto RefSha = P->getString("reference_sha256");
+  ASSERT_TRUE(RefSha.has_value());
+  auto ReferenceText = readTestSourceFile("X86LegalizerInfoReference.cpp");
+  ASSERT_TRUE(ReferenceText.has_value());
+  EXPECT_EQ(RefSha->str(), sha256Hex(*ReferenceText));
+
+  auto LiteralsText = readTestSourceFile("x86-legalizer-llt-literals.json");
+  ASSERT_TRUE(LiteralsText.has_value());
+  auto LiteralsValue = json::parse(*LiteralsText);
+  ASSERT_TRUE(!!LiteralsValue) << toString(LiteralsValue.takeError());
+  const json::Object *L = LiteralsValue->getAsObject();
+  ASSERT_NE(L, nullptr);
+  const json::Array *LiteralArray = L->getArray("literals");
+  ASSERT_NE(LiteralArray, nullptr);
+  EXPECT_EQ(L->getInteger("count").value_or(-1), (int64_t)LiteralArray->size());
+  EXPECT_EQ(LiteralArray->size(), 25u);
+  for (const json::Value &V : *LiteralArray) {
+    auto S = V.getAsString();
+    ASSERT_TRUE(S.has_value());
+    EXPECT_NE(ReferenceText->find(*S), std::string::npos)
+        << "literal not present in the reference source: " << *S;
+  }
+}
+
+TEST_F(X86LegalizerDifferentialTest, ReferenceBehaviorFingerprint) {
+  auto ProvText = readTestSourceFile("x86-legalizer-reference-provenance.json");
+  ASSERT_TRUE(ProvText.has_value());
+  auto Prov = json::parse(*ProvText);
+  ASSERT_TRUE(!!Prov) << toString(Prov.takeError());
+  const json::Object *P = Prov->getAsObject();
+  ASSERT_NE(P, nullptr);
+  auto Want = P->getString("reference_behavior_sha256");
+  ASSERT_TRUE(Want.has_value());
+
+  auto QueriesText = readTestSourceFile("x86-legalizer-behavior-queries.json");
+  ASSERT_TRUE(QueriesText.has_value());
+  auto QueriesValue = json::parse(*QueriesText);
+  ASSERT_TRUE(!!QueriesValue) << toString(QueriesValue.takeError());
+  const json::Object *Q = QueriesValue->getAsObject();
+  ASSERT_NE(Q, nullptr);
+  const json::Array *QueryArray = Q->getArray("queries");
+  ASSERT_NE(QueryArray, nullptr);
+
+  std::vector<std::pair<std::string, const json::Object *>> Sorted;
+  for (const json::Value &V : *QueryArray) {
+    const json::Object *O = V.getAsObject();
+    ASSERT_NE(O, nullptr);
+    auto Id = O->getString("id");
+    ASSERT_TRUE(Id.has_value());
+    Sorted.emplace_back(Id->str(), O);
+  }
+  std::sort(Sorted.begin(), Sorted.end(),
+            [](const auto &A, const auto &B) { return A.first < B.first; });
+
+  std::map<std::string, Sigma> Sigmas;
+  std::map<std::string, std::unique_ptr<X86LegalizerInfoReference>> Oracles;
+  std::string Encoded;
+  raw_string_ostream OS(Encoded);
+  for (const auto &Entry : Sorted) {
+    auto BQ = parseBehaviorQuery(*Entry.second);
+    ASSERT_TRUE(BQ.has_value()) << Entry.first;
+    const Config *C = findConfig(BQ->Config);
+    ASSERT_NE(C, nullptr) << BQ->Config;
+
+    auto SigmaIt = Sigmas.find(BQ->Config);
+    if (SigmaIt == Sigmas.end())
+      SigmaIt = Sigmas.emplace(BQ->Config, makeSigma(*C)).first;
+    ASSERT_TRUE(SigmaIt->second.STI) << BQ->Config;
+
+    auto &Oracle = Oracles[BQ->Config];
+    if (!Oracle)
+      Oracle = std::make_unique<X86LegalizerInfoReference>(
+          *SigmaIt->second.STI,
+          *static_cast<const X86TargetMachine *>(SigmaIt->second.TM.get()));
+
+    SmallVector<LLT, 3> Types;
+    SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+    auto Opcode = buildBehaviorQuery(*BQ, C->Is64 ? 64 : 32, Types, MemDescs);
+    ASSERT_TRUE(Opcode.has_value()) << BQ->Opcode;
+    LegalityQuery Query(*Opcode, Types, MemDescs);
+
+    LegalizeActionStep Step = Oracle->getAction(Query);
+    std::string ActionText;
+    raw_string_ostream ActionOS(ActionText);
+    ActionOS << Step.Action;
+    ActionOS.flush();
+    std::string NewType =
+        Step.NewType.isValid() ? jsonLLTName(Step.NewType) : "none";
+    OS << "{\"id\":\"" << BQ->Id << "\",\"action\":\"" << ActionText
+       << "\",\"type_idx\":" << Step.TypeIdx << ",\"new_type\":\"" << NewType
+       << "\"}\n";
+  }
+  OS.flush();
+
+  const std::string Computed = sha256Hex(Encoded);
+  if (Computed != Want->str())
+    ADD_FAILURE() << "computed=" << Computed;
+  EXPECT_EQ(Computed, Want->str());
+}
+
+TEST_F(X86LegalizerDifferentialTest, BehaviorQueryHitPointsAreTableHits) {
+  auto QueriesText = readTestSourceFile("x86-legalizer-behavior-queries.json");
+  ASSERT_TRUE(QueriesText.has_value());
+  auto QueriesValue = json::parse(*QueriesText);
+  ASSERT_TRUE(!!QueriesValue) << toString(QueriesValue.takeError());
+  const json::Object *Q = QueriesValue->getAsObject();
+  ASSERT_NE(Q, nullptr);
+  const json::Array *QueryArray = Q->getArray("queries");
+  ASSERT_NE(QueryArray, nullptr);
+
+  std::map<std::string, Sigma> Sigmas;
+  std::map<std::string, std::unique_ptr<TableLegalizerInfoForTest>> Tables;
+  unsigned Checked = 0;
+  for (const json::Value &V : *QueryArray) {
+    const json::Object *O = V.getAsObject();
+    ASSERT_NE(O, nullptr);
+    auto BQ = parseBehaviorQuery(*O);
+    ASSERT_TRUE(BQ.has_value());
+    if (BQ->Kind != "hit")
+      continue;
+
+    const Config *C = findConfig(BQ->Config);
+    ASSERT_NE(C, nullptr) << BQ->Config;
+    auto SigmaIt = Sigmas.find(BQ->Config);
+    if (SigmaIt == Sigmas.end())
+      SigmaIt = Sigmas.emplace(BQ->Config, makeSigma(*C)).first;
+    ASSERT_TRUE(SigmaIt->second.STI) << BQ->Config;
+
+    auto &Table = Tables[BQ->Config];
+    if (!Table)
+      Table = std::make_unique<TableLegalizerInfoForTest>(*SigmaIt->second.STI);
+
+    SmallVector<LLT, 3> Types;
+    SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+    auto Opcode = buildBehaviorQuery(*BQ, C->Is64 ? 64 : 32, Types, MemDescs);
+    ASSERT_TRUE(Opcode.has_value()) << BQ->Opcode;
+    LegalityQuery Query(*Opcode, Types, MemDescs);
+    X86LegalizerTable::Result R = Table->table().query(Query);
+    EXPECT_EQ(R.Kind, X86LegalizerTable::Answer::Hit) << BQ->Id;
+    ++Checked;
+  }
+  EXPECT_EQ(Checked, 63u);
 }
 
 TEST_F(X86LegalizerDifferentialTest, FeatureBoolsPerConfig) {

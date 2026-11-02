@@ -1,0 +1,33 @@
+{
+  "schema": "llvm-x86-legalizer-llt-literals",
+  "version": 1,
+  "source": "X86LegalizerInfoReference.cpp",
+  "count": 25,
+  "literals": [
+    "LLT::fixed_vector(16, 16)",
+    "LLT::fixed_vector(16, 32)",
+    "LLT::fixed_vector(16, 8)",
+    "LLT::fixed_vector(2, 32)",
+    "LLT::fixed_vector(2, 64)",
+    "LLT::fixed_vector(2, p0)",
+    "LLT::fixed_vector(32, 16)",
+    "LLT::fixed_vector(32, 8)",
+    "LLT::fixed_vector(4, 32)",
+    "LLT::fixed_vector(4, 64)",
+    "LLT::fixed_vector(4, 8)",
+    "LLT::fixed_vector(4, p0)",
+    "LLT::fixed_vector(64, 8)",
+    "LLT::fixed_vector(8, 16)",
+    "LLT::fixed_vector(8, 32)",
+    "LLT::fixed_vector(8, 64)",
+    "LLT::pointer(0, Subtarget.isTarget64BitLP64() ? 64 : 32)",
+    "LLT::scalar(1)",
+    "LLT::scalar(128)",
+    "LLT::scalar(16)",
+    "LLT::scalar(32)",
+    "LLT::scalar(32)",
+    "LLT::scalar(64)",
+    "LLT::scalar(8)",
+    "LLT::scalar(80)"
+  ]
+}

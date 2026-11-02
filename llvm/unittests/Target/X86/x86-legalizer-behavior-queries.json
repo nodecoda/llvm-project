@@ -1,0 +1,2247 @@
+{
+  "schema": "llvm-x86-legalizer-behavior-queries",
+  "version": 1,
+  "comment": "Hit points are a static approximation of the table's Answer::Hit: classifiable types, no non-zero address space and no pointer vector.  Boundary picks the first candidate with a different type tuple and the widest last type; ties keep the earlier point.",
+  "count": 189,
+  "config_default": "C2",
+  "queries": [
+    {
+      "id": "X86_ADD/as",
+      "descriptor": "X86_ADD",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_ADD",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_ADD/boundary",
+      "descriptor": "X86_ADD",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_ADD",
+      "types": [
+        "v16s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_ADD/hit",
+      "descriptor": "X86_ADD",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_ADD",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_AND/as",
+      "descriptor": "X86_AND",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_AND",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_AND/boundary",
+      "descriptor": "X86_AND",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_AND",
+      "types": [
+        "v64s8"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_AND/hit",
+      "descriptor": "X86_AND",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_AND",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_ANYEXT/as",
+      "descriptor": "X86_ANYEXT",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_ANYEXT",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_ANYEXT/boundary",
+      "descriptor": "X86_ANYEXT",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_ANYEXT",
+      "types": [
+        "s12",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_ANYEXT/hit",
+      "descriptor": "X86_ANYEXT",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_ANYEXT",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_BR/as",
+      "descriptor": "X86_BR",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_BR",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_BR/boundary",
+      "descriptor": "X86_BR",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_BR",
+      "types": [
+        "v3s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_BR/hit",
+      "descriptor": "X86_BR",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_BR",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_BRCOND/as",
+      "descriptor": "X86_BRCOND",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_BRCOND",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_BRCOND/boundary",
+      "descriptor": "X86_BRCOND",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_BRCOND",
+      "types": [
+        "v3s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_BRCOND/hit",
+      "descriptor": "X86_BRCOND",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_BRCOND",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_BSWAP/as",
+      "descriptor": "X86_BSWAP",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_BSWAP",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_BSWAP/boundary",
+      "descriptor": "X86_BSWAP",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_BSWAP",
+      "types": [
+        "v3s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_BSWAP/hit",
+      "descriptor": "X86_BSWAP",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_BSWAP",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_BUILD_VECTOR/as",
+      "descriptor": "X86_BUILD_VECTOR",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_BUILD_VECTOR",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_BUILD_VECTOR/boundary",
+      "descriptor": "X86_BUILD_VECTOR",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_BUILD_VECTOR",
+      "types": [
+        "v3s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_BUILD_VECTOR/hit",
+      "descriptor": "X86_BUILD_VECTOR",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_BUILD_VECTOR",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_CONCAT_VECTORS/as",
+      "descriptor": "X86_CONCAT_VECTORS",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_CONCAT_VECTORS",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_CONCAT_VECTORS/boundary",
+      "descriptor": "X86_CONCAT_VECTORS",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_CONCAT_VECTORS",
+      "types": [
+        "v64s8",
+        "v32s8"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_CONCAT_VECTORS/hit",
+      "descriptor": "X86_CONCAT_VECTORS",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_CONCAT_VECTORS",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_CONSTANT/as",
+      "descriptor": "X86_CONSTANT",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_CONSTANT",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_CONSTANT/boundary",
+      "descriptor": "X86_CONSTANT",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_CONSTANT",
+      "types": [
+        "v3s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_CONSTANT/hit",
+      "descriptor": "X86_CONSTANT",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_CONSTANT",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_CONSTANT_POOL/as",
+      "descriptor": "X86_CONSTANT_POOL",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_CONSTANT_POOL",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_CONSTANT_POOL/boundary",
+      "descriptor": "X86_CONSTANT_POOL",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_CONSTANT_POOL",
+      "types": [
+        "v3s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_CONSTANT_POOL/hit",
+      "descriptor": "X86_CONSTANT_POOL",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_CONSTANT_POOL",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_CTLZ/as",
+      "descriptor": "X86_CTLZ",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_CTLZ",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_CTLZ/boundary",
+      "descriptor": "X86_CTLZ",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_CTLZ",
+      "types": [
+        "s64",
+        "s64"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_CTLZ/hit",
+      "descriptor": "X86_CTLZ",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_CTLZ",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_CTPOP/as",
+      "descriptor": "X86_CTPOP",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_CTPOP",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_CTPOP/boundary",
+      "descriptor": "X86_CTPOP",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_CTPOP",
+      "types": [
+        "v16s32",
+        "v16s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_CTPOP/hit",
+      "descriptor": "X86_CTPOP",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_CTPOP",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_CTTZ/as",
+      "descriptor": "X86_CTTZ",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_CTTZ",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_CTTZ/boundary",
+      "descriptor": "X86_CTTZ",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_CTTZ",
+      "types": [
+        "s64",
+        "s64"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_CTTZ/hit",
+      "descriptor": "X86_CTTZ",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_CTTZ",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_CTTZ_ZERO_POISON/as",
+      "descriptor": "X86_CTTZ_ZERO_POISON",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_CTTZ_ZERO_POISON",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_CTTZ_ZERO_POISON/boundary",
+      "descriptor": "X86_CTTZ_ZERO_POISON",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_CTTZ_ZERO_POISON",
+      "types": [
+        "s64",
+        "s64"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_CTTZ_ZERO_POISON/hit",
+      "descriptor": "X86_CTTZ_ZERO_POISON",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_CTTZ_ZERO_POISON",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_DYN_STACKALLOC/as",
+      "descriptor": "X86_DYN_STACKALLOC",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_DYN_STACKALLOC",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_DYN_STACKALLOC/boundary",
+      "descriptor": "X86_DYN_STACKALLOC",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_DYN_STACKALLOC",
+      "types": [
+        "v3s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_DYN_STACKALLOC/hit",
+      "descriptor": "X86_DYN_STACKALLOC",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_DYN_STACKALLOC",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_EXTRACT/as",
+      "descriptor": "X86_EXTRACT",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_EXTRACT",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_EXTRACT/boundary",
+      "descriptor": "X86_EXTRACT",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_EXTRACT",
+      "types": [
+        "v16s8",
+        "v64s8"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_EXTRACT/hit",
+      "descriptor": "X86_EXTRACT",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_EXTRACT",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FABS/as",
+      "descriptor": "X86_FABS",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_FABS",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FABS/boundary",
+      "descriptor": "X86_FABS",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_FABS",
+      "types": [
+        "v3s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FABS/hit",
+      "descriptor": "X86_FABS",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_FABS",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FADD/as",
+      "descriptor": "X86_FADD",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_FADD",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FADD/boundary",
+      "descriptor": "X86_FADD",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_FADD",
+      "types": [
+        "v16s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FADD/hit",
+      "descriptor": "X86_FADD",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_FADD",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FCMP/as",
+      "descriptor": "X86_FCMP",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_FCMP",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FCMP/boundary",
+      "descriptor": "X86_FCMP",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_FCMP",
+      "types": [
+        "s12",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FCMP/hit",
+      "descriptor": "X86_FCMP",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_FCMP",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FCONSTANT/as",
+      "descriptor": "X86_FCONSTANT",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_FCONSTANT",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FCONSTANT/boundary",
+      "descriptor": "X86_FCONSTANT",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_FCONSTANT",
+      "types": [
+        "v3s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FCONSTANT/hit",
+      "descriptor": "X86_FCONSTANT",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_FCONSTANT",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FCOS/as",
+      "descriptor": "X86_FCOS",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_FCOS",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FCOS/boundary",
+      "descriptor": "X86_FCOS",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_FCOS",
+      "types": [
+        "v3s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FCOS/hit",
+      "descriptor": "X86_FCOS",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_FCOS",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FNEG/as",
+      "descriptor": "X86_FNEG",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_FNEG",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FNEG/boundary",
+      "descriptor": "X86_FNEG",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_FNEG",
+      "types": [
+        "v3s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FNEG/hit",
+      "descriptor": "X86_FNEG",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_FNEG",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FPEXT/as",
+      "descriptor": "X86_FPEXT",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_FPEXT",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FPEXT/boundary",
+      "descriptor": "X86_FPEXT",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_FPEXT",
+      "types": [
+        "v8s64",
+        "v8s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FPEXT/hit",
+      "descriptor": "X86_FPEXT",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_FPEXT",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FPEXTLOAD/as",
+      "descriptor": "X86_FPEXTLOAD",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_FPEXTLOAD",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": {
+        "memory_ty": "p0",
+        "align_bits": 1
+      }
+    },
+    {
+      "id": "X86_FPEXTLOAD/boundary",
+      "descriptor": "X86_FPEXTLOAD",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_FPEXTLOAD",
+      "types": [
+        "s80",
+        "p0"
+      ],
+      "memdesc": {
+        "memory_ty": "s32",
+        "align_bits": 1
+      }
+    },
+    {
+      "id": "X86_FPEXTLOAD/hit",
+      "descriptor": "X86_FPEXTLOAD",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_FPEXTLOAD",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": {
+        "memory_ty": "p0",
+        "align_bits": 1
+      }
+    },
+    {
+      "id": "X86_FPTOSI/as",
+      "descriptor": "X86_FPTOSI",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_FPTOSI",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FPTOSI/boundary",
+      "descriptor": "X86_FPTOSI",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_FPTOSI",
+      "types": [
+        "s32",
+        "s64"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FPTOSI/hit",
+      "descriptor": "X86_FPTOSI",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_FPTOSI",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FPTOUI/as",
+      "descriptor": "X86_FPTOUI",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_FPTOUI",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FPTOUI/boundary",
+      "descriptor": "X86_FPTOUI",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_FPTOUI",
+      "types": [
+        "s32",
+        "s64"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FPTOUI/hit",
+      "descriptor": "X86_FPTOUI",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_FPTOUI",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FPTRUNC/as",
+      "descriptor": "X86_FPTRUNC",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_FPTRUNC",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FPTRUNC/boundary",
+      "descriptor": "X86_FPTRUNC",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_FPTRUNC",
+      "types": [
+        "v8s32",
+        "v8s64"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FPTRUNC/hit",
+      "descriptor": "X86_FPTRUNC",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_FPTRUNC",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FPTRUNCSTORE/as",
+      "descriptor": "X86_FPTRUNCSTORE",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_FPTRUNCSTORE",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": {
+        "memory_ty": "p0",
+        "align_bits": 1
+      }
+    },
+    {
+      "id": "X86_FPTRUNCSTORE/boundary",
+      "descriptor": "X86_FPTRUNCSTORE",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_FPTRUNCSTORE",
+      "types": [
+        "s80",
+        "p0"
+      ],
+      "memdesc": {
+        "memory_ty": "s32",
+        "align_bits": 1
+      }
+    },
+    {
+      "id": "X86_FPTRUNCSTORE/hit",
+      "descriptor": "X86_FPTRUNCSTORE",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_FPTRUNCSTORE",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": {
+        "memory_ty": "p0",
+        "align_bits": 1
+      }
+    },
+    {
+      "id": "X86_FRAME_INDEX/as",
+      "descriptor": "X86_FRAME_INDEX",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_FRAME_INDEX",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FRAME_INDEX/boundary",
+      "descriptor": "X86_FRAME_INDEX",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_FRAME_INDEX",
+      "types": [
+        "v3s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FRAME_INDEX/hit",
+      "descriptor": "X86_FRAME_INDEX",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_FRAME_INDEX",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FSQRT/as",
+      "descriptor": "X86_FSQRT",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_FSQRT",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FSQRT/boundary",
+      "descriptor": "X86_FSQRT",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_FSQRT",
+      "types": [
+        "v3s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_FSQRT/hit",
+      "descriptor": "X86_FSQRT",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_FSQRT",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_GET_ROUNDING/as",
+      "descriptor": "X86_GET_ROUNDING",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_GET_ROUNDING",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_GET_ROUNDING/boundary",
+      "descriptor": "X86_GET_ROUNDING",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_GET_ROUNDING",
+      "types": [
+        "v3s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_GET_ROUNDING/hit",
+      "descriptor": "X86_GET_ROUNDING",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_GET_ROUNDING",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_GLOBAL_VALUE/as",
+      "descriptor": "X86_GLOBAL_VALUE",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_GLOBAL_VALUE",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_GLOBAL_VALUE/boundary",
+      "descriptor": "X86_GLOBAL_VALUE",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_GLOBAL_VALUE",
+      "types": [
+        "v3s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_GLOBAL_VALUE/hit",
+      "descriptor": "X86_GLOBAL_VALUE",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_GLOBAL_VALUE",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_ICMP/as",
+      "descriptor": "X86_ICMP",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_ICMP",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_ICMP/boundary",
+      "descriptor": "X86_ICMP",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_ICMP",
+      "types": [
+        "s8",
+        "s64"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_ICMP/hit",
+      "descriptor": "X86_ICMP",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_ICMP",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_IMPLICIT_DEF/as",
+      "descriptor": "X86_IMPLICIT_DEF",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_IMPLICIT_DEF",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_IMPLICIT_DEF/boundary",
+      "descriptor": "X86_IMPLICIT_DEF",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_IMPLICIT_DEF",
+      "types": [
+        "v64s8"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_IMPLICIT_DEF/hit",
+      "descriptor": "X86_IMPLICIT_DEF",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_IMPLICIT_DEF",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_INSERT/as",
+      "descriptor": "X86_INSERT",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_INSERT",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_INSERT/boundary",
+      "descriptor": "X86_INSERT",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_INSERT",
+      "types": [
+        "v64s8",
+        "v32s8"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_INSERT/hit",
+      "descriptor": "X86_INSERT",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_INSERT",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_INTRINSIC/as",
+      "descriptor": "X86_INTRINSIC",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_INTRINSIC",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_INTRINSIC/boundary",
+      "descriptor": "X86_INTRINSIC",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_INTRINSIC",
+      "types": [
+        "v3s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_INTRINSIC/hit",
+      "descriptor": "X86_INTRINSIC",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_INTRINSIC",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_INTRINSIC_ROUNDEVEN/as",
+      "descriptor": "X86_INTRINSIC_ROUNDEVEN",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_INTRINSIC_ROUNDEVEN",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_INTRINSIC_ROUNDEVEN/boundary",
+      "descriptor": "X86_INTRINSIC_ROUNDEVEN",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_INTRINSIC_ROUNDEVEN",
+      "types": [
+        "v3s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_INTRINSIC_ROUNDEVEN/hit",
+      "descriptor": "X86_INTRINSIC_ROUNDEVEN",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_INTRINSIC_ROUNDEVEN",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_INTTOPTR/as",
+      "descriptor": "X86_INTTOPTR",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_INTTOPTR",
+      "types": [
+        "p1",
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_INTTOPTR/boundary",
+      "descriptor": "X86_INTTOPTR",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_INTTOPTR",
+      "types": [
+        "s12",
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_INTTOPTR/hit",
+      "descriptor": "X86_INTTOPTR",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_INTTOPTR",
+      "types": [
+        "p0",
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_INVOKE_REGION_START/as",
+      "descriptor": "X86_INVOKE_REGION_START",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_INVOKE_REGION_START",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_INVOKE_REGION_START/boundary",
+      "descriptor": "X86_INVOKE_REGION_START",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_INVOKE_REGION_START",
+      "types": [
+        "v3s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_INVOKE_REGION_START/hit",
+      "descriptor": "X86_INVOKE_REGION_START",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_INVOKE_REGION_START",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_IS_FPCLASS/as",
+      "descriptor": "X86_IS_FPCLASS",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_IS_FPCLASS",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_IS_FPCLASS/boundary",
+      "descriptor": "X86_IS_FPCLASS",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_IS_FPCLASS",
+      "types": [
+        "s1",
+        "s80"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_IS_FPCLASS/hit",
+      "descriptor": "X86_IS_FPCLASS",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_IS_FPCLASS",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_LOAD/as",
+      "descriptor": "X86_LOAD",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_LOAD",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": {
+        "memory_ty": "p0",
+        "align_bits": 1
+      }
+    },
+    {
+      "id": "X86_LOAD/boundary",
+      "descriptor": "X86_LOAD",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_LOAD",
+      "types": [
+        "s8",
+        "p0"
+      ],
+      "memdesc": {
+        "memory_ty": "s8",
+        "align_bits": 1
+      }
+    },
+    {
+      "id": "X86_LOAD/hit",
+      "descriptor": "X86_LOAD",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_LOAD",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": {
+        "memory_ty": "p0",
+        "align_bits": 1
+      }
+    },
+    {
+      "id": "X86_LROUND/as",
+      "descriptor": "X86_LROUND",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_LROUND",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_LROUND/boundary",
+      "descriptor": "X86_LROUND",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_LROUND",
+      "types": [
+        "s12",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_LROUND/hit",
+      "descriptor": "X86_LROUND",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_LROUND",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_MEMCPY/as",
+      "descriptor": "X86_MEMCPY",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_MEMCPY",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_MEMCPY/boundary",
+      "descriptor": "X86_MEMCPY",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_MEMCPY",
+      "types": [
+        "v3s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_MEMCPY/hit",
+      "descriptor": "X86_MEMCPY",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_MEMCPY",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_MERGE_VALUES/as",
+      "descriptor": "X86_MERGE_VALUES",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_MERGE_VALUES",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_MERGE_VALUES/boundary",
+      "descriptor": "X86_MERGE_VALUES",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_MERGE_VALUES",
+      "types": [
+        "s12",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_MERGE_VALUES/hit",
+      "descriptor": "X86_MERGE_VALUES",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_MERGE_VALUES",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_MUL/as",
+      "descriptor": "X86_MUL",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_MUL",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_MUL/boundary",
+      "descriptor": "X86_MUL",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_MUL",
+      "types": [
+        "v16s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_MUL/hit",
+      "descriptor": "X86_MUL",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_MUL",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_PTRTOINT/as",
+      "descriptor": "X86_PTRTOINT",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_PTRTOINT",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_PTRTOINT/boundary",
+      "descriptor": "X86_PTRTOINT",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_PTRTOINT",
+      "types": [
+        "s1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_PTRTOINT/hit",
+      "descriptor": "X86_PTRTOINT",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_PTRTOINT",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_PTR_ADD/as",
+      "descriptor": "X86_PTR_ADD",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_PTR_ADD",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_PTR_ADD/boundary",
+      "descriptor": "X86_PTR_ADD",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_PTR_ADD",
+      "types": [
+        "p0",
+        "s64"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_PTR_ADD/hit",
+      "descriptor": "X86_PTR_ADD",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_PTR_ADD",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_SDIV/as",
+      "descriptor": "X86_SDIV",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_SDIV",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_SDIV/boundary",
+      "descriptor": "X86_SDIV",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_SDIV",
+      "types": [
+        "v3s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_SDIV/hit",
+      "descriptor": "X86_SDIV",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_SDIV",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_SELECT/as",
+      "descriptor": "X86_SELECT",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_SELECT",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_SELECT/boundary",
+      "descriptor": "X86_SELECT",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_SELECT",
+      "types": [
+        "s12",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_SELECT/hit",
+      "descriptor": "X86_SELECT",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_SELECT",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_SEXT/as",
+      "descriptor": "X86_SEXT",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_SEXT",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_SEXT/boundary",
+      "descriptor": "X86_SEXT",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_SEXT",
+      "types": [
+        "s12",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_SEXT/hit",
+      "descriptor": "X86_SEXT",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_SEXT",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_SEXTLOAD/as",
+      "descriptor": "X86_SEXTLOAD",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_SEXTLOAD",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": {
+        "memory_ty": "p0",
+        "align_bits": 1
+      }
+    },
+    {
+      "id": "X86_SEXTLOAD/boundary",
+      "descriptor": "X86_SEXTLOAD",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_SEXTLOAD",
+      "types": [
+        "s16",
+        "p0"
+      ],
+      "memdesc": {
+        "memory_ty": "s8",
+        "align_bits": 1
+      }
+    },
+    {
+      "id": "X86_SEXTLOAD/hit",
+      "descriptor": "X86_SEXTLOAD",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_SEXTLOAD",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": {
+        "memory_ty": "p0",
+        "align_bits": 1
+      }
+    },
+    {
+      "id": "X86_SEXT_INREG/as",
+      "descriptor": "X86_SEXT_INREG",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_SEXT_INREG",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_SEXT_INREG/boundary",
+      "descriptor": "X86_SEXT_INREG",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_SEXT_INREG",
+      "types": [
+        "v3s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_SEXT_INREG/hit",
+      "descriptor": "X86_SEXT_INREG",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_SEXT_INREG",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_SHL/as",
+      "descriptor": "X86_SHL",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_SHL",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_SHL/boundary",
+      "descriptor": "X86_SHL",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_SHL",
+      "types": [
+        "s12",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_SHL/hit",
+      "descriptor": "X86_SHL",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_SHL",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_SITOFP/as",
+      "descriptor": "X86_SITOFP",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_SITOFP",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_SITOFP/boundary",
+      "descriptor": "X86_SITOFP",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_SITOFP",
+      "types": [
+        "s32",
+        "s64"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_SITOFP/hit",
+      "descriptor": "X86_SITOFP",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_SITOFP",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_SMULH/as",
+      "descriptor": "X86_SMULH",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_SMULH",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_SMULH/boundary",
+      "descriptor": "X86_SMULH",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_SMULH",
+      "types": [
+        "v3s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_SMULH/hit",
+      "descriptor": "X86_SMULH",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_SMULH",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_STORE/as",
+      "descriptor": "X86_STORE",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_STORE",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": {
+        "memory_ty": "p0",
+        "align_bits": 1
+      }
+    },
+    {
+      "id": "X86_STORE/boundary",
+      "descriptor": "X86_STORE",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_STORE",
+      "types": [
+        "s8",
+        "p0"
+      ],
+      "memdesc": {
+        "memory_ty": "s8",
+        "align_bits": 1
+      }
+    },
+    {
+      "id": "X86_STORE/hit",
+      "descriptor": "X86_STORE",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_STORE",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": {
+        "memory_ty": "p0",
+        "align_bits": 1
+      }
+    },
+    {
+      "id": "X86_TRAP/as",
+      "descriptor": "X86_TRAP",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_TRAP",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_TRAP/boundary",
+      "descriptor": "X86_TRAP",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_TRAP",
+      "types": [
+        "v3s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_TRAP/hit",
+      "descriptor": "X86_TRAP",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_TRAP",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_TRUNC/as",
+      "descriptor": "X86_TRUNC",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_TRUNC",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_TRUNC/boundary",
+      "descriptor": "X86_TRUNC",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_TRUNC",
+      "types": [
+        "s1",
+        "s128"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_TRUNC/hit",
+      "descriptor": "X86_TRUNC",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_TRUNC",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_UADDE/as",
+      "descriptor": "X86_UADDE",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_UADDE",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_UADDE/boundary",
+      "descriptor": "X86_UADDE",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_UADDE",
+      "types": [
+        "s12",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_UADDE/hit",
+      "descriptor": "X86_UADDE",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_UADDE",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_UITOFP/as",
+      "descriptor": "X86_UITOFP",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_UITOFP",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_UITOFP/boundary",
+      "descriptor": "X86_UITOFP",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_UITOFP",
+      "types": [
+        "s32",
+        "s64"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_UITOFP/hit",
+      "descriptor": "X86_UITOFP",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_UITOFP",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_UMIN/as",
+      "descriptor": "X86_UMIN",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_UMIN",
+      "types": [
+        "p1"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_UMIN/boundary",
+      "descriptor": "X86_UMIN",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_UMIN",
+      "types": [
+        "v3s32"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_UMIN/hit",
+      "descriptor": "X86_UMIN",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_UMIN",
+      "types": [
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_UNMERGE_VALUES/as",
+      "descriptor": "X86_UNMERGE_VALUES",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_UNMERGE_VALUES",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_UNMERGE_VALUES/boundary",
+      "descriptor": "X86_UNMERGE_VALUES",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_UNMERGE_VALUES",
+      "types": [
+        "s12",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_UNMERGE_VALUES/hit",
+      "descriptor": "X86_UNMERGE_VALUES",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_UNMERGE_VALUES",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": null
+    },
+    {
+      "id": "X86_ZEXTLOAD/as",
+      "descriptor": "X86_ZEXTLOAD",
+      "kind": "as",
+      "config": "C2",
+      "opcode": "G_ZEXTLOAD",
+      "types": [
+        "p1",
+        "p0"
+      ],
+      "memdesc": {
+        "memory_ty": "p0",
+        "align_bits": 1
+      }
+    },
+    {
+      "id": "X86_ZEXTLOAD/boundary",
+      "descriptor": "X86_ZEXTLOAD",
+      "kind": "boundary",
+      "config": "C2",
+      "opcode": "G_ZEXTLOAD",
+      "types": [
+        "s16",
+        "p0"
+      ],
+      "memdesc": {
+        "memory_ty": "s8",
+        "align_bits": 1
+      }
+    },
+    {
+      "id": "X86_ZEXTLOAD/hit",
+      "descriptor": "X86_ZEXTLOAD",
+      "kind": "hit",
+      "config": "C2",
+      "opcode": "G_ZEXTLOAD",
+      "types": [
+        "p0",
+        "p0"
+      ],
+      "memdesc": {
+        "memory_ty": "p0",
+        "align_bits": 1
+      }
+    }
+  ]
+}
