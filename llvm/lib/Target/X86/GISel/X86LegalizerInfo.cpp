@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "X86LegalizerInfo.h"
+#include "X86LegalizerTable.h"
 #include "X86Subtarget.h"
 #include "X86TargetMachine.h"
 #include "llvm/CodeGen/GlobalISel/GenericMachineInstrs.h"
@@ -25,12 +26,23 @@
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/IntrinsicsX86.h"
 #include "llvm/IR/Type.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
 using namespace MIPatternMatch;
 using namespace TargetOpcode;
 using namespace LegalizeActions;
 using namespace LegalityPredicates;
+
+static cl::opt<bool>
+    X86GISelTable("x86-gisel-table", cl::Hidden, cl::init(false),
+                  cl::desc("Answer X86 legalizer queries from a table instead "
+                           "of the rule chains"));
+
+static cl::opt<bool> X86GISelTableCheck(
+    "x86-gisel-table-check", cl::Hidden, cl::init(false),
+    cl::desc("Check the X86 legalizer table against the rule chains"));
 
 X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI,
                                    const X86TargetMachine &TM)
@@ -43,6 +55,22 @@ X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI,
 #include "X86LegalizerInfo.inc"
 
   verify(*STI.getInstrInfo());
+
+  if (X86GISelTable)
+    setTable(std::make_unique<X86LegalizerTable>(*this));
+
+  if (X86GISelTableCheck) {
+    // The enumerated domain is derived from the 64-bit rule set; asking the
+    // 32-bit chain those questions can reach mutations that are invalid for
+    // pointer types.  A per-subtarget domain will come with the generated
+    // table; until then, do not run the check where it does not apply.
+    if (!STI.is64Bit())
+      errs() << "x86-gisel-table-check: no 32-bit domain yet, skipping\n";
+    else {
+      X86LegalizerTable Table(*this);
+      Table.selfCheck(errs());
+    }
+  }
 }
 
 bool X86LegalizerInfo::legalizeCustom(LegalizerHelper &Helper, MachineInstr &MI,

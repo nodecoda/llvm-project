@@ -106,6 +106,7 @@ set(sources
   GISel/X86CallLowering.cpp
   GISel/X86InstructionSelector.cpp
   GISel/X86LegalizerInfo.cpp
+  GISel/X86LegalizerTable.cpp
   GISel/X86PostLegalizerCombiner.cpp
   GISel/X86PreLegalizerCombiner.cpp
   GISel/X86RegisterBankInfo.cpp
