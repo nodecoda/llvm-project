@@ -23,11 +23,14 @@
 // target .td that pulls in llvm/Target/Target.td.
 //
 // LegalizeOpaqueRule is the escape hatch for guards that are still raw C++.
-// Three of the 309 rules need it, and each one is a guard the vocabulary cannot
-// spell yet: G_LROUND returns a pair<unsigned, LLT> mutation, G_STORE compares
-// Types[0] against MMODescrs[0].MemoryTy, and G_EXTRACT selects its type slots
-// from Query.Opcode.  The merge/unmerge width check used to be the fourth; it
-// is now a sizeIs dag, which is the same predicate the C++ wrote by hand.
+// Two of the 309 rules need it, and each one is a guard the vocabulary cannot
+// spell yet: G_STORE compares Types[0] against MMODescrs[0].MemoryTy, and
+// G_EXTRACT selects its type slots from Query.Opcode.  G_LROUND used to be the
+// third -- its guard could be written down but its mutation (a constant
+// pair<unsigned, LLT>) had no rule form; it is now a minScalarIf, which the
+// C++ builder implements as the same widen.  The merge/unmerge width check
+// used to be the fourth; it is now a sizeIs dag, which is the same predicate
+// the C++ wrote by hand.
 //
 // Four `for (Op : {...})` loops in the former C++ produced one rule set per
 // opcode.  Each loop body existed once, so its members could not disagree;
@@ -84,6 +87,7 @@ def NotCMOV : LegalizePredicateDag<(not HasCMOV)>;
 // to be a raw lambda can now be an AST.
 def IsS32In0 : LegalizeTypePredicate<"typeIs(0, X86_s32)">;
 def IsS64In0 : LegalizeTypePredicate<"typeIs(0, X86_s64)">;
+def IsS16In1 : LegalizeTypePredicate<"typeIs(1, X86_s16)">;
 def NarrowerIn1 : LegalizeTypePredicate<"scalarNarrowerThan(1, Is64Bit ? 64 : 32)">;
 
 // !HasAVX512 && ((HasSSE1 && typeIs(0, s32)) || (HasSSE2 && typeIs(0, s64)))
@@ -255,13 +259,10 @@ def X86_CONSTANT : LegalizeRuleSet<["G_CONSTANT"]> {
 
 def X86_LROUND : LegalizeRuleSet<["G_LROUND", "G_LLROUND"]> {
   let Rules = [
-    LegalizeOpaqueRule<BuilderWidenScalarIf, [{
-
-      typeIs(1, X86_s16),
-      [=](const LegalityQuery &) {
-        return std::pair<unsigned, LLT>(1, X86_s32);
-      }
-    }]>,
+    // The former opaque body returned (slot 1, s32) unconditionally for an
+    // s16 slot; that is exactly minScalarIf on the same guard, and the
+    // table's step can express it.
+    MinScalarIf<IsS16In1, 1, X86_s32>,
     Libcall,
   ];
 }
