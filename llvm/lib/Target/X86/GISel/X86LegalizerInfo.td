@@ -36,6 +36,7 @@ include "llvm/Target/LegalizerInfo.td"
 /// Subtarget-feature booleans the rules are written in terms of.  The record
 /// name is the C++ identifier -gen-legalizer declares.
 def Is64Bit : LegalizeFeature<"Subtarget.is64Bit()">;
+def HasSSE1 : LegalizeFeature<"Subtarget.hasSSE1()">;
 def HasSSE2 : LegalizeFeature<"Subtarget.hasSSE2()">;
 def HasSSE41 : LegalizeFeature<"Subtarget.hasSSE41()">;
 def HasAVX : LegalizeFeature<"Subtarget.hasAVX()">;
@@ -88,14 +89,21 @@ def X86_s80 : LegalizeNamedType<"LLT::scalar(80)">;
 def X86_s128 : LegalizeNamedType<"LLT::scalar(128)">;
 def X86_sMaxScalar : LegalizeNamedType<"Subtarget.is64Bit() ? X86_s64 : X86_s32">;
 
+def X86_v2s32 : LegalizeNamedType<"LLT::fixed_vector(2, 32)">;
+def X86_v4s8 : LegalizeNamedType<"LLT::fixed_vector(4, 8)">;
+
 def X86_v16s8 : LegalizeNamedType<"LLT::fixed_vector(16, 8)">;
 def X86_v8s16 : LegalizeNamedType<"LLT::fixed_vector(8, 16)">;
 def X86_v4s32 : LegalizeNamedType<"LLT::fixed_vector(4, 32)">;
 def X86_v2s64 : LegalizeNamedType<"LLT::fixed_vector(2, 64)">;
+def X86_v2p0 : LegalizeNamedType<"LLT::fixed_vector(2, X86_p0)">;
+
 def X86_v32s8 : LegalizeNamedType<"LLT::fixed_vector(32, 8)">;
 def X86_v16s16 : LegalizeNamedType<"LLT::fixed_vector(16, 16)">;
 def X86_v8s32 : LegalizeNamedType<"LLT::fixed_vector(8, 32)">;
 def X86_v4s64 : LegalizeNamedType<"LLT::fixed_vector(4, 64)">;
+def X86_v4p0 : LegalizeNamedType<"LLT::fixed_vector(4, X86_p0)">;
+
 def X86_v64s8 : LegalizeNamedType<"LLT::fixed_vector(64, 8)">;
 def X86_v32s16 : LegalizeNamedType<"LLT::fixed_vector(32, 16)">;
 def X86_v16s32 : LegalizeNamedType<"LLT::fixed_vector(16, 32)">;
@@ -418,6 +426,93 @@ def X86_GLOBAL_VALUE : LegalizeRuleSet<["G_GLOBAL_VALUE"]> {
 // missing from one list does not fail to compile: it silently legalizes worse
 // on one subtarget.  Here the disagreement is the parameter and nothing else
 // can drift.
+multiclass X86_MemOp<string Op, list<string> Note, list<LegalizeRule> Tail> {
+  def NAME : LegalizeRuleSet<[Op]> {
+    let Comments = Note;
+    let Rules = [
+      LegalForMemDesc<[LegalizeMemDesc<X86_s8, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s16, X86_p0, X86_s16, 1>,
+                       LegalizeMemDesc<X86_s32, X86_p0, X86_s32, 1>, LegalizeMemDesc<X86_s80, X86_p0, X86_s80, 1>,
+                       LegalizeMemDesc<X86_p0, X86_p0, X86_p0, 1>, LegalizeMemDesc<X86_v4s8, X86_p0, X86_v4s8, 1>]>,
+      LegalForMemDescIf<Is64Bit,
+                        [LegalizeMemDesc<X86_s64, X86_p0, X86_s64, 1>, LegalizeMemDesc<X86_v2s32, X86_p0, X86_v2s32, 1>]>,
+      LegalForMemDescIf<HasSSE1, [LegalizeMemDesc<X86_v4s32, X86_p0, X86_v4s32, 1>]>,
+      LegalForMemDescIf<HasSSE2,
+                        [LegalizeMemDesc<X86_v16s8, X86_p0, X86_v16s8, 1>, LegalizeMemDesc<X86_v8s16, X86_p0, X86_v8s16, 1>,
+                         LegalizeMemDesc<X86_v2s64, X86_p0, X86_v2s64, 1>, LegalizeMemDesc<X86_v2p0, X86_p0, X86_v2p0, 1>]>,
+      LegalForMemDescIf<HasAVX,
+                        [LegalizeMemDesc<X86_v32s8, X86_p0, X86_v32s8, 1>, LegalizeMemDesc<X86_v16s16, X86_p0, X86_v16s16, 1>,
+                         LegalizeMemDesc<X86_v8s32, X86_p0, X86_v8s32, 1>, LegalizeMemDesc<X86_v4s64, X86_p0, X86_v4s64, 1>,
+                         LegalizeMemDesc<X86_v4p0, X86_p0, X86_v4p0, 1>]>,
+      LegalForMemDescIf<HasAVX512,
+                        [LegalizeMemDesc<X86_v64s8, X86_p0, X86_v64s8, 1>, LegalizeMemDesc<X86_v32s16, X86_p0, X86_v32s16, 1>,
+                         LegalizeMemDesc<X86_v16s32, X86_p0, X86_v16s32, 1>, LegalizeMemDesc<X86_v8s64, X86_p0, X86_v8s64, 1>]>
+    ] # Tail;
+  }
+}
+
+defm X86_LOAD : X86_MemOp<"G_LOAD", ["load/store: add more corner cases"], [
+  // X86 supports extending loads but not stores for GPRs.
+  LegalForMemDesc<[LegalizeMemDesc<X86_s8, X86_p0, X86_s1, 1>, LegalizeMemDesc<X86_s16, X86_p0, X86_s8, 1>,
+                   LegalizeMemDesc<X86_s32, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s32, X86_p0, X86_s16, 1>]>,
+  LegalForMemDescIf<Is64Bit,
+                    [LegalizeMemDesc<X86_s64, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s64, X86_p0, X86_s16, 1>,
+                     LegalizeMemDesc<X86_s64, X86_p0, X86_s32, 1>]>,
+  WidenScalarToNextPow2<0, 8>,
+  ClampScalar<0, X86_s8, X86_sMaxScalar>,
+  Scalarize<0>,
+]>;
+
+defm X86_STORE : X86_MemOp<"G_STORE", [], [
+  // A store whose value type differs from the memory type is not legalized
+  // here; the type has to match exactly.
+  LegalizeOpaqueRule<BuilderCustomIf, [{
+
+    [=](const LegalityQuery &Query) {
+      return Query.Types[0] != Query.MMODescrs[0].MemoryTy;
+    }
+  }]>,
+  WidenScalarToNextPow2<0, 8>,
+  ClampScalar<0, X86_s8, X86_sMaxScalar>,
+  Scalarize<0>,
+]>;
+
+
+// Both extending loads accept exactly the same (type, memory type) pairs; the
+// hand-written chain built them in one `for (Op : {G_SEXTLOAD, G_ZEXTLOAD})`,
+// so this body existed once.  Sharing it keeps it that way.
+defvar X86_ExtLoadRules = [
+  LegalForMemDesc<[LegalizeMemDesc<X86_s16, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s32, X86_p0, X86_s8, 1>,
+                   LegalizeMemDesc<X86_s32, X86_p0, X86_s16, 1>]>,
+  LegalForMemDescIf<Is64Bit,
+                    [LegalizeMemDesc<X86_s64, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s64, X86_p0, X86_s16, 1>,
+                     LegalizeMemDesc<X86_s64, X86_p0, X86_s32, 1>]>,
+  // TODO - SSE41/AVX2/AVX512F/AVX512BW vector extensions
+];
+
+def X86_SEXTLOAD : LegalizeRuleSet<["G_SEXTLOAD"]> {
+  let Rules = X86_ExtLoadRules;
+}
+
+def X86_ZEXTLOAD : LegalizeRuleSet<["G_ZEXTLOAD"]> {
+  let Rules = X86_ExtLoadRules;
+}
+
+// The x87 load and store accept the same three (type, memory type) pairs; one
+// `for (Op : {G_FPEXTLOAD, G_FPTRUNCSTORE})` in the former C++.
+defvar X86_X87MemRules = [
+  LegalForMemDescIf<UseX87,
+                    [LegalizeMemDesc<X86_s80, X86_p0, X86_s32, 1>, LegalizeMemDesc<X86_s80, X86_p0, X86_s64, 1>,
+                     LegalizeMemDesc<X86_s64, X86_p0, X86_s32, 1>]>,
+];
+
+def X86_FPEXTLOAD : LegalizeRuleSet<["G_FPEXTLOAD"]> {
+  let Rules = X86_X87MemRules;
+}
+
+def X86_FPTRUNCSTORE : LegalizeRuleSet<["G_FPTRUNCSTORE"]> {
+  let Rules = X86_X87MemRules;
+}
+
 def X86_ANYEXT : LegalizeRuleSet<["G_ANYEXT"]> {
   let Comments = ["sext, zext, and anyext"];
   let Rules = [
