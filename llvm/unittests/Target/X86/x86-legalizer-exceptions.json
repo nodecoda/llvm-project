@@ -1,6 +1,6 @@
 {
   "schema": "llvm.gisel.legalizer-exceptions",
-  "version": 1,
+  "version": 2,
   "comment": "Approved coverage exceptions. An entry without proof is a failure.",
   "exceptions": [
     {
@@ -19,6 +19,16 @@
       "rule_index": 9,
       "reason": "ClampMinNumElements<0, X86_s64, 2> guard requires a fixed vector of s64 with fewer than 2 elements, which LLT cannot represent.",
       "proof": "Generated guard X86EvalRuleGuard10_9 is isFixedVector && element==s64 && numElements<2; LLT::fixed_vector requires at least 2 lanes; exhaustive C0-C3 domain search (class-pair+boundary+AS+guard atoms) finds no trigger.",
+      "linked_ledger": "WitnessDescriptorAtoms",
+      "approver": "nodecoda",
+      "PR": "TBD"
+    },
+    {
+      "kind": "judgment",
+      "rule_set": "X86_STORE",
+      "rule_index": 6,
+      "reason": "raw customIf predicate is not representable as a TableGen guard summary",
+      "proof": "core.json escapes[rule_set=X86_STORE, rule_index=6] records the raw customIf rule; descriptor atom x86/escape/X86_STORE#6 witnesses G_STORE (p0:64, p0:64) mem(s1, align 0) with reference decision Custom. The atom remains in the descriptor and decision differentials; this entry only records coverage.",
       "linked_ledger": "WitnessDescriptorAtoms",
       "approver": "nodecoda",
       "PR": "TBD"

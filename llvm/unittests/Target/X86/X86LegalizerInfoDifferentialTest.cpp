@@ -1948,16 +1948,35 @@ struct LegalizerException {
   std::string PR;
 };
 
+// The ten kinds the ledger accepts.  Only `unreachable` means "this rule has
+// no atom": the other kinds record coverage, suppress a MIR mapping, or defer
+// an obligation, and each consumer accepts a declared subset.  An unknown kind
+// is a hard parse failure rather than a silently ignored entry.
+static constexpr StringLiteral LegalizerExceptionKinds[] = {
+    "unreachable",          "residual-only",
+    "mir-exclusion",        "fuzz-budget",
+    "reference-rebaseline", "ci-budget-waiver",
+    "nonliteral-shape",     "judgment",
+    "prerequisite-pending", "reference-retirement"};
+
+static bool isLegalizerExceptionKind(StringRef Kind) {
+  for (StringLiteral Known : LegalizerExceptionKinds)
+    if (Kind == Known)
+      return true;
+  return false;
+}
+
+// `judgment` may link to the descriptor ledger or directly to one witness
+// atom; `mir-exclusion` may cite an atom in its proof.  Witness atom ids use
+// the `x86/<origin>/<rule set>#<index>` spelling the corpus commits.
+static bool namesWitnessAtom(StringRef Text) { return Text.contains("x86/"); }
+
+// Parse the in-memory ledger.  Field validation is shared by the committed
+// file and by ExceptionLedgerKindContract, so a malformed entry fails the same
+// way in both paths.
 static std::optional<std::vector<LegalizerException>>
-readLegalizerExceptions(std::string &Error) {
-  std::optional<std::string> Text =
-      readTestSourceFile("x86-legalizer-exceptions.json");
-  if (!Text) {
-    Error = "cannot read x86-legalizer-exceptions.json from " +
-            std::string(X86_LEGALIZER_TEST_SRC_DIR);
-    return std::nullopt;
-  }
-  auto Value = json::parse(*Text);
+parseLegalizerExceptions(StringRef Text, std::string &Error) {
+  auto Value = json::parse(Text);
   if (!Value) {
     Error = toString(Value.takeError());
     return std::nullopt;
@@ -1973,8 +1992,8 @@ readLegalizerExceptions(std::string &Error) {
     return std::nullopt;
   }
   auto Version = Root->getInteger("version");
-  if (!Version || *Version != 1) {
-    Error = "version must be 1";
+  if (!Version || *Version != 2) {
+    Error = "version must be 2";
     return std::nullopt;
   }
   const json::Array *Entries = Root->getArray("exceptions");
@@ -1983,17 +2002,6 @@ readLegalizerExceptions(std::string &Error) {
     return std::nullopt;
   }
 
-  auto Required = [&](const json::Object &O, StringRef Key,
-                      std::string &Out) -> bool {
-    auto S = O.getString(Key);
-    if (!S) {
-      Error = "missing field '" + Key.str() + "'";
-      return false;
-    }
-    Out = S->str();
-    return true;
-  };
-
   std::vector<LegalizerException> Out;
   for (const json::Value &V : *Entries) {
     const json::Object *O = V.getAsObject();
@@ -2001,35 +2009,222 @@ readLegalizerExceptions(std::string &Error) {
       Error = "exception is not an object";
       return std::nullopt;
     }
-    LegalizerException E;
-    if (!Required(*O, "kind", E.Kind) || !Required(*O, "rule_set", E.RuleSet) ||
-        !Required(*O, "reason", E.Reason) || !Required(*O, "proof", E.Proof) ||
-        !Required(*O, "linked_ledger", E.LinkedLedger) ||
-        !Required(*O, "approver", E.Approver) || !Required(*O, "PR", E.PR))
-      return std::nullopt;
+
+    // Read the rule identity first so a later problem can name the rule.
+    auto RuleSet = O->getString("rule_set");
     auto RuleIndex = O->getInteger("rule_index");
+    std::string Name = RuleSet ? RuleSet->str() : std::string("<unknown>");
+    if (RuleIndex)
+      Name += "#" + std::to_string(*RuleIndex);
+
+    LegalizerException E;
+    auto RequireNonEmpty = [&](StringRef Key, std::string &Field) -> bool {
+      auto S = O->getString(Key);
+      if (!S) {
+        Error = Name + ": missing field '" + Key.str() + "'";
+        return false;
+      }
+      if (S->empty()) {
+        Error = Name + ": empty '" + Key.str() + "'";
+        return false;
+      }
+      Field = S->str();
+      return true;
+    };
+    if (!RequireNonEmpty("kind", E.Kind) ||
+        !RequireNonEmpty("rule_set", E.RuleSet) ||
+        !RequireNonEmpty("reason", E.Reason) ||
+        !RequireNonEmpty("proof", E.Proof) ||
+        !RequireNonEmpty("linked_ledger", E.LinkedLedger) ||
+        !RequireNonEmpty("approver", E.Approver) ||
+        !RequireNonEmpty("PR", E.PR))
+      return std::nullopt;
     if (!RuleIndex || *RuleIndex < 0) {
-      Error = "missing or negative field 'rule_index'";
+      Error = Name + ": missing or negative field 'rule_index'";
       return std::nullopt;
     }
     E.RuleIndex = static_cast<unsigned>(*RuleIndex);
-    const std::string Name = E.RuleSet + "#" + std::to_string(E.RuleIndex);
-    if (E.Kind != "unreachable") {
-      Error =
-          Name + ": only kind 'unreachable' is accepted, got '" + E.Kind + "'";
+    Name = E.RuleSet + "#" + std::to_string(E.RuleIndex);
+
+    if (!isLegalizerExceptionKind(E.Kind)) {
+      Error = Name + ": unknown kind '" + E.Kind + "'";
       return std::nullopt;
     }
-    if (E.Reason.empty()) {
-      Error = Name + ": empty 'reason'";
+    if (E.Kind == "prerequisite-pending" && E.PR != "PR-F1") {
+      Error = Name + ": prerequisite-pending requires PR 'PR-F1', got '" +
+              E.PR + "'";
       return std::nullopt;
     }
-    if (E.Proof.empty()) {
-      Error = Name + ": empty 'proof'";
+    if (E.Kind == "judgment" && E.LinkedLedger != "WitnessDescriptorAtoms" &&
+        !namesWitnessAtom(E.LinkedLedger)) {
+      Error = Name +
+              ": judgment must link WitnessDescriptorAtoms or a witness "
+              "atom, got '" +
+              E.LinkedLedger + "'";
+      return std::nullopt;
+    }
+    if (E.Kind == "nonliteral-shape" &&
+        E.LinkedLedger != "WitnessDescriptorAtoms") {
+      Error = Name +
+              ": nonliteral-shape must link WitnessDescriptorAtoms, "
+              "got '" +
+              E.LinkedLedger + "'";
+      return std::nullopt;
+    }
+    if (E.Kind == "mir-exclusion" &&
+        E.LinkedLedger != "WitnessDecisionDifferential" &&
+        !namesWitnessAtom(E.Proof)) {
+      Error = Name + ": mir-exclusion must link WitnessDecisionDifferential "
+                     "or cite a witness atom in its proof";
       return std::nullopt;
     }
     Out.push_back(E);
   }
   return Out;
+}
+
+static std::optional<std::vector<LegalizerException>>
+readLegalizerExceptions(std::string &Error) {
+  std::optional<std::string> Text =
+      readTestSourceFile("x86-legalizer-exceptions.json");
+  if (!Text) {
+    Error = "cannot read x86-legalizer-exceptions.json from " +
+            std::string(X86_LEGALIZER_TEST_SRC_DIR);
+    return std::nullopt;
+  }
+  return parseLegalizerExceptions(*Text, Error);
+}
+
+// A minimal in-memory ledger entry.  A nullopt drops a field so the contract
+// test can distinguish "missing" from "present but empty".
+struct LedgerEntryFields {
+  std::optional<std::string> Kind = "unreachable";
+  std::optional<std::string> RuleSet = "X86_ADD";
+  std::optional<std::string> RuleIndex = "9";
+  std::optional<std::string> Reason = "reason";
+  std::optional<std::string> Proof = "proof";
+  std::optional<std::string> LinkedLedger = "WitnessDescriptorAtoms";
+  std::optional<std::string> Approver = "nodecoda";
+  std::optional<std::string> PR = "TBD";
+};
+
+static std::string ledgerEntryJson(const LedgerEntryFields &F) {
+  std::string Body = "{";
+  auto AddString = [&](StringRef Key, const std::optional<std::string> &V) {
+    if (!V)
+      return;
+    Body += "\"" + Key.str() + "\":\"" + *V + "\",";
+  };
+  auto AddRaw = [&](StringRef Key, const std::optional<std::string> &V) {
+    if (!V)
+      return;
+    Body += "\"" + Key.str() + "\":" + *V + ",";
+  };
+  AddString("kind", F.Kind);
+  AddString("rule_set", F.RuleSet);
+  AddRaw("rule_index", F.RuleIndex);
+  AddString("reason", F.Reason);
+  AddString("proof", F.Proof);
+  AddString("linked_ledger", F.LinkedLedger);
+  AddString("approver", F.Approver);
+  AddString("PR", F.PR);
+  if (!Body.empty() && Body.back() == ',')
+    Body.pop_back();
+  Body += "}";
+  return Body;
+}
+
+static std::string ledgerDocument(StringRef EntryJson) {
+  return "{\"schema\":\"llvm.gisel.legalizer-exceptions\","
+         "\"version\":2,\"exceptions\":[" +
+         EntryJson.str() + "]}";
+}
+
+// Every declared kind must be usable when its fields are valid, and each
+// malformed field must fail instead of being treated as an absent exception.
+TEST(LegalizerExceptionLedger, ExceptionLedgerKindContract) {
+  auto Parses = [](const LedgerEntryFields &F, std::string &Error) {
+    return parseLegalizerExceptions(ledgerDocument(ledgerEntryJson(F)), Error)
+        .has_value();
+  };
+
+  struct KindCase {
+    const char *Kind;
+    const char *LinkedLedger;
+    const char *PR;
+  };
+  static const KindCase Kinds[] = {
+      {"unreachable", "WitnessDescriptorAtoms", "TBD"},
+      {"residual-only", "WitnessDescriptorAtoms", "TBD"},
+      {"mir-exclusion", "WitnessDecisionDifferential", "TBD"},
+      {"fuzz-budget", "WitnessDescriptorAtoms", "TBD"},
+      {"reference-rebaseline", "WitnessDescriptorAtoms", "TBD"},
+      {"ci-budget-waiver", "WitnessDescriptorAtoms", "TBD"},
+      {"nonliteral-shape", "WitnessDescriptorAtoms", "TBD"},
+      {"judgment", "WitnessDescriptorAtoms", "TBD"},
+      {"prerequisite-pending", "WitnessDescriptorAtoms", "PR-F1"},
+      {"reference-retirement", "WitnessDescriptorAtoms", "TBD"},
+  };
+  for (const KindCase &C : Kinds) {
+    LedgerEntryFields F;
+    F.Kind = C.Kind;
+    F.LinkedLedger = C.LinkedLedger;
+    F.PR = C.PR;
+    std::string Error;
+    EXPECT_TRUE(Parses(F, Error)) << C.Kind << ": " << Error;
+  }
+
+  auto ExpectFailure = [&](const LedgerEntryFields &F, StringRef What) {
+    std::string Error;
+    EXPECT_FALSE(Parses(F, Error)) << What << " unexpectedly parsed";
+    EXPECT_FALSE(Error.empty()) << What << " failed without a message";
+  };
+
+  {
+    LedgerEntryFields F;
+    F.Kind = "not-a-kind";
+    ExpectFailure(F, "unknown kind");
+  }
+  {
+    LedgerEntryFields F;
+    F.Approver = "";
+    ExpectFailure(F, "empty approver");
+  }
+  {
+    LedgerEntryFields F;
+    F.Proof = "";
+    ExpectFailure(F, "empty proof");
+  }
+  {
+    LedgerEntryFields F;
+    F.LinkedLedger = std::nullopt;
+    ExpectFailure(F, "missing linked_ledger");
+  }
+  {
+    LedgerEntryFields F;
+    F.PR = std::nullopt;
+    ExpectFailure(F, "missing PR");
+  }
+  {
+    LedgerEntryFields F;
+    F.RuleIndex = "-1";
+    ExpectFailure(F, "negative rule_index");
+  }
+  {
+    LedgerEntryFields F;
+    F.Kind = "prerequisite-pending";
+    F.PR = "TBD";
+    ExpectFailure(F, "prerequisite-pending with wrong PR");
+  }
+
+  // The committed ledger must parse and only use declared kinds.
+  std::string Error;
+  std::optional<std::vector<LegalizerException>> Committed =
+      readLegalizerExceptions(Error);
+  ASSERT_TRUE(Committed.has_value()) << Error;
+  for (const LegalizerException &E : *Committed)
+    EXPECT_TRUE(isLegalizerExceptionKind(E.Kind))
+        << E.RuleSet << "#" << E.RuleIndex << ": " << E.Kind;
 }
 
 // Directed guard atoms.  These are not boundary points and do not change the
@@ -2379,10 +2574,16 @@ TEST_F(X86LegalizerDifferentialTest, LiteralRuleFirstMatchLedger) {
     // literal first-match ledger.
     if (!IsLiteral)
       continue;
+    // Only `unreachable` means this literal rule has no atom.  A kind this
+    // ledger does not accept is a hard failure, not a silent skip.
+    if (E.Kind != "unreachable") {
+      if (E.LinkedLedger == "LiteralRuleFirstMatchLedger")
+        ADD_FAILURE() << "LiteralRuleFirstMatchLedger does not accept kind '"
+                      << E.Kind << "' for " << E.RuleSet << "#" << E.RuleIndex;
+      continue;
+    }
     ASSERT_TRUE(Approved.emplace(Key, &E).second)
         << "duplicate exception for " << E.RuleSet << "#" << E.RuleIndex;
-    EXPECT_EQ(E.Kind, "unreachable")
-        << E.RuleSet << "#" << E.RuleIndex << " must be kind unreachable";
   }
 
   std::vector<Sigma> Sigmas;
@@ -2857,6 +3058,10 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
 
   std::set<RuleKey> ApprovedLiteral, ApprovedEscaped;
   for (const LegalizerException &E : *Exceptions) {
+    // Only `unreachable` removes a rule from an atom denominator.  Coverage
+    // kinds such as judgment/nonliteral-shape must not shrink the corpus.
+    if (E.Kind != "unreachable")
+      continue;
     auto TableIt = TableForSet.find(E.RuleSet);
     ASSERT_NE(TableIt, TableForSet.end()) << E.RuleSet;
     const RuleKey Key{TableIt->second, E.RuleIndex};
@@ -3227,6 +3432,11 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
     ExpectedRulePairs.insert(Entry.first);
   std::set<RuleKey> ApprovedEscapePairs;
   for (const LegalizerException &E : *Exceptions) {
+    // Only `unreachable` means the rule has no atom.  A judgment or a
+    // nonliteral-shape entry records coverage and must leave the atom in the
+    // denominator it belongs to.
+    if (E.Kind != "unreachable")
+      continue;
     auto TableIt = TableForSet.find(E.RuleSet);
     ASSERT_NE(TableIt, TableForSet.end()) << E.RuleSet;
     const RuleKey Key{TableIt->second, E.RuleIndex};
@@ -3241,6 +3451,27 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
       ASSERT_TRUE(ApprovedEscapePairs.insert(Key).second)
           << "duplicate exception for " << E.RuleSet << "#" << E.RuleIndex;
     }
+  }
+
+  // Per-consumer acceptance: WitnessDescriptorAtoms accepts unreachable,
+  // nonliteral-shape and judgment only.  An entry linked to another ledger is
+  // that consumer's responsibility.
+  for (const LegalizerException &E : *Exceptions) {
+    const bool InDescriptorScope =
+        E.LinkedLedger == "WitnessDescriptorAtoms" ||
+        (E.Kind == "judgment" && namesWitnessAtom(E.LinkedLedger));
+    if (!InDescriptorScope)
+      continue;
+    if (E.Kind != "unreachable" && E.Kind != "nonliteral-shape" &&
+        E.Kind != "judgment") {
+      ADD_FAILURE() << "WitnessDescriptorAtoms does not accept kind '" << E.Kind
+                    << "' for " << E.RuleSet << "#" << E.RuleIndex;
+      continue;
+    }
+    if (E.Kind == "nonliteral-shape" &&
+        !isEscapedTarget(*EscapeTargets, E.RuleSet, E.RuleIndex))
+      ADD_FAILURE() << "nonliteral-shape exception " << E.RuleSet << "#"
+                    << E.RuleIndex << " must name an escaped rule";
   }
   ASSERT_EQ(ExpectedRulePairs.size(), 188u);
   ASSERT_EQ(ExpectedEscapePairs.size(), 92u);
@@ -3457,10 +3688,14 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
       << "descriptor atoms must name every witnessable escaped rule; only "
          "approved unreachable exceptions may be absent";
   for (const LegalizerException &E : *Exceptions) {
+    // Judgment and nonliteral-shape entries must never suppress a descriptor
+    // atom or its decision comparison; only `unreachable` may be absent.
+    if (E.Kind != "unreachable")
+      continue;
     auto TableIt = TableForSet.find(E.RuleSet);
     ASSERT_NE(TableIt, TableForSet.end()) << E.RuleSet;
     EXPECT_EQ(DescriptorPairs.count({TableIt->second, E.RuleIndex}), 0u)
-        << "approved exception " << E.RuleSet << "#" << E.RuleIndex
+        << "unreachable exception " << E.RuleSet << "#" << E.RuleIndex
         << " unexpectedly has a descriptor atom";
   }
   EXPECT_EQ(DescriptorPairs.size() + ApprovedEscapePairs.size(), 93u)
@@ -4636,6 +4871,415 @@ TEST_F(X86LegalizerDifferentialTest, MutationKillMatrix) {
                  << " atom=" << E.AtomId << "\n";
   }
   llvm::outs() << "mutants killed: " << Killed << "/16\n";
+}
+
+//===----------------------------------------------------------------------===//
+// T4: .td rule set to MIR map
+//===----------------------------------------------------------------------===//
+//
+// The two fragments are authored by separate lanes and joined here: every
+// table name is either exercised by a MIR file that runs the legalizer, or it
+// carries a linked, approved exclusion.  A missing mapping, an atom that is
+// not in the witness corpus, or an exclusion without a matching ledger entry
+// is a hard failure that names the rule set.
+
+struct MirMapEntry {
+  std::string RuleSet;
+  std::string Kind;
+  std::string MirFile;
+  std::vector<std::string> Functions;
+  std::string Atom;
+  std::vector<std::string> Opcodes;
+  std::string ExceptionKind;
+  std::string Reason;
+  std::string LinkedLedger;
+};
+
+static bool readStringArray(const json::Object &O, StringRef Key,
+                            std::vector<std::string> &Out, std::string &Error,
+                            StringRef Name) {
+  const json::Array *A = O.getArray(Key);
+  if (!A) {
+    Error = Name.str() + ": missing array '" + Key.str() + "'";
+    return false;
+  }
+  for (const json::Value &V : *A) {
+    auto S = V.getAsString();
+    if (!S) {
+      Error = Name.str() + ": '" + Key.str() + "' is not an array of strings";
+      return false;
+    }
+    Out.push_back(S->str());
+  }
+  return true;
+}
+
+static std::optional<std::vector<MirMapEntry>>
+readMirMapFragment(StringRef Name, StringRef ExpectedFamily,
+                   std::string &Error) {
+  std::optional<std::string> Text = readTestSourceFile(Name);
+  if (!Text) {
+    Error = "cannot read " + Name.str() + " from " +
+            std::string(X86_LEGALIZER_TEST_SRC_DIR) +
+            " (the fragment-producing lane has not delivered it yet)";
+    return std::nullopt;
+  }
+  auto Value = json::parse(*Text);
+  if (!Value) {
+    Error = Name.str() + ": " + toString(Value.takeError());
+    return std::nullopt;
+  }
+  const json::Object *Root = Value->getAsObject();
+  if (!Root) {
+    Error = Name.str() + ": top level is not an object";
+    return std::nullopt;
+  }
+  auto Schema = Root->getString("schema");
+  if (!Schema || *Schema != "llvm.gisel.x86-legalizer-mir-map") {
+    Error = Name.str() + ": schema must be llvm.gisel.x86-legalizer-mir-map";
+    return std::nullopt;
+  }
+  auto Version = Root->getInteger("version");
+  if (!Version || *Version != 1) {
+    Error = Name.str() + ": version must be 1";
+    return std::nullopt;
+  }
+  auto Family = Root->getString("family");
+  if (!Family || *Family != ExpectedFamily) {
+    Error = Name.str() + ": family must be " + ExpectedFamily.str();
+    return std::nullopt;
+  }
+  const json::Array *RuleSets = Root->getArray("rule_sets");
+  if (!RuleSets) {
+    Error = Name.str() + ": missing field 'rule_sets'";
+    return std::nullopt;
+  }
+
+  std::vector<MirMapEntry> Out;
+  for (const json::Value &V : *RuleSets) {
+    const json::Object *O = V.getAsObject();
+    if (!O) {
+      Error = Name.str() + ": rule_sets entry is not an object";
+      return std::nullopt;
+    }
+    auto RuleSet = O->getString("rule_set");
+    const std::string EntryName =
+        RuleSet ? RuleSet->str() : std::string("<unknown rule set>");
+    if (!RuleSet || RuleSet->empty()) {
+      Error = Name.str() + ": rule_sets entry has no 'rule_set'";
+      return std::nullopt;
+    }
+    auto Kind = O->getString("kind");
+    if (!Kind || Kind->empty()) {
+      Error = EntryName + ": missing field 'kind'";
+      return std::nullopt;
+    }
+    auto Atom = O->getString("atom");
+    if (!Atom || Atom->empty()) {
+      Error = EntryName + ": missing field 'atom'";
+      return std::nullopt;
+    }
+    MirMapEntry E;
+    E.RuleSet = RuleSet->str();
+    E.Kind = Kind->str();
+    E.Atom = Atom->str();
+    if (E.Kind == "mir") {
+      auto MirFile = O->getString("mir_file");
+      if (!MirFile || MirFile->empty()) {
+        Error = EntryName + ": mir entry has no 'mir_file'";
+        return std::nullopt;
+      }
+      E.MirFile = MirFile->str();
+      if (!readStringArray(*O, "functions", E.Functions, Error, EntryName) ||
+          !readStringArray(*O, "opcodes", E.Opcodes, Error, EntryName))
+        return std::nullopt;
+    } else if (E.Kind == "exclusion") {
+      auto ExceptionKind = O->getString("exception_kind");
+      if (!ExceptionKind || ExceptionKind->empty()) {
+        Error = EntryName + ": exclusion entry has no 'exception_kind'";
+        return std::nullopt;
+      }
+      auto Reason = O->getString("reason");
+      auto LinkedLedger = O->getString("linked_ledger");
+      if (!Reason || Reason->empty()) {
+        Error = EntryName + ": exclusion entry has no 'reason'";
+        return std::nullopt;
+      }
+      if (!LinkedLedger || LinkedLedger->empty()) {
+        Error = EntryName + ": exclusion entry has no 'linked_ledger'";
+        return std::nullopt;
+      }
+      E.ExceptionKind = ExceptionKind->str();
+      E.Reason = Reason->str();
+      E.LinkedLedger = LinkedLedger->str();
+    } else {
+      Error = EntryName + ": unknown kind '" + E.Kind + "'";
+      return std::nullopt;
+    }
+    Out.push_back(std::move(E));
+  }
+  return Out;
+}
+
+struct WitnessAtomRef {
+  std::string RuleSet;
+  std::optional<int64_t> RuleIndex;
+};
+
+static std::optional<std::map<std::string, WitnessAtomRef>>
+readWitnessAtomIndex(std::string &Error) {
+  std::optional<std::string> Text =
+      readTestSourceFile("x86-legalizer-witness.json");
+  if (!Text) {
+    Error = "cannot read x86-legalizer-witness.json";
+    return std::nullopt;
+  }
+  auto Value = json::parse(*Text);
+  if (!Value) {
+    Error = toString(Value.takeError());
+    return std::nullopt;
+  }
+  const json::Object *Root = Value->getAsObject();
+  if (!Root) {
+    Error = "witness top level is not an object";
+    return std::nullopt;
+  }
+  const json::Array *Atoms = Root->getArray("atoms");
+  if (!Atoms) {
+    Error = "witness has no 'atoms'";
+    return std::nullopt;
+  }
+  std::map<std::string, WitnessAtomRef> Out;
+  for (const json::Value &V : *Atoms) {
+    const json::Object *O = V.getAsObject();
+    if (!O) {
+      Error = "witness atom is not an object";
+      return std::nullopt;
+    }
+    auto Id = O->getString("id");
+    auto RuleSet = O->getString("rule_set");
+    if (!Id || !RuleSet) {
+      Error = "witness atom has no 'id' or 'rule_set'";
+      return std::nullopt;
+    }
+    WitnessAtomRef Ref;
+    Ref.RuleSet = RuleSet->str();
+    Ref.RuleIndex = O->getInteger("rule_index");
+    if (!Out.emplace(Id->str(), Ref).second) {
+      Error = "duplicate witness atom id " + Id->str();
+      return std::nullopt;
+    }
+  }
+  return Out;
+}
+
+static bool mirFileHasFunction(StringRef Text, StringRef Function) {
+  SmallVector<StringRef, 0> Lines;
+  Text.split(Lines, '\n');
+  for (StringRef Line : Lines) {
+    Line = Line.ltrim();
+    if (!Line.consume_front("name:"))
+      continue;
+    Line = Line.ltrim();
+    StringRef Name = Line.take_until([](char C) { return isSpace(C); });
+    if (Name == Function)
+      return true;
+  }
+  return false;
+}
+
+static bool mirFileRunsLegalizer(StringRef Text) {
+  SmallVector<StringRef, 0> Lines;
+  Text.split(Lines, '\n');
+  for (StringRef Line : Lines)
+    if (Line.contains("RUN:") && (Line.contains("-run-pass=legalizer") ||
+                                  Line.contains("-stop-after=legalizer")))
+      return true;
+  return false;
+}
+
+TEST(X86LegalizerMirMap, MirRuleSetMapIsCompleteAndLinked) {
+  std::string Error;
+  std::optional<std::vector<MirMapEntry>> IntMap =
+      readMirMapFragment("x86-legalizer-mir-map-01-int.json", "int", Error);
+  ASSERT_TRUE(IntMap.has_value()) << Error;
+  Error.clear();
+  std::optional<std::vector<MirMapEntry>> MemMap =
+      readMirMapFragment("x86-legalizer-mir-map-02-mem.json", "mem", Error);
+  ASSERT_TRUE(MemMap.has_value()) << Error;
+
+  // The union is exactly the 63 table names, each mapped once.
+  std::set<std::string> Tables;
+  for (unsigned I = 0; I != X86TestNumTables; ++I)
+    Tables.insert(X86RuleIndexTableNames[I]);
+  ASSERT_EQ(Tables.size(), 63u);
+
+  std::map<std::string, const MirMapEntry *> BySet;
+  for (const MirMapEntry &E : *IntMap)
+    if (!BySet.emplace(E.RuleSet, &E).second)
+      ADD_FAILURE() << "duplicate rule set in the int map: " << E.RuleSet;
+  for (const MirMapEntry &E : *MemMap)
+    if (!BySet.emplace(E.RuleSet, &E).second)
+      ADD_FAILURE() << "duplicate rule set in the mem map: " << E.RuleSet;
+  for (const auto &Entry : BySet)
+    if (!Tables.count(Entry.first))
+      ADD_FAILURE() << "map names an unknown table: " << Entry.first;
+  for (const std::string &T : Tables)
+    if (!BySet.count(T))
+      ADD_FAILURE() << "map is missing rule set " << T;
+
+  // Literal-bearing rulesets versus all-escaped ones come from the Core IR.
+  std::optional<std::map<RuleKey, LiteralTarget>> LiteralTargets =
+      readLiteralTargets(Error);
+  ASSERT_TRUE(LiteralTargets.has_value()) << Error;
+  std::set<std::string> LiteralSets;
+  for (const auto &Entry : *LiteralTargets)
+    LiteralSets.insert(Entry.second.Set);
+  EXPECT_EQ(LiteralSets.size(), 55u);
+  std::optional<std::vector<EscapeTarget>> EscapeTargets =
+      readEscapeTargets(Error);
+  ASSERT_TRUE(EscapeTargets.has_value()) << Error;
+  std::set<std::string> EscapeSets;
+  for (const EscapeTarget &E : *EscapeTargets)
+    EscapeSets.insert(E.RuleSet);
+  std::set<std::string> AllEscaped;
+  for (const std::string &T : Tables)
+    if (!LiteralSets.count(T))
+      AllEscaped.insert(T);
+  EXPECT_EQ(AllEscaped.size(), 8u);
+  std::set<std::string> EscapeOnly;
+  for (const std::string &S : EscapeSets)
+    if (!LiteralSets.count(S))
+      EscapeOnly.insert(S);
+  EXPECT_EQ(EscapeOnly, AllEscaped)
+      << "all-escaped rule sets must be exactly the escape-only sets";
+  std::set<std::string> Classified = LiteralSets;
+  Classified.insert(EscapeSets.begin(), EscapeSets.end());
+  EXPECT_EQ(Classified, Tables)
+      << "every table must have a literal rule or an escaped rule";
+
+  std::optional<std::map<std::string, WitnessAtomRef>> WitnessAtoms =
+      readWitnessAtomIndex(Error);
+  ASSERT_TRUE(WitnessAtoms.has_value()) << Error;
+  std::optional<std::vector<LegalizerException>> Exceptions =
+      readLegalizerExceptions(Error);
+  ASSERT_TRUE(Exceptions.has_value()) << Error;
+  std::map<std::tuple<std::string, std::string, unsigned>,
+           const LegalizerException *>
+      Approved;
+  for (const LegalizerException &E : *Exceptions)
+    Approved.emplace(std::make_tuple(E.RuleSet, E.Kind, E.RuleIndex), &E);
+
+  std::set<std::string> Valid;
+  for (const auto &E : BySet) {
+    const MirMapEntry &M = *E.second;
+    bool EntryOK = true;
+    auto WIt = WitnessAtoms->find(M.Atom);
+    if (WIt == WitnessAtoms->end()) {
+      ADD_FAILURE() << M.RuleSet << ": atom " << M.Atom
+                    << " is not in x86-legalizer-witness.json";
+      EntryOK = false;
+    } else if (WIt->second.RuleSet != M.RuleSet) {
+      ADD_FAILURE() << M.RuleSet << ": atom " << M.Atom << " belongs to "
+                    << WIt->second.RuleSet;
+      EntryOK = false;
+    }
+
+    if (M.Kind == "mir") {
+      const std::string Path =
+          std::string(X86_LEGALIZER_TEST_TREE_DIR) + "/" + M.MirFile;
+      auto Buffer = MemoryBuffer::getFile(Path);
+      if (!Buffer) {
+        ADD_FAILURE() << M.RuleSet << ": MIR file " << M.MirFile
+                      << " does not exist under "
+                      << X86_LEGALIZER_TEST_TREE_DIR;
+        EntryOK = false;
+      } else {
+        const StringRef Text = (*Buffer)->getBuffer();
+        if (M.Functions.empty()) {
+          ADD_FAILURE() << M.RuleSet << ": mir entry lists no functions";
+          EntryOK = false;
+        }
+        for (const std::string &Fn : M.Functions)
+          if (!mirFileHasFunction(Text, Fn)) {
+            ADD_FAILURE() << M.RuleSet << ": " << M.MirFile
+                          << " has no function named " << Fn;
+            EntryOK = false;
+          }
+        if (!mirFileRunsLegalizer(Text)) {
+          ADD_FAILURE() << M.RuleSet << ": " << M.MirFile
+                        << " has no legalizer RUN line";
+          EntryOK = false;
+        }
+        bool OpcodeFound = false;
+        for (const std::string &Opcode : M.Opcodes)
+          if (!Opcode.empty() && Text.contains(Opcode)) {
+            OpcodeFound = true;
+            break;
+          }
+        if (!OpcodeFound) {
+          ADD_FAILURE() << M.RuleSet
+                        << ": none of the listed opcodes appears in "
+                        << M.MirFile;
+          EntryOK = false;
+        }
+      }
+    } else if (M.Kind == "exclusion") {
+      const bool IsLiteral = LiteralSets.count(M.RuleSet) != 0;
+      const bool IsAllEscaped = AllEscaped.count(M.RuleSet) != 0;
+      if (!IsLiteral && !IsAllEscaped) {
+        ADD_FAILURE() << M.RuleSet
+                      << " is neither literal-bearing nor all-escaped";
+        EntryOK = false;
+      }
+      const std::string ExpectedKind =
+          IsLiteral ? "mir-exclusion" : "nonliteral-shape";
+      if (M.ExceptionKind != ExpectedKind) {
+        ADD_FAILURE() << M.RuleSet << ": exclusion exception_kind must be "
+                      << ExpectedKind << ", got " << M.ExceptionKind;
+        EntryOK = false;
+      }
+      if (M.ExceptionKind != "mir-exclusion" &&
+          M.ExceptionKind != "nonliteral-shape") {
+        ADD_FAILURE() << M.RuleSet
+                      << ": MirRuleSetMap does not accept exception kind '"
+                      << M.ExceptionKind << "'";
+        EntryOK = false;
+      }
+      if (WIt == WitnessAtoms->end() || !WIt->second.RuleIndex) {
+        ADD_FAILURE() << M.RuleSet << ": exclusion atom " << M.Atom
+                      << " has no rule_index to match the ledger";
+        EntryOK = false;
+      } else {
+        const unsigned Index = static_cast<unsigned>(*WIt->second.RuleIndex);
+        auto ApprovedIt =
+            Approved.find(std::make_tuple(M.RuleSet, M.ExceptionKind, Index));
+        if (ApprovedIt == Approved.end()) {
+          ADD_FAILURE() << M.RuleSet << ": no approved " << M.ExceptionKind
+                        << " exception for rule #" << Index << " (atom "
+                        << M.Atom << ")";
+          EntryOK = false;
+        } else if (ApprovedIt->second->LinkedLedger.empty() ||
+                   ApprovedIt->second->Proof.empty()) {
+          ADD_FAILURE() << M.RuleSet << "#" << Index
+                        << ": approved exclusion needs linked_ledger and proof";
+          EntryOK = false;
+        }
+      }
+    } else {
+      ADD_FAILURE() << M.RuleSet << ": unknown map kind " << M.Kind;
+      EntryOK = false;
+    }
+
+    if (EntryOK)
+      Valid.insert(M.RuleSet);
+  }
+
+  for (const std::string &T : Tables)
+    if (!Valid.count(T))
+      ADD_FAILURE() << "rule set " << T
+                    << " has neither a valid mir entry nor a valid approved "
+                       "exclusion";
 }
 
 } // namespace
