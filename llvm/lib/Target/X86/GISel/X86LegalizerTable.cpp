@@ -139,6 +139,18 @@ int classifyMemType(LLT T) {
   return kUnknownClass;
 }
 
+/// A pointer whose address space is not zero is outside the table's pointer
+/// class.  The key folds every pointer to p0, and a rule such as G_STORE's
+/// `Types[0] != MemoryTy` compares exactly what that folding erases, so such
+/// a query must be answered by the evaluator with its concrete LLTs.
+bool hasNonZeroAddressSpace(LLT T) {
+  if (T.isPointer())
+    return T.getAddressSpace() != 0;
+  if (T.isPointerVector())
+    return T.getElementType().getAddressSpace() != 0;
+  return false;
+}
+
 /// Alignment class: how many of the generated thresholds the alignment meets.
 /// The memdesc predicates only ask `Align >= threshold`, so the prefix is the
 /// whole answer.
@@ -265,6 +277,25 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
     return R;
   };
 
+  // The key has one pointer class, so it cannot see the address space -- and
+  // G_STORE's `Types[0] != MemoryTy` guard is a comparison of two pointers.
+  // Ask the evaluator with the concrete LLTs instead: the residual path does
+  // not go through a cell, so nothing is folded.
+  bool PointerVector = false;
+  bool NonZeroAddressSpace = false;
+  auto ScanAddressSpace = [&](LLT T) {
+    PointerVector |= T.isPointerVector();
+    NonZeroAddressSpace |= hasNonZeroAddressSpace(T);
+  };
+  for (LLT T : Q.Types)
+    ScanAddressSpace(T);
+  for (const LegalityQuery::MemDesc &MD : Q.MMODescrs)
+    ScanAddressSpace(MD.MemoryTy);
+  if (NonZeroAddressSpace) {
+    ++AddressSpaceResiduals;
+    return AskEvaluator(PointerVector);
+  }
+
   const int C0 = Q.Types.size() > D.Slots[0] ? classifyType(Q.Types[D.Slots[0]])
                                              : kUnknownClass;
   // A unary query has no slot 1.  The descriptor is uniform, so missing slot 1
@@ -333,8 +364,8 @@ X86LegalizerTable::~X86LegalizerTable() {
     return;
   errs() << "x86-gisel-table: hit " << Hits << " residual " << Residuals
          << " escape " << Escapes << " outside " << Outsides << " ptrvec "
-         << PointerVectors << " untabulated " << Untabulated << " fills "
-         << Fills << "\n";
+         << PointerVectors << " addrspace " << AddressSpaceResiduals
+         << " untabulated " << Untabulated << " fills " << Fills << "\n";
 }
 
 void X86LegalizerTable::selfCheck(raw_ostream &OS) {
@@ -402,8 +433,8 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
   OS << "x86-gisel-table-check: points " << Points.size() << " compared "
      << Compared << " mismatches " << Mismatches << " skipped " << Skipped
      << " residual " << Residual << " outside " << Outsides << " ptrvec "
-     << PointerVectors << " untabulated " << Untabulated << " fills " << Fills
-     << "\n";
+     << PointerVectors << " addrspace " << AddressSpaceResiduals
+     << " untabulated " << Untabulated << " fills " << Fills << "\n";
   if (Mismatches)
     report_fatal_error(
         "x86-gisel-table-check: the table and the chain disagree");

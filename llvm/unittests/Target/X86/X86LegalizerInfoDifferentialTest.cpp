@@ -508,6 +508,61 @@ TEST_F(X86LegalizerDifferentialTest, TableAnswersCorpus) {
   EXPECT_EQ(Declines, 21u);
 }
 
+// F1: the table's key has a single pointer class.  Every pointer collapses to
+// p0, and G_STORE's first rule is exactly `Types[0] != MemoryTy`: folding the
+// address space erases the comparison and answers (p1, p0) as if it were
+// (p1, p1).  A pointer whose address space is not zero must therefore leave
+// the table and be answered by the evaluator, which sees the concrete LLTs.
+TEST_F(X86LegalizerDifferentialTest, AddressSpaceGoesResidual) {
+  const Config &C = Configs[0];
+  Sigma S = makeSigma(C);
+  ASSERT_TRUE(S.STI) << C.ID;
+  X86LegalizerInfoReference Oracle(
+      *S.STI, *static_cast<const X86TargetMachine *>(S.TM.get()));
+  TableLegalizerInfoForTest Table(*S.STI);
+
+  const LLT P0 = LLT::pointer(0, 64), P1 = LLT::pointer(1, 64);
+  const LLT V2P1 = LLT::fixed_vector(2, P1);
+
+  auto Ask = [&](LLT ValueTy, LLT PtrTy, LLT MemTy, const char *Name) {
+    LLT Types[] = {ValueTy, PtrTy};
+    LegalityQuery::MemDesc MemDescs[] = {{MemTy, /*AlignInBits=*/8,
+                                          AtomicOrdering::NotAtomic,
+                                          AtomicOrdering::NotAtomic}};
+    LegalityQuery Q(G_STORE, Types, MemDescs);
+
+    X86LegalizerTable::Result R = Table.table().query(Q);
+    EXPECT_EQ(R.Kind, X86LegalizerTable::Answer::Residual)
+        << Name << ": a non-zero address space must not use a table cell";
+
+    LegalizeActionStep Got(R.Action, R.TypeIdx, R.NewType);
+    LegalizeActionStep Want = Oracle.getAction(Q);
+    EXPECT_TRUE(stepsAgree(Got, Want))
+        << Name << ": table " << describe(Got) << ", oracle " << describe(Want);
+    return Want;
+  };
+
+  // Value type and memory type agree.  The oracle's Type != MemoryTy guard
+  // does not fire, so this is not the Custom answer below.
+  const LegalizeActionStep SameAS = Ask(P1, P1, P1, "G_STORE (p1, p1) m(p1)");
+
+  // Value type and memory type disagree only in address space.  With one
+  // pointer class the table cannot see that: this is the F1 discriminator.
+  const LegalizeActionStep DifferentAS =
+      Ask(P1, P0, P0, "G_STORE (p1, p0) m(p0)");
+  EXPECT_FALSE(stepsAgree(SameAS, DifferentAS))
+      << "the oracle must distinguish (p1, p1) from (p1, p0): "
+      << describe(SameAS) << " vs " << describe(DifferentAS);
+  EXPECT_EQ(DifferentAS.Action, Custom)
+      << "G_STORE's type != memory-type guard must fire";
+
+  // The address space can also be only in the memory descriptor.
+  Ask(P0, P0, P1, "G_STORE (p0, p0) m(p1)");
+
+  // Pointer vectors carry their address space in the element type.
+  Ask(V2P1, P0, V2P1, "G_STORE (v2p1, p0) m(v2p1)");
+}
+
 // TC-27: the report is a pure function of the corpus and the tables, so two
 // independent constructions must produce the same bytes.  This is the cheap
 // half of the determinism evidence; TC-26 (two CLI processes) needs the CLI.

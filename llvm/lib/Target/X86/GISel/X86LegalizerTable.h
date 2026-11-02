@@ -95,7 +95,8 @@ private:
   mutable std::vector<std::vector<uint16_t>> Cells;
   mutable std::vector<LegalizeActionStep> Steps;
   mutable uint64_t Hits = 0, Residuals = 0, Escapes = 0, Outsides = 0,
-                   PointerVectors = 0, Untabulated = 0, Fills = 0;
+                   PointerVectors = 0, AddressSpaceResiduals = 0,
+                   Untabulated = 0, Fills = 0;
 };
 
 } // namespace llvm
