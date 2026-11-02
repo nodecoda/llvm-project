@@ -1335,6 +1335,22 @@ class LLVM_ABI LegalizerInfo {
 public:
   virtual ~LegalizerInfo() = default;
 
+  /// An optional index in front of the rule chains.
+  ///
+  /// A table answers a query without walking the rules.  It is optional and it
+  /// is allowed to decline: returning false means "the rules still decide",
+  /// which is how a partially-built table stays correct while it grows.
+  class LegalizeTable {
+  public:
+    virtual ~LegalizeTable() = default;
+    virtual bool lookup(const LegalityQuery &Query,
+                        LegalizeActionStep &Step) const = 0;
+  };
+
+  /// Install (or remove, with nullptr) the table consulted by getAction().
+  void setTable(std::unique_ptr<LegalizeTable> T) { Table = std::move(T); }
+  bool hasTable() const { return Table != nullptr; }
+
   unsigned getOpcodeIdxForOpcode(unsigned Opcode) const;
   unsigned getActionDefinitionsIdx(unsigned Opcode) const;
 
@@ -1418,6 +1434,7 @@ public:
   virtual unsigned getExtOpcodeForWideningConstant(LLT SmallTy) const;
 
 private:
+  std::unique_ptr<LegalizeTable> Table;
   static const int FirstOp = TargetOpcode::PRE_ISEL_GENERIC_OPCODE_START;
   static const int LastOp = TargetOpcode::PRE_ISEL_GENERIC_OPCODE_END;
 
