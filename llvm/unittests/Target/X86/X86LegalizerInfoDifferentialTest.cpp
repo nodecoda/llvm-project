@@ -560,6 +560,10 @@ TEST_F(X86LegalizerDifferentialTest, ReportMatchesCommittedGolden) {
 // The generated header carries the tuple recorded in x86-ctpop-atoms.json next
 // to the values observed in this build.  Comparing them here, rather than
 // hashing a whole report, means a drift names the field that drifted.
+//
+// Only behaviour is pinned.  The emitter and the .td are covered through the
+// .inc they generate; pinning their source text would turn a formatting change
+// into a repin without saying anything about what the table answers.
 
 TEST_F(X86LegalizerDifferentialTest, PinnedTuple) {
   // The oracle is a verbatim copy of the hand-written rules.  If it is edited,
@@ -567,12 +571,6 @@ TEST_F(X86LegalizerDifferentialTest, PinnedTuple) {
   // that was deleted", so its blob is pinned too.
   EXPECT_STREQ(X86_PIN_ORACLE_RECORDED, X86_PIN_ORACLE_ACTUAL)
       << "X86LegalizerInfoReference.cpp (frozen oracle)";
-  EXPECT_STREQ(X86_PIN_EMITTER_RECORDED, X86_PIN_EMITTER_ACTUAL)
-      << "LegalizerInfoEmitter.cpp";
-  EXPECT_STREQ(X86_PIN_LI_TD_RECORDED, X86_PIN_LI_TD_ACTUAL)
-      << "llvm/Target/LegalizerInfo.td";
-  EXPECT_STREQ(X86_PIN_X86_TD_RECORDED, X86_PIN_X86_TD_ACTUAL)
-      << "X86LegalizerInfo.td";
   EXPECT_STREQ(X86_PIN_INC_RECORDED, X86_PIN_INC_ACTUAL)
       << "generated X86LegalizerInfo.inc";
   EXPECT_STREQ(X86_PIN_CORE_RECORDED, X86_PIN_CORE_ACTUAL)

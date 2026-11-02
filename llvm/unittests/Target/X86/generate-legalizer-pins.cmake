@@ -14,12 +14,12 @@
 # the generated .inc and the Core IR -- do not exist until llvm-tblgen has run.
 #
 # Usage:
-#   cmake -DINC=... -DCORE=... -DJSON=... -DEMITTER=... -DLEGALIZERINFO_TD=...
-#         -DX86_TD=... -DSRC_ROOT=... -DOUT=... -P generate-legalizer-pins.cmake
+#   cmake -DINC=... -DCORE=... -DJSON=... -DORACLE=... -DSRC_ROOT=... -DOUT=...
+#         -P generate-legalizer-pins.cmake
 #
 #===----------------------------------------------------------------------===#
 
-foreach(_var INC CORE JSON EMITTER LEGALIZERINFO_TD X86_TD ORACLE SRC_ROOT OUT)
+foreach(_var INC CORE JSON ORACLE SRC_ROOT OUT)
   if(NOT DEFINED ${_var})
     message(FATAL_ERROR "generate-legalizer-pins.cmake: -D${_var} is required")
   endif()
@@ -37,9 +37,6 @@ function(pin out name)
 endfunction()
 
 pin(_rec_oracle oracle_sha256)
-pin(_rec_emitter emitter_blob)
-pin(_rec_li_td legalizerinfo_td_blob)
-pin(_rec_x86_td x86_td_blob)
 pin(_rec_inc generated_inc_sha256)
 pin(_rec_core core_ir_sha256)
 pin(_rec_escapes core_ir_escape_count)
@@ -47,9 +44,6 @@ pin(_rec_ctpop core_ir_ctpop_clamp_escapes)
 
 # Observed side.
 file(SHA256 "${ORACLE}" _act_oracle)
-file(SHA256 "${EMITTER}" _act_emitter)
-file(SHA256 "${LEGALIZERINFO_TD}" _act_li_td)
-file(SHA256 "${X86_TD}" _act_x86_td)
 file(SHA256 "${INC}" _act_inc)
 
 # The Core IR records the absolute path of the .td it was generated from, so
@@ -89,12 +83,6 @@ endfunction()
 
 define(X86_PIN_ORACLE_RECORDED "${_rec_oracle}")
 define(X86_PIN_ORACLE_ACTUAL "${_act_oracle}")
-define(X86_PIN_EMITTER_RECORDED "${_rec_emitter}")
-define(X86_PIN_EMITTER_ACTUAL "${_act_emitter}")
-define(X86_PIN_LI_TD_RECORDED "${_rec_li_td}")
-define(X86_PIN_LI_TD_ACTUAL "${_act_li_td}")
-define(X86_PIN_X86_TD_RECORDED "${_rec_x86_td}")
-define(X86_PIN_X86_TD_ACTUAL "${_act_x86_td}")
 define(X86_PIN_INC_RECORDED "${_rec_inc}")
 define(X86_PIN_INC_ACTUAL "${_act_inc}")
 define(X86_PIN_CORE_RECORDED "${_rec_core}")
