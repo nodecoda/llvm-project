@@ -1154,26 +1154,26 @@ public:
     return minScalarOrElt(TypeIdx, MinTy).maxScalarOrElt(TypeIdx, MaxTy);
   }
 
-  /// Widen the scalar to match the size of another.
+  /// Widen the scalar or element to match the scalar size of another.
   LegalizeRuleSet &minScalarSameAs(unsigned TypeIdx, unsigned LargeTypeIdx) {
     typeIdx(TypeIdx);
     return actionIf(
         LegalizeAction::WidenScalar,
         [=](const LegalityQuery &Query) {
           return Query.Types[LargeTypeIdx].getScalarSizeInBits() >
-                 Query.Types[TypeIdx].getSizeInBits();
+                 Query.Types[TypeIdx].getScalarSizeInBits();
         },
         LegalizeMutations::changeElementSizeTo(TypeIdx, LargeTypeIdx));
   }
 
-  /// Narrow the scalar to match the size of another.
+  /// Narrow the scalar or element to match the scalar size of another.
   LegalizeRuleSet &maxScalarSameAs(unsigned TypeIdx, unsigned NarrowTypeIdx) {
     typeIdx(TypeIdx);
     return actionIf(
         LegalizeAction::NarrowScalar,
         [=](const LegalityQuery &Query) {
           return Query.Types[NarrowTypeIdx].getScalarSizeInBits() <
-                 Query.Types[TypeIdx].getSizeInBits();
+                 Query.Types[TypeIdx].getScalarSizeInBits();
         },
         LegalizeMutations::changeElementSizeTo(TypeIdx, NarrowTypeIdx));
   }
