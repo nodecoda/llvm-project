@@ -209,6 +209,26 @@ The rule factories also have the following predicates in common:
   sets. So `.legalForCartesianProduct({s16, s32}, {s32, s64})` will accept
   `{s16, s32}`, `{s16, s64}`, `{s32, s32}`, and `{s32, s64}`.
 
+### TableGen-described rules
+
+A target can describe a rule set in TableGen instead of writing the builder
+chain in C++.  The schema lives in
+`llvm/include/llvm/Target/LegalizerInfo.td`, and `-gen-legalizer` emits the
+builder calls as a statement sequence that is included in the target's
+`LegalizerInfo` constructor.
+
+The generated fragment is deliberately a statement sequence rather than a data
+table: a target can convert one opcode at a time, keep the remaining rules
+hand-written, and delete a hand-written chain when its TableGen rule set lands.
+The schema rejects at TableGen time an action whose mutation direction does not
+match the rule, a duplicate opcode across rule sets, and non-generic opcodes.
+The X86 `G_CTPOP` rule set is the first conversion; see
+`llvm/lib/Target/X86/GISel/X86LegalizerInfo.td`.
+
+The current increment still spells type lists and builder arguments as strings;
+follow-ups will make types and builder signatures first-class so typos are
+rejected before C++ is generated.
+
 ### Composite Rules
 
 There are some composite rules for common situations built out of the above facilities:
