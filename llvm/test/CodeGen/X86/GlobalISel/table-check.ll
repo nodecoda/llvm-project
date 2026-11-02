@@ -17,10 +17,13 @@
 ; answer the chain would not give.
 ;
 ; Every tabulated rule set has an evaluator, so no enumerated point is
-; skipped: points == compared.  A skipped point would mean a rule set the
-; generator cannot translate, which is a gap to close rather than to allow.
+; skipped: points == compared.  The domain also includes types the class list
+; does not name (s12/s27/s35/s42/s48, v4s1, v3s32), which take the residual
+; path: the evaluator answers the concrete query instead of a cell.  A skipped
+; point would mean a rule set the generator cannot translate, which is a gap to
+; close rather than to allow.
 ;
-; CHECK: x86-gisel-table-check: points 586 compared 586 mismatches 0 skipped 0 outside 0 ptrvec 0 untabulated 0
+; CHECK: x86-gisel-table-check: points 1397 compared 1397 mismatches 0 skipped 0 residual 811 outside 0 ptrvec 0 untabulated 0
 
 define void @f() {
   ret void

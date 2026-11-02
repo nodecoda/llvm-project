@@ -35,11 +35,6 @@ using namespace TargetOpcode;
 using namespace LegalizeActions;
 using namespace LegalityPredicates;
 
-static cl::opt<bool>
-    X86GISelTable("x86-gisel-table", cl::Hidden, cl::init(false),
-                  cl::desc("Answer X86 legalizer queries from a table instead "
-                           "of the rule chains"));
-
 static cl::opt<bool> X86GISelTableCheck(
     "x86-gisel-table-check", cl::Hidden, cl::init(false),
     cl::desc("Check the X86 legalizer table against the rule chains"));
@@ -48,17 +43,19 @@ X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI,
                                    const X86TargetMachine &TM)
     : Subtarget(STI) {
 
-  // The subtarget-feature/LLT vocabulary and the rule chains are both
-  // generated from GISel/X86LegalizerInfo.td.  The generated file is a
-  // statement sequence, so it stays inside the constructor and the member
-  // Subtarget stays in scope.
+  const unsigned PointerBits = STI.isTarget64BitLP64() ? 64 : 32;
+
+  // The table answers every query in release; the chains exist only as the
+  // reference the differential check compares against.  They are a statement
+  // sequence generated from GISel/X86LegalizerInfo.td, so they stay inside the
+  // constructor and the member Subtarget stays in scope.
+  if (X86GISelTableCheck) {
 #include "X86LegalizerInfo.inc"
 
-  verify(*STI.getInstrInfo());
+    verify(*STI.getInstrInfo());
+  }
 
-  const unsigned PointerBits = STI.isTarget64BitLP64() ? 64 : 32;
-  if (X86GISelTable)
-    setTable(std::make_unique<X86LegalizerTable>(*this, STI, PointerBits));
+  setTable(std::make_unique<X86LegalizerTable>(*this, STI, PointerBits));
 
   if (X86GISelTableCheck) {
     X86LegalizerTable Table(*this, STI, PointerBits);

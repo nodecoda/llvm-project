@@ -3111,6 +3111,18 @@ public:
       std::string Mem;
     };
 
+    // Types the class list does not name, used to probe the reader's residual
+    // path for every rule set.
+    static const TableType ResidualTypes[] = {
+        {TableScalar, 12, 1, "residual s12"},
+        {TableScalar, 27, 1, "residual s27"},
+        {TableScalar, 35, 1, "residual s35"},
+        {TableScalar, 42, 1, "residual s42"},
+        {TableScalar, 48, 1, "residual s48"},
+        {TableVector, 1, 4, "residual v4s1"},
+        {TableVector, 32, 3, "residual v3s32"},
+    };
+
     // Opcode -> distinct query shapes, in first-seen order.
     std::vector<std::string> Opcodes;
     std::map<std::string, std::vector<DomainPoint>> Points;
@@ -3177,6 +3189,24 @@ public:
         for (const RuleTuple &Tuple : Tuples)
           if (Tuple.Types.size() == Arity)
             Add(Tuple);
+
+        // Types the class list does not name take the reader's residual path:
+        // the evaluator is called with the concrete query.  These are the
+        // widths and shapes real IR produces that the lattice stops at, so the
+        // differential covers the fallback instead of assuming it.
+        for (const TableType &Residual : ResidualTypes) {
+          RuleTuple T = Probe;
+          T.Types[0] = Residual;
+          Add(T);
+        }
+        if (HasMem) {
+          // A memory type outside the class list has to reach the evaluator
+          // too; the type slots stay in the lattice so only the descriptor
+          // axis is exercised.
+          RuleTuple T = Probe;
+          T.MemTy = {TableVector, 32, 3, "residual v3s32"};
+          Add(T);
+        }
       }
     }
 

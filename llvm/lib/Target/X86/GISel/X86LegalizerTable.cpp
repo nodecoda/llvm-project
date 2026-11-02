@@ -154,7 +154,7 @@ struct X86TablePoint {
   const char *Name;
   uint8_t NumTypes;
   LLT Types[3];
-  LLT MemTy;     // valid when HasMem
+  LLT MemTy; // valid when HasMem
   uint64_t Align;
   bool HasMem;
 };
@@ -245,6 +245,26 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
   }
   const LegalizerTableDesc &D = X86Tables[Table];
 
+  // A type outside the lattice is not a failure: the evaluator is a function of
+  // the query, so it can answer the concrete types directly.  This is the
+  // residual path; there is no rule chain behind it.
+  auto AskEvaluator = [&](bool PointerVector) -> Result {
+    std::optional<LegalizeActionStep> Step = X86EvalTable(Table, Subtarget, Q);
+    if (!Step) {
+      ++Escapes;
+      R.Kind = Answer::Escape;
+      return R;
+    }
+    ++Residuals;
+    if (PointerVector)
+      ++PointerVectors;
+    R.Kind = Answer::Residual;
+    R.Action = Step->Action;
+    R.TypeIdx = Step->TypeIdx;
+    R.NewType = Step->NewType;
+    return R;
+  };
+
   const int C0 = Q.Types.size() > D.Slots[0] ? classifyType(Q.Types[D.Slots[0]])
                                              : kUnknownClass;
   // A unary query has no slot 1.  The descriptor is uniform, so missing slot 1
@@ -253,16 +273,10 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
   if (D.Dims[1] > 1 && Q.Types.size() > D.Slots[1])
     C1 = classifyType(Q.Types[D.Slots[1]]);
 
-  if (C0 == kPointerVectorClass || C1 == kPointerVectorClass) {
-    ++PointerVectors;
-    R.Kind = Answer::PointerVector;
-    return R;
-  }
-  if (C0 < 0 || C1 < 0) {
-    ++Outsides;
-    R.Kind = Answer::Outside;
-    return R;
-  }
+  if (C0 == kPointerVectorClass || C1 == kPointerVectorClass)
+    return AskEvaluator(/*PointerVector=*/true);
+  if (C0 < 0 || C1 < 0)
+    return AskEvaluator(/*PointerVector=*/false);
 
   const uint8_t L0 = C0;
   const uint8_t L1 = D.Dims[1] > 1 ? C1 : 0;
@@ -276,11 +290,8 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
     }
     const LegalityQuery::MemDesc &MD = Q.MMODescrs[D.MemSlot];
     const int CM = classifyMemType(MD.MemoryTy);
-    if (CM < 0) {
-      ++Outsides;
-      R.Kind = Answer::Outside;
-      return R;
-    }
+    if (CM < 0)
+      return AskEvaluator(/*PointerVector=*/false);
     MemClass = CM * X86NumAlignClasses + alignClass(MD.AlignInBits);
   }
 
@@ -311,7 +322,7 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
 bool X86LegalizerTable::lookup(const LegalityQuery &Q,
                                LegalizeActionStep &Step) const {
   const Result R = query(Q);
-  if (R.Kind != Answer::Hit)
+  if (R.Kind != Answer::Hit && R.Kind != Answer::Residual)
     return false;
   Step = LegalizeActionStep(R.Action, R.TypeIdx, R.NewType);
   return true;
@@ -320,9 +331,10 @@ bool X86LegalizerTable::lookup(const LegalityQuery &Q,
 X86LegalizerTable::~X86LegalizerTable() {
   if (!X86GISelTableStats)
     return;
-  errs() << "x86-gisel-table: hit " << Hits << " escape " << Escapes
-         << " outside " << Outsides << " ptrvec " << PointerVectors
-         << " untabulated " << Untabulated << " fills " << Fills << "\n";
+  errs() << "x86-gisel-table: hit " << Hits << " residual " << Residuals
+         << " escape " << Escapes << " outside " << Outsides << " ptrvec "
+         << PointerVectors << " untabulated " << Untabulated << " fills "
+         << Fills << "\n";
 }
 
 void X86LegalizerTable::selfCheck(raw_ostream &OS) {
@@ -333,6 +345,7 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
   unsigned Compared = 0;
   unsigned Mismatches = 0;
   unsigned Skipped = 0;
+  unsigned Residual = 0;
   for (const X86TablePoint &P : Points) {
     ArrayRef<LLT> Types(P.Types, P.NumTypes);
     // A memdesc point carries the descriptor it was generated from, so the
@@ -352,12 +365,17 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
       }
       errs() << ")\n";
     }
-    const LegalizeActionStep ChainStep = LI.getAction(Q);
+    // Ask the chain directly: LI.getAction() would consult the installed
+    // table first, which is the thing being checked.
+    const LegalizeActionStep ChainStep =
+        LI.getActionDefinitions(Q.Opcode).apply(Q);
     const Result R = query(Q);
-    if (R.Kind != Answer::Hit) {
+    if (R.Kind != Answer::Hit && R.Kind != Answer::Residual) {
       ++Skipped;
       continue;
     }
+    if (R.Kind == Answer::Residual)
+      ++Residual;
     ++Compared;
     if (R.Action == ChainStep.Action && R.TypeIdx == ChainStep.TypeIdx &&
         R.NewType == ChainStep.NewType)
@@ -383,8 +401,9 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
 
   OS << "x86-gisel-table-check: points " << Points.size() << " compared "
      << Compared << " mismatches " << Mismatches << " skipped " << Skipped
-     << " outside " << Outsides << " ptrvec " << PointerVectors
-     << " untabulated " << Untabulated << " fills " << Fills << "\n";
+     << " residual " << Residual << " outside " << Outsides << " ptrvec "
+     << PointerVectors << " untabulated " << Untabulated << " fills " << Fills
+     << "\n";
   if (Mismatches)
     report_fatal_error(
         "x86-gisel-table-check: the table and the chain disagree");

@@ -232,6 +232,25 @@ mutation direction.  The emitter declares the feature booleans and type
 constants ahead of the rule sets, so the generated fragment is self-contained
 inside the target's constructor.
 
+### Answering queries from a table
+
+A target can also ask `-gen-legalizer-table` for a table instead of the builder
+chain.  The generated file contains the type classes, a descriptor per opcode,
+and an evaluator per rule set: the same guards and mutations the chain would
+run, written against the same prologue.  `LegalizerTableImpl` (see
+`llvm/lib/Target/X86/GISel/X86LegalizerTable.cpp`) classifies the query's type
+slots, fills a cell lazily by calling the evaluator with the class
+representative, and answers subsequent queries in that class with one array
+load.  The memory descriptor is a separate axis, keyed on the descriptor's LLT
+and on an alignment class, because a rule can compare either.
+
+A query whose types are outside the generated class list is answered by calling
+the evaluator directly on the concrete query; this is the residual path.  The
+rule chain itself is not part of the release path.  It is compiled only when
+`-x86-gisel-table-check` is given, and is then used as the reference for a
+self-check over an enumerated domain of query shapes, including types the class
+list does not name.
+
 ### Composite Rules
 
 There are some composite rules for common situations built out of the above facilities:
