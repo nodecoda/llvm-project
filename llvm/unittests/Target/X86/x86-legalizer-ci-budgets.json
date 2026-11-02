@@ -1,0 +1,31 @@
+{
+  "schema": "llvm.gisel.x86-legalizer-ci-budgets",
+  "version": 1,
+  "comment": "CI wall-clock budgets for the X86 legalizer regression suite. Measured values were recorded on the reference machine named below; the budgets are contract thresholds, not measurements.",
+  "machine": {
+    "uname": "Linux x86_64",
+    "nproc": 32,
+    "note": "reference machine"
+  },
+  "measured": {
+    "x86tests_ms": 1023,
+    "globalisel_lit_ms": 877,
+    "tablegen_lit_ms": 6533,
+    "x86_codegen_lit_ms": 31928,
+    "fuzz_smoke_ms": 4,
+    "fuzz_nightly_ms": 7
+  },
+  "budgets": {
+    "x86tests_target_ms": 5000,
+    "x86tests_hard_ms": 10000,
+    "check_llvm_delta_ms": 2000,
+    "check_llvm_delta_percent": 10,
+    "full_corpus_minutes": 30,
+    "deep_panel_hours": 2
+  },
+  "pending_g008": {
+    "full_corpus": "measured when the full corpus lands",
+    "deep_panel": "measured when the deep panel lands"
+  },
+  "hard_limit_rule": "Exceeding 10s requires reducing the witness or moving tests to nightly plus an approver entry; the budget itself must not be raised."
+}

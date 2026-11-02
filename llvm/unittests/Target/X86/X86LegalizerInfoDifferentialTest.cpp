@@ -30,6 +30,7 @@
 #include "x86-ctpop-atoms.h"
 #include "x86-ctpop-report.h"
 #include "x86-legalizer-pins.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/CodeGen/GlobalISel/LegalizerInfo.h"
@@ -49,6 +50,7 @@
 #include "gtest/gtest.h"
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdlib>
 #include <map>
 #include <optional>
@@ -128,24 +130,55 @@ public:
   }
 };
 
+// A test-only decorator that records how often LegalizerInfo::getAction()
+// consults the table and how often the table declines.  The reader's query()
+// is not called through lookup(), so replaying a query directly does not move
+// these counters.
+class CountingLegalizerTable : public LegalizerInfo::LegalizeTable {
+  std::unique_ptr<X86LegalizerTable> Inner;
+  mutable uint64_t Lookups = 0;
+  mutable uint64_t FallThroughs = 0;
+
+public:
+  explicit CountingLegalizerTable(std::unique_ptr<X86LegalizerTable> Table)
+      : Inner(std::move(Table)) {}
+
+  bool lookup(const LegalityQuery &Query,
+              LegalizeActionStep &Step) const override {
+    ++Lookups;
+    if (Inner->lookup(Query, Step))
+      return true;
+    ++FallThroughs;
+    return false;
+  }
+
+  const X86LegalizerTable &inner() const { return *Inner; }
+  X86LegalizerTable &inner() { return *Inner; }
+  uint64_t lookups() const { return Lookups; }
+  uint64_t fallThroughs() const { return FallThroughs; }
+};
+
 // The table reader installed on the same generated fragments.  Its answers are
 // compared through query() directly: getAction() falls back to the chain when
 // the table declines, which would make a decline look like agreement.
 class TableLegalizerInfoForTest : public LegalizerInfo {
   const X86Subtarget &Subtarget;
-  X86LegalizerTable *TablePtr = nullptr;
+  CountingLegalizerTable *TablePtr = nullptr;
 
 public:
   explicit TableLegalizerInfoForTest(const X86Subtarget &STI) : Subtarget(STI) {
 #include "X86LegalizerInfo.inc"
     auto T = std::make_unique<X86LegalizerTable>(
         *this, Subtarget, Subtarget.isTarget64BitLP64() ? 64 : 32);
-    TablePtr = T.get();
-    setTable(std::move(T));
+    auto Counting = std::make_unique<CountingLegalizerTable>(std::move(T));
+    TablePtr = Counting.get();
+    setTable(std::move(Counting));
   }
 
-  const X86LegalizerTable &table() const { return *TablePtr; }
-  X86LegalizerTable &mutableTable() { return *TablePtr; }
+  const X86LegalizerTable &table() const { return TablePtr->inner(); }
+  X86LegalizerTable &mutableTable() { return TablePtr->inner(); }
+  uint64_t lookups() const { return TablePtr->lookups(); }
+  uint64_t fallThroughs() const { return TablePtr->fallThroughs(); }
 
   bool legalizeCustom(LegalizerHelper &, MachineInstr &,
                       LostDebugLocObserver &) const override {
@@ -5280,6 +5313,888 @@ TEST(X86LegalizerMirMap, MirRuleSetMapIsCompleteAndLinked) {
       ADD_FAILURE() << "rule set " << T
                     << " has neither a valid mir entry nor a valid approved "
                        "exclusion";
+}
+
+//===----------------------------------------------------------------------===//
+// Fixed-seed differential fuzz
+//===----------------------------------------------------------------------===//
+//
+// The exhaustive tests above enumerate a reviewed domain.  This tier adds a
+// fixed-seed random walk over the same two tables: every query comes from a
+// committed SplitMix64 seed, both the generated table and the reference answer
+// it, and only a table decline (Escape/Outside/Untabulated) is skipped -- that
+// is the documented fallback, not an answer to compare.  A mismatch is shrunk
+// by replacing one type slot at a time with the class representatives, so the
+// report names a smaller query that still reproduces.
+//
+// The tier table and the seeds live in x86-legalizer-fuzz-seeds.json.  This TU
+// has no defaults: a missing or malformed artifact is a test failure, so every
+// run is reproducible from the committed JSON alone.
+
+// SplitMix64.  Small and stateless, so the sequence is a pure function of the
+// seed; <random> is deliberately not used because its distributions are
+// library-defined, and a digest over them would not be portable.
+struct SplitMix64 {
+  uint64_t State;
+
+  explicit SplitMix64(uint64_t Seed) : State(Seed) {}
+
+  uint64_t next() {
+    uint64_t Z = (State += 0x9E3779B97F4A7C15ULL);
+    Z = (Z ^ (Z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    Z = (Z ^ (Z >> 27)) * 0x94D049BB133111EBULL;
+    return Z ^ (Z >> 31);
+  }
+
+  // Modulo bias is irrelevant here: the sequence is fixed and reviewed, not a
+  // statistical claim about the generator.
+  uint64_t bounded(uint64_t N) { return next() % N; }
+};
+
+static constexpr uint64_t Fnv1a64Offset = 0xCBF29CE484222325ULL;
+static constexpr uint64_t Fnv1a64Prime = 0x100000001B3ULL;
+
+static uint64_t fnv1a64Step(uint64_t Hash, uint64_t Value) {
+  for (unsigned I = 0; I != 8; ++I) {
+    Hash ^= (Value >> (8 * I)) & 0xFF;
+    Hash *= Fnv1a64Prime;
+  }
+  return Hash;
+}
+
+// Fixed alignment vocabulary for the memory-descriptor axis.  It spans below
+// every threshold, the thresholds themselves, and both sides of 32/64.
+static constexpr uint64_t FuzzAlignVocabulary[] = {0,  1,  4,  8,   16, 31,
+                                                   32, 64, 65, 128, 256};
+
+struct FuzzSeeds {
+  std::map<std::string, uint64_t> Tiers;
+  std::map<std::string, uint64_t> Seeds;
+};
+
+static std::optional<uint64_t> parseFuzzNumber(StringRef S) {
+  uint64_t Value = 0;
+  if (S.consume_front("0x") || S.consume_front("0X")) {
+    if (S.getAsInteger(16, Value))
+      return std::nullopt;
+    return Value;
+  }
+  if (S.getAsInteger(10, Value))
+    return std::nullopt;
+  return Value;
+}
+
+static std::optional<FuzzSeeds> loadFuzzSeeds(std::string &Err) {
+  std::optional<std::string> Text =
+      readTestSourceFile("x86-legalizer-fuzz-seeds.json");
+  if (!Text) {
+    Err = "cannot read x86-legalizer-fuzz-seeds.json from " +
+          std::string(X86_LEGALIZER_TEST_SRC_DIR);
+    return std::nullopt;
+  }
+  Expected<json::Value> Parsed = json::parse(*Text);
+  if (!Parsed) {
+    Err = "x86-legalizer-fuzz-seeds.json: " + toString(Parsed.takeError());
+    return std::nullopt;
+  }
+  const json::Object *Root = Parsed->getAsObject();
+  if (!Root) {
+    Err = "x86-legalizer-fuzz-seeds.json: root is not an object";
+    return std::nullopt;
+  }
+  std::optional<StringRef> Schema = Root->getString("schema");
+  if (!Schema || *Schema != "llvm.gisel.x86-legalizer-fuzz-seeds") {
+    Err = "x86-legalizer-fuzz-seeds.json: bad or missing schema";
+    return std::nullopt;
+  }
+  std::optional<int64_t> Version = Root->getInteger("version");
+  if (!Version || *Version != 1) {
+    Err = "x86-legalizer-fuzz-seeds.json: bad or missing version";
+    return std::nullopt;
+  }
+  std::optional<StringRef> Generator = Root->getString("generator");
+  if (!Generator || *Generator != "splitmix64") {
+    Err = "x86-legalizer-fuzz-seeds.json: bad or missing generator";
+    return std::nullopt;
+  }
+  const json::Object *Tiers = Root->getObject("tiers");
+  const json::Object *Seeds = Root->getObject("seeds");
+  if (!Tiers || !Seeds) {
+    Err = "x86-legalizer-fuzz-seeds.json: missing tiers or seeds";
+    return std::nullopt;
+  }
+  FuzzSeeds Out;
+  for (StringRef Tier : {"smoke", "nightly", "weekly", "long"}) {
+    std::optional<int64_t> Queries = Tiers->getInteger(Tier);
+    if (!Queries || *Queries <= 0) {
+      Err = "x86-legalizer-fuzz-seeds.json: missing or invalid tier " +
+            Tier.str();
+      return std::nullopt;
+    }
+    std::optional<StringRef> SeedText = Seeds->getString(Tier);
+    if (!SeedText) {
+      Err = "x86-legalizer-fuzz-seeds.json: missing seed for " + Tier.str();
+      return std::nullopt;
+    }
+    std::optional<uint64_t> Seed = parseFuzzNumber(*SeedText);
+    if (!Seed) {
+      Err = "x86-legalizer-fuzz-seeds.json: malformed seed for " + Tier.str();
+      return std::nullopt;
+    }
+    Out.Tiers[Tier.str()] = static_cast<uint64_t>(*Queries);
+    Out.Seeds[Tier.str()] = *Seed;
+  }
+  return Out;
+}
+
+struct FuzzRunConfig {
+  std::string Tier;
+  uint64_t Queries = 0;
+  uint64_t Seed = 0;
+  bool QueriesOverridden = false;
+};
+
+static std::optional<std::string> getFuzzEnv(const char *Name) {
+  const char *Value = std::getenv(Name);
+  if (!Value || !*Value)
+    return std::nullopt;
+  return std::string(Value);
+}
+
+// Resolve the tier, count and seed.  The JSON is authoritative; the three
+// environment variables exist for local runs and are never a fallback for a
+// missing artifact.
+static std::optional<FuzzRunConfig> resolveFuzzRun(StringRef DefaultTier,
+                                                   std::string &Err) {
+  std::optional<FuzzSeeds> Seeds = loadFuzzSeeds(Err);
+  if (!Seeds)
+    return std::nullopt;
+  FuzzRunConfig C;
+  C.Tier = DefaultTier.str();
+  if (std::optional<std::string> Env = getFuzzEnv("X86_LEGALIZER_FUZZ_TIER"))
+    C.Tier = *Env;
+  auto TierIt = Seeds->Tiers.find(C.Tier);
+  auto SeedIt = Seeds->Seeds.find(C.Tier);
+  if (TierIt == Seeds->Tiers.end() || SeedIt == Seeds->Seeds.end()) {
+    Err = "unknown fuzz tier '" + C.Tier +
+          "' (expected smoke, nightly, weekly or long)";
+    return std::nullopt;
+  }
+  C.Queries = TierIt->second;
+  C.Seed = SeedIt->second;
+  if (std::optional<std::string> Env =
+          getFuzzEnv("X86_LEGALIZER_FUZZ_QUERIES")) {
+    std::optional<uint64_t> Value = parseFuzzNumber(*Env);
+    if (!Value || *Value == 0) {
+      Err = "malformed X86_LEGALIZER_FUZZ_QUERIES";
+      return std::nullopt;
+    }
+    C.Queries = *Value;
+    C.QueriesOverridden = true;
+  }
+  if (std::optional<std::string> Env = getFuzzEnv("X86_LEGALIZER_FUZZ_SEED")) {
+    std::optional<uint64_t> Value = parseFuzzNumber(*Env);
+    if (!Value) {
+      Err = "malformed X86_LEGALIZER_FUZZ_SEED";
+      return std::nullopt;
+    }
+    C.Seed = *Value;
+  }
+  return C;
+}
+
+// The fuzz type pool: the class representatives from X86TestTypeClasses that
+// are not pointers, plus every LLT typeClasses() names that the class lattice
+// does not (s7, s24, s200 -- they leave the class tuple and take the residual
+// path).  That is 21 + 3 = 24 representatives.  Pointer and pointer-vector
+// slots are deliberately absent: rules such as ScalarSameSizeAs/ClampScalar
+// mutate the operand and LLT::changeElementSize asserts on pointers, so a
+// pointer-typed slot is not a well-formed legalizer query for these rule sets.
+static std::vector<LLT> fuzzTypeReps() {
+  std::vector<LLT> Reps;
+  auto Add = [&](LLT Ty) {
+    if (std::find(Reps.begin(), Reps.end(), Ty) == Reps.end())
+      Reps.push_back(Ty);
+  };
+  for (unsigned I = 0; I != X86TestNumTypeClasses; ++I) {
+    LLT Ty = testTypeClassLLT(X86TestTypeClasses[I], /*PointerBits=*/64);
+    if (!Ty.isPointer() && !Ty.isPointerVector())
+      Add(Ty);
+  }
+  for (const TypeClass &T : typeClasses()) {
+    LLT Ty = T.Dst;
+    bool InLattice = false;
+    for (unsigned I = 0; I != X86TestNumTypeClasses; ++I)
+      if (testTypeClassLLT(X86TestTypeClasses[I], /*PointerBits=*/64) == Ty)
+        InLattice = true;
+    if (!InLattice)
+      Add(Ty);
+  }
+  return Reps;
+}
+
+struct FuzzQuery {
+  unsigned Table = 0;
+  unsigned Config = 0;
+  SmallVector<LLT, 2> Types;
+  bool HasMem = false;
+  LLT MemTy;
+  uint64_t Align = 0;
+};
+
+// One fixture per run: four subtargets, four references and four tables.  The
+// representatives and opcodes are precomputed so a large tier does not pay
+// for them per query.
+struct FuzzFixture {
+  std::vector<Sigma> Sigmas;
+  std::vector<std::unique_ptr<X86LegalizerInfoReference>> Oracles;
+  std::vector<std::unique_ptr<TableLegalizerInfoForTest>> Tables;
+  std::array<unsigned, X86TestNumTables> Opcodes{};
+  std::vector<LLT> TypeReps;
+  std::vector<LLT> MemReps32, MemReps64;
+
+  const std::vector<LLT> &memReps(unsigned Config) const {
+    return FullConfigs[Config].Is64 ? MemReps64 : MemReps32;
+  }
+};
+
+static std::optional<FuzzFixture> makeFuzzFixture(std::string &Err) {
+  FuzzFixture F;
+  F.Sigmas.reserve(std::size(FullConfigs));
+  F.Oracles.reserve(std::size(FullConfigs));
+  F.Tables.reserve(std::size(FullConfigs));
+  for (const Config &C : FullConfigs) {
+    Sigma S = makeSigma(C);
+    if (!S.STI) {
+      Err = std::string("fuzz: no subtarget for config ") + C.ID;
+      return std::nullopt;
+    }
+    F.Oracles.push_back(std::make_unique<X86LegalizerInfoReference>(
+        *S.STI, *static_cast<const X86TargetMachine *>(S.TM.get())));
+    F.Tables.push_back(std::make_unique<TableLegalizerInfoForTest>(*S.STI));
+    F.Sigmas.push_back(std::move(S));
+  }
+  for (unsigned I = 0; I != X86TestNumTables; ++I) {
+    std::optional<unsigned> Opcode = opcodeForName(X86TestTables[I].Opcode);
+    if (!Opcode) {
+      Err = std::string("fuzz: no TargetOpcode for ") + X86TestTables[I].Opcode;
+      return std::nullopt;
+    }
+    F.Opcodes[I] = *Opcode;
+  }
+  F.TypeReps = fuzzTypeReps();
+  F.MemReps32 = memClassReps(32);
+  F.MemReps64 = memClassReps(64);
+  return F;
+}
+
+// Draw order is part of the committed sequence: table, config, one type per
+// slot, then the descriptor and its alignment.  Changing it changes every
+// later query, so it is documented next to the generator.
+static FuzzQuery makeFuzzQuery(SplitMix64 &Rng, const FuzzFixture &F) {
+  FuzzQuery Q;
+  Q.Table = static_cast<unsigned>(Rng.bounded(X86TestNumTables));
+  Q.Config = static_cast<unsigned>(Rng.bounded(std::size(FullConfigs)));
+  const X86TestTable &T = X86TestTables[Q.Table];
+  for (unsigned I = 0; I != T.NumSlots; ++I)
+    Q.Types.push_back(F.TypeReps[Rng.bounded(F.TypeReps.size())]);
+  if (T.HasMem) {
+    Q.HasMem = true;
+    const std::vector<LLT> &MemTypes = F.memReps(Q.Config);
+    Q.MemTy = MemTypes[Rng.bounded(MemTypes.size())];
+    Q.Align = FuzzAlignVocabulary[Rng.bounded(std::size(FuzzAlignVocabulary))];
+  }
+  return Q;
+}
+
+struct FuzzAnswer {
+  X86LegalizerTable::Result Table;
+  LegalizeActionStep Reference{Unsupported, 0, LLT{}};
+};
+
+static FuzzAnswer answerFuzzQuery(FuzzFixture &F, const FuzzQuery &Q) {
+  const X86TestTable &T = X86TestTables[Q.Table];
+  LLT Types[2] = {LLT(), LLT()};
+  for (unsigned I = 0; I != Q.Types.size(); ++I)
+    Types[I] = Q.Types[I];
+  LegalityQuery::MemDesc MemDescs[1] = {
+      {Q.MemTy, Q.Align, AtomicOrdering::NotAtomic, AtomicOrdering::NotAtomic}};
+  ArrayRef<LegalityQuery::MemDesc> MemRef;
+  if (Q.HasMem)
+    MemRef = MemDescs;
+  LegalityQuery LQ(F.Opcodes[Q.Table], ArrayRef<LLT>(Types, T.NumSlots),
+                   MemRef);
+  FuzzAnswer A;
+  A.Table = F.Tables[Q.Config]->table().query(LQ);
+  A.Reference = F.Oracles[Q.Config]->getAction(LQ);
+  return A;
+}
+
+static LegalizeActionStep fuzzTableStep(const X86LegalizerTable::Result &R) {
+  return LegalizeActionStep(R.Action, R.TypeIdx, R.NewType);
+}
+
+// A decline is the documented fallback, not an answer: only Hit and Residual
+// are compared, and the comparison is the same three-field predicate the
+// exhaustive tests use.
+static bool fuzzAnswersMismatch(const FuzzAnswer &A) {
+  if (A.Table.Kind != X86LegalizerTable::Answer::Hit &&
+      A.Table.Kind != X86LegalizerTable::Answer::Residual)
+    return false;
+  return !stepsAgree(fuzzTableStep(A.Table), A.Reference);
+}
+
+static std::string renderFuzzQuery(const FuzzQuery &Q) {
+  std::string S;
+  raw_string_ostream OS(S);
+  OS << X86TestTables[Q.Table].Name << " (";
+  for (unsigned I = 0; I != Q.Types.size(); ++I)
+    OS << (I ? ", " : "") << witnessLLTName(Q.Types[I]);
+  OS << ")";
+  if (Q.HasMem)
+    OS << " mem(" << witnessLLTName(Q.MemTy) << ", align " << Q.Align << ")";
+  return OS.str();
+}
+
+static std::string fuzzTableText(const X86LegalizerTable::Result &R) {
+  return std::string(answerName(R.Kind)) + "/" + describe(fuzzTableStep(R));
+}
+
+// Greedy one-pass shrink: for each slot in turn, keep the first class
+// representative that still mismatches.  A candidate that turns the query into
+// a decline does not count as reproducing the failure.
+static std::string shrinkFuzzFailure(FuzzFixture &F, const FuzzQuery &Start,
+                                     uint64_t Index, StringRef Tier,
+                                     uint64_t Seed,
+                                     const FuzzAnswer &StartAnswer) {
+  FuzzQuery Cur = Start;
+  FuzzAnswer CurAnswer = StartAnswer;
+  for (unsigned Slot = 0; Slot != Start.Types.size(); ++Slot) {
+    for (const LLT &Rep : F.TypeReps) {
+      FuzzQuery Candidate = Cur;
+      Candidate.Types[Slot] = Rep;
+      FuzzAnswer A = answerFuzzQuery(F, Candidate);
+      if (!fuzzAnswersMismatch(A))
+        continue;
+      Cur = Candidate;
+      CurAnswer = A;
+      break;
+    }
+  }
+  std::string Msg;
+  raw_string_ostream OS(Msg);
+  OS << "FUZZ FAIL seed=0x" << utohexstr(Seed, /*LowerCase=*/true, 16)
+     << " index=" << Index << " tier=" << Tier
+     << " config=" << FullConfigs[Cur.Config].ID
+     << " table=" << X86TestTables[Cur.Table].Name
+     << " query=" << renderFuzzQuery(Start)
+     << " table=" << fuzzTableText(CurAnswer.Table)
+     << " reference=" << describe(CurAnswer.Reference)
+     << " shrunk=" << renderFuzzQuery(Cur);
+  return Msg;
+}
+
+struct FuzzRun {
+  uint64_t Queries = 0;
+  uint64_t Hits = 0;
+  uint64_t Residuals = 0;
+  uint64_t Escapes = 0;
+  uint64_t Outsides = 0;
+  uint64_t Untabulated = 0;
+  uint64_t Diffs = 0;
+  uint64_t Digest = Fnv1a64Offset;
+  std::string Failure;
+};
+
+static uint64_t digestFuzzAnswer(uint64_t Hash,
+                                 const X86LegalizerTable::Result &R) {
+  Hash = fnv1a64Step(Hash, static_cast<uint64_t>(R.Kind));
+  Hash = fnv1a64Step(Hash, static_cast<uint64_t>(R.Action));
+  Hash = fnv1a64Step(Hash, R.TypeIdx);
+  Hash = fnv1a64Step(Hash, R.NewType.getUniqueRAWLLTData());
+  return Hash;
+}
+
+static FuzzRun runFuzzTier(StringRef Tier, uint64_t Seed, uint64_t Queries) {
+  FuzzRun Run;
+  std::string Err;
+  std::optional<FuzzFixture> F = makeFuzzFixture(Err);
+  if (!F) {
+    Run.Failure = Err;
+    return Run;
+  }
+  SplitMix64 Rng(Seed);
+  for (uint64_t I = 0; I != Queries; ++I) {
+    FuzzQuery Q = makeFuzzQuery(Rng, *F);
+    FuzzAnswer A = answerFuzzQuery(*F, Q);
+    ++Run.Queries;
+    Run.Digest = digestFuzzAnswer(Run.Digest, A.Table);
+    switch (A.Table.Kind) {
+    case X86LegalizerTable::Answer::Hit:
+      ++Run.Hits;
+      break;
+    case X86LegalizerTable::Answer::Residual:
+      ++Run.Residuals;
+      break;
+    case X86LegalizerTable::Answer::Escape:
+      ++Run.Escapes;
+      break;
+    case X86LegalizerTable::Answer::Outside:
+      ++Run.Outsides;
+      break;
+    case X86LegalizerTable::Answer::Untabulated:
+      ++Run.Untabulated;
+      break;
+    }
+    if (!fuzzAnswersMismatch(A))
+      continue;
+    ++Run.Diffs;
+    Run.Failure = shrinkFuzzFailure(*F, Q, I, Tier, Seed, A);
+    break;
+  }
+  return Run;
+}
+
+static void printFuzzSummary(const FuzzRun &R, StringRef Tier, uint64_t Seed) {
+  llvm::outs() << "fuzz tier=" << Tier << " queries=" << R.Queries
+               << " hit=" << R.Hits << " residual=" << R.Residuals
+               << " escape=" << R.Escapes << " diffs=" << R.Diffs << " seed=0x"
+               << utohexstr(Seed, /*LowerCase=*/true, 16) << "\n";
+  llvm::outs() << "fuzz tier=" << Tier << " digest=0x"
+               << utohexstr(R.Digest, /*LowerCase=*/true, 16)
+               << " outside=" << R.Outsides << " untabulated=" << R.Untabulated
+               << "\n";
+}
+
+// A tier run must touch both compared paths; a local run with an explicit
+// query override is allowed to be too small for that.  Answer::Escape is
+// counted and skipped like Outside/Untabulated, but it is unreachable for a
+// well-formed query here: every one of the 63 rule sets in X86TestTables has a
+// generated evaluator, and X86EvalTable only returns nullopt (the opaque-cell
+// signal) from its invalid-table default.  The per-kind counts are asserted to
+// add up to the query count, so a decline can never be silently dropped.
+static void checkFuzzCoverage(const FuzzRun &R, bool RequireCoverage) {
+  if (!RequireCoverage)
+    return;
+  EXPECT_GT(R.Hits, 0u) << "fuzz tier never reached a table Hit";
+  EXPECT_GT(R.Residuals, 0u) << "fuzz tier never reached the residual path";
+}
+
+TEST_F(X86LegalizerDifferentialTest, FuzzDifferentialSmoke) {
+  std::string Err;
+  std::optional<FuzzRunConfig> C = resolveFuzzRun("smoke", Err);
+  ASSERT_TRUE(C.has_value()) << Err;
+
+  const auto Started = std::chrono::steady_clock::now();
+  FuzzRun First = runFuzzTier(C->Tier, C->Seed, C->Queries);
+  // A second independent run over the same seed proves the generated sequence
+  // and both answers are deterministic; the digest covers each query's answer
+  // tuple in order.
+  FuzzRun Second = runFuzzTier(C->Tier, C->Seed, C->Queries);
+  const auto ElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - Started)
+                             .count();
+
+  printFuzzSummary(First, C->Tier, C->Seed);
+  llvm::outs() << "fuzz tier=" << C->Tier << " rerun_digest=0x"
+               << utohexstr(Second.Digest, /*LowerCase=*/true, 16)
+               << " deterministic="
+               << (First.Digest == Second.Digest ? "yes" : "no")
+               << " elapsed_ms=" << ElapsedMs << "\n";
+
+  checkFuzzCoverage(First, !C->QueriesOverridden);
+  EXPECT_EQ(First.Queries, First.Hits + First.Residuals + First.Escapes +
+                               First.Outsides + First.Untabulated);
+  EXPECT_EQ(First.Queries, C->Queries);
+  EXPECT_EQ(Second.Queries, C->Queries);
+  EXPECT_EQ(Second.Digest, First.Digest)
+      << "the same seed produced a different digest";
+  EXPECT_EQ(Second.Diffs, First.Diffs);
+  if (!First.Failure.empty())
+    ADD_FAILURE() << First.Failure;
+  if (!Second.Failure.empty())
+    ADD_FAILURE() << "second run: " << Second.Failure;
+  EXPECT_EQ(First.Diffs, 0u);
+}
+
+// The large tiers are opt-in: gtest only runs this with
+// --gtest_also_run_disabled_tests, and X86_LEGALIZER_FUZZ_TIER selects the
+// tier.  It defaults to nightly so an accidental unfiltered disabled run does
+// not start the long tier.
+TEST_F(X86LegalizerDifferentialTest, DISABLED_FuzzDifferentialTier) {
+  std::string Err;
+  std::optional<FuzzRunConfig> C = resolveFuzzRun("nightly", Err);
+  ASSERT_TRUE(C.has_value()) << Err;
+
+  const auto Started = std::chrono::steady_clock::now();
+  FuzzRun Run = runFuzzTier(C->Tier, C->Seed, C->Queries);
+  const auto ElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - Started)
+                             .count();
+
+  printFuzzSummary(Run, C->Tier, C->Seed);
+  llvm::outs() << "fuzz tier=" << C->Tier << " elapsed_ms=" << ElapsedMs
+               << "\n";
+
+  checkFuzzCoverage(Run, !C->QueriesOverridden);
+  EXPECT_EQ(Run.Queries, Run.Hits + Run.Residuals + Run.Escapes + Run.Outsides +
+                             Run.Untabulated);
+  EXPECT_EQ(Run.Queries, C->Queries);
+  if (!Run.Failure.empty())
+    ADD_FAILURE() << Run.Failure;
+  EXPECT_EQ(Run.Diffs, 0u);
+}
+
+//===----------------------------------------------------------------------===//
+// Structural and workload budgets
+//===----------------------------------------------------------------------===//
+//
+// The generated .inc files and the witness corpus are reviewed artifacts, not
+// hashes: this section bounds their growth and records what the CI path costs
+// on the reference machine.  A budget is a decision threshold, so a failure
+// names the artifact and both numbers rather than pointing at a diff.
+
+static std::optional<uint64_t> getJSONUInt(const json::Object &O,
+                                           StringRef Key) {
+  if (std::optional<int64_t> V = O.getInteger(Key))
+    if (*V >= 0)
+      return static_cast<uint64_t>(*V);
+  return std::nullopt;
+}
+
+static uint64_t growthCap(uint64_t Baseline, uint64_t Percent) {
+  return (Baseline * (100 + Percent) + 99) / 100;
+}
+
+static std::string buildArtifactPath(StringRef Relative) {
+  return std::string(X86_LEGALIZER_BUILD_DIR) + "/" + Relative.str();
+}
+
+static std::optional<uint64_t> countFileLines(StringRef Path,
+                                              std::string &Error) {
+  auto Buffer = MemoryBuffer::getFile(Path);
+  if (!Buffer) {
+    Error = "cannot read " + Path.str();
+    return std::nullopt;
+  }
+  return (*Buffer)->getBuffer().count('\n');
+}
+
+// selfCheck() ends with a single summary line.  The counters are read from
+// that line instead of from the reader's private state so the test observes
+// the same artifact an operator sees in the log.
+static std::optional<uint64_t> selfCheckCount(StringRef Log, StringRef Key) {
+  const std::string Needle = (" " + Key + " ").str();
+  const size_t Pos = Log.rfind(Needle);
+  if (Pos == StringRef::npos)
+    return std::nullopt;
+  StringRef Rest = Log.substr(Pos + Needle.size());
+  size_t Digits = 0;
+  while (Digits != Rest.size() && Rest[Digits] >= '0' && Rest[Digits] <= '9')
+    ++Digits;
+  if (Digits == 0)
+    return std::nullopt;
+  uint64_t Value = 0;
+  if (Rest.take_front(Digits).getAsInteger(10, Value))
+    return std::nullopt;
+  return Value;
+}
+
+TEST_F(X86LegalizerDifferentialTest, CodegenGrowthIsBounded) {
+  std::optional<std::string> Text =
+      readTestSourceFile("x86-legalizer-codegen-budget.json");
+  ASSERT_TRUE(Text.has_value())
+      << "cannot read x86-legalizer-codegen-budget.json";
+  auto Parsed = json::parse(*Text);
+  ASSERT_TRUE(!!Parsed) << toString(Parsed.takeError());
+  const json::Object *Root = Parsed->getAsObject();
+  ASSERT_TRUE(Root) << "codegen budget root is not an object";
+  ASSERT_EQ(Root->getString("schema").value_or(""),
+            "llvm.gisel.x86-legalizer-codegen-budget");
+
+  std::optional<uint64_t> Percent = getJSONUInt(*Root, "max_growth_percent");
+  ASSERT_TRUE(Percent.has_value()) << "missing max_growth_percent";
+  const json::Object *Baseline = Root->getObject("baseline");
+  ASSERT_TRUE(Baseline) << "missing baseline";
+
+  struct Artifact {
+    const char *Name;
+    const char *Key;
+    const char *Relative;
+  };
+  static const Artifact Artifacts[] = {
+      {"X86LegalizerTable.inc", "table_inc_lines",
+       "lib/Target/X86/X86LegalizerTable.inc"},
+      {"X86LegalizerInfo.inc", "info_inc_lines",
+       "lib/Target/X86/X86LegalizerInfo.inc"},
+      {"X86LegalizerTablePointsForTest.inc", "points_inc_lines",
+       "unittests/Target/X86/X86LegalizerTablePointsForTest.inc"},
+      {"X86LegalizerRuleIndex.inc", "rule_index_inc_lines",
+       "unittests/Target/X86/X86LegalizerRuleIndex.inc"},
+  };
+  for (const Artifact &A : Artifacts) {
+    std::optional<uint64_t> Base = getJSONUInt(*Baseline, A.Key);
+    ASSERT_TRUE(Base.has_value()) << "missing baseline " << A.Key;
+    const uint64_t Cap = growthCap(*Base, *Percent);
+    std::string Error;
+    std::optional<uint64_t> Actual =
+        countFileLines(buildArtifactPath(A.Relative), Error);
+    ASSERT_TRUE(Actual.has_value()) << Error;
+    EXPECT_LE(*Actual, Cap)
+        << A.Name << ": " << *Actual << " lines exceeds cap " << Cap
+        << " (baseline " << *Base << ", max_growth_percent " << *Percent << ")";
+    llvm::outs() << "growth " << A.Name << " lines=" << *Actual
+                 << " baseline=" << *Base << " cap=" << Cap << "\n";
+  }
+
+  // The recorded table/rule counts are the same denominators the coverage
+  // manifest uses; a budget that drifted from it would bound a different
+  // object than the tests walk.
+  std::optional<std::string> CountsText =
+      readTestSourceFile("x86-legalizer-rule-counts.json");
+  ASSERT_TRUE(CountsText.has_value());
+  auto CountsParsed = json::parse(*CountsText);
+  ASSERT_TRUE(!!CountsParsed) << toString(CountsParsed.takeError());
+  const json::Object *Counts = CountsParsed->getAsObject();
+  ASSERT_TRUE(Counts);
+  std::optional<uint64_t> ManifestTables = getJSONUInt(*Counts, "table_count");
+  std::optional<uint64_t> ManifestRules = getJSONUInt(*Counts, "td_rule_count");
+  std::optional<uint64_t> BaseTables = getJSONUInt(*Baseline, "tables");
+  std::optional<uint64_t> BaseRules = getJSONUInt(*Baseline, "rules");
+  ASSERT_TRUE(ManifestTables.has_value());
+  ASSERT_TRUE(ManifestRules.has_value());
+  ASSERT_TRUE(BaseTables.has_value());
+  ASSERT_TRUE(BaseRules.has_value());
+  EXPECT_EQ(*BaseTables, *ManifestTables)
+      << "codegen budget tables do not match the coverage manifest";
+  EXPECT_EQ(*BaseRules, *ManifestRules)
+      << "codegen budget rules do not match the coverage manifest";
+
+  // The rule index is generated from the same .td as the table, so it is an
+  // independent read of the two counts the manifest and the budget record.
+  uint64_t GeneratedRules = 0;
+  for (unsigned NumRules : X86RuleIndexNumRules)
+    GeneratedRules += NumRules;
+  EXPECT_EQ(*BaseTables, std::size(X86RuleIndexNumRules))
+      << "codegen budget tables do not match the generated rule index";
+  EXPECT_EQ(*BaseRules, GeneratedRules)
+      << "codegen budget rules do not match the generated rule index";
+
+  // The domain size and the lazy-fill count are measured by the reader.  The
+  // fill budget is a growth bound on the same workload, so it uses the same
+  // percentage rather than a separate number.
+  const Config &C = Configs[0];
+  Sigma S = makeSigma(C);
+  ASSERT_TRUE(S.STI) << C.ID;
+  TableLegalizerInfoForTest Table(*S.STI);
+  std::string Log;
+  raw_string_ostream OS(Log);
+  Table.mutableTable().selfCheck(OS);
+  OS.flush();
+
+  std::optional<uint64_t> Points = selfCheckCount(Log, "points");
+  std::optional<uint64_t> Mismatches = selfCheckCount(Log, "mismatches");
+  std::optional<uint64_t> Fills = selfCheckCount(Log, "fills");
+  std::optional<uint64_t> BasePoints = getJSONUInt(*Baseline, "points");
+  std::optional<uint64_t> BaseFills = getJSONUInt(*Baseline, "fills");
+  ASSERT_TRUE(Points.has_value()) << Log;
+  ASSERT_TRUE(Mismatches.has_value()) << Log;
+  ASSERT_TRUE(Fills.has_value()) << Log;
+  ASSERT_TRUE(BasePoints.has_value()) << "missing baseline points";
+  ASSERT_TRUE(BaseFills.has_value()) << "missing baseline fills";
+  EXPECT_EQ(*Mismatches, 0u) << Log;
+  EXPECT_EQ(*Points, *BasePoints)
+      << "codegen budget points do not match selfCheck";
+  const uint64_t FillsCap = growthCap(*BaseFills, *Percent);
+  EXPECT_LE(*Fills, FillsCap)
+      << "fills: " << *Fills << " exceeds cap " << FillsCap << " (baseline "
+      << *BaseFills << ", max_growth_percent " << *Percent << ")";
+  llvm::outs() << "growth fills=" << *Fills << " baseline=" << *BaseFills
+               << " cap=" << FillsCap << "\n";
+}
+
+// AC10: the table must answer every committed witness query itself.  Direct
+// query() answers are classified first, then each atom is replayed through
+// getAction() with a counting decorator installed.  A decline is allowed only
+// when the table's own answer was Escape, Outside or Untabulated -- the
+// documented fallback to the rule chain.
+TEST_F(X86LegalizerDifferentialTest, ReleasePathNoApply) {
+  std::string Error;
+  std::optional<std::vector<WitnessAtom>> Atoms = readWitnessAtoms(Error);
+  ASSERT_TRUE(Atoms.has_value()) << Error;
+  ASSERT_EQ(Atoms->size(), 1256u);
+
+  std::map<std::string, unsigned> ConfigForID;
+  for (unsigned I = 0; I != std::size(FullConfigs); ++I)
+    ConfigForID.emplace(FullConfigs[I].ID, I);
+
+  std::vector<Sigma> Sigmas;
+  Sigmas.reserve(std::size(FullConfigs));
+  for (const Config &C : FullConfigs) {
+    Sigmas.push_back(makeSigma(C));
+    ASSERT_TRUE(Sigmas.back().STI) << C.ID;
+  }
+  std::vector<std::unique_ptr<TableLegalizerInfoForTest>> Tables;
+  Tables.reserve(Sigmas.size());
+  for (const Sigma &S : Sigmas)
+    Tables.push_back(std::make_unique<TableLegalizerInfoForTest>(*S.STI));
+
+  uint64_t Hits = 0, Residuals = 0, ExpectedFalls = 0;
+  std::set<unsigned> SeenConfigs;
+  for (const WitnessAtom &A : *Atoms) {
+    auto It = ConfigForID.find(A.ConfigID);
+    ASSERT_NE(It, ConfigForID.end()) << A.Id;
+    const unsigned CI = It->second;
+    SeenConfigs.insert(CI);
+
+    X86LegalizerTable::Result Direct;
+    withAtomQuery(A.Point, [&](const LegalityQuery &Q) {
+      Direct = Tables[CI]->table().query(Q);
+    });
+    switch (Direct.Kind) {
+    case X86LegalizerTable::Answer::Hit:
+      ++Hits;
+      break;
+    case X86LegalizerTable::Answer::Residual:
+      ++Residuals;
+      break;
+    case X86LegalizerTable::Answer::Escape:
+    case X86LegalizerTable::Answer::Outside:
+    case X86LegalizerTable::Answer::Untabulated:
+      ++ExpectedFalls;
+      break;
+    }
+
+    withAtomQuery(A.Point, [&](const LegalityQuery &Q) {
+      (void)Tables[CI]->getAction(Q);
+    });
+  }
+
+  uint64_t Lookups = 0, FallThroughs = 0;
+  for (const auto &T : Tables) {
+    Lookups += T->lookups();
+    FallThroughs += T->fallThroughs();
+  }
+  llvm::outs() << "release-path: atoms=" << Atoms->size() << " hit=" << Hits
+               << " residual=" << Residuals << " fallthroughs=" << FallThroughs
+               << "\n";
+  EXPECT_EQ(SeenConfigs.size(), std::size(FullConfigs))
+      << "witness corpus does not cover every full configuration";
+  EXPECT_EQ(Lookups, Atoms->size());
+  EXPECT_EQ(FallThroughs, ExpectedFalls);
+  EXPECT_EQ(ExpectedFalls, 0u)
+      << "the committed corpus must stay on the table path";
+}
+
+TEST_F(X86LegalizerDifferentialTest, TableFillsAreBoundedAndStable) {
+  const Config &C = Configs[0];
+  Sigma S = makeSigma(C);
+  ASSERT_TRUE(S.STI) << C.ID;
+  TableLegalizerInfoForTest Table(*S.STI);
+
+  auto RunSelfCheck = [&](std::string &Log) {
+    raw_string_ostream OS(Log);
+    Table.mutableTable().selfCheck(OS);
+    OS.flush();
+  };
+
+  std::string FirstLog, SecondLog;
+  RunSelfCheck(FirstLog);
+  RunSelfCheck(SecondLog);
+
+  std::optional<uint64_t> FirstPoints = selfCheckCount(FirstLog, "points");
+  std::optional<uint64_t> FirstMismatches =
+      selfCheckCount(FirstLog, "mismatches");
+  std::optional<uint64_t> FirstFills = selfCheckCount(FirstLog, "fills");
+  std::optional<uint64_t> SecondMismatches =
+      selfCheckCount(SecondLog, "mismatches");
+  std::optional<uint64_t> SecondFills = selfCheckCount(SecondLog, "fills");
+  ASSERT_TRUE(FirstPoints.has_value()) << FirstLog;
+  ASSERT_TRUE(FirstMismatches.has_value()) << FirstLog;
+  ASSERT_TRUE(FirstFills.has_value()) << FirstLog;
+  ASSERT_TRUE(SecondMismatches.has_value()) << SecondLog;
+  ASSERT_TRUE(SecondFills.has_value()) << SecondLog;
+
+  EXPECT_EQ(*FirstMismatches, 0u) << FirstLog;
+  EXPECT_EQ(*SecondMismatches, 0u) << SecondLog;
+  EXPECT_GT(*FirstFills, 0u) << FirstLog;
+  EXPECT_LE(*FirstFills, *FirstPoints) << FirstLog;
+  EXPECT_EQ(*SecondFills, *FirstFills)
+      << "a second selfCheck() refilled cells: " << SecondLog;
+  llvm::outs() << "fills=" << *FirstFills << " points=" << *FirstPoints
+               << " stable=yes\n";
+}
+
+TEST_F(X86LegalizerDifferentialTest, CiBudgetsAreRecorded) {
+  std::optional<std::string> Text =
+      readTestSourceFile("x86-legalizer-ci-budgets.json");
+  ASSERT_TRUE(Text.has_value()) << "cannot read x86-legalizer-ci-budgets.json";
+  auto Parsed = json::parse(*Text);
+  ASSERT_TRUE(!!Parsed) << toString(Parsed.takeError());
+  const json::Object *Root = Parsed->getAsObject();
+  ASSERT_TRUE(Root) << "CI budget root is not an object";
+  ASSERT_EQ(Root->getString("schema").value_or(""),
+            "llvm.gisel.x86-legalizer-ci-budgets");
+
+  const json::Object *Machine = Root->getObject("machine");
+  ASSERT_TRUE(Machine) << "missing machine";
+  std::optional<StringRef> Uname = Machine->getString("uname");
+  ASSERT_TRUE(Uname.has_value()) << "missing machine.uname";
+  EXPECT_FALSE(Uname->empty());
+  std::optional<uint64_t> Nproc = getJSONUInt(*Machine, "nproc");
+  ASSERT_TRUE(Nproc.has_value()) << "missing machine.nproc";
+  EXPECT_GT(*Nproc, 0u);
+
+  const json::Object *Measured = Root->getObject("measured");
+  ASSERT_TRUE(Measured) << "missing measured";
+  static const char *const MeasuredKeys[] = {
+      "x86tests_ms",        "globalisel_lit_ms", "tablegen_lit_ms",
+      "x86_codegen_lit_ms", "fuzz_smoke_ms",     "fuzz_nightly_ms",
+  };
+  std::string Summary;
+  raw_string_ostream OS(Summary);
+  OS << "ci-budget measured:";
+  for (const char *Key : MeasuredKeys) {
+    std::optional<uint64_t> Value = getJSONUInt(*Measured, Key);
+    ASSERT_TRUE(Value.has_value()) << "missing measured." << Key;
+    EXPECT_GT(*Value, 0u) << Key;
+    OS << " " << Key << "=" << *Value;
+  }
+  OS << "\n";
+  OS.flush();
+  llvm::outs() << Summary;
+
+  const json::Object *Budgets = Root->getObject("budgets");
+  ASSERT_TRUE(Budgets) << "missing budgets";
+  std::optional<uint64_t> Target = getJSONUInt(*Budgets, "x86tests_target_ms");
+  std::optional<uint64_t> Hard = getJSONUInt(*Budgets, "x86tests_hard_ms");
+  std::optional<uint64_t> CheckLLVMDeltaMs =
+      getJSONUInt(*Budgets, "check_llvm_delta_ms");
+  std::optional<uint64_t> CheckLLVMDeltaPercent =
+      getJSONUInt(*Budgets, "check_llvm_delta_percent");
+  std::optional<uint64_t> FullCorpusMinutes =
+      getJSONUInt(*Budgets, "full_corpus_minutes");
+  std::optional<uint64_t> DeepPanelHours =
+      getJSONUInt(*Budgets, "deep_panel_hours");
+  ASSERT_TRUE(Target.has_value());
+  ASSERT_TRUE(Hard.has_value());
+  ASSERT_TRUE(CheckLLVMDeltaMs.has_value());
+  ASSERT_TRUE(CheckLLVMDeltaPercent.has_value());
+  ASSERT_TRUE(FullCorpusMinutes.has_value());
+  ASSERT_TRUE(DeepPanelHours.has_value());
+  EXPECT_LT(*Target, *Hard);
+  EXPECT_EQ(*Hard, 10000u);
+  EXPECT_EQ(*CheckLLVMDeltaMs, 2000u);
+  EXPECT_EQ(*CheckLLVMDeltaPercent, 10u);
+  EXPECT_EQ(*FullCorpusMinutes, 30u);
+  EXPECT_EQ(*DeepPanelHours, 2u);
+
+  const json::Object *Pending = Root->getObject("pending_g008");
+  ASSERT_TRUE(Pending) << "missing pending_g008";
+  EXPECT_TRUE(Pending->getString("full_corpus").has_value())
+      << "pending_g008 does not name the full corpus";
+  EXPECT_TRUE(Pending->getString("deep_panel").has_value())
+      << "pending_g008 does not name the deep panel";
 }
 
 } // namespace

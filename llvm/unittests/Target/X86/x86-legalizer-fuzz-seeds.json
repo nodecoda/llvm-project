@@ -1,0 +1,18 @@
+{
+  "schema": "llvm.gisel.x86-legalizer-fuzz-seeds",
+  "version": 1,
+  "comment": "Fixed seeds for the X86 legalizer differential fuzz.  These seeds are part of the test input: do not reshuffle them without a re-baseline note.  A changed seed or tier count requires editing this file; the test has no implicit defaults.  The generator is SplitMix64, so a seed and a tier count fully determine the query sequence.",
+  "tiers": {
+    "smoke": 1000,
+    "nightly": 10000,
+    "weekly": 1000000,
+    "long": 100000000
+  },
+  "seeds": {
+    "smoke": "0x9e3779b97f4a7c15",
+    "nightly": "0xd1b54a32d192ed03",
+    "weekly": "0x94d049bb133111eb",
+    "long": "0x2545f4914f6cdd1d"
+  },
+  "generator": "splitmix64"
+}

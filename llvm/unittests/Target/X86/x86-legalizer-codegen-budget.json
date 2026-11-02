@@ -1,0 +1,18 @@
+{
+  "schema": "llvm.gisel.x86-legalizer-codegen-budget",
+  "version": 1,
+  "comment": "Workload caps. These are growth bounds, not byte pins.",
+  "max_growth_percent": 20,
+  "baseline": {
+    "table_inc_lines": 4974,
+    "info_inc_lines": 445,
+    "points_inc_lines": 1407,
+    "rule_index_inc_lines": 23194,
+    "type_classes": 24,
+    "mem_classes": 24,
+    "tables": 63,
+    "rules": 282,
+    "points": 1397,
+    "fills": 365
+  }
+}
