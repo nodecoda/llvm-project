@@ -6,6 +6,8 @@
   define void @test_constant() { ret void }
   define void @test_fconstant() { ret void }
 
+  define void @rule_X86_CONSTANT_1() { ret void }
+  define void @rule_X86_FCONSTANT_0() { ret void }
 ...
 ---
 name:            test_constant
@@ -85,3 +87,23 @@ body: |
     $rax = COPY %1
 ...
 
+---
+name: rule_X86_CONSTANT_1
+body: |
+  bb.0:
+    ; X64-LABEL: name: rule_X86_CONSTANT_1
+    ; X64: %{{[0-9]+}}:_(s64) = G_CONSTANT i64 42
+    %0:_(s64) = G_CONSTANT i64 42
+    RET 0, implicit %0
+...
+---
+name: rule_X86_FCONSTANT_0
+body: |
+  bb.0:
+    ; X32-LABEL: name: rule_X86_FCONSTANT_0
+    ; X64-LABEL: name: rule_X86_FCONSTANT_0
+    ; X32: %{{[0-9]+}}:_(s32) = G_FCONSTANT float 1.000000e+00
+    ; X64: %{{[0-9]+}}:_(s32) = G_FCONSTANT float 1.000000e+00
+    %0:_(s32) = G_FCONSTANT float 1.000000e+00
+    RET 0, implicit %0
+...

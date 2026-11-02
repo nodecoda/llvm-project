@@ -48,3 +48,14 @@ body: |
     %4:_(s64) = G_IMPLICIT_DEF
     G_STORE %4, %5 ::(store (s64))
 ...
+---
+name: rule_X86_IMPLICIT_DEF_3
+body: |
+  bb.0:
+    ; X64-LABEL: name: rule_X86_IMPLICIT_DEF_3
+    ; X32-LABEL: name: rule_X86_IMPLICIT_DEF_3
+    ; X64: %{{[0-9]+}}:_(<16 x s8>) = IMPLICIT_DEF
+    ; X32: %{{[0-9]+}}:_(<16 x s8>) = IMPLICIT_DEF
+    %0:_(<16 x s8>) = IMPLICIT_DEF
+    RET 0, implicit %0
+...

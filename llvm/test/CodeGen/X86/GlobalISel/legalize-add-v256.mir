@@ -26,6 +26,7 @@
     ret void
   }
 
+  define void @rule_X86_CONCAT_VECTORS_0() { ret void }
 ...
 ---
 name:            test_add_v32i8
@@ -242,4 +243,19 @@ body:             |
     $ymm0 = COPY %2
     RET 0
 
+...
+---
+name: rule_X86_CONCAT_VECTORS_0
+body: |
+  bb.0:
+    ; SSE2-LABEL: name: rule_X86_CONCAT_VECTORS_0
+    ; AVX1-LABEL: name: rule_X86_CONCAT_VECTORS_0
+    ; AVX2-LABEL: name: rule_X86_CONCAT_VECTORS_0
+    ; SSE2: %{{[0-9]+}}:_(<32 x s8>) = G_CONCAT_VECTORS
+    ; AVX1: %{{[0-9]+}}:_(<32 x s8>) = G_CONCAT_VECTORS
+    ; AVX2: %{{[0-9]+}}:_(<32 x s8>) = G_CONCAT_VECTORS
+    %0:_(<16 x s8>) = IMPLICIT_DEF
+    %1:_(<16 x s8>) = IMPLICIT_DEF
+    %2:_(<32 x s8>) = G_CONCAT_VECTORS %0, %1
+    RET 0, implicit %2
 ...

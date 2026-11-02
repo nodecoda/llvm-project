@@ -25,3 +25,31 @@ body:             |
     RET 0, implicit %2
 
 ...
+---
+name: rule_X86_SEXT_0
+body: |
+  bb.0:
+    ; X86-32-LABEL: name: rule_X86_SEXT_0
+    ; X86-64-LABEL: name: rule_X86_SEXT_0
+    ; X86-32: %{{[0-9]+}}:_(s32) = G_SEXT
+    ; X86-64: %{{[0-9]+}}:_(s32) = G_SEXT
+    %0:_(s8) = IMPLICIT_DEF
+    %1:_(s32) = G_SEXT %0
+    RET 0, implicit %1
+...
+---
+name: rule_X86_SEXT_INREG_0
+body: |
+  bb.0:
+    ; X86-32-LABEL: name: rule_X86_SEXT_INREG_0
+    ; X86-64-LABEL: name: rule_X86_SEXT_INREG_0
+    ; X86-32: G_SHL
+    ; X86-64: G_SHL
+    ; X86-32: G_ASHR
+    ; X86-64: G_ASHR
+    ; X86-32-NOT: G_SEXT_INREG
+    ; X86-64-NOT: G_SEXT_INREG
+    %0:_(s32) = IMPLICIT_DEF
+    %1:_(s32) = G_SEXT_INREG %0, 8
+    RET 0, implicit %1
+...

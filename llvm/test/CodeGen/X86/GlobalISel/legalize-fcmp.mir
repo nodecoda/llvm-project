@@ -146,6 +146,7 @@
     ret i1 %1
   }
 
+  define void @rule_X86_FCMP_0() { ret void }
 ...
 ---
 name:            fcmp_float_oeq
@@ -1126,4 +1127,15 @@ body:             |
     $al = COPY %5(s8)
     RET 0, implicit $al
 
+...
+---
+name: rule_X86_FCMP_0
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_FCMP_0
+    ; CHECK: %{{[0-9]+}}:_(s8) = G_FCMP floatpred(oeq)
+    %0:_(s32) = IMPLICIT_DEF
+    %1:_(s32) = IMPLICIT_DEF
+    %2:_(s8) = G_FCMP floatpred(oeq), %0, %1
+    RET 0, implicit %2
 ...

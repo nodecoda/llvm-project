@@ -1,0 +1,65 @@
+# RUN: llc -mtriple=x86_64-linux-gnu -run-pass=legalizer %s -o - | FileCheck %s
+
+--- |
+  define void @rule_X86_FCOS_0() { ret void }
+  define void @rule_X86_GET_ROUNDING_0() { ret void }
+  define void @rule_X86_INTRINSIC_ROUNDEVEN_2() { ret void }
+  define void @rule_X86_IS_FPCLASS_0() { ret void }
+  define void @rule_X86_LROUND_1() { ret void }
+...
+---
+name: rule_X86_FCOS_0
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_FCOS_0
+    ; CHECK: CALL64pcrel32 &cosf
+    ; CHECK-NOT: G_FCOS
+    %0:_(s32) = IMPLICIT_DEF
+    %1:_(s32) = G_FCOS %0
+    RET 0, implicit %1
+...
+---
+name: rule_X86_GET_ROUNDING_0
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_GET_ROUNDING_0
+    ; CHECK: G_FNSTCW16
+    ; CHECK: G_LSHR
+    ; CHECK-NOT: G_GET_ROUNDING
+    %0:_(s32) = G_GET_ROUNDING
+    RET 0, implicit %0
+...
+---
+name: rule_X86_INTRINSIC_ROUNDEVEN_2
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_INTRINSIC_ROUNDEVEN_2
+    ; CHECK: CALL64pcrel32 &roundevenf
+    ; CHECK-NOT: G_INTRINSIC_ROUNDEVEN
+    %0:_(s32) = IMPLICIT_DEF
+    %1:_(s32) = G_INTRINSIC_ROUNDEVEN %0
+    RET 0, implicit %1
+...
+---
+name: rule_X86_IS_FPCLASS_0
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_IS_FPCLASS_0
+    ; CHECK: G_ICMP intpred(ugt)
+    ; CHECK-NOT: G_IS_FPCLASS
+    %0:_(s32) = IMPLICIT_DEF
+    %1:_(s1) = nofpexcept G_IS_FPCLASS %0(s32), 3
+    %2:_(s32) = G_ANYEXT %1
+    RET 0, implicit %2
+...
+---
+name: rule_X86_LROUND_1
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_LROUND_1
+    ; CHECK: CALL64pcrel32 &lroundf
+    ; CHECK-NOT: G_LROUND
+    %0:_(s32) = IMPLICIT_DEF
+    %1:_(s64) = G_LROUND %0
+    RET 0, implicit %1
+...

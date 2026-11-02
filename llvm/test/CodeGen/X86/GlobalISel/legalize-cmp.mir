@@ -32,6 +32,8 @@
     ret i32 %res
   }
 
+  define void @rule_X86_ICMP_1() { ret void }
+  define void @rule_X86_UMIN_1() { ret void }
 ...
 ---
 name:            test_cmp_i8
@@ -197,4 +199,30 @@ body:             |
     $eax = COPY %3(s32)
     RET 0, implicit $eax
 
+...
+---
+name: rule_X86_ICMP_1
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_ICMP_1
+    ; CHECK: G_ZEXT
+    ; CHECK: %{{[0-9]+}}:_(s8) = G_ICMP intpred(eq)
+    ; CHECK: G_TRUNC
+    %0:_(s1) = IMPLICIT_DEF
+    %1:_(s1) = IMPLICIT_DEF
+    %2:_(s1) = G_ICMP intpred(eq), %0, %1
+    RET 0, implicit %2
+...
+---
+name: rule_X86_UMIN_1
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_UMIN_1
+    ; CHECK: G_ICMP intpred(ult)
+    ; CHECK: G_SELECT
+    ; CHECK-NOT: G_UMIN
+    %0:_(s32) = IMPLICIT_DEF
+    %1:_(s32) = IMPLICIT_DEF
+    %2:_(s32) = G_UMIN %0, %1
+    RET 0, implicit %2
 ...

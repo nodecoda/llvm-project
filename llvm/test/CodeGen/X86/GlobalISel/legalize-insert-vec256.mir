@@ -4,6 +4,8 @@
   define void @test_insert_128() {
     ret void
   }
+  define void @rule_X86_EXTRACT_0() { ret void }
+  define void @rule_X86_INSERT_0() { ret void }
 ...
 ---
 name:            test_insert_128
@@ -30,4 +32,25 @@ body:             |
     $ymm0 = COPY %2(<8 x s32>)
     RET 0, implicit $ymm0
 
+...
+---
+name: rule_X86_EXTRACT_0
+body: |
+  bb.0:
+    ; ALL-LABEL: name: rule_X86_EXTRACT_0
+    ; ALL: %{{[0-9]+}}:_(<16 x s8>) = G_EXTRACT
+    %0:_(<32 x s8>) = IMPLICIT_DEF
+    %1:_(<16 x s8>) = G_EXTRACT %0, 0
+    RET 0, implicit %1
+...
+---
+name: rule_X86_INSERT_0
+body: |
+  bb.0:
+    ; ALL-LABEL: name: rule_X86_INSERT_0
+    ; ALL: %{{[0-9]+}}:_(<32 x s8>) = G_INSERT
+    %0:_(<32 x s8>) = IMPLICIT_DEF
+    %1:_(<16 x s8>) = IMPLICIT_DEF
+    %2:_(<32 x s8>) = G_INSERT %0, %1, 0
+    RET 0, implicit %2
 ...

@@ -128,3 +128,15 @@ body:             |
     %3:_(s8) = G_SELECT %2, %1, %0
     %4:_(s8) = COPY %3(s8)
     RET 0, implicit %4
+---
+name: rule_X86_SELECT_1
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_SELECT_1
+    ; CHECK: %{{[0-9]+}}:_(s16) = G_SELECT
+    %0:_(s32) = IMPLICIT_DEF
+    %1:_(s16) = IMPLICIT_DEF
+    %2:_(s16) = IMPLICIT_DEF
+    %3:_(s16) = G_SELECT %0, %1, %2
+    RET 0, implicit %3
+...

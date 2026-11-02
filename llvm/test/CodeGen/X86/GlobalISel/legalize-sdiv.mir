@@ -125,3 +125,14 @@ body:             |
     RET 0, implicit %3
 
 ...
+---
+name: rule_X86_SDIV_1
+body: |
+  bb.0:
+    ; X64-LABEL: name: rule_X86_SDIV_1
+    ; X64: %{{[0-9]+}}:_(s64) = G_SDIV
+    %0:_(s64) = IMPLICIT_DEF
+    %1:_(s64) = IMPLICIT_DEF
+    %2:_(s64) = G_SDIV %0, %1
+    RET 0, implicit %2
+...

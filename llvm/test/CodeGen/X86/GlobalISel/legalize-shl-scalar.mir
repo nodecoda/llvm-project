@@ -4,6 +4,7 @@
 
   define void @test_shl() { ret void }
   define void @test_shl_i1() { ret void }
+  define void @rule_X86_SHL_1() { ret void }
 ...
 ---
 name:            test_shl
@@ -77,4 +78,15 @@ body:             |
 
     RET 0
 
+...
+---
+name: rule_X86_SHL_1
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_SHL_1
+    ; CHECK: %{{[0-9]+}}:_(s64) = G_SHL
+    %0:_(s64) = IMPLICIT_DEF
+    %1:_(s8) = IMPLICIT_DEF
+    %2:_(s64) = G_SHL %0, %1
+    RET 0, implicit %2
 ...

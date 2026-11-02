@@ -34,6 +34,8 @@
     %ret = mul i64 %arg1, %arg2
     ret i64 %ret
   }
+  define void @rule_X86_MUL_0() { ret void }
+  define void @rule_X86_SMULH_0() { ret void }
 ...
 ---
 name:            test_mul_i1
@@ -256,4 +258,26 @@ body:             |
     %2(s64) = G_MUL %0, %1
     $rax = COPY %2(s64)
     RET 0, implicit $rax
+...
+---
+name: rule_X86_MUL_0
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_MUL_0
+    ; CHECK: %{{[0-9]+}}:_(s8) = G_MUL
+    %0:_(s8) = IMPLICIT_DEF
+    %1:_(s8) = IMPLICIT_DEF
+    %2:_(s8) = G_MUL %0, %1
+    RET 0, implicit %2
+...
+---
+name: rule_X86_SMULH_0
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_SMULH_0
+    ; CHECK: %{{[0-9]+}}:_(s8) = G_SMULH
+    %0:_(s8) = IMPLICIT_DEF
+    %1:_(s8) = IMPLICIT_DEF
+    %2:_(s8) = G_SMULH %0, %1
+    RET 0, implicit %2
 ...

@@ -1,0 +1,32 @@
+# RUN: llc -mtriple=x86_64-linux-gnu -mattr=+sse2 -run-pass=legalizer %s -o - | FileCheck %s
+
+--- |
+  define void @rule_X86_BUILD_VECTOR_0() { ret void }
+...
+---
+name: rule_X86_BUILD_VECTOR_0
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_BUILD_VECTOR_0
+    ; CHECK: G_CONSTANT_POOL
+    ; CHECK: %{{[0-9]+}}:_(<16 x s8>) = G_LOAD
+    ; CHECK-NOT: G_BUILD_VECTOR
+    %0:_(s8) = G_CONSTANT i8 0
+    %1:_(s8) = G_CONSTANT i8 1
+    %2:_(s8) = G_CONSTANT i8 2
+    %3:_(s8) = G_CONSTANT i8 3
+    %4:_(s8) = G_CONSTANT i8 4
+    %5:_(s8) = G_CONSTANT i8 5
+    %6:_(s8) = G_CONSTANT i8 6
+    %7:_(s8) = G_CONSTANT i8 7
+    %8:_(s8) = G_CONSTANT i8 8
+    %9:_(s8) = G_CONSTANT i8 9
+    %10:_(s8) = G_CONSTANT i8 10
+    %11:_(s8) = G_CONSTANT i8 11
+    %12:_(s8) = G_CONSTANT i8 12
+    %13:_(s8) = G_CONSTANT i8 13
+    %14:_(s8) = G_CONSTANT i8 14
+    %15:_(s8) = G_CONSTANT i8 15
+    %16:_(<16 x s8>) = G_BUILD_VECTOR %0, %1, %2, %3, %4, %5, %6, %7, %8, %9, %10, %11, %12, %13, %14, %15
+    RET 0, implicit %16
+...

@@ -8,6 +8,7 @@
     ret double %conv
   }
 
+  define void @rule_X86_FPEXT_0() { ret void }
 ...
 ---
 name:            test
@@ -37,4 +38,14 @@ body:             |
     $xmm0 = COPY %3(s128)
     RET 0, implicit $xmm0
 
+...
+---
+name: rule_X86_FPEXT_0
+body: |
+  bb.0:
+    ; ALL-LABEL: name: rule_X86_FPEXT_0
+    ; ALL: %{{[0-9]+}}:_(s64) = G_FPEXT
+    %0:_(s32) = IMPLICIT_DEF
+    %1:_(s64) = G_FPEXT %0
+    RET 0, implicit %1
 ...

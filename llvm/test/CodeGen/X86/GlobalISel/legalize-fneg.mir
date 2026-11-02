@@ -11,6 +11,8 @@
   entry:
     ret void
   }
+  define void @rule_X86_FABS_0() { ret void }
+  define void @rule_X86_FNEG_2() { ret void }
 ...
 ---
 name:            test_fneg_f32
@@ -45,4 +47,24 @@ body:             |
     %0(s64) = G_IMPLICIT_DEF
     %1(s64) = G_FNEG %0
     $rdi = COPY %1
+...
+---
+name: rule_X86_FABS_0
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_FABS_0
+    ; CHECK: %{{[0-9]+}}:_(s80) = G_FABS
+    %0:_(s80) = IMPLICIT_DEF
+    %1:_(s80) = G_FABS %0
+    RET 0, implicit %1
+...
+---
+name: rule_X86_FNEG_2
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_FNEG_2
+    ; CHECK: %{{[0-9]+}}:_(s80) = G_FNEG
+    %0:_(s80) = IMPLICIT_DEF
+    %1:_(s80) = G_FNEG %0
+    RET 0, implicit %1
 ...

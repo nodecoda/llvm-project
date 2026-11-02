@@ -13,6 +13,10 @@
   define void @test_add_i64() { ret void }
   define void @test_add_i128() { ret void }
 
+  define void @rule_X86_ADD_0() { ret void }
+  define void @rule_X86_MERGE_VALUES_4() { ret void }
+  define void @rule_X86_UADDE_0() { ret void }
+  define void @rule_X86_UNMERGE_VALUES_4() { ret void }
 ...
 ---
 name:            test_add_i1
@@ -246,4 +250,47 @@ body:             |
     $rax = COPY %3
     $rdx = COPY %4
     RET 0
+...
+---
+name: rule_X86_ADD_0
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_ADD_0
+    ; CHECK: %{{[0-9]+}}:_(s8) = G_ADD
+    %0:_(s8) = IMPLICIT_DEF
+    %1:_(s8) = IMPLICIT_DEF
+    %2:_(s8) = G_ADD %0, %1
+    RET 0, implicit %2
+...
+---
+name: rule_X86_MERGE_VALUES_4
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_MERGE_VALUES_4
+    ; CHECK: %{{[0-9]+}}:_(p0) = G_MERGE_VALUES
+    %0:_(p0) = IMPLICIT_DEF
+    %1:_(p0) = G_MERGE_VALUES %0
+    RET 0, implicit %1
+...
+---
+name: rule_X86_UADDE_0
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_UADDE_0
+    ; CHECK: %{{[0-9]+}}:_(s32), %{{[0-9]+}}:_(s8) = G_UADDE
+    %0:_(s32) = IMPLICIT_DEF
+    %1:_(s32) = IMPLICIT_DEF
+    %2:_(s8) = IMPLICIT_DEF
+    %3:_(s32), %4:_(s8) = G_UADDE %0, %1, %2
+    RET 0, implicit %3, implicit %4
+...
+---
+name: rule_X86_UNMERGE_VALUES_4
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_UNMERGE_VALUES_4
+    ; CHECK: %{{[0-9]+}}:_(p0) = G_UNMERGE_VALUES
+    %0:_(p0) = IMPLICIT_DEF
+    %1:_(p0) = G_UNMERGE_VALUES %0
+    RET 0, implicit %1
 ...

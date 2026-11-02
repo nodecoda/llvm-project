@@ -6,6 +6,7 @@
     ret void
   }
 
+  define void @rule_X86_TRUNC_0() { ret void }
 ...
 ---
 name:            trunc_check
@@ -53,4 +54,16 @@ body:             |
     G_STORE %3, %4 :: (store (s16))
     RET 0
 
+...
+---
+name: rule_X86_TRUNC_0
+body: |
+  bb.0:
+    ; X32-LABEL: name: rule_X86_TRUNC_0
+    ; X64-LABEL: name: rule_X86_TRUNC_0
+    ; X32: %{{[0-9]+}}:_(s1) = G_TRUNC
+    ; X64: %{{[0-9]+}}:_(s1) = G_TRUNC
+    %0:_(s8) = IMPLICIT_DEF
+    %1:_(s1) = G_TRUNC %0
+    RET 0, implicit %1
 ...

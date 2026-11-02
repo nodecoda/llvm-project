@@ -1,0 +1,536 @@
+{
+  "schema": "llvm.gisel.x86-legalizer-mir-map",
+  "version": 1,
+  "family": "int",
+  "comment": "T4 decision-level MIR mapping for the int/fp/vector/arith/cast rule sets. Each function is a hand-written MIR function exercised by the file's own -run-pass=legalizer RUN line; the FileCheck assertions describe the legalized body (opcode/type/action), not text or byte layout.",
+  "rule_sets": [
+    {
+      "rule_set": "X86_ADD",
+      "kind": "mir",
+      "mir_file": "legalize-add.mir",
+      "functions": [
+        "rule_X86_ADD_0"
+      ],
+      "atom": "x86/rule/X86_ADD#0",
+      "opcodes": [
+        "G_ADD"
+      ]
+    },
+    {
+      "rule_set": "X86_AND",
+      "kind": "mir",
+      "mir_file": "legalize-and-scalar.mir",
+      "functions": [
+        "rule_X86_AND_0"
+      ],
+      "atom": "x86/rule/X86_AND#0",
+      "opcodes": [
+        "G_AND"
+      ]
+    },
+    {
+      "rule_set": "X86_ANYEXT",
+      "kind": "mir",
+      "mir_file": "legalize-anyext.mir",
+      "functions": [
+        "rule_X86_ANYEXT_0"
+      ],
+      "atom": "x86/rule/X86_ANYEXT#0",
+      "opcodes": [
+        "G_ANYEXT"
+      ]
+    },
+    {
+      "rule_set": "X86_BSWAP",
+      "kind": "mir",
+      "mir_file": "legalize-bswap.mir",
+      "functions": [
+        "rule_X86_BSWAP_0"
+      ],
+      "atom": "x86/rule/X86_BSWAP#0",
+      "opcodes": [
+        "G_BSWAP"
+      ]
+    },
+    {
+      "rule_set": "X86_BUILD_VECTOR",
+      "kind": "mir",
+      "mir_file": "legalizer-decisions-vector.mir",
+      "functions": [
+        "rule_X86_BUILD_VECTOR_0"
+      ],
+      "atom": "x86/rule/X86_BUILD_VECTOR#0",
+      "opcodes": [
+        "G_BUILD_VECTOR"
+      ]
+    },
+    {
+      "rule_set": "X86_CONCAT_VECTORS",
+      "kind": "mir",
+      "mir_file": "legalize-add-v256.mir",
+      "functions": [
+        "rule_X86_CONCAT_VECTORS_0"
+      ],
+      "atom": "x86/rule/X86_CONCAT_VECTORS#0",
+      "opcodes": [
+        "G_CONCAT_VECTORS"
+      ]
+    },
+    {
+      "rule_set": "X86_CONSTANT",
+      "kind": "mir",
+      "mir_file": "legalize-constant.mir",
+      "functions": [
+        "rule_X86_CONSTANT_1"
+      ],
+      "atom": "x86/rule/X86_CONSTANT#1",
+      "opcodes": [
+        "G_CONSTANT"
+      ]
+    },
+    {
+      "rule_set": "X86_CTLZ",
+      "kind": "mir",
+      "mir_file": "legalize-leading-zeros.mir",
+      "functions": [
+        "rule_X86_CTLZ_0"
+      ],
+      "atom": "x86/rule/X86_CTLZ#0",
+      "opcodes": [
+        "G_CTLZ"
+      ]
+    },
+    {
+      "rule_set": "X86_CTPOP",
+      "kind": "mir",
+      "mir_file": "legalize-ctpop.mir",
+      "functions": [
+        "rule_X86_CTPOP_0"
+      ],
+      "atom": "x86/rule/X86_CTPOP#0",
+      "opcodes": [
+        "G_CTPOP"
+      ]
+    },
+    {
+      "rule_set": "X86_CTTZ",
+      "kind": "mir",
+      "mir_file": "legalize-trailing-zeros.mir",
+      "functions": [
+        "rule_X86_CTTZ_0"
+      ],
+      "atom": "x86/rule/X86_CTTZ#0",
+      "opcodes": [
+        "G_CTTZ"
+      ]
+    },
+    {
+      "rule_set": "X86_CTTZ_ZERO_POISON",
+      "kind": "mir",
+      "mir_file": "legalize-trailing-zeros-poison.mir",
+      "functions": [
+        "rule_X86_CTTZ_ZERO_POISON_0"
+      ],
+      "atom": "x86/rule/X86_CTTZ_ZERO_POISON#0",
+      "opcodes": [
+        "G_CTTZ_ZERO_POISON"
+      ]
+    },
+    {
+      "rule_set": "X86_EXTRACT",
+      "kind": "mir",
+      "mir_file": "legalize-insert-vec256.mir",
+      "functions": [
+        "rule_X86_EXTRACT_0"
+      ],
+      "atom": "x86/rule/X86_EXTRACT#0",
+      "opcodes": [
+        "G_EXTRACT"
+      ]
+    },
+    {
+      "rule_set": "X86_FABS",
+      "kind": "mir",
+      "mir_file": "legalize-fneg.mir",
+      "functions": [
+        "rule_X86_FABS_0"
+      ],
+      "atom": "x86/rule/X86_FABS#0",
+      "opcodes": [
+        "G_FABS"
+      ]
+    },
+    {
+      "rule_set": "X86_FADD",
+      "kind": "mir",
+      "mir_file": "legalize-fadd-scalar.mir",
+      "functions": [
+        "rule_X86_FADD_0"
+      ],
+      "atom": "x86/rule/X86_FADD#0",
+      "opcodes": [
+        "G_FADD"
+      ]
+    },
+    {
+      "rule_set": "X86_FCMP",
+      "kind": "mir",
+      "mir_file": "legalize-fcmp.mir",
+      "functions": [
+        "rule_X86_FCMP_0"
+      ],
+      "atom": "x86/rule/X86_FCMP#0",
+      "opcodes": [
+        "G_FCMP"
+      ]
+    },
+    {
+      "rule_set": "X86_FCONSTANT",
+      "kind": "mir",
+      "mir_file": "legalize-constant.mir",
+      "functions": [
+        "rule_X86_FCONSTANT_0"
+      ],
+      "atom": "x86/rule/X86_FCONSTANT#0",
+      "opcodes": [
+        "G_FCONSTANT"
+      ]
+    },
+    {
+      "rule_set": "X86_FCOS",
+      "kind": "mir",
+      "mir_file": "legalizer-decisions-fp.mir",
+      "functions": [
+        "rule_X86_FCOS_0"
+      ],
+      "atom": "x86/rule/X86_FCOS#0",
+      "opcodes": [
+        "G_FCOS"
+      ]
+    },
+    {
+      "rule_set": "X86_FNEG",
+      "kind": "mir",
+      "mir_file": "legalize-fneg.mir",
+      "functions": [
+        "rule_X86_FNEG_2"
+      ],
+      "atom": "x86/rule/X86_FNEG#2",
+      "opcodes": [
+        "G_FNEG"
+      ]
+    },
+    {
+      "rule_set": "X86_FPEXT",
+      "kind": "mir",
+      "mir_file": "legalize-fpext-scalar.mir",
+      "functions": [
+        "rule_X86_FPEXT_0"
+      ],
+      "atom": "x86/rule/X86_FPEXT#0",
+      "opcodes": [
+        "G_FPEXT"
+      ]
+    },
+    {
+      "rule_set": "X86_FPTOSI",
+      "kind": "mir",
+      "mir_file": "x86_64-legalize-fptosi.mir",
+      "functions": [
+        "rule_X86_FPTOSI_0"
+      ],
+      "atom": "x86/rule/X86_FPTOSI#0",
+      "opcodes": [
+        "G_FPTOSI"
+      ]
+    },
+    {
+      "rule_set": "X86_FPTOUI",
+      "kind": "mir",
+      "mir_file": "legalizer-decisions-fp-convert.mir",
+      "functions": [
+        "rule_X86_FPTOUI_0"
+      ],
+      "atom": "x86/rule/X86_FPTOUI#0",
+      "opcodes": [
+        "G_FPTOUI"
+      ]
+    },
+    {
+      "rule_set": "X86_FPTRUNC",
+      "kind": "mir",
+      "mir_file": "legalize-fptrunc-scalar.mir",
+      "functions": [
+        "rule_X86_FPTRUNC_0"
+      ],
+      "atom": "x86/rule/X86_FPTRUNC#0",
+      "opcodes": [
+        "G_FPTRUNC"
+      ]
+    },
+    {
+      "rule_set": "X86_FSQRT",
+      "kind": "mir",
+      "mir_file": "legalize-fadd-scalar.mir",
+      "functions": [
+        "rule_X86_FSQRT_0"
+      ],
+      "atom": "x86/rule/X86_FSQRT#0",
+      "opcodes": [
+        "G_FSQRT"
+      ]
+    },
+    {
+      "rule_set": "X86_GET_ROUNDING",
+      "kind": "mir",
+      "mir_file": "legalizer-decisions-fp.mir",
+      "functions": [
+        "rule_X86_GET_ROUNDING_0"
+      ],
+      "atom": "x86/rule/X86_GET_ROUNDING#0",
+      "opcodes": [
+        "G_GET_ROUNDING"
+      ]
+    },
+    {
+      "rule_set": "X86_ICMP",
+      "kind": "mir",
+      "mir_file": "legalize-cmp.mir",
+      "functions": [
+        "rule_X86_ICMP_1"
+      ],
+      "atom": "x86/rule/X86_ICMP#1",
+      "opcodes": [
+        "G_ICMP"
+      ]
+    },
+    {
+      "rule_set": "X86_IMPLICIT_DEF",
+      "kind": "mir",
+      "mir_file": "legalize-undef.mir",
+      "functions": [
+        "rule_X86_IMPLICIT_DEF_3"
+      ],
+      "atom": "x86/rule/X86_IMPLICIT_DEF#3",
+      "opcodes": [
+        "G_IMPLICIT_DEF"
+      ]
+    },
+    {
+      "rule_set": "X86_INSERT",
+      "kind": "mir",
+      "mir_file": "legalize-insert-vec256.mir",
+      "functions": [
+        "rule_X86_INSERT_0"
+      ],
+      "atom": "x86/rule/X86_INSERT#0",
+      "opcodes": [
+        "G_INSERT"
+      ]
+    },
+    {
+      "rule_set": "X86_INTRINSIC_ROUNDEVEN",
+      "kind": "mir",
+      "mir_file": "legalizer-decisions-fp.mir",
+      "functions": [
+        "rule_X86_INTRINSIC_ROUNDEVEN_2"
+      ],
+      "atom": "x86/rule/X86_INTRINSIC_ROUNDEVEN#2",
+      "opcodes": [
+        "G_INTRINSIC_ROUNDEVEN"
+      ]
+    },
+    {
+      "rule_set": "X86_IS_FPCLASS",
+      "kind": "mir",
+      "mir_file": "legalizer-decisions-fp.mir",
+      "functions": [
+        "rule_X86_IS_FPCLASS_0"
+      ],
+      "atom": "x86/rule/X86_IS_FPCLASS#0",
+      "opcodes": [
+        "G_IS_FPCLASS"
+      ]
+    },
+    {
+      "rule_set": "X86_LROUND",
+      "kind": "mir",
+      "mir_file": "legalizer-decisions-fp.mir",
+      "functions": [
+        "rule_X86_LROUND_1"
+      ],
+      "atom": "x86/rule/X86_LROUND#1",
+      "opcodes": [
+        "G_LROUND"
+      ]
+    },
+    {
+      "rule_set": "X86_MERGE_VALUES",
+      "kind": "mir",
+      "mir_file": "legalize-add.mir",
+      "functions": [
+        "rule_X86_MERGE_VALUES_4"
+      ],
+      "atom": "x86/rule/X86_MERGE_VALUES#4",
+      "opcodes": [
+        "G_MERGE_VALUES"
+      ]
+    },
+    {
+      "rule_set": "X86_MUL",
+      "kind": "mir",
+      "mir_file": "legalize-mul-scalar.mir",
+      "functions": [
+        "rule_X86_MUL_0"
+      ],
+      "atom": "x86/rule/X86_MUL#0",
+      "opcodes": [
+        "G_MUL"
+      ]
+    },
+    {
+      "rule_set": "X86_SDIV",
+      "kind": "mir",
+      "mir_file": "legalize-sdiv.mir",
+      "functions": [
+        "rule_X86_SDIV_1"
+      ],
+      "atom": "x86/rule/X86_SDIV#1",
+      "opcodes": [
+        "G_SDIV"
+      ]
+    },
+    {
+      "rule_set": "X86_SELECT",
+      "kind": "mir",
+      "mir_file": "legalize-select.mir",
+      "functions": [
+        "rule_X86_SELECT_1"
+      ],
+      "atom": "x86/rule/X86_SELECT#1",
+      "opcodes": [
+        "G_SELECT"
+      ]
+    },
+    {
+      "rule_set": "X86_SEXT",
+      "kind": "mir",
+      "mir_file": "legalize-sext.mir",
+      "functions": [
+        "rule_X86_SEXT_0"
+      ],
+      "atom": "x86/rule/X86_SEXT#0",
+      "opcodes": [
+        "G_SEXT"
+      ]
+    },
+    {
+      "rule_set": "X86_SEXT_INREG",
+      "kind": "mir",
+      "mir_file": "legalize-sext.mir",
+      "functions": [
+        "rule_X86_SEXT_INREG_0"
+      ],
+      "atom": "x86/rule/X86_SEXT_INREG#0",
+      "opcodes": [
+        "G_SEXT_INREG"
+      ]
+    },
+    {
+      "rule_set": "X86_SHL",
+      "kind": "mir",
+      "mir_file": "legalize-shl-scalar.mir",
+      "functions": [
+        "rule_X86_SHL_1"
+      ],
+      "atom": "x86/rule/X86_SHL#1",
+      "opcodes": [
+        "G_SHL"
+      ]
+    },
+    {
+      "rule_set": "X86_SITOFP",
+      "kind": "mir",
+      "mir_file": "x86_64-legalize-sitofp.mir",
+      "functions": [
+        "rule_X86_SITOFP_0"
+      ],
+      "atom": "x86/rule/X86_SITOFP#0",
+      "opcodes": [
+        "G_SITOFP"
+      ]
+    },
+    {
+      "rule_set": "X86_SMULH",
+      "kind": "mir",
+      "mir_file": "legalize-mul-scalar.mir",
+      "functions": [
+        "rule_X86_SMULH_0"
+      ],
+      "atom": "x86/rule/X86_SMULH#0",
+      "opcodes": [
+        "G_SMULH"
+      ]
+    },
+    {
+      "rule_set": "X86_TRUNC",
+      "kind": "mir",
+      "mir_file": "legalize-trunc.mir",
+      "functions": [
+        "rule_X86_TRUNC_0"
+      ],
+      "atom": "x86/rule/X86_TRUNC#0",
+      "opcodes": [
+        "G_TRUNC"
+      ]
+    },
+    {
+      "rule_set": "X86_UADDE",
+      "kind": "mir",
+      "mir_file": "legalize-add.mir",
+      "functions": [
+        "rule_X86_UADDE_0"
+      ],
+      "atom": "x86/rule/X86_UADDE#0",
+      "opcodes": [
+        "G_UADDE"
+      ]
+    },
+    {
+      "rule_set": "X86_UITOFP",
+      "kind": "mir",
+      "mir_file": "legalizer-decisions-fp-convert.mir",
+      "functions": [
+        "rule_X86_UITOFP_0"
+      ],
+      "atom": "x86/rule/X86_UITOFP#0",
+      "opcodes": [
+        "G_UITOFP"
+      ]
+    },
+    {
+      "rule_set": "X86_UMIN",
+      "kind": "mir",
+      "mir_file": "legalize-cmp.mir",
+      "functions": [
+        "rule_X86_UMIN_1"
+      ],
+      "atom": "x86/rule/X86_UMIN#1",
+      "opcodes": [
+        "G_UMIN"
+      ]
+    },
+    {
+      "rule_set": "X86_UNMERGE_VALUES",
+      "kind": "mir",
+      "mir_file": "legalize-add.mir",
+      "functions": [
+        "rule_X86_UNMERGE_VALUES_4"
+      ],
+      "atom": "x86/rule/X86_UNMERGE_VALUES#4",
+      "opcodes": [
+        "G_UNMERGE_VALUES"
+      ]
+    }
+  ]
+}

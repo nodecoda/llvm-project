@@ -51,6 +51,7 @@
     ret i64 %conv
   }
 
+  define void @rule_X86_FPTOSI_0() { ret void }
 ...
 ---
 name:            float_to_int8
@@ -263,4 +264,14 @@ body:             |
     $rax = COPY %2(s64)
     RET 0, implicit $rax
 
+...
+---
+name: rule_X86_FPTOSI_0
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_FPTOSI_0
+    ; CHECK: %{{[0-9]+}}:_(s32) = G_FPTOSI
+    %0:_(s32) = IMPLICIT_DEF
+    %1:_(s32) = G_FPTOSI %0
+    RET 0, implicit %1
 ...

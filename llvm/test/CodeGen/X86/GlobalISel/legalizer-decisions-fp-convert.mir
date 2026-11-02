@@ -1,0 +1,26 @@
+# RUN: llc -mtriple=x86_64-linux-gnu -mattr=+avx512f -run-pass=legalizer %s -o - | FileCheck %s
+
+--- |
+  define void @rule_X86_FPTOUI_0() { ret void }
+  define void @rule_X86_UITOFP_0() { ret void }
+...
+---
+name: rule_X86_FPTOUI_0
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_FPTOUI_0
+    ; CHECK: %{{[0-9]+}}:_(s32) = G_FPTOUI
+    %0:_(s32) = IMPLICIT_DEF
+    %1:_(s32) = G_FPTOUI %0
+    RET 0, implicit %1
+...
+---
+name: rule_X86_UITOFP_0
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_UITOFP_0
+    ; CHECK: %{{[0-9]+}}:_(s32) = G_UITOFP
+    %0:_(s32) = IMPLICIT_DEF
+    %1:_(s32) = G_UITOFP %0
+    RET 0, implicit %1
+...

@@ -12,6 +12,8 @@
     ret double %ret
   }
 
+  define void @rule_X86_FADD_0() { ret void }
+  define void @rule_X86_FSQRT_0() { ret void }
 ...
 ---
 name:            test_fadd_float
@@ -90,4 +92,25 @@ body:             |
     $xmm0 = COPY %5(s128)
     RET 0, implicit $xmm0
 
+...
+---
+name: rule_X86_FADD_0
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_FADD_0
+    ; CHECK: %{{[0-9]+}}:_(s32) = G_FADD
+    %0:_(s32) = IMPLICIT_DEF
+    %1:_(s32) = IMPLICIT_DEF
+    %2:_(s32) = G_FADD %0, %1
+    RET 0, implicit %2
+...
+---
+name: rule_X86_FSQRT_0
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_FSQRT_0
+    ; CHECK: %{{[0-9]+}}:_(s32) = G_FSQRT
+    %0:_(s32) = IMPLICIT_DEF
+    %1:_(s32) = G_FSQRT %0
+    RET 0, implicit %1
 ...

@@ -71,6 +71,7 @@
   !0 = !{i32 1, !"wchar_size", i32 4}
   !1 = !{!"clang version 7.0.0"}
 
+  define void @rule_X86_SITOFP_0() { ret void }
 ...
 ---
 name:            int8_to_float
@@ -303,4 +304,14 @@ body:             |
     $xmm0 = COPY %2(s128)
     RET 0, implicit $xmm0
 
+...
+---
+name: rule_X86_SITOFP_0
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_SITOFP_0
+    ; CHECK: %{{[0-9]+}}:_(s32) = G_SITOFP
+    %0:_(s32) = IMPLICIT_DEF
+    %1:_(s32) = G_SITOFP %0
+    RET 0, implicit %1
 ...

@@ -75,3 +75,15 @@ body:             |
     RET 0, implicit %2
 
 ...
+---
+name: rule_X86_BSWAP_0
+body: |
+  bb.0:
+    ; X86-32-LABEL: name: rule_X86_BSWAP_0
+    ; X86-64-LABEL: name: rule_X86_BSWAP_0
+    ; X86-32: %{{[0-9]+}}:_(s32) = G_BSWAP
+    ; X86-64: %{{[0-9]+}}:_(s32) = G_BSWAP
+    %0:_(s32) = IMPLICIT_DEF
+    %1:_(s32) = G_BSWAP %0
+    RET 0, implicit %1
+...

@@ -1,0 +1,78 @@
+# NOTE: Assertions are hand-written decision-level checks on the legalized
+# body; regenerate only by re-reading the checks, not with update_mir_test_checks.
+# RUN: llc -mtriple=x86_64-linux-gnu -run-pass=legalizer -verify-machineinstrs %s -o - | FileCheck %s
+#
+# T4 coverage for the memory rule sets that had no legalizer-level MIR test:
+# G_CONSTANT_POOL (legal), G_MEMCPY (libcall), and the extending loads
+# G_SEXTLOAD/G_ZEXTLOAD (legal).  G_CONSTANT_POOL and the extending loads have
+# no literal rule in the generated table, so these functions exercise the
+# escaped memdesc rules directly.
+
+---
+name:            rule_X86_CONSTANT_POOL_0
+alignment:       8
+constants:
+  - id:              0
+    value:           i32 42
+    alignment:       4
+    isTargetSpecific: false
+body:             |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_CONSTANT_POOL_0
+    ; CHECK: [[POOL:%[0-9]+]]:_(p0) = G_CONSTANT_POOL %const.0
+    ; CHECK-NEXT: RET 0, implicit [[POOL]](p0)
+    %0:_(p0) = G_CONSTANT_POOL %const.0
+    RET 0, implicit %0
+
+...
+---
+name:            rule_X86_MEMCPY_0
+alignment:       8
+body:             |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_MEMCPY_0
+    ; CHECK: [[DST:%[0-9]+]]:_(p0) = IMPLICIT_DEF
+    ; CHECK-NEXT: [[SRC:%[0-9]+]]:_(p0) = IMPLICIT_DEF
+    ; CHECK-NEXT: [[LEN:%[0-9]+]]:_(s64) = G_CONSTANT i64 16
+    ; CHECK-NEXT: ADJCALLSTACKDOWN64
+    ; CHECK-NEXT: $rdi = COPY [[DST]](p0)
+    ; CHECK-NEXT: $rsi = COPY [[SRC]](p0)
+    ; CHECK-NEXT: $rdx = COPY [[LEN]](s64)
+    ; CHECK-NEXT: CALL64pcrel32 &memcpy,
+    ; CHECK-NEXT: ADJCALLSTACKUP64
+    ; CHECK-NEXT: RET 0
+    %0:_(p0) = IMPLICIT_DEF
+    %1:_(p0) = IMPLICIT_DEF
+    %2:_(s64) = G_CONSTANT i64 16
+    G_MEMCPY %0(p0), %1(p0), %2(s64), 0 :: (store (s8) into `ptr undef`, align 1), (load (s8) from `ptr undef`, align 1)
+    RET 0
+
+...
+---
+name:            rule_X86_SEXTLOAD_0
+alignment:       8
+body:             |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_SEXTLOAD_0
+    ; CHECK: [[PTR:%[0-9]+]]:_(p0) = IMPLICIT_DEF
+    ; CHECK-NEXT: [[VAL:%[0-9]+]]:_(s32) = G_SEXTLOAD [[PTR]](p0) :: (load (s8))
+    ; CHECK-NEXT: RET 0, implicit [[VAL]](s32)
+    %0:_(p0) = IMPLICIT_DEF
+    %1:_(s32) = G_SEXTLOAD %0(p0) :: (load (s8))
+    RET 0, implicit %1
+
+...
+---
+name:            rule_X86_ZEXTLOAD_0
+alignment:       8
+body:             |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_ZEXTLOAD_0
+    ; CHECK: [[PTR:%[0-9]+]]:_(p0) = IMPLICIT_DEF
+    ; CHECK-NEXT: [[VAL:%[0-9]+]]:_(s32) = G_ZEXTLOAD [[PTR]](p0) :: (load (s8))
+    ; CHECK-NEXT: RET 0, implicit [[VAL]](s32)
+    %0:_(p0) = IMPLICIT_DEF
+    %1:_(s32) = G_ZEXTLOAD %0(p0) :: (load (s8))
+    RET 0, implicit %1
+
+...

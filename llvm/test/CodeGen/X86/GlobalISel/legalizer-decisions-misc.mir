@@ -1,0 +1,83 @@
+# NOTE: Assertions are hand-written decision-level checks on the legalized
+# body; regenerate only by re-reading the checks, not with update_mir_test_checks.
+# RUN: llc -mtriple=x86_64-linux-gnu -run-pass=legalizer -verify-machineinstrs %s -o - | FileCheck %s
+#
+# T4 coverage for the stack, pointer, and control rule sets that had no
+# legalizer-level MIR test: G_DYN_STACKALLOC (Lower), G_FRAME_INDEX (legal),
+# G_INTRINSIC (legal), G_INVOKE_REGION_START (legal), and G_TRAP (legal).
+
+---
+name:            rule_X86_DYN_STACKALLOC_0
+alignment:       8
+stack:
+  - { id: 0, type: variable-sized, alignment: 16 }
+body:             |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_DYN_STACKALLOC_0
+    ; CHECK: [[SIZE:%[0-9]+]]:_(s64) = G_CONSTANT i64 64
+    ; CHECK-NEXT: [[SP:%[0-9]+]]:_(p0) = COPY $rsp
+    ; CHECK-NEXT: [[SPINT:%[0-9]+]]:_(s64) = G_PTRTOINT [[SP]](p0)
+    ; CHECK-NEXT: [[NEWINT:%[0-9]+]]:_(s64) = G_SUB [[SPINT]], [[SIZE]]
+    ; CHECK-NEXT: [[ALIGN:%[0-9]+]]:_(s64) = G_CONSTANT i64 -16
+    ; CHECK-NEXT: [[ALIGNED:%[0-9]+]]:_(s64) = G_AND [[NEWINT]], [[ALIGN]]
+    ; CHECK-NEXT: [[NEWSP:%[0-9]+]]:_(p0) = G_INTTOPTR [[ALIGNED]](s64)
+    ; CHECK-NEXT: $rsp = COPY [[NEWSP]](p0)
+    ; CHECK-NEXT: [[RESULT:%[0-9]+]]:_(p0) = COPY [[NEWSP]](p0)
+    ; CHECK-NEXT: RET 0, implicit [[RESULT]](p0)
+    %0:_(s64) = G_CONSTANT i64 64
+    %1:_(p0) = G_DYN_STACKALLOC %0(s64), 16
+    RET 0, implicit %1
+
+...
+---
+name:            rule_X86_FRAME_INDEX_0
+alignment:       8
+stack:
+  - { id: 0, size: 4, alignment: 4 }
+body:             |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_FRAME_INDEX_0
+    ; CHECK: [[FI:%[0-9]+]]:_(p0) = G_FRAME_INDEX %stack.0
+    ; CHECK-NEXT: RET 0, implicit [[FI]](p0)
+    %0:_(p0) = G_FRAME_INDEX %stack.0
+    RET 0, implicit %0
+
+...
+---
+name:            rule_X86_INTRINSIC_0
+alignment:       8
+body:             |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_INTRINSIC_0
+    ; CHECK: [[ARG:%[0-9]+]]:_(s32) = IMPLICIT_DEF
+    ; CHECK-NEXT: [[RES:%[0-9]+]]:_(s32) = G_INTRINSIC intrinsic(@llvm.fabs), [[ARG]](s32)
+    ; CHECK-NEXT: RET 0, implicit [[RES]](s32)
+    %0:_(s32) = IMPLICIT_DEF
+    %1:_(s32) = G_INTRINSIC intrinsic(@llvm.fabs.f32), %0(s32)
+    RET 0, implicit %1
+
+...
+---
+name:            rule_X86_INVOKE_REGION_START_0
+alignment:       8
+body:             |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_INVOKE_REGION_START_0
+    ; CHECK: G_INVOKE_REGION_START
+    ; CHECK-NEXT: RET 0
+    G_INVOKE_REGION_START
+    RET 0
+
+...
+---
+name:            rule_X86_TRAP_0
+alignment:       8
+body:             |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_TRAP_0
+    ; CHECK: G_TRAP
+    ; CHECK-NEXT: RET 0
+    G_TRAP
+    RET 0
+
+...

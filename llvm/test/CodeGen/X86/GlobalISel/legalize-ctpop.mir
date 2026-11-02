@@ -112,3 +112,13 @@ body:             |
     RET 0, implicit %2
 
 ...
+---
+name: rule_X86_CTPOP_0
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_CTPOP_0
+    ; CHECK: %{{[0-9]+}}:_(s16) = G_CTPOP
+    %0:_(s16) = IMPLICIT_DEF
+    %1:_(s16) = G_CTPOP %0
+    RET 0, implicit %1
+...

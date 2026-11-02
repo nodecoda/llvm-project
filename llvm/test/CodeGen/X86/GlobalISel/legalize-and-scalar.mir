@@ -12,6 +12,7 @@
   define void @test_and_i42() { ret void }
   define void @test_and_i64() { ret void }
 
+  define void @rule_X86_AND_0() { ret void }
 ...
 ---
 name:            test_and_i1
@@ -199,4 +200,15 @@ body:             |
     %2(s64) = G_AND %0, %1
     $rax = COPY %2
     RET 0
+...
+---
+name: rule_X86_AND_0
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: rule_X86_AND_0
+    ; CHECK: %{{[0-9]+}}:_(s8) = G_AND
+    %0:_(s8) = IMPLICIT_DEF
+    %1:_(s8) = IMPLICIT_DEF
+    %2:_(s8) = G_AND %0, %1
+    RET 0, implicit %2
 ...
