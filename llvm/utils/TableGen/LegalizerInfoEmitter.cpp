@@ -2486,29 +2486,60 @@ class LegalizerTableEmitterImpl {
 
   /// One returned step.  Without a mutation the step is the action alone; with
   /// one, the mutation is called on the query exactly as the chain would.
+  ///
+  /// With RuleIdx set the step is stored in Out and the rule that produced it
+  /// is named by its 0-based position in the rule set's Rules list, then the
+  /// evaluator reports a match instead of returning the step.  That is the
+  /// test-only rule-index form (-gen-legalizer-rule-index); the numbering is
+  /// the one X86LegalizerInfo.core.json records as rule_index.
   static void emitStep(raw_ostream &OS, StringRef Action, StringRef Indent,
-                       StringRef Mutation) {
-    if (Mutation.empty()) {
-      OS << Indent << "return {LegalizeActions::" << Action << ", 0, LLT{}};\n";
+                       StringRef Mutation, StringRef RuleIdx = "") {
+    if (RuleIdx.empty()) {
+      if (Mutation.empty()) {
+        OS << Indent << "return {LegalizeActions::" << Action
+           << ", 0, LLT{}};\n";
+        return;
+      }
+      OS << Indent << "auto M = (" << Mutation << ")(Q);\n";
+      OS << Indent << "return {LegalizeActions::" << Action
+         << ", M.first, M.second};\n";
       return;
     }
-    OS << Indent << "auto M = (" << Mutation << ")(Q);\n";
-    OS << Indent << "return {LegalizeActions::" << Action
-       << ", M.first, M.second};\n";
+    if (Mutation.empty()) {
+      OS << Indent << "Out = {LegalizeActions::" << Action << ", 0, LLT{}};\n";
+    } else {
+      OS << Indent << "auto M = (" << Mutation << ")(Q);\n";
+      OS << Indent << "Out = {LegalizeActions::" << Action
+         << ", M.first, M.second};\n";
+    }
+    OS << Indent << "RuleIndex = " << RuleIdx << ";\n";
+    OS << Indent << "return true;\n";
   }
 
   /// One returned step whose new type is spelled out rather than computed by a
   /// mutation factory: the clamp builders produce their type inline.
   static void emitTypedStep(raw_ostream &OS, StringRef Action, StringRef Indent,
-                            StringRef TypeIdx, StringRef NewType) {
-    OS << Indent << "return {LegalizeActions::" << Action << ", " << TypeIdx
+                            StringRef TypeIdx, StringRef NewType,
+                            StringRef RuleIdx = "") {
+    if (RuleIdx.empty()) {
+      OS << Indent << "return {LegalizeActions::" << Action << ", " << TypeIdx
+         << ", " << NewType << "};\n";
+      return;
+    }
+    OS << Indent << "Out = {LegalizeActions::" << Action << ", " << TypeIdx
        << ", " << NewType << "};\n";
+    OS << Indent << "RuleIndex = " << RuleIdx << ";\n";
+    OS << Indent << "return true;\n";
   }
 
   /// Translate one rule into the statements an evaluator runs.  Returns false
   /// when the builder has no table translation; the whole rule set is then
   /// opaque and the reader falls back to the chain for it.
-  bool translateRule(const Record &Rule, std::string &Out, std::string &Why) {
+  /// With RuleIdx set the emitted statements store the step and the rule's
+  /// position instead of returning it, for -gen-legalizer-rule-index.
+  bool translateRule(const Record &Rule, std::string &Out, std::string &Why,
+                     const unsigned *RuleIdx = nullptr) {
+    const std::string RuleIdxText = RuleIdx ? std::to_string(*RuleIdx) : "";
     StringRef Name = builderName(Rule);
     std::vector<const Record *> Args = Rule.getValueAsListOfDefs("Args");
     const Record *B = Rule.getValueAsDef("Builder");
@@ -2531,7 +2562,7 @@ class LegalizerTableEmitterImpl {
       std::string Buf;
       raw_string_ostream OS(Buf);
       OS << "  if ((" << Text << ")(Q)) {\n";
-      emitStep(OS, Action, "    ", "");
+      emitStep(OS, Action, "    ", "", RuleIdxText);
       OS << "  }\n";
       OS.flush();
       Out = std::move(Buf);
@@ -2558,13 +2589,13 @@ class LegalizerTableEmitterImpl {
     raw_string_ostream OS(Buf);
     auto EmitIf = [&](StringRef Cond, StringRef Act, StringRef Mut = "") {
       OS << "  if (" << Cond << ") {\n";
-      emitStep(OS, Act, "    ", Mut);
+      emitStep(OS, Act, "    ", Mut, RuleIdxText);
       OS << "  }\n";
     };
     auto EmitTypedIf = [&](StringRef Cond, StringRef Act, StringRef Idx,
                            StringRef Ty) {
       OS << "  if (" << Cond << ") {\n";
-      emitTypedStep(OS, Act, "    ", Idx, Ty);
+      emitTypedStep(OS, Act, "    ", Idx, Ty, RuleIdxText);
       OS << "  }\n";
     };
     auto Finish = [&]() {
@@ -2578,7 +2609,7 @@ class LegalizerTableEmitterImpl {
         Name == "custom" || Name == "unsupported") {
       if (!Args.empty() || !Guard.empty())
         return Fail();
-      emitStep(OS, Action, "  ", "");
+      emitStep(OS, Action, "  ", "", RuleIdxText);
       return Finish();
     }
 
@@ -2638,7 +2669,7 @@ class LegalizerTableEmitterImpl {
       OS << "      if ("
          << conjunction(Guard, "typeIs(0, T0)(Q) && typeIs(1, T1)(Q)")
          << ") {\n";
-      emitStep(OS, Action, "        ", "");
+      emitStep(OS, Action, "        ", "", RuleIdxText);
       OS << "      }\n";
       return Finish();
     }
@@ -3001,6 +3032,130 @@ public:
     OS << "  default:\n    return std::nullopt;\n  }\n}\n";
   }
 
+  /// The test-only rule-index output (-gen-legalizer-rule-index).
+  ///
+  /// The evaluators are the same translation of the .td rules as run() emits:
+  /// same prologue, same guards, same mutations.  The one difference is the
+  /// match form: instead of returning the step, a rule stores it in Out, names
+  /// itself by its 0-based position in the rule set's Rules list, and reports
+  /// a match.  The numbering is the one X86LegalizerInfo.core.json records as
+  /// rule_index, so a test can hold the two side by side.
+  ///
+  /// Nothing here is part of the table reader: no production TU includes this
+  /// file, and the table the target builds is the one run() emits.
+  void runRuleIndex(raw_ostream &OS) {
+    std::vector<const Record *> RuleSets =
+        Records.getAllDerivedDefinitions("LegalizeRuleSet");
+    llvm::sort(RuleSets, LessRecordByID());
+    std::vector<const Record *> Tables;
+    for (const Record *RS : RuleSets)
+      if (tabulated(*RS))
+        Tables.push_back(RS);
+
+    std::string P = TablePrefix;
+    std::string Lower = P;
+    if (!Lower.empty())
+      Lower[0] = toLower(Lower[0]);
+
+    OS << "//===-- " << P
+       << "LegalizerRuleIndex.inc - first matching rule "
+          "-----*- C++ -*-===//\n";
+    OS << "//\n// Generated by llvm-tblgen -gen-legalizer-rule-index.  Do not "
+          "edit.\n";
+    OS << "//\n// TEST-ONLY.  " << P
+       << "LegalizerTable.inc does not include this file and no\n"
+          "// production TU compiles it.  Each evaluator is the same "
+          "translation of the\n"
+          "// .td rules as the table's, but it also reports which rule "
+          "matched.\n";
+    OS << "//\n//"
+          "===-----------------------------------------------------------------"
+          "-----===//\n\n";
+
+    // Translate every rule, keeping its position in the rule set.  A rule
+    // whose builder has no table translation makes its whole rule set opaque,
+    // exactly as it does for the table.
+    std::vector<bool> Opaque(Tables.size(), false);
+    std::vector<std::string> Why(Tables.size());
+    std::vector<std::string> Bodies(Tables.size());
+    std::vector<unsigned> NumRules(Tables.size(), 0);
+    for (size_t I = 0; I != Tables.size(); ++I) {
+      std::vector<const Record *> Rules =
+          Tables[I]->getValueAsListOfDefs("Rules");
+      NumRules[I] = Rules.size();
+      for (unsigned R = 0; R != Rules.size(); ++R) {
+        std::string Text, Reason;
+        if (!translateRule(*Rules[R], Text, Reason, &R)) {
+          Opaque[I] = true;
+          Why[I] = Reason;
+          Bodies[I].clear();
+          break;
+        }
+        Bodies[I] += Text;
+      }
+    }
+
+    OS << "\n// One evaluator per tabulated rule set, in X86Tables[] order.  ";
+    OS << "A match\n// stores its step in Out and its rule's position in "
+          "RuleIndex.\n";
+    for (size_t I = 0; I != Tables.size(); ++I) {
+      OS << "\n";
+      if (Opaque[I]) {
+        OS << "// " << Tables[I]->getName() << " is opaque: " << Why[I]
+           << ".\n// The table's evaluator declines this rule set as well.\n";
+        OS << "static bool " << P << "EvalRuleIndex" << I << "(\n";
+        OS << "    const " << P << "Subtarget &, const LegalityQuery &,\n";
+        OS << "    unsigned &, LegalizeActionStep &) {\n  return false;\n}\n";
+        continue;
+      }
+      OS << "static bool " << P << "EvalRuleIndex" << I << "(\n";
+      OS << "    const " << P
+         << "Subtarget &Subtarget, const LegalityQuery &Q,\n";
+      OS << "    unsigned &RuleIndex, LegalizeActionStep &Out) {\n";
+      EmitPrologue(OS);
+      OS << Bodies[I];
+      OS << "  return false;\n}\n";
+    }
+
+    // The test's own map from opcode to rule set, plus the rule counts the
+    // index is bounded by.  The reader keys by class and never needs either.
+    OS << "\n// Opcode to rule set, in X86Tables[] order, and the number of "
+          ".td rules\n// in each set.  A matched index is in [0, "
+          "NumRules[Table]).\n";
+    OS << "static constexpr const char *" << P
+       << "RuleIndexTableNames[] = "
+          "{\n";
+    for (const Record *RS : Tables)
+      OS << "  \"" << RS->getName() << "\",\n";
+    OS << "};\n";
+    OS << "static constexpr unsigned " << P << "RuleIndexNumRules[] = {\n";
+    for (unsigned N : NumRules)
+      OS << "  " << N << ",\n";
+    OS << "};\n";
+    OS << "static int " << Lower
+       << "RuleIndexTableForOpcode(unsigned Opcode) {\n";
+    OS << "  switch (Opcode) {\n";
+    for (size_t I = 0; I != Tables.size(); ++I)
+      for (StringRef Opcode : Tables[I]->getValueAsListOfStrings("Opcodes"))
+        OS << "  case TargetOpcode::" << Opcode << ": return " << I << ";\n";
+    OS << "  default: return -1;\n  }\n}\n";
+
+    OS << "\n/// Answer one query from a tabulated rule set and report the "
+          "first\n/// matching rule.  False means no rule matched, or the "
+          "rule set is opaque.\n";
+    OS << "static bool " << P << "EvalRuleIndex(unsigned Table, const " << P
+       << "Subtarget &Subtarget,\n"
+          "                             const LegalityQuery &Q, unsigned "
+          "&RuleIndex,\n"
+          "                             LegalizeActionStep &Out) {\n";
+    OS << "  switch (Table) {\n";
+    for (size_t I = 0; I != Tables.size(); ++I)
+      OS << "  case " << I << ": // " << Tables[I]->getName() << "\n"
+         << "    return " << P << "EvalRuleIndex" << I
+         << "(Subtarget, Q, RuleIndex, Out);\n";
+    OS << "  default:\n    return false;\n  }\n}\n";
+  }
+
   /// Emit the identifiers a rule, an evaluator and -gen-legalizer all refer to:
   /// the feature bools, the LLT constants and the named type lists.  The
   /// -gen-legalizer emitter filters the features down to the ones it uses; an
@@ -3265,6 +3420,22 @@ public:
 static TableGen::Emitter::OptClass<LegalizerTablePointsEmitter>
     XTablePoints("gen-legalizer-table-points",
                  "Emit the GlobalISel legalizer table domain");
+
+/// The rule index is a test aid, not a reader: -gen-legalizer-table is what a
+/// target builds.  The file this emits is included by a unit test only.
+class LegalizerRuleIndexEmitter {
+  const RecordKeeper &Records;
+
+public:
+  explicit LegalizerRuleIndexEmitter(const RecordKeeper &RK) : Records(RK) {}
+  void run(raw_ostream &OS) {
+    LegalizerTableEmitterImpl(Records).runRuleIndex(OS);
+  }
+};
+
+static TableGen::Emitter::OptClass<LegalizerRuleIndexEmitter>
+    XTableRuleIndex("gen-legalizer-rule-index",
+                    "Emit the GlobalISel legalizer rule index (tests only)");
 
 static TableGen::Emitter::OptClass<LegalizerInfoEmitter>
     X("gen-legalizer", "Generate GlobalISel legalizer rule fragments");

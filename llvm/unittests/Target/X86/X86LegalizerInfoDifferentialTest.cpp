@@ -60,6 +60,49 @@ using namespace LegalizeMutations;
 
 namespace {
 
+//===----------------------------------------------------------------------===//
+// Rule index (test-only)
+//===----------------------------------------------------------------------===//
+//
+// -gen-legalizer-rule-index emits the same evaluator as -gen-legalizer-table,
+// but a matching rule stores its step and its 0-based position in the rule
+// set's Rules list instead of returning.  That position is the number
+// X86LegalizerInfo.core.json records as rule_index, so a test can name the rule
+// that won rather than only its effect.  No production TU includes the file.
+//
+// The domain is generated from the same point emitter the reader's selfCheck()
+// walks.  The struct below is the shape that emitter's aggregate initializers
+// expect -- the reader's own definition is private to X86LegalizerTable.cpp --
+// so the 1397 queries are included, never copied.
+struct X86TablePoint {
+  unsigned Opcode;
+  const char *Name;
+  uint8_t NumTypes;
+  LLT Types[3];
+  LLT MemTy;
+  uint64_t Align;
+  bool HasMem;
+};
+
+#include "X86LegalizerRuleIndex.inc"
+#include "X86LegalizerTablePointsForTest.inc"
+
+struct RuleHit {
+  unsigned RuleSet;
+  unsigned RuleIndex;
+  LegalizeActionStep Step;
+};
+
+static std::optional<RuleHit> queryRuleIndex(unsigned Table,
+                                             const X86Subtarget &Subtarget,
+                                             const LegalityQuery &Q) {
+  unsigned RuleIndex = 0;
+  LegalizeActionStep Step(Unsupported, 0, LLT{});
+  if (!X86EvalRuleIndex(Table, Subtarget, Q, RuleIndex, Step))
+    return std::nullopt;
+  return RuleHit{Table, RuleIndex, Step};
+}
+
 // The SaaS-generated fragments are a bare statement sequence that expects
 // `Subtarget` and the inherited builder API in scope, exactly as
 // X86LegalizerInfo's constructor provides them.
@@ -1091,6 +1134,182 @@ TEST_F(X86LegalizerDifferentialTest, SelfCheckDomainSmoke) {
   EXPECT_NE(Log.find("points 1397"), std::string::npos) << Log;
   EXPECT_NE(Log.find("mismatches 0"), std::string::npos) << Log;
   EXPECT_NE(Log.find("skipped 0"), std::string::npos) << Log;
+}
+
+// The rule index must agree with the reference, not just the table: it is a
+// second emission of the same .td rules, and if its guards drifted the step it
+// reports would drift with them.  A query the evaluator declines must be one
+// the table declines too, so a decline cannot hide a missing rule.
+TEST_F(X86LegalizerDifferentialTest, RuleIndexAgreesWithReference) {
+  // C0 has neither AVX nor AVX-512, C2 has both: the feature-guarded rules the
+  // rule index emits must be exercised, not just the unconditional ones.
+  unsigned Matched = 0, NoRule = 0, Opaque = 0, OutOfRange = 0, Diffs = 0;
+  std::string Diagnostics;
+  raw_string_ostream Diag(Diagnostics);
+  for (const Config *C : {&Configs[0], &Configs[2]}) {
+    Sigma S = makeSigma(*C);
+    ASSERT_TRUE(S.STI) << C->ID;
+    TableLegalizerInfoForTest Table(*S.STI);
+    X86LegalizerInfoReference Oracle(
+        *S.STI, *static_cast<const X86TargetMachine *>(S.TM.get()));
+
+    SmallVector<X86TablePoint, 0> Points;
+    Points.reserve(X86NumTablePoints);
+    x86CollectTablePoints(Points, S.STI->isTarget64BitLP64() ? 64 : 32);
+    ASSERT_EQ(Points.size(), 1397u);
+
+    for (const X86TablePoint &P : Points) {
+      ArrayRef<LLT> Types(P.Types, P.NumTypes);
+      SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+      if (P.HasMem)
+        MemDescs.emplace_back(P.MemTy, P.Align, AtomicOrdering::NotAtomic,
+                              AtomicOrdering::NotAtomic);
+      const LegalityQuery Q(P.Opcode, Types, MemDescs);
+
+      const int TableID = x86RuleIndexTableForOpcode(P.Opcode);
+      ASSERT_GE(TableID, 0) << P.Name;
+      const char *Set = X86RuleIndexTableNames[TableID];
+      const LegalizeActionStep Want = Oracle.getAction(Q);
+      const X86LegalizerTable::Result TableResult = Table.table().query(Q);
+      const std::optional<RuleHit> Hit = queryRuleIndex(TableID, *S.STI, Q);
+
+      if (!Hit) {
+        // No rule matched.  The table's evaluator is the same translation, so
+        // it reports the chain's default; a table that declines instead is
+        // opaque for this rule set, which is the other way the index can have
+        // no answer.
+        if (TableResult.Kind == X86LegalizerTable::Answer::Escape) {
+          ++Opaque;
+          continue;
+        }
+        ++NoRule;
+        if (Want.Action == Unsupported)
+          continue;
+        ++Diffs;
+        Diag << C->ID << "/" << P.Name << " [" << Set
+             << "] no rule matched, oracle " << describe(Want) << "\n";
+        continue;
+      }
+
+      ++Matched;
+      if (Hit->RuleIndex >= X86RuleIndexNumRules[TableID]) {
+        ++OutOfRange;
+        Diag << C->ID << "/" << P.Name << " [" << Set << "] index "
+             << Hit->RuleIndex << " outside [0, "
+             << X86RuleIndexNumRules[TableID] << ")\n";
+      }
+      if (!stepsAgree(Hit->Step, Want)) {
+        ++Diffs;
+        Diag << C->ID << "/" << P.Name << " [" << Set << "#" << Hit->RuleIndex
+             << "] index " << describe(Hit->Step) << ", oracle "
+             << describe(Want) << "\n";
+      }
+      // The index names the rule the table's own evaluator answers with, so the
+      // two emissions of the evaluator cannot drift apart.
+      if (TableResult.Kind == X86LegalizerTable::Answer::Hit ||
+          TableResult.Kind == X86LegalizerTable::Answer::Residual) {
+        if (!stepsAgree(Hit->Step, LegalizeActionStep(TableResult.Action,
+                                                      TableResult.TypeIdx,
+                                                      TableResult.NewType))) {
+          ++Diffs;
+          Diag << C->ID << "/" << P.Name << " [" << Set << "#" << Hit->RuleIndex
+               << "] index " << describe(Hit->Step) << ", table "
+               << describe(LegalizeActionStep(TableResult.Action,
+                                              TableResult.TypeIdx,
+                                              TableResult.NewType))
+               << "\n";
+        }
+      }
+    }
+  }
+
+  EXPECT_EQ(Matched + NoRule + Opaque, 2 * X86NumTablePoints);
+  EXPECT_EQ(Diffs, 0u) << Diag.str();
+  EXPECT_EQ(OutOfRange, 0u) << Diag.str();
+  // The domain is the table's own: a decline here would mean the rules stopped
+  // matching queries the reader still asks.
+  EXPECT_EQ(Matched, 2164u) << Diag.str();
+  EXPECT_EQ(NoRule, 630u) << Diag.str();
+  EXPECT_EQ(Opaque, 0u) << Diag.str();
+}
+
+// A rule number that was always zero would still agree on every step above, so
+// these probes pin the number to the .td rule that actually wins.  The expected
+// values are X86LegalizerInfo.core.json's rule_index for the same rule, which
+// is the rule's 0-based position in the rule set's Rules list.
+TEST_F(X86LegalizerDifferentialTest, RuleIndexPinsFirstMatch) {
+  const Config &C = Configs[0];
+  Sigma S = makeSigma(C);
+  ASSERT_TRUE(S.STI) << C.ID;
+  X86LegalizerInfoReference Oracle(
+      *S.STI, *static_cast<const X86TargetMachine *>(S.TM.get()));
+
+  struct Probe {
+    const char *Name;
+    unsigned Opcode;
+    LLT Types[2];
+    unsigned NumTypes;
+    bool HasMem;
+    LLT MemTy;
+    unsigned RuleIndex;
+    LegalizeActionStep Want;
+  } Probes[] = {
+      // X86_STORE: the six LegalForMemDesc<Ty, p0, Ty> entries come first, so a
+      // value whose type differs from the memory type reaches the opaque
+      // `Types[0] != MemoryTy` rule at index 6 and is customized.
+      {"G_STORE(s32)[s64]",
+       G_STORE,
+       {LLT::scalar(32), LLT::pointer(0, 64)},
+       2,
+       true,
+       LLT::scalar(64),
+       6,
+       LegalizeActionStep(Custom, 0, LLT{})},
+      // The same store with a matching memory type is the first rule.
+      {"G_STORE(s32)[s32]",
+       G_STORE,
+       {LLT::scalar(32), LLT::pointer(0, 64)},
+       2,
+       true,
+       LLT::scalar(32),
+       0,
+       LegalizeActionStep(Legal, 0, LLT{})},
+      // X86_ANYEXT: the four legal pairs and the 64-bit one precede the
+      // WidenScalarToNextPow2<0, 8> rule, so a non-power-of-two scalar is
+      // widened by rule 2.
+      {"G_ANYEXT(s48)",
+       G_ANYEXT,
+       {LLT::scalar(48), LLT::scalar(48)},
+       2,
+       false,
+       LLT{},
+       2,
+       LegalizeActionStep(WidenScalar, 0, LLT::scalar(64))},
+  };
+
+  for (const Probe &P : Probes) {
+    ArrayRef<LLT> Types(P.Types, P.NumTypes);
+    SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+    if (P.HasMem)
+      MemDescs.emplace_back(P.MemTy, /*AlignInBits=*/1,
+                            AtomicOrdering::NotAtomic,
+                            AtomicOrdering::NotAtomic);
+    const LegalityQuery Q(P.Opcode, Types, MemDescs);
+
+    const int TableID = x86RuleIndexTableForOpcode(P.Opcode);
+    ASSERT_GE(TableID, 0) << P.Name;
+    const std::optional<RuleHit> Hit = queryRuleIndex(TableID, *S.STI, Q);
+    ASSERT_TRUE(Hit) << P.Name << " [" << X86RuleIndexTableNames[TableID]
+                     << "] matched no rule";
+    EXPECT_EQ(Hit->RuleIndex, P.RuleIndex)
+        << P.Name << " [" << X86RuleIndexTableNames[TableID] << "]";
+    EXPECT_TRUE(stepsAgree(Hit->Step, P.Want))
+        << P.Name << ": index " << describe(Hit->Step) << ", want "
+        << describe(P.Want);
+    EXPECT_TRUE(stepsAgree(P.Want, Oracle.getAction(Q)))
+        << P.Name << ": want " << describe(P.Want) << ", oracle "
+        << describe(Oracle.getAction(Q));
+  }
 }
 
 // F1: the table's key has a single pointer class.  Every pointer collapses to

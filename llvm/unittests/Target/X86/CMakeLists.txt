@@ -62,6 +62,17 @@ set(X86_LEGALIZER_TD
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
              ${X86_LEGALIZER_TD})
 
+# The rule index is a test aid, not a reader: -gen-legalizer-rule-index emits
+# the same evaluators as -gen-legalizer-table, with the matching rule's
+# position stored next to the step.  Nothing in lib/Target/X86 includes it.
+# The domain the test walks is generated here too, so the 1397 queries are not
+# copied into the test: the point emitter is the one selfCheck() uses.
+set(LLVM_TARGET_DEFINITIONS ${X86_LEGALIZER_TD})
+tablegen(LLVM X86LegalizerRuleIndex.inc -gen-legalizer-rule-index
+         -legalizer-table-prefix=X86)
+tablegen(LLVM X86LegalizerTablePointsForTest.inc -gen-legalizer-table-points
+         -legalizer-table-prefix=X86)
+
 function(x86_add_legalizer_mutant name from to)
   file(READ ${X86_LEGALIZER_TD} _td)
   string(REPLACE "${from}" "${to}" _mut "${_td}")
