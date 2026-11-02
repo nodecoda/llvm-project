@@ -83,14 +83,6 @@ public:
   /// the key, not a number to look at.
   void selfCheck(raw_ostream &OS);
 
-  uint64_t hits() const { return Hits; }
-  uint64_t residuals() const { return Residuals; }
-  uint64_t escapes() const { return Escapes; }
-  uint64_t outside() const { return Outsides; }
-  uint64_t pointerVectors() const { return PointerVectors; }
-  uint64_t untabulated() const { return Untabulated; }
-  uint64_t fills() const { return Fills; }
-
 private:
   uint16_t fill(unsigned Table, const LegalityQuery &Q, unsigned L0,
                 unsigned L1, unsigned MemClass) const;
