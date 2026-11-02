@@ -221,13 +221,16 @@ The generated fragment is deliberately a statement sequence rather than a data
 table: a target can convert one opcode at a time, keep the remaining rules
 hand-written, and delete a hand-written chain when its TableGen rule set lands.
 The schema rejects at TableGen time an action whose mutation direction does not
-match the rule, a duplicate opcode across rule sets, and non-generic opcodes.
-The X86 `G_CTPOP` rule set is the first conversion; see
+match the rule, a duplicate opcode across rule sets, a non-generic opcode, and
+a rule whose arguments do not match the builder's declared shapes.
+The X86 rule sets are the first conversion; see
 `llvm/lib/Target/X86/GISel/X86LegalizerInfo.td`.
 
-The current increment still spells type lists and builder arguments as strings;
-follow-ups will make types and builder signatures first-class so typos are
-rejected before C++ is generated.
+Predicates are records and dags (`all_of`, `any_of`, `none_of`, `not`), types
+are `LegalizeNamedType` records, and actions are records that carry their
+mutation direction.  The emitter declares the feature booleans and type
+constants ahead of the rule sets, so the generated fragment is self-contained
+inside the target's constructor.
 
 ### Composite Rules
 
