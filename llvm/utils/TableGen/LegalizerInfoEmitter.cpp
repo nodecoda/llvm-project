@@ -36,7 +36,10 @@
 
 #include <algorithm>
 #include <functional>
+#include <map>
+#include <set>
 #include <string>
+#include <tuple>
 
 using namespace llvm;
 
@@ -1851,6 +1854,325 @@ void LegalizerInfoEmitter::runCore(raw_ostream &OS) {
     OS << "\n  ";
   OS << "]\n}\n";
 }
+//===----------------------------------------------------------------------===//
+// Table output (-gen-legalizer-table)
+//
+// The table is a key over type classes, not a second description of the rules.
+// A class is (kind, element bits, lanes); the classes come from the named types
+// the rules are written in terms of, so the lattice cannot drift from the .td.
+// A rule set is tabulated only when its guards are total over that key: a rule
+// that reads the memory descriptor, the opcode, or a type slot past 1 is not
+// tabulated and takes the chain instead.  That is the same boundary the
+// prototype documented, now enforced by construction.
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+cl::opt<std::string> TablePrefix(
+    "legalizer-table-prefix",
+    cl::desc("identifier prefix for the generated legalizer table"),
+    cl::init("X86"));
+
+enum TableTypeKind { TablePointer, TableScalar, TableVector, TablePtrVector };
+
+struct TableType {
+  TableTypeKind Kind;
+  unsigned ElemBits;
+  unsigned Lanes;
+  std::string Name;
+};
+
+/// Split "Cond ? Then : Else" at the top level, ignoring parentheses and
+/// nested conditionals.  The condition itself is irrelevant: both branches
+/// name types that must be in the lattice.
+bool splitConditional(StringRef S, StringRef &Then, StringRef &Else) {
+  int Depth = 0;
+  size_t Q = StringRef::npos;
+  for (size_t I = 0; I != S.size(); ++I) {
+    char C = S[I];
+    if (C == '(' || C == '[' || C == '{')
+      ++Depth;
+    else if (C == ')' || C == ']' || C == '}')
+      --Depth;
+    else if (C == '?' && Depth == 0) {
+      Q = I;
+      break;
+    }
+  }
+  if (Q == StringRef::npos)
+    return false;
+
+  Depth = 0;
+  int Nest = 0;
+  for (size_t I = Q + 1; I != S.size(); ++I) {
+    char C = S[I];
+    if (C == '(' || C == '[' || C == '{')
+      ++Depth;
+    else if (C == ')' || C == ']' || C == '}')
+      --Depth;
+    else if (C == '?' && Depth == 0)
+      ++Nest;
+    else if (C == ':' && Depth == 0) {
+      if (Nest == 0) {
+        Then = S.slice(Q + 1, I);
+        Else = S.substr(I + 1);
+        return true;
+      }
+      --Nest;
+    }
+  }
+  return false;
+}
+
+/// Strip balanced parentheses around a whole expression.
+StringRef stripParens(StringRef S) {
+  S = S.trim();
+  while (S.size() >= 2 && S.front() == '(' && S.back() == ')') {
+    int Depth = 0;
+    bool Balanced = true;
+    for (size_t I = 0; I != S.size(); ++I) {
+      if (S[I] == '(')
+        ++Depth;
+      else if (S[I] == ')' && --Depth == 0 && I + 1 != S.size()) {
+        Balanced = false;
+        break;
+      }
+    }
+    if (!Balanced)
+      break;
+    S = S.drop_front().drop_back().trim();
+  }
+  return S;
+}
+
+class LegalizerTableEmitterImpl {
+  const RecordKeeper &Records;
+  std::map<std::string, const Record *> NamedTypes;
+  std::vector<TableType> Classes;
+
+  bool resolve(StringRef Expr, StringRef Root, SmallVectorImpl<TableType> &Out,
+               unsigned Depth) {
+    Expr = stripParens(Expr);
+    if (Depth > 16)
+      return false;
+
+    StringRef Then, Else;
+    if (splitConditional(Expr, Then, Else))
+      return resolve(Then, Root, Out, Depth) &&
+             resolve(Else, Root, Out, Depth);
+
+    auto ArgOf = [&](StringRef Prefix, StringRef &Arg) {
+      if (!Expr.consume_front(Prefix) || !Expr.consume_back(")"))
+        return false;
+      Arg = Expr;
+      return true;
+    };
+
+    StringRef Arg;
+    if (ArgOf("LLT::scalar(", Arg)) {
+      unsigned Bits;
+      if (Arg.trim().getAsInteger(10, Bits))
+        return false;
+      Out.push_back({TableScalar, Bits, 1, Root.str()});
+      return true;
+    }
+    if (ArgOf("LLT::pointer(", Arg)) {
+      Out.push_back({TablePointer, 0, 1, Root.str()});
+      return true;
+    }
+    if (ArgOf("LLT::fixed_vector(", Arg)) {
+      size_t Comma = Arg.find(',');
+      if (Comma == StringRef::npos)
+        return false;
+      unsigned Lanes;
+      if (Arg.substr(0, Comma).trim().getAsInteger(10, Lanes))
+        return false;
+      StringRef Elem = Arg.substr(Comma + 1).trim();
+
+      unsigned ElemBits;
+      if (!Elem.getAsInteger(10, ElemBits)) {
+        Out.push_back({TableVector, ElemBits, Lanes, Root.str()});
+        return true;
+      }
+
+      SmallVector<TableType, 2> Elems;
+      if (!resolve(Elem, Root, Elems, Depth + 1))
+        return false;
+      for (const TableType &E : Elems) {
+        if (E.Kind == TableScalar)
+          Out.push_back({TableVector, E.ElemBits, Lanes, Root.str()});
+        else if (E.Kind == TablePointer)
+          // A vector of pointers is a different LLT from a vector of integers
+          // of the same shape; the class list cannot express it yet.
+          Out.push_back({TablePtrVector, 0, Lanes, Root.str()});
+        else
+          return false;
+      }
+      return true;
+    }
+
+    // A named type (or a named list member) refers to another record.
+    if (Expr.empty() || !(isAlpha(Expr.front()) || Expr.front() == '_'))
+      return false;
+    for (char C : Expr)
+      if (!isAlnum(C) && C != '_')
+        return false;
+    auto It = NamedTypes.find(Expr.str());
+    if (It == NamedTypes.end())
+      return false;
+    return resolve(It->second->getValueAsString("Expr"), Root, Out, Depth + 1);
+  }
+
+  void collectClasses() {
+    std::vector<const Record *> Types =
+        Records.getAllDerivedDefinitions("LegalizeNamedType");
+    llvm::sort(Types, LessRecordByID());
+
+    std::set<std::tuple<int, unsigned, unsigned>> Seen;
+    for (const Record *T : Types) {
+      SmallVector<TableType, 4> Resolved;
+      SmallVector<TableType, 4> Out;
+      StringRef Expr = T->getValueAsString("Expr");
+      if (!resolve(Expr, T->getName(), Resolved, 0))
+        PrintFatalError(T->getLoc(),
+                        "cannot derive a table type class from '" + Expr + "'");
+      for (const TableType &R : Resolved) {
+        if (R.Kind == TablePtrVector)
+          continue;
+        if (!Seen.insert({R.Kind, R.ElemBits, R.Lanes}).second)
+          continue;
+        Out.push_back(R);
+      }
+      Classes.insert(Classes.end(), Out.begin(), Out.end());
+    }
+
+    auto Rank = [](TableTypeKind K) {
+      switch (K) {
+      case TablePointer:
+        return 0;
+      case TableScalar:
+        return 1;
+      case TableVector:
+        return 2;
+      case TablePtrVector:
+        return 3;
+      }
+      llvm_unreachable("bad table type kind");
+    };
+    llvm::sort(Classes, [&](const TableType &A, const TableType &B) {
+      if (Rank(A.Kind) != Rank(B.Kind))
+        return Rank(A.Kind) < Rank(B.Kind);
+      if (A.ElemBits != B.ElemBits)
+        return A.ElemBits < B.ElemBits;
+      return A.Lanes < B.Lanes;
+    });
+    if (Classes.empty() || Classes.front().Kind != TablePointer)
+      PrintFatalError("a legalizer table needs a pointer type class");
+  }
+
+  static bool hasMemDescArg(const Record &Rule) {
+    for (const Record *Arg : Rule.getValueAsListOfDefs("Args"))
+      if (Arg->isSubClassOf("LegalizeMemDesc"))
+        return true;
+    return false;
+  }
+
+  static bool hasOpaqueEscape(const Record &Rule) {
+    if (!Rule.isSubClassOf("LegalizeOpaqueRule"))
+      return false;
+    StringRef Body = Rule.getValueAsString("OpaqueArgs");
+    return Body.contains("MMODescrs") || Body.contains("Query.Opcode") ||
+           Body.contains("Opcode ==") || Body.contains("Types[2]") ||
+           Body.contains("Types[3]");
+  }
+
+  static bool tabulated(const Record &RuleSet) {
+    for (const Record *Rule : RuleSet.getValueAsListOfDefs("Rules"))
+      if (hasMemDescArg(*Rule) || hasOpaqueEscape(*Rule))
+        return false;
+    return true;
+  }
+
+public:
+  explicit LegalizerTableEmitterImpl(const RecordKeeper &RK) : Records(RK) {
+    for (const Record *T :
+         Records.getAllDerivedDefinitions("LegalizeNamedType"))
+      NamedTypes[T->getName().str()] = T;
+  }
+
+  void run(raw_ostream &OS) {
+    collectClasses();
+
+    std::vector<const Record *> RuleSets =
+        Records.getAllDerivedDefinitions("LegalizeRuleSet");
+    llvm::sort(RuleSets, LessRecordByID());
+    std::vector<const Record *> Tables;
+    for (const Record *RS : RuleSets)
+      if (tabulated(*RS))
+        Tables.push_back(RS);
+
+    std::string P = TablePrefix;
+    std::string Lower = P;
+    if (!Lower.empty())
+      Lower[0] = toLower(Lower[0]);
+
+    OS << "//===-- " << P << "LegalizerTable.inc - generated table data "
+          "-----*- C++ -*-===//\n";
+    OS << "//\n// Generated by llvm-tblgen -gen-legalizer-table.  Do not edit.\n";
+    OS << "//\n//===----------------------------------------------------------------------===//\n\n";
+
+    OS << "static constexpr LegalizerTypeClass " << P
+       << "TypeClasses[] = {\n";
+    for (size_t I = 0; I != Classes.size(); ++I) {
+      const TableType &C = Classes[I];
+      StringRef Kind = C.Kind == TablePointer ? "Kind_Pointer"
+                       : C.Kind == TableScalar ? "Kind_Scalar"
+                                               : "Kind_Vector";
+      OS << "  /*" << I << "*/ {" << Kind << ", " << C.ElemBits << ", "
+         << C.Lanes << "}, // " << C.Name << "\n";
+    }
+    OS << "};\n";
+    OS << "static constexpr unsigned " << P
+       << "NumTypeClasses = sizeof(" << P << "TypeClasses) / sizeof(" << P
+       << "TypeClasses[0]);\n\n";
+
+    OS << "// The key is uniform for now: slots 0 and 1, partitioned by the full "
+          "class list.\n";
+    OS << "// A rule set that needs more than that is not in this table (see "
+          "the emitter).\n";
+    OS << "static constexpr LegalizerTableDesc " << P << "Tables[] = {\n";
+    for (size_t I = 0; I != Tables.size(); ++I)
+      OS << "  /*" << I << "*/ {{0, 1}, {" << Classes.size() << ", "
+         << Classes.size() << "}}, // " << Tables[I]->getName() << "\n";
+    OS << "};\n";
+    OS << "static constexpr unsigned " << P << "NumTables = sizeof(" << P
+       << "Tables) / sizeof(" << P << "Tables[0]);\n\n";
+
+    OS << "static inline int " << Lower << "TableForOpcode(unsigned Opcode) {\n";
+    OS << "  switch (Opcode) {\n";
+    for (size_t I = 0; I != Tables.size(); ++I)
+      for (StringRef Opcode : Tables[I]->getValueAsListOfStrings("Opcodes"))
+        OS << "  case TargetOpcode::" << Opcode << ": return " << I << ";\n";
+    OS << "  default: return -1;\n  }\n}\n";
+  }
+};
+
+} // namespace
+
+class LegalizerTableEmitter {
+  const RecordKeeper &Records;
+
+public:
+  explicit LegalizerTableEmitter(const RecordKeeper &RK) : Records(RK) {}
+  void run(raw_ostream &OS) {
+    LegalizerTableEmitterImpl(Records).run(OS);
+  }
+};
+
+static TableGen::Emitter::OptClass<LegalizerTableEmitter>
+    XTable("gen-legalizer-table",
+           "Emit the GlobalISel legalizer table data");
+
 static TableGen::Emitter::OptClass<LegalizerInfoEmitter>
     X("gen-legalizer", "Generate GlobalISel legalizer rule fragments");
 

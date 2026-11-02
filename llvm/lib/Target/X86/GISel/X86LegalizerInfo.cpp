@@ -56,20 +56,13 @@ X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI,
 
   verify(*STI.getInstrInfo());
 
+  const unsigned PointerBits = STI.isTarget64BitLP64() ? 64 : 32;
   if (X86GISelTable)
-    setTable(std::make_unique<X86LegalizerTable>(*this));
+    setTable(std::make_unique<X86LegalizerTable>(*this, PointerBits));
 
   if (X86GISelTableCheck) {
-    // The enumerated domain is derived from the 64-bit rule set; asking the
-    // 32-bit chain those questions can reach mutations that are invalid for
-    // pointer types.  A per-subtarget domain will come with the generated
-    // table; until then, do not run the check where it does not apply.
-    if (!STI.is64Bit())
-      errs() << "x86-gisel-table-check: no 32-bit domain yet, skipping\n";
-    else {
-      X86LegalizerTable Table(*this);
-      Table.selfCheck(errs());
-    }
+    X86LegalizerTable Table(*this, PointerBits);
+    Table.selfCheck(errs());
   }
 }
 
