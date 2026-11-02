@@ -39,16 +39,9 @@ X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI,
   bool HasCMOV = Subtarget.canUseCMOV();
   bool HasSSE1 = Subtarget.hasSSE1();
   bool HasSSE2 = Subtarget.hasSSE2();
-  bool HasSSE41 = Subtarget.hasSSE41();
   bool HasAVX = Subtarget.hasAVX();
-  bool HasAVX2 = Subtarget.hasAVX2();
   bool HasAVX512 = Subtarget.hasAVX512();
-  bool HasVLX = Subtarget.hasVLX();
-  bool HasDQI = Subtarget.hasAVX512() && Subtarget.hasDQI();
-  bool HasBWI = Subtarget.hasAVX512() && Subtarget.hasBWI();
   bool UseX87 = !Subtarget.useSoftFloat() && Subtarget.hasX87();
-  bool HasLZCNT = Subtarget.hasLZCNT();
-  bool HasBMI = Subtarget.hasBMI();
 
   const LLT p0 = LLT::pointer(0, Subtarget.isTarget64BitLP64() ? 64 : 32);
   const LLT s1 = LLT::scalar(1);
@@ -57,7 +50,6 @@ X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI,
   const LLT s32 = LLT::scalar(32);
   const LLT s64 = LLT::scalar(64);
   const LLT s80 = LLT::scalar(80);
-  const LLT s128 = LLT::scalar(128);
   const LLT sMaxScalar = Subtarget.is64Bit() ? s64 : s32;
   const LLT v2s32 = LLT::fixed_vector(2, 32);
   const LLT v4s8 = LLT::fixed_vector(4, 8);
@@ -83,38 +75,6 @@ X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI,
   const LLT s16MaxVector = HasAVX512 ? v32s16 : HasAVX ? v16s16 : v8s16;
   const LLT s32MaxVector = HasAVX512 ? v16s32 : HasAVX ? v8s32 : v4s32;
   const LLT s64MaxVector = HasAVX512 ? v8s64 : HasAVX ? v4s64 : v2s64;
-
-  // todo: AVX512 bool vector predicate types
-
-  // implicit/constants
-  // 32/64-bits needs support for s64/s128 to handle cases:
-  // s64 = EXTEND (G_IMPLICIT_DEF s32) -> s64 = G_IMPLICIT_DEF
-  // s128 = EXTEND (G_IMPLICIT_DEF s32/s64) -> s128 = G_IMPLICIT_DEF
-  getActionDefinitionsBuilder(
-      {G_IMPLICIT_DEF, G_PHI, G_FREEZE, G_CONSTANT_FOLD_BARRIER})
-      .legalFor({p0, s1, s8, s16, s32, s64})
-      .legalFor(UseX87, {s80})
-      .legalFor(Is64Bit, {s128})
-      .legalFor(HasSSE2, {v16s8, v8s16, v4s32, v2s64})
-      .legalFor(HasAVX, {v32s8, v16s16, v8s32, v4s64})
-      .legalFor(HasAVX512, {v64s8, v32s16, v16s32, v8s64})
-      .widenScalarOrEltToNextPow2(0, /*Min=*/8)
-      .clampScalarOrElt(0, s8, sMaxScalar)
-      .moreElementsToNextPow2(0)
-      .clampNumElements(0, v16s8, s8MaxVector)
-      .clampNumElements(0, v8s16, s16MaxVector)
-      .clampNumElements(0, v4s32, s32MaxVector)
-      .clampNumElements(0, v2s64, s64MaxVector)
-      .clampMaxNumElements(0, p0,
-                           Is64Bit ? s64MaxVector.getNumElements()
-                                   : s32MaxVector.getNumElements())
-      .scalarizeIf(scalarOrEltWiderThan(0, 64), 0);
-
-  getActionDefinitionsBuilder(G_CONSTANT)
-      .legalFor({p0, s8, s16, s32})
-      .legalFor(Is64Bit, {s64})
-      .widenScalarToNextPow2(0, /*Min=*/8)
-      .clampScalar(0, s8, sMaxScalar);
 
   getActionDefinitionsBuilder({G_LROUND, G_LLROUND})
       .widenScalarIf(typeIs(1, s16),
@@ -143,147 +103,6 @@ X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI,
   getActionDefinitionsBuilder({G_GET_ROUNDING, G_SET_ROUNDING})
       .customFor({s32});
 
-  // merge/unmerge
-  for (unsigned Op : {G_MERGE_VALUES, G_UNMERGE_VALUES}) {
-    unsigned BigTyIdx = Op == G_MERGE_VALUES ? 0 : 1;
-    unsigned LitTyIdx = Op == G_MERGE_VALUES ? 1 : 0;
-    getActionDefinitionsBuilder(Op)
-        .widenScalarToNextPow2(LitTyIdx, /*Min=*/8)
-        .widenScalarToNextPow2(BigTyIdx, /*Min=*/16)
-        .minScalar(LitTyIdx, s8)
-        .minScalar(BigTyIdx, s32)
-        .legalIf([=](const LegalityQuery &Q) {
-          switch (Q.Types[BigTyIdx].getSizeInBits()) {
-          case 16:
-          case 32:
-          case 64:
-          case 128:
-          case 256:
-          case 512:
-            break;
-          default:
-            return false;
-          }
-          switch (Q.Types[LitTyIdx].getSizeInBits()) {
-          case 8:
-          case 16:
-          case 32:
-          case 64:
-          case 128:
-          case 256:
-            return true;
-          default:
-            return false;
-          }
-        });
-  }
-
-  getActionDefinitionsBuilder({G_UMIN, G_UMAX, G_SMIN, G_SMAX})
-      .widenScalarToNextPow2(0, /*Min=*/32)
-      .lower();
-
-  // integer addition/subtraction
-  getActionDefinitionsBuilder({G_ADD, G_SUB})
-      .legalFor({s8, s16, s32})
-      .legalFor(Is64Bit, {s64})
-      .legalFor(HasSSE2, {v16s8, v8s16, v4s32, v2s64})
-      .legalFor(HasAVX2, {v32s8, v16s16, v8s32, v4s64})
-      .legalFor(HasAVX512, {v16s32, v8s64})
-      .legalFor(HasBWI, {v64s8, v32s16})
-      .clampMinNumElements(0, s8, 16)
-      .clampMinNumElements(0, s16, 8)
-      .clampMinNumElements(0, s32, 4)
-      .clampMinNumElements(0, s64, 2)
-      .clampMaxNumElements(0, s8, HasBWI ? 64 : (HasAVX2 ? 32 : 16))
-      .clampMaxNumElements(0, s16, HasBWI ? 32 : (HasAVX2 ? 16 : 8))
-      .clampMaxNumElements(0, s32, HasAVX512 ? 16 : (HasAVX2 ? 8 : 4))
-      .clampMaxNumElements(0, s64, HasAVX512 ? 8 : (HasAVX2 ? 4 : 2))
-      .widenScalarToNextPow2(0, /*Min=*/32)
-      .clampScalar(0, s8, sMaxScalar)
-      .scalarize(0);
-
-  getActionDefinitionsBuilder({G_UADDE, G_UADDO, G_USUBE, G_USUBO})
-      .legalFor({{s8, s8}, {s16, s8}, {s32, s8}})
-      .legalFor(Is64Bit, {{s64, s8}})
-      .widenScalarToNextPow2(0, /*Min=*/32)
-      .clampScalar(0, s8, sMaxScalar)
-      .clampScalar(1, s8, s8)
-      .scalarize(0);
-
-  // integer multiply
-  getActionDefinitionsBuilder(G_MUL)
-      .legalFor({s8, s16, s32})
-      .legalFor(Is64Bit, {s64})
-      .legalFor(HasSSE2, {v8s16})
-      .legalFor(HasSSE41, {v4s32})
-      .legalFor(HasAVX2, {v16s16, v8s32})
-      .legalFor(HasAVX512, {v16s32})
-      .legalFor(HasDQI, {v8s64})
-      .legalFor(HasDQI && HasVLX, {v2s64, v4s64})
-      .legalFor(HasBWI, {v32s16})
-      .clampMinNumElements(0, s16, 8)
-      .clampMinNumElements(0, s32, 4)
-      .clampMinNumElements(0, s64, HasVLX ? 2 : 8)
-      .clampMaxNumElements(0, s16, HasBWI ? 32 : (HasAVX2 ? 16 : 8))
-      .clampMaxNumElements(0, s32, HasAVX512 ? 16 : (HasAVX2 ? 8 : 4))
-      .clampMaxNumElements(0, s64, 8)
-      .widenScalarToNextPow2(0, /*Min=*/32)
-      .clampScalar(0, s8, sMaxScalar)
-      .scalarize(0);
-
-  getActionDefinitionsBuilder({G_SMULH, G_UMULH})
-      .legalFor({s8, s16, s32})
-      .legalFor(Is64Bit, {s64})
-      .widenScalarToNextPow2(0, /*Min=*/32)
-      .clampScalar(0, s8, sMaxScalar)
-      .scalarize(0);
-
-  // integer divisions
-  getActionDefinitionsBuilder({G_SDIV, G_SREM, G_UDIV, G_UREM})
-      .legalFor({s8, s16, s32})
-      .legalFor(Is64Bit, {s64})
-      .libcallFor({s64})
-      .clampScalar(0, s8, sMaxScalar);
-
-  // integer shifts
-  getActionDefinitionsBuilder({G_SHL, G_LSHR, G_ASHR})
-      .legalFor({{s8, s8}, {s16, s8}, {s32, s8}})
-      .legalFor(Is64Bit, {{s64, s8}})
-      .clampScalar(0, s8, sMaxScalar)
-      .clampScalar(1, s8, s8);
-
-  // integer logic
-  getActionDefinitionsBuilder({G_AND, G_OR, G_XOR})
-      .legalFor({s8, s16, s32})
-      .legalFor(Is64Bit, {s64})
-      .legalFor(HasSSE2, {v16s8, v8s16, v4s32, v2s64})
-      .legalFor(HasAVX, {v32s8, v16s16, v8s32, v4s64})
-      .legalFor(HasAVX512, {v64s8, v32s16, v16s32, v8s64})
-      .clampNumElements(0, v16s8, s8MaxVector)
-      .clampNumElements(0, v8s16, s16MaxVector)
-      .clampNumElements(0, v4s32, s32MaxVector)
-      .clampNumElements(0, v2s64, s64MaxVector)
-      .widenScalarToNextPow2(0, /*Min=*/32)
-      .clampScalar(0, s8, sMaxScalar)
-      .scalarize(0);
-
-  // integer comparison
-  const std::initializer_list<LLT> IntTypes32 = {s8, s16, s32, p0};
-  const std::initializer_list<LLT> IntTypes64 = {s8, s16, s32, s64, p0};
-
-  getActionDefinitionsBuilder(G_ICMP)
-      .legalForCartesianProduct({s8}, Is64Bit ? IntTypes64 : IntTypes32)
-      .clampScalar(0, s8, s8)
-      .widenScalarToNextPow2(1, /*Min=*/8)
-      .clampScalar(1, s8, sMaxScalar);
-
-  // bswap
-  getActionDefinitionsBuilder(G_BSWAP)
-      .legalFor({s32})
-      .legalFor(Is64Bit, {s64})
-      .widenScalarToNextPow2(0, /*Min=*/32)
-      .clampScalar(0, s32, sMaxScalar);
-
   // The rule sets converted so far.  -gen-legalizer emits the vocabulary they
   // use as declarations as well as the chains themselves; the block scope keeps
   // those declarations from colliding with the locals above, which the chains
@@ -291,55 +110,6 @@ X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI,
   {
 #include "X86LegalizerInfo.inc"
   }
-
-  // count leading zeros (LZCNT)
-  getActionDefinitionsBuilder(G_CTLZ)
-      .legalFor(HasLZCNT, {{s16, s16}, {s32, s32}})
-      .legalFor(HasLZCNT && Is64Bit, {{s64, s64}})
-      .widenScalarToNextPow2(1, /*Min=*/16)
-      .clampScalar(1, s16, sMaxScalar)
-      .scalarSameSizeAs(0, 1);
-
-  // count trailing zeros
-  getActionDefinitionsBuilder(G_CTTZ_ZERO_POISON)
-      .legalFor({{s16, s16}, {s32, s32}})
-      .legalFor(Is64Bit, {{s64, s64}})
-      .widenScalarToNextPow2(1, /*Min=*/16)
-      .clampScalar(1, s16, sMaxScalar)
-      .scalarSameSizeAs(0, 1);
-
-  getActionDefinitionsBuilder(G_CTTZ)
-      .legalFor(HasBMI, {{s16, s16}, {s32, s32}})
-      .legalFor(HasBMI && Is64Bit, {{s64, s64}})
-      .widenScalarToNextPow2(1, /*Min=*/16)
-      .clampScalar(1, s16, sMaxScalar)
-      .scalarSameSizeAs(0, 1);
-
-  getActionDefinitionsBuilder(G_BR).alwaysLegal();
-  getActionDefinitionsBuilder(G_BRCOND).legalFor({s1});
-
-  // pointer handling
-  const std::initializer_list<LLT> PtrTypes32 = {s1, s8, s16, s32};
-  const std::initializer_list<LLT> PtrTypes64 = {s1, s8, s16, s32, s64};
-
-  getActionDefinitionsBuilder(G_PTRTOINT)
-      .legalForCartesianProduct(Is64Bit ? PtrTypes64 : PtrTypes32, {p0})
-      .maxScalar(0, sMaxScalar)
-      .widenScalarToNextPow2(0, /*Min*/ 8);
-
-  getActionDefinitionsBuilder(G_INTTOPTR).legalFor({{p0, sMaxScalar}});
-
-  getActionDefinitionsBuilder(G_CONSTANT_POOL).legalFor({p0});
-
-  getActionDefinitionsBuilder(G_PTR_ADD)
-      .legalFor({{p0, s32}})
-      .legalFor(Is64Bit, {{p0, s64}})
-      .widenScalarToNextPow2(1, /*Min*/ 32)
-      .clampScalar(1, s32, sMaxScalar);
-
-  getActionDefinitionsBuilder(G_FRAME_INDEX).legalFor({p0});
-
-  getActionDefinitionsBuilder(G_GLOBAL_VALUE).customFor({p0});
 
   // load/store: add more corner cases
   for (unsigned Op : {G_LOAD, G_STORE}) {
@@ -407,30 +177,6 @@ X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI,
     Action.legalForTypesWithMemDesc(
         UseX87, {{s80, p0, s32, 1}, {s80, p0, s64, 1}, {s64, p0, s32, 1}});
   }
-
-  // sext, zext, and anyext
-  getActionDefinitionsBuilder(G_ANYEXT)
-      .legalFor({s8, s16, s32, s128})
-      .legalFor(Is64Bit, {s64})
-      .widenScalarToNextPow2(0, /*Min=*/8)
-      .clampScalar(0, s8, sMaxScalar)
-      .widenScalarToNextPow2(1, /*Min=*/8)
-      .clampScalar(1, s8, sMaxScalar)
-      .scalarize(0);
-
-  getActionDefinitionsBuilder({G_SEXT, G_ZEXT})
-      .legalFor({s8, s16, s32})
-      .legalFor(Is64Bit, {s64})
-      .widenScalarToNextPow2(0, /*Min=*/8)
-      .clampScalar(0, s8, sMaxScalar)
-      .widenScalarToNextPow2(1, /*Min=*/8)
-      .clampScalar(1, s8, sMaxScalar)
-      .scalarize(0);
-
-  getActionDefinitionsBuilder(G_TRUNC).legalForCartesianProduct(
-      {s1, s8, s16, s32, s64}, {s8, s16, s32, s64, s128});
-
-  getActionDefinitionsBuilder(G_SEXT_INREG).lower();
 
   // fp constants
   getActionDefinitionsBuilder(G_FCONSTANT)
