@@ -2093,6 +2093,142 @@ class LegalizerTableEmitterImpl {
     return true;
   }
 
+  /// C++ spelling of a resolved class.  The pointer width is a parameter of
+  /// the generated collector, not a constant: the same domain is asked on
+  /// 32- and 64-bit subtargets.
+  static std::string render(const TableType &T) {
+    switch (T.Kind) {
+    case TablePointer:
+      return "LLT::pointer(0, PointerBits)";
+    case TableScalar:
+      return "LLT::scalar(" + std::to_string(T.ElemBits) + ")";
+    case TableVector:
+      return "LLT::fixed_vector(" + std::to_string(T.Lanes) + ", " +
+             std::to_string(T.ElemBits) + ")";
+    case TablePtrVector:
+      return "LLT::fixed_vector(" + std::to_string(T.Lanes) +
+             ", LLT::pointer(0, PointerBits))";
+    }
+    llvm_unreachable("bad table type kind");
+  }
+
+  /// Type tuples a rule names as a complete query shape.  A builder that takes
+  /// two separate type arguments (ClampScalar's bounds) names bounds, not a
+  /// query, so only list/pair/memdesc arguments are used.
+  void collectRuleTuples(const Record &Rule,
+                         std::vector<std::vector<TableType>> &Out) {
+    std::vector<const Record *> Args = Rule.getValueAsListOfDefs("Args");
+    // A builder that takes a slot index treats its type arguments as bounds
+    // (ClampScalar<0, s8, sMaxScalar>), not as a query shape.  Without an
+    // index, a list of types is a legalFor-style group and each type is one
+    // unary query.
+    bool HasIndex = false;
+    for (const Record *Arg : Args)
+      if (Arg->isSubClassOf("LegalizeArgIndex"))
+        HasIndex = true;
+
+    auto ResolveOne = [&](const Record &R, std::vector<TableType> &Tys) {
+      StringRef Expr = R.isSubClassOf("LegalizeInlineType")
+                           ? R.getValueAsString("Text")
+                           : R.getValueAsString("Expr");
+      SmallVector<TableType, 2> Resolved;
+      if (!resolve(Expr, R.getName(), Resolved, 0))
+        PrintFatalError(R.getLoc(), "cannot resolve '" + Expr +
+                                        "' for the table domain");
+      Tys.insert(Tys.end(), Resolved.begin(), Resolved.end());
+    };
+
+    // Expand a list-shaped argument: a named/inline list, or a choice between
+    // two named lists.
+    std::function<void(const Record &, std::vector<TableType> &)> ExpandList =
+        [&](const Record &List, std::vector<TableType> &L) {
+          if (List.isSubClassOf("LegalizeTypeListChoice")) {
+            StringRef Text = List.getValueAsString("Text");
+            StringRef Then, Else;
+            SmallVector<StringRef, 2> Branches;
+            if (splitConditional(Text, Then, Else)) {
+              Branches.push_back(Then.trim());
+              Branches.push_back(Else.trim());
+            } else {
+              Branches.push_back(Text.trim());
+            }
+            for (StringRef B : Branches) {
+              const Record *R = Records.getDef(B);
+              if (!R || !R->isSubClassOf("LegalizeNamedTypeList"))
+                PrintFatalError(List.getLoc(),
+                                "cannot resolve type list '" + B + "'");
+              ExpandList(*R, L);
+            }
+            return;
+          }
+          for (const Record *E : List.getValueAsListOfDefs("Elems")) {
+            std::vector<TableType> Tys;
+            ResolveOne(*E, Tys);
+            L.insert(L.end(), Tys.begin(), Tys.end());
+          }
+        };
+
+    // legalForCartesianProduct({a, b}, {c}) is a pair query, not two unary
+    // ones: each argument list contributes one slot.
+    if (builderName(Rule) == "legalForCartesianProduct") {
+      std::vector<std::vector<TableType>> Lists;
+      for (const Record *Arg : Args) {
+        if (!Arg->isSubClassOf("LegalizeNamedTypeList") &&
+            !Arg->isSubClassOf("LegalizeInlineTypeList") &&
+            !Arg->isSubClassOf("LegalizeTypeListChoice"))
+          continue;
+        std::vector<TableType> L;
+        ExpandList(*Arg, L);
+        if (!L.empty())
+          Lists.push_back(std::move(L));
+      }
+      std::vector<TableType> Cur;
+      std::function<void(size_t)> Product = [&](size_t I) {
+        if (I == Lists.size()) {
+          Out.push_back(Cur);
+          return;
+        }
+        for (const TableType &T : Lists[I]) {
+          Cur.push_back(T);
+          Product(I + 1);
+          Cur.pop_back();
+        }
+      };
+      Product(0);
+      return;
+    }
+
+    for (const Record *Arg : Args) {
+      if (Arg->isSubClassOf("LegalizeNamedTypeList") ||
+          Arg->isSubClassOf("LegalizeInlineTypeList") ||
+          Arg->isSubClassOf("LegalizeTypeListChoice")) {
+        std::vector<TableType> L;
+        ExpandList(*Arg, L);
+        for (const TableType &T : L)
+          Out.push_back({T});
+      } else if (Arg->isSubClassOf("LegalizeTypePair")) {
+        std::vector<TableType> Ty;
+        ResolveOne(*Arg->getValueAsDef("Type0"), Ty);
+        ResolveOne(*Arg->getValueAsDef("Type1"), Ty);
+        Out.push_back(Ty);
+      } else if (Arg->isSubClassOf("LegalizeMemDesc")) {
+        // The memory type is part of MMODescr, not of Types; the query shape
+        // the reader sees is (value, pointer).
+        std::vector<TableType> Ty;
+        ResolveOne(*Arg->getValueAsDef("Type0"), Ty);
+        ResolveOne(*Arg->getValueAsDef("Type1"), Ty);
+        Out.push_back(Ty);
+      } else if (!HasIndex &&
+                 (Arg->isSubClassOf("LegalizeNamedType") ||
+                  Arg->isSubClassOf("LegalizeInlineType"))) {
+        std::vector<TableType> Ty;
+        ResolveOne(*Arg, Ty);
+        for (const TableType &T : Ty)
+          Out.push_back({T});
+      }
+    }
+  }
+
 public:
   explicit LegalizerTableEmitterImpl(const RecordKeeper &RK) : Records(RK) {
     for (const Record *T :
@@ -2155,6 +2291,157 @@ public:
         OS << "  case TargetOpcode::" << Opcode << ": return " << I << ";\n";
     OS << "  default: return -1;\n  }\n}\n";
   }
+
+  /// Slots a predicate, an opaque body or a mutation index names.  The table
+  /// key is only sound if the domain has the same arity as the guards, so a
+  /// rule that reads slot 1 must not be probed with a one-type query.
+  static void scanSlots(StringRef S, unsigned &Arity) {
+    for (size_t I = 0; I + 2 < S.size(); ++I) {
+      if (S[I] != '(')
+        continue;
+      size_t J = I + 1;
+      while (J < S.size() && isSpace(S[J]))
+        ++J;
+      if (J >= S.size() || !isDigit(S[J]))
+        continue;
+      unsigned V = 0;
+      while (J < S.size() && isDigit(S[J]))
+        V = V * 10 + (S[J++] - '0');
+      while (J < S.size() && isSpace(S[J]))
+        ++J;
+      if (J < S.size() && S[J] == ',')
+        Arity = std::max(Arity, V + 1);
+    }
+    for (size_t P = S.find("Types["); P != StringRef::npos;
+         P = S.find("Types[", P + 1)) {
+      size_t J = P + 6;
+      unsigned V = 0;
+      while (J < S.size() && isDigit(S[J]))
+        V = V * 10 + (S[J++] - '0');
+      Arity = std::max(Arity, V + 1);
+    }
+  }
+
+  static void scanPredicate(const Record *P, unsigned &Arity) {
+    if (!P)
+      return;
+    if (P->isSubClassOf("LegalizeTypePredicate"))
+      scanSlots(P->getValueAsString("Call"), Arity);
+    else if (P->isSubClassOf("LegalizeQueryPredicate"))
+      scanSlots(P->getValueAsString("Expr"), Arity);
+    if (P->isSubClassOf("LegalizeQueryPredicateDag") ||
+        P->isSubClassOf("LegalizePredicateDag")) {
+      std::function<void(const Init *)> Walk = [&](const Init *I) {
+        if (const auto *D = dyn_cast<DagInit>(I)) {
+          for (const Init *Arg : D->getArgs())
+            Walk(Arg);
+          return;
+        }
+        if (const auto *Def = dyn_cast<DefInit>(I))
+          if (Def->getDef() != P)
+            scanPredicate(Def->getDef(), Arity);
+      };
+      Walk(P->getValueAsDag("CondDag"));
+    }
+  }
+
+  unsigned arityOf(const Record &RuleSet) {
+    unsigned Arity = 1;
+    for (const Record *Rule : RuleSet.getValueAsListOfDefs("Rules")) {
+      for (const Record *Arg : Rule->getValueAsListOfDefs("Args"))
+        if (Arg->isSubClassOf("LegalizeArgIndex"))
+          Arity = std::max(Arity, unsigned(Arg->getValueAsInt("Value") + 1));
+      scanPredicate(Rule->getValueAsOptionalDef("Pred"), Arity);
+      scanSlots(Rule->getValueAsString("OpaqueArgs"), Arity);
+    }
+    return std::min(Arity, 3u);
+  }
+
+  void runPoints(raw_ostream &OS) {
+    std::vector<const Record *> RuleSets =
+        Records.getAllDerivedDefinitions("LegalizeRuleSet");
+    llvm::sort(RuleSets, LessRecordByID());
+
+    struct DomainPoint {
+      std::string Text;
+      unsigned NumTypes;
+    };
+
+    // Opcode -> distinct query shapes, in first-seen order.
+    std::vector<std::string> Opcodes;
+    std::map<std::string, std::vector<DomainPoint>> Points;
+    std::map<std::string, std::set<std::string>> Seen;
+
+    for (const Record *RS : RuleSets) {
+      // The domain is the domain of the emitted table: asking the chain a
+      // question the table deliberately does not answer adds no evidence.
+      if (!tabulated(*RS))
+        continue;
+
+      unsigned Arity = arityOf(*RS);
+      std::vector<std::vector<TableType>> Tuples;
+      for (const Record *Rule : RS->getValueAsListOfDefs("Rules"))
+        collectRuleTuples(*Rule, Tuples);
+      for (const std::vector<TableType> &Tuple : Tuples)
+        Arity = std::max(Arity, unsigned(Tuple.size()));
+
+      TableType Ptr{TablePointer, 0, 1, "p0"};
+      for (StringRef Opcode : RS->getValueAsListOfStrings("Opcodes")) {
+        std::string Op = Opcode.str();
+        if (!Seen.count(Op))
+          Opcodes.push_back(Op);
+        auto &List = Points[Op];
+        auto &SeenSet = Seen[Op];
+        auto Add = [&](const std::vector<TableType> &Tuple) {
+          if (Tuple.empty() || Tuple.size() > 3)
+            return;
+          std::string Key;
+          for (const TableType &T : Tuple)
+            Key += render(T) + "|";
+          if (!SeenSet.insert(Key).second)
+            return;
+          std::string S = "{";
+          for (size_t I = 0; I != 3; ++I) {
+            if (I)
+              S += ", ";
+            S += I < Tuple.size() ? render(Tuple[I]) : "LLT()";
+          }
+          S += "}";
+          List.push_back({S, static_cast<unsigned>(Tuple.size())});
+        };
+
+        // Every opcode gets a pointer probe with the arity of its guards: the
+        // pointer class is the one class whose width is not in the .td.
+        Add(std::vector<TableType>(Arity, Ptr));
+        for (const std::vector<TableType> &Tuple : Tuples)
+          if (Tuple.size() == Arity)
+            Add(Tuple);
+      }
+    }
+
+    unsigned Total = 0;
+    for (StringRef Op : Opcodes)
+      Total += Points[Op.str()].size();
+
+    std::string P = TablePrefix;
+    std::string Lower = P;
+    if (!Lower.empty())
+      Lower[0] = toLower(Lower[0]);
+    OS << "//===-- " << P << "LegalizerTablePoints.inc - generated domain "
+          "-----*- C++ -*-===//\n";
+    OS << "//\n// Generated by llvm-tblgen -gen-legalizer-table-points.  Do not "
+          "edit.\n";
+    OS << "//\n//===----------------------------------------------------------------------===//\n\n";
+    OS << "static constexpr unsigned " << P << "NumTablePoints = " << Total
+       << ";\n\n";
+    OS << "static void " << Lower << "CollectTablePoints(SmallVectorImpl<" << P
+       << "TablePoint> &Out, unsigned PointerBits) {\n";
+    for (StringRef Op : Opcodes)
+      for (const DomainPoint &P : Points[Op.str()])
+        OS << "  Out.push_back({TargetOpcode::" << Op << ", \"" << Op << "\", "
+           << P.NumTypes << ", " << P.Text << "});\n";
+    OS << "}\n";
+  }
 };
 
 } // namespace
@@ -2172,6 +2459,20 @@ public:
 static TableGen::Emitter::OptClass<LegalizerTableEmitter>
     XTable("gen-legalizer-table",
            "Emit the GlobalISel legalizer table data");
+
+class LegalizerTablePointsEmitter {
+  const RecordKeeper &Records;
+
+public:
+  explicit LegalizerTablePointsEmitter(const RecordKeeper &RK) : Records(RK) {}
+  void run(raw_ostream &OS) {
+    LegalizerTableEmitterImpl(Records).runPoints(OS);
+  }
+};
+
+static TableGen::Emitter::OptClass<LegalizerTablePointsEmitter>
+    XTablePoints("gen-legalizer-table-points",
+                 "Emit the GlobalISel legalizer table domain");
 
 static TableGen::Emitter::OptClass<LegalizerInfoEmitter>
     X("gen-legalizer", "Generate GlobalISel legalizer rule fragments");
