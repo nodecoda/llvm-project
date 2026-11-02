@@ -41,15 +41,19 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SHA256.h"
 #include "llvm/Support/TargetSelect.h"
+#include "llvm/Support/VCSRevision.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/TargetParser/Triple.h"
 #include "gtest/gtest.h"
 #include <algorithm>
+#include <array>
+#include <cstdlib>
 #include <map>
 #include <optional>
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 using namespace llvm;
@@ -303,6 +307,21 @@ static Sigma makeSigma(const Config &C) {
   return S;
 }
 
+// LegalizeAction::Lower and Libcall carry no type argument; treating their
+// (unused) NewType as a decision field would compare uninitialized data.
+static bool actionCarriesType(LegalizeAction Action) {
+  switch (Action) {
+  case Legal:
+  case Unsupported:
+  case Custom:
+  case Lower:
+  case Libcall:
+    return false;
+  default:
+    return true;
+  }
+}
+
 // The comparison predicate.  It must be sensitive to all three fields:
 // comparing only the action would miss a table that widens to the wrong type,
 // and comparing only the mutation would miss a table that legalizes where the
@@ -311,7 +330,7 @@ static bool stepsAgree(const LegalizeActionStep &A,
                        const LegalizeActionStep &B) {
   if (A.Action != B.Action)
     return false;
-  if (A.Action == Legal || A.Action == Unsupported || A.Action == Custom)
+  if (!actionCarriesType(A.Action))
     return true;
   return A.TypeIdx == B.TypeIdx && A.NewType == B.NewType;
 }
@@ -337,7 +356,7 @@ static std::string describe(const LegalizeActionStep &S) {
   std::string Out;
   raw_string_ostream OS(Out);
   OS << S.Action;
-  if (S.Action != Legal && S.Action != Unsupported && S.Action != Custom)
+  if (actionCarriesType(S.Action))
     OS << " idx=" << S.TypeIdx << " to=" << shortLLT(S.NewType);
   return OS.str();
 }
@@ -553,6 +572,137 @@ static uint64_t alignForClass(unsigned Class) {
   return Class == 0 ? 0 : X86TestAlignThresholds[Class - 1];
 }
 
+// The axes the domain enumeration walks.  They come from the metadata the
+// rule-index backend emits, never from a copy of the table.
+struct TableDomainAxis {
+  std::vector<LLT> Classes;
+  std::vector<LLT> MemClasses;
+  LLT P0;
+  LLT P1;
+  LLT P2;
+  LLT V2P1;
+  LLT V4P1;
+};
+
+static TableDomainAxis tableDomainAxis(unsigned PointerBits) {
+  TableDomainAxis A;
+  A.Classes = typeClassReps(PointerBits);
+  A.MemClasses = memClassReps(PointerBits);
+  A.P0 = A.Classes.front();
+  A.P1 = LLT::pointer(1, PointerBits);
+  A.P2 = LLT::pointer(2, PointerBits);
+  A.V2P1 = LLT::fixed_vector(2, A.P1);
+  A.V4P1 = LLT::fixed_vector(4, A.P1);
+  return A;
+}
+
+// Class-pair breadth.  A memory rule set adds the descriptor axis, so its
+// second type slot cycles the class list too; the query shape is the one the
+// table's descriptor keys.
+template <typename Sink>
+static void enumerateClassPairPoints(const X86TestTable &T,
+                                     const TableDomainAxis &A, Sink &&Emit) {
+  if (T.HasMem) {
+    for (const LLT &Value : A.Classes)
+      for (const LLT &Other : A.Classes)
+        for (const LLT &Mem : A.MemClasses)
+          for (unsigned Align = 0; Align != X86TestNumAlignClasses; ++Align)
+            Emit(ArrayRef<LLT>({Value, Other}), true, Mem,
+                 alignForClass(Align));
+  } else if (T.NumSlots == 1) {
+    for (const LLT &Ty : A.Classes)
+      Emit(ArrayRef<LLT>({Ty}), false, LLT{}, 0);
+  } else {
+    for (const LLT &L : A.Classes)
+      for (const LLT &R : A.Classes)
+        Emit(ArrayRef<LLT>({L, R}), false, LLT{}, 0);
+  }
+}
+
+// Boundary depth: the panel in slot 0 for a one-slot rule set, and in both
+// directions for a two-slot one.  A memory rule set alternates the panel
+// between the value type and the descriptor's memory type.
+template <typename Sink>
+static void enumerateBoundaryPoints(const X86TestTable &T,
+                                    const TableDomainAxis &A, Sink &&Emit) {
+  const ArrayRef<LLT> Boundary = boundaryPanel();
+  if (T.HasMem) {
+    for (const LLT &C : A.Classes)
+      for (const LLT &B : Boundary)
+        for (unsigned Align = 0; Align != X86TestNumAlignClasses; ++Align) {
+          Emit(ArrayRef<LLT>({C, A.P0}), true, B, alignForClass(Align));
+          Emit(ArrayRef<LLT>({B, A.P0}), true, C, alignForClass(Align));
+        }
+  } else if (T.NumSlots == 1) {
+    for (const LLT &B : Boundary)
+      Emit(ArrayRef<LLT>({B}), false, LLT{}, 0);
+  } else {
+    for (const LLT &C : A.Classes)
+      for (const LLT &B : Boundary) {
+        Emit(ArrayRef<LLT>({C, B}), false, LLT{}, 0);
+        Emit(ArrayRef<LLT>({B, C}), false, LLT{}, 0);
+      }
+  }
+}
+
+// Scalar address-space points.  A non-zero AS is answered by the evaluator on
+// the original query, so it is a domain point even though the table's key
+// folds every pointer to p0.
+template <typename Sink>
+static void enumerateScalarASPoints(const X86TestTable &T,
+                                    const TableDomainAxis &A, Sink &&Emit) {
+  const uint64_t Alignment = alignForClass(1);
+  if (T.HasMem) {
+    // slot 0
+    Emit(ArrayRef<LLT>({A.P1, A.P0}), true, A.P0, Alignment);
+    Emit(ArrayRef<LLT>({A.P2, A.P0}), true, A.P0, Alignment);
+    // slot 1
+    Emit(ArrayRef<LLT>({A.P0, A.P1}), true, A.P0, Alignment);
+    Emit(ArrayRef<LLT>({A.P0, A.P2}), true, A.P0, Alignment);
+    // value AS x memory AS
+    Emit(ArrayRef<LLT>({A.P1, A.P0}), true, A.P1, Alignment);
+    Emit(ArrayRef<LLT>({A.P1, A.P0}), true, A.P2, Alignment);
+    Emit(ArrayRef<LLT>({A.P2, A.P0}), true, A.P1, Alignment);
+    Emit(ArrayRef<LLT>({A.P2, A.P0}), true, A.P2, Alignment);
+    // the G_STORE (p0)[mem p1] half
+    Emit(ArrayRef<LLT>({A.P0, A.P0}), true, A.P1, Alignment);
+    Emit(ArrayRef<LLT>({A.P0, A.P0}), true, A.P2, Alignment);
+  } else if (T.NumSlots == 1) {
+    Emit(ArrayRef<LLT>({A.P1}), false, LLT{}, 0);
+    Emit(ArrayRef<LLT>({A.P2}), false, LLT{}, 0);
+  } else {
+    Emit(ArrayRef<LLT>({A.P1, A.P0}), false, LLT{}, 0);
+    Emit(ArrayRef<LLT>({A.P2, A.P0}), false, LLT{}, 0);
+    Emit(ArrayRef<LLT>({A.P0, A.P1}), false, LLT{}, 0);
+    Emit(ArrayRef<LLT>({A.P0, A.P2}), false, LLT{}, 0);
+  }
+}
+
+// Pointer-vector address-space points.
+template <typename Sink>
+static void enumerateVectorASPoints(const X86TestTable &T,
+                                    const TableDomainAxis &A, Sink &&Emit) {
+  const uint64_t Alignment = alignForClass(1);
+  if (T.HasMem) {
+    Emit(ArrayRef<LLT>({A.V2P1, A.P0}), true, A.P0, Alignment);
+    Emit(ArrayRef<LLT>({A.V4P1, A.P0}), true, A.P0, Alignment);
+    Emit(ArrayRef<LLT>({A.P0, A.V2P1}), true, A.P0, Alignment);
+    Emit(ArrayRef<LLT>({A.P0, A.V4P1}), true, A.P0, Alignment);
+    // The per-mem-set vector point is counted separately by the spec even
+    // though it repeats the slot-0 point above.
+    Emit(ArrayRef<LLT>({A.V2P1, A.P0}), true, A.P0, Alignment);
+    Emit(ArrayRef<LLT>({A.V4P1, A.P0}), true, A.P0, Alignment);
+  } else if (T.NumSlots == 1) {
+    Emit(ArrayRef<LLT>({A.V2P1}), false, LLT{}, 0);
+    Emit(ArrayRef<LLT>({A.V4P1}), false, LLT{}, 0);
+  } else {
+    Emit(ArrayRef<LLT>({A.V2P1, A.P0}), false, LLT{}, 0);
+    Emit(ArrayRef<LLT>({A.V4P1, A.P0}), false, LLT{}, 0);
+    Emit(ArrayRef<LLT>({A.P0, A.V2P1}), false, LLT{}, 0);
+    Emit(ArrayRef<LLT>({A.P0, A.V4P1}), false, LLT{}, 0);
+  }
+}
+
 template <typename Sink>
 static void enumerateTableDomain(unsigned Table, unsigned PointerBits,
                                  Sink &&Emit) {
@@ -562,101 +712,89 @@ static void enumerateTableDomain(unsigned Table, unsigned PointerBits,
     ADD_FAILURE() << "no TargetOpcode for " << T.Opcode;
     return;
   }
+  const TableDomainAxis A = tableDomainAxis(PointerBits);
+  enumerateClassPairPoints(
+      T, A, [&](ArrayRef<LLT> Types, bool HasMem, LLT MemTy, uint64_t Align) {
+        Emit(DomainKind::ClassPair, Types, HasMem, MemTy, Align);
+      });
+  enumerateBoundaryPoints(
+      T, A, [&](ArrayRef<LLT> Types, bool HasMem, LLT MemTy, uint64_t Align) {
+        Emit(DomainKind::Boundary, Types, HasMem, MemTy, Align);
+      });
+  enumerateScalarASPoints(
+      T, A, [&](ArrayRef<LLT> Types, bool HasMem, LLT MemTy, uint64_t Align) {
+        Emit(DomainKind::AScalar, Types, HasMem, MemTy, Align);
+      });
+  enumerateVectorASPoints(
+      T, A, [&](ArrayRef<LLT> Types, bool HasMem, LLT MemTy, uint64_t Align) {
+        Emit(DomainKind::ASVector, Types, HasMem, MemTy, Align);
+      });
+}
 
-  const std::vector<LLT> Classes = typeClassReps(PointerBits);
-  const std::vector<LLT> MemClasses = memClassReps(PointerBits);
-  const ArrayRef<LLT> Boundary = boundaryPanel();
-  const LLT P0 = Classes.front();
-  const LLT P1 = LLT::pointer(1, PointerBits);
-  const LLT P2 = LLT::pointer(2, PointerBits);
-  const LLT V2P1 = LLT::fixed_vector(2, P1);
-  const LLT V4P1 = LLT::fixed_vector(4, P1);
-
-  // Class-pair breadth.  A memory rule set adds the descriptor axis, so its
-  // second type slot cycles the class list too; the query shape is the one
-  // the table's descriptor keys.
-  if (T.HasMem) {
-    for (const LLT &Value : Classes)
-      for (const LLT &Other : Classes)
-        for (const LLT &Mem : MemClasses)
-          for (unsigned A = 0; A != X86TestNumAlignClasses; ++A)
-            Emit(DomainKind::ClassPair, ArrayRef<LLT>({Value, Other}), true,
-                 Mem, alignForClass(A));
-  } else if (T.NumSlots == 1) {
-    for (const LLT &Ty : Classes)
-      Emit(DomainKind::ClassPair, ArrayRef<LLT>({Ty}), false, LLT{}, 0);
-  } else {
-    for (const LLT &A : Classes)
-      for (const LLT &B : Classes)
-        Emit(DomainKind::ClassPair, ArrayRef<LLT>({A, B}), false, LLT{}, 0);
+// The witness boundary sample is the reviewed 12-atom panel applied once per
+// rule set -- 63 x 12 = 756 atoms, not a second domain.  A one-slot rule set
+// takes the panel in slot 0; a two-slot one alternates it between the keyed
+// slots; a memory rule set alternates it between the value type and the
+// descriptor's memory type.
+template <typename Sink>
+static void enumerateWitnessBoundaryPanel(const X86TestTable &T,
+                                          const TableDomainAxis &A,
+                                          Sink &&Emit) {
+  const ArrayRef<LLT> Panel = boundaryPanel();
+  const uint64_t Align = alignForClass(1);
+  // The non-panel slot is a class representative, but not p0: X86_CTPOP and
+  // friends end with an unguarded scalarSameSizeAs that would mutate a pointer.
+  // Keeping the representative scalar means every boundary atom is a shape the
+  // reference can answer.
+  const LLT Rep = LLT::scalar(32);
+  for (unsigned I = 0; I != Panel.size(); ++I) {
+    const LLT &B = Panel[I];
+    if (T.HasMem) {
+      if (I % 2 == 0)
+        Emit(I, ArrayRef<LLT>({B, A.P0}), true, Rep, Align);
+      else
+        Emit(I, ArrayRef<LLT>({Rep, A.P0}), true, B, Align);
+    } else if (T.NumSlots == 1) {
+      Emit(I, ArrayRef<LLT>({B}), false, LLT{}, 0);
+    } else if (I % 2 == 0) {
+      Emit(I, ArrayRef<LLT>({B, Rep}), false, LLT{}, 0);
+    } else {
+      Emit(I, ArrayRef<LLT>({Rep, B}), false, LLT{}, 0);
+    }
   }
+}
 
-  // Boundary depth: the panel in slot 0 for a one-slot rule set, and in both
-  // directions for a two-slot one.  A memory rule set alternates the panel
-  // between the value type and the descriptor's memory type.
-  if (T.HasMem) {
-    for (const LLT &C : Classes)
-      for (const LLT &B : Boundary)
-        for (unsigned A = 0; A != X86TestNumAlignClasses; ++A) {
-          Emit(DomainKind::Boundary, ArrayRef<LLT>({C, P0}), true, B,
-               alignForClass(A));
-          Emit(DomainKind::Boundary, ArrayRef<LLT>({B, P0}), true, C,
-               alignForClass(A));
-        }
-  } else if (T.NumSlots == 1) {
-    for (const LLT &B : Boundary)
-      Emit(DomainKind::Boundary, ArrayRef<LLT>({B}), false, LLT{}, 0);
-  } else {
-    for (const LLT &C : Classes)
-      for (const LLT &B : Boundary) {
-        Emit(DomainKind::Boundary, ArrayRef<LLT>({C, B}), false, LLT{}, 0);
-        Emit(DomainKind::Boundary, ArrayRef<LLT>({B, C}), false, LLT{}, 0);
-      }
-  }
+// The witness scalar-AS slice follows the construction in the test spec
+// (slot-0, slot-1, memory cross product and the memory-symmetric half) but
+// keeps the 220-atom budget of the G003 assignment:
+//
+//   220 = 29*2 single-slot + 28*4 double-slot + 6*10 memory
+//         - 5*2 skipped inferred slot-1 points.
+//
+// Five rule sets read slot 1 only through an inferred scalar-width predicate
+// (sizeNotPow2(1) / scalarNarrowerThan(1) / scalarWiderThan(1)); their slot-1
+// AS points are the ten that the full-domain count (230) has and this slice
+// does not.  Their slot-0 AS points are still emitted; the full-domain count
+// stays asserted by DomainCountsMatchSpec.
+static bool skipsWitnessSlot1AS(StringRef RuleSet) {
+  return RuleSet == "X86_MERGE_VALUES" || RuleSet == "X86_UNMERGE_VALUES" ||
+         RuleSet == "X86_ANYEXT" || RuleSet == "X86_SEXT" ||
+         RuleSet == "X86_FCMP";
+}
 
-  // Address-space points.  A non-zero AS is answered by the evaluator on the
-  // original query, so it is a domain point even though the table's key folds
-  // every pointer to p0.
-  const uint64_t Alignment = alignForClass(1);
-  if (T.HasMem) {
-    // slot 0
-    Emit(DomainKind::AScalar, ArrayRef<LLT>({P1, P0}), true, P0, Alignment);
-    Emit(DomainKind::AScalar, ArrayRef<LLT>({P2, P0}), true, P0, Alignment);
-    // slot 1
-    Emit(DomainKind::AScalar, ArrayRef<LLT>({P0, P1}), true, P0, Alignment);
-    Emit(DomainKind::AScalar, ArrayRef<LLT>({P0, P2}), true, P0, Alignment);
-    // value AS x memory AS
-    Emit(DomainKind::AScalar, ArrayRef<LLT>({P1, P0}), true, P1, Alignment);
-    Emit(DomainKind::AScalar, ArrayRef<LLT>({P1, P0}), true, P2, Alignment);
-    Emit(DomainKind::AScalar, ArrayRef<LLT>({P2, P0}), true, P1, Alignment);
-    Emit(DomainKind::AScalar, ArrayRef<LLT>({P2, P0}), true, P2, Alignment);
-    // the G_STORE (p0)[mem p1] half
-    Emit(DomainKind::AScalar, ArrayRef<LLT>({P0, P0}), true, P1, Alignment);
-    Emit(DomainKind::AScalar, ArrayRef<LLT>({P0, P0}), true, P2, Alignment);
-
-    Emit(DomainKind::ASVector, ArrayRef<LLT>({V2P1, P0}), true, P0, Alignment);
-    Emit(DomainKind::ASVector, ArrayRef<LLT>({V4P1, P0}), true, P0, Alignment);
-    Emit(DomainKind::ASVector, ArrayRef<LLT>({P0, V2P1}), true, P0, Alignment);
-    Emit(DomainKind::ASVector, ArrayRef<LLT>({P0, V4P1}), true, P0, Alignment);
-    // The per-mem-set vector point is counted separately by the spec even
-    // though it repeats the slot-0 point above.
-    Emit(DomainKind::ASVector, ArrayRef<LLT>({V2P1, P0}), true, P0, Alignment);
-    Emit(DomainKind::ASVector, ArrayRef<LLT>({V4P1, P0}), true, P0, Alignment);
-  } else if (T.NumSlots == 1) {
-    Emit(DomainKind::AScalar, ArrayRef<LLT>({P1}), false, LLT{}, 0);
-    Emit(DomainKind::AScalar, ArrayRef<LLT>({P2}), false, LLT{}, 0);
-    Emit(DomainKind::ASVector, ArrayRef<LLT>({V2P1}), false, LLT{}, 0);
-    Emit(DomainKind::ASVector, ArrayRef<LLT>({V4P1}), false, LLT{}, 0);
-  } else {
-    Emit(DomainKind::AScalar, ArrayRef<LLT>({P1, P0}), false, LLT{}, 0);
-    Emit(DomainKind::AScalar, ArrayRef<LLT>({P2, P0}), false, LLT{}, 0);
-    Emit(DomainKind::AScalar, ArrayRef<LLT>({P0, P1}), false, LLT{}, 0);
-    Emit(DomainKind::AScalar, ArrayRef<LLT>({P0, P2}), false, LLT{}, 0);
-    Emit(DomainKind::ASVector, ArrayRef<LLT>({V2P1, P0}), false, LLT{}, 0);
-    Emit(DomainKind::ASVector, ArrayRef<LLT>({V4P1, P0}), false, LLT{}, 0);
-    Emit(DomainKind::ASVector, ArrayRef<LLT>({P0, V2P1}), false, LLT{}, 0);
-    Emit(DomainKind::ASVector, ArrayRef<LLT>({P0, V4P1}), false, LLT{}, 0);
-  }
+template <typename Sink>
+static void enumerateWitnessScalarAS(const X86TestTable &T,
+                                     const TableDomainAxis &A, Sink &&Emit) {
+  unsigned Serial = 0;
+  enumerateScalarASPoints(
+      T, A, [&](ArrayRef<LLT> Types, bool HasMem, LLT MemTy, uint64_t Align) {
+        const bool IsSlot1 = Types.size() == 2 && Types[0] == A.P0 &&
+                             (Types[1] == A.P1 || Types[1] == A.P2) &&
+                             (!HasMem || MemTy == A.P0);
+        if (IsSlot1 && skipsWitnessSlot1AS(T.Name))
+          return;
+        Emit(Serial++, Types, HasMem, MemTy, Align);
+      });
 }
 
 // The counts are a property of the emitted metadata, so the test walks the
@@ -1257,7 +1395,7 @@ TEST_F(X86LegalizerDifferentialTest, FrozenCorpusMatchesJson) {
 
 static void renderStepJson(raw_ostream &OS, const LegalizeActionStep &S) {
   OS << "{\"action\":\"" << S.Action << "\"";
-  if (S.Action != Legal && S.Action != Unsupported && S.Action != Custom)
+  if (actionCarriesType(S.Action))
     OS << ",\"idx\":" << S.TypeIdx << ",\"to\":\"" << shortLLT(S.NewType)
        << "\"";
   OS << "}";
@@ -1722,108 +1860,135 @@ static ArrayRef<GuardAtom> guardAtoms() {
   return Atoms;
 }
 
-// The denominator is the manifest's 189 literal `.td` rules, keyed by the same
-// (ruleSet, ruleIndex) the Core IR records.  The ledger records the first-match
-// witness of every rule the domain can reach.  A rule that cannot first-match
-// must be approved in x86-legalizer-exceptions.json, so a new miss is a hard
-// failure rather than a silently reduced denominator.
-TEST_F(X86LegalizerDifferentialTest, LiteralRuleFirstMatchLedger) {
+using RuleKey = std::pair<unsigned, unsigned>;
+
+struct LiteralTarget {
+  unsigned Table = 0;
+  unsigned RuleIndex = 0;
+  std::string Set;
+  int64_t Line = 0;
+};
+
+// The literal denominator: every (rule set, rule_index) pair in the emitted
+// Core IR.  The ledger and the witness generator must agree on it, so both
+// read it here instead of each parsing the file.
+static std::optional<std::map<RuleKey, LiteralTarget>>
+readLiteralTargets(std::string &Error) {
   auto CoreBuffer = MemoryBuffer::getFile(X86_LEGALIZER_CORE_JSON);
-  ASSERT_TRUE(!!CoreBuffer) << X86_LEGALIZER_CORE_JSON;
+  if (!CoreBuffer) {
+    Error = std::string("cannot read ") + X86_LEGALIZER_CORE_JSON;
+    return std::nullopt;
+  }
   auto CoreValue = json::parse((*CoreBuffer)->getBuffer());
-  ASSERT_TRUE(!!CoreValue) << toString(CoreValue.takeError());
+  if (!CoreValue) {
+    Error = toString(CoreValue.takeError());
+    return std::nullopt;
+  }
   const json::Object *Core = CoreValue->getAsObject();
-  ASSERT_NE(Core, nullptr);
+  if (!Core) {
+    Error = "core.json top level is not an object";
+    return std::nullopt;
+  }
   const json::Array *Rulesets = Core->getArray("rulesets");
-  ASSERT_NE(Rulesets, nullptr);
+  if (!Rulesets) {
+    Error = "core.json has no 'rulesets'";
+    return std::nullopt;
+  }
 
   std::map<std::string, unsigned> TableForSet;
   for (unsigned I = 0; I != X86TestNumTables; ++I)
     TableForSet.emplace(X86RuleIndexTableNames[I], I);
 
-  struct Target {
-    unsigned Table;
-    unsigned RuleIndex;
-    std::string Set;
-    int64_t Line;
-  };
-  using RuleKey = std::pair<unsigned, unsigned>;
-  std::map<RuleKey, Target> Targets;
+  std::map<RuleKey, LiteralTarget> Targets;
   for (const json::Value &RulesetValue : *Rulesets) {
     const json::Object *Ruleset = RulesetValue.getAsObject();
-    ASSERT_NE(Ruleset, nullptr);
+    if (!Ruleset) {
+      Error = "ruleset is not an object";
+      return std::nullopt;
+    }
     auto Def = Ruleset->getString("def");
-    ASSERT_TRUE(Def.has_value());
+    if (!Def) {
+      Error = "ruleset has no 'def'";
+      return std::nullopt;
+    }
     auto TableIt = TableForSet.find(Def->str());
-    ASSERT_NE(TableIt, TableForSet.end()) << Def->str();
+    if (TableIt == TableForSet.end()) {
+      Error = "ruleset names an unknown table: " + Def->str();
+      return std::nullopt;
+    }
     const json::Array *Rules = Ruleset->getArray("rules");
-    ASSERT_NE(Rules, nullptr);
+    if (!Rules) {
+      Error = "ruleset has no 'rules'";
+      return std::nullopt;
+    }
     for (const json::Value &RuleValue : *Rules) {
       const json::Object *Rule = RuleValue.getAsObject();
-      ASSERT_NE(Rule, nullptr);
+      if (!Rule) {
+        Error = "rule is not an object";
+        return std::nullopt;
+      }
       auto RuleIndex = Rule->getInteger("rule_index");
-      ASSERT_TRUE(RuleIndex.has_value());
-      ASSERT_GE(*RuleIndex, 0);
+      if (!RuleIndex || *RuleIndex < 0) {
+        Error = "rule has no non-negative 'rule_index'";
+        return std::nullopt;
+      }
       int64_t Line = 0;
       if (const json::Object *Origin = Rule->getObject("origin"))
         Line = Origin->getInteger("line").value_or(0);
       const RuleKey Key{TableIt->second, static_cast<unsigned>(*RuleIndex)};
-      Targets.emplace(Key, Target{Key.first, Key.second, Def->str(), Line});
+      Targets.emplace(Key,
+                      LiteralTarget{Key.first, Key.second, Def->str(), Line});
     }
   }
-  ASSERT_EQ(Targets.size(), 189u)
-      << "literal rule denominator must be the manifest's 189 distinct "
-         "(def, rule_index) pairs";
+  return Targets;
+}
 
-  // Approved coverage exceptions come from the committed JSON, not a literal
-  // list in this file.  Every entry must have a reason and proof, and only
-  // `unreachable` is accepted.  X86_BUILD_VECTOR#5 is deliberately not an
-  // exception: the directed guard atom below supplies the non-power-of-two
-  // shape the 12-atom panel lacks.
-  std::string ExceptionsError;
-  std::optional<std::vector<LegalizerException>> Exceptions =
-      readLegalizerExceptions(ExceptionsError);
-  ASSERT_TRUE(Exceptions.has_value()) << ExceptionsError;
+struct RuleWitness {
+  unsigned Table = 0;
+  unsigned RuleIndex = 0;
+  unsigned ConfigIndex = 0;
+  X86TablePoint Point;
+};
 
-  std::map<RuleKey, const LegalizerException *> Approved;
-  for (const LegalizerException &E : *Exceptions) {
-    auto TableIt = TableForSet.find(E.RuleSet);
-    ASSERT_NE(TableIt, TableForSet.end())
-        << "exception names an unknown rule set: " << E.RuleSet;
-    const RuleKey Key{TableIt->second, E.RuleIndex};
-    ASSERT_TRUE(Targets.count(Key))
-        << "exception names a rule that is not in the literal manifest: "
-        << E.RuleSet << "#" << E.RuleIndex;
-    ASSERT_TRUE(Approved.emplace(Key, &E).second)
-        << "duplicate exception for " << E.RuleSet << "#" << E.RuleIndex;
-    EXPECT_EQ(E.Kind, "unreachable")
-        << E.RuleSet << "#" << E.RuleIndex << " must be kind unreachable";
-  }
-
-  std::vector<Sigma> Sigmas;
-  Sigmas.reserve(4);
-  for (unsigned CI = 0; CI != 4; ++CI) {
-    Sigmas.push_back(makeSigma(FullConfigs[CI]));
-    ASSERT_TRUE(Sigmas.back().STI) << FullConfigs[CI].ID;
-  }
-
-  // Only the rule identity is under test here.  The full domain includes
-  // points the chain would never see (a pointer where a scalar mutation is
-  // applied), and evaluating such a mutation asserts inside LLT.
-  struct MutationsOff {
-    bool &Flag;
-    explicit MutationsOff(bool &F) : Flag(F) { Flag = false; }
-    ~MutationsOff() { Flag = true; }
-  } MutationsOffGuard(X86EvalRuleIndexMutations);
-
-  std::vector<std::set<RuleKey>> ConfigHits(4);
+struct RuleWitnessLedger {
+  std::map<RuleKey, RuleWitness> Witnesses;
   std::map<RuleKey, unsigned> FirstConfig;
-  std::set<RuleKey> Union;
-  struct Witness {
-    unsigned ConfigIndex;
-    X86TablePoint Point;
-  };
-  std::map<RuleKey, Witness> Witnesses;
+  std::array<std::set<RuleKey>, 4> ConfigHits;
+};
+
+// The rule-index backend applies the matching rule's mutations while it
+// reports the step.  A domain point can put a pointer where a scalar mutation
+// is applied, which asserts inside LLT, so the search and its rechecks run
+// with mutations off: only the rule identity is under test.
+struct RuleIndexMutationsOff {
+  bool &Flag;
+  explicit RuleIndexMutationsOff(bool &F) : Flag(F) { Flag = false; }
+  ~RuleIndexMutationsOff() { Flag = true; }
+};
+
+// A mutating rule applied to a pointer type asserts inside LLT
+// (changeElementSize).  The full domain deliberately includes such shapes; a
+// first-match witness must not, because the witness records the reference's
+// decision and the reference applies the mutation.
+static bool stepAppliesMutation(const LegalizeActionStep &Step) {
+  return actionCarriesType(Step.Action);
+}
+
+static bool queryHasPointer(ArrayRef<LLT> Types, bool HasMem, LLT MemTy) {
+  for (LLT T : Types)
+    if (T.isPointer() || T.isPointerVector())
+      return true;
+  return HasMem && (MemTy.isPointer() || MemTy.isPointerVector());
+}
+
+// The first-match search shared by the ledger test and the witness generator.
+// The configuration order, the domain walk and the directed guard atoms are
+// the ones the ledger documents; extracting them keeps the generated corpus
+// and the ledger from disagreeing about which query represents a rule.
+static RuleWitnessLedger
+collectRuleWitnesses(ArrayRef<Sigma> Sigmas, const std::set<RuleKey> &Targets) {
+  RuleWitnessLedger Ledger;
+  RuleIndexMutationsOff MutationsOffGuard(X86EvalRuleIndexMutations);
 
   // The test spec assigns each rule to the first configuration that can
   // first-match it, trying the most capable configuration first: C2, C1, C3,
@@ -1836,7 +2001,10 @@ TEST_F(X86LegalizerDifferentialTest, LiteralRuleFirstMatchLedger) {
     for (unsigned TI = 0; TI != X86TestNumTables; ++TI) {
       const X86TestTable &T = X86TestTables[TI];
       const std::optional<unsigned> Opcode = opcodeForName(T.Opcode);
-      ASSERT_TRUE(Opcode.has_value()) << T.Opcode;
+      if (!Opcode) {
+        ADD_FAILURE() << "no TargetOpcode for " << T.Opcode;
+        continue;
+      }
 
       auto Consider = [&](ArrayRef<LLT> Types, bool HasMem, LLT MemTy,
                           uint64_t Align) {
@@ -1855,21 +2023,25 @@ TEST_F(X86LegalizerDifferentialTest, LiteralRuleFirstMatchLedger) {
         const RuleKey Key{TI, Hit->RuleIndex};
         if (!Targets.count(Key))
           return;
-        ConfigHits[CI].insert(Key);
-        Union.insert(Key);
-        FirstConfig.emplace(Key, CI);
-        if (Witnesses.count(Key))
+        if (stepAppliesMutation(Hit->Step) &&
+            queryHasPointer(Types, HasMem, MemTy))
           return;
-        Witness W;
+        Ledger.ConfigHits[CI].insert(Key);
+        Ledger.FirstConfig.emplace(Key, CI);
+        if (Ledger.Witnesses.count(Key))
+          return;
+        RuleWitness W;
+        W.Table = TI;
+        W.RuleIndex = Hit->RuleIndex;
         W.ConfigIndex = CI;
         W.Point.Opcode = *Opcode;
         W.Point.Name = T.Opcode;
-        W.Point.NumTypes = static_cast<uint8_t>(Types.size());
-        std::copy(Types.begin(), Types.end(), W.Point.Types);
+        W.Point.NumTypes = static_cast<uint8_t>(TypeVec.size());
+        std::copy(TypeVec.begin(), TypeVec.end(), W.Point.Types);
         W.Point.MemTy = MemTy;
         W.Point.Align = Align;
         W.Point.HasMem = HasMem;
-        Witnesses.emplace(Key, W);
+        Ledger.Witnesses.emplace(Key, W);
       };
 
       enumerateTableDomain(
@@ -1884,13 +2056,76 @@ TEST_F(X86LegalizerDifferentialTest, LiteralRuleFirstMatchLedger) {
           Consider(ArrayRef<LLT>(&Atom.Type, 1), false, LLT{}, 0);
     }
   }
+  return Ledger;
+}
+
+// The denominator is the manifest's 189 literal `.td` rules, keyed by the same
+// (ruleSet, ruleIndex) the Core IR records.  The ledger records the first-match
+// witness of every rule the domain can reach.  A rule that cannot first-match
+// must be approved in x86-legalizer-exceptions.json, so a new miss is a hard
+// failure rather than a silently reduced denominator.
+TEST_F(X86LegalizerDifferentialTest, LiteralRuleFirstMatchLedger) {
+  std::string Error;
+  std::optional<std::map<RuleKey, LiteralTarget>> Targets =
+      readLiteralTargets(Error);
+  ASSERT_TRUE(Targets.has_value()) << Error;
+  ASSERT_EQ(Targets->size(), 189u)
+      << "literal rule denominator must be the manifest's 189 distinct "
+         "(def, rule_index) pairs";
+
+  std::map<std::string, unsigned> TableForSet;
+  for (unsigned I = 0; I != X86TestNumTables; ++I)
+    TableForSet.emplace(X86RuleIndexTableNames[I], I);
+
+  // Approved coverage exceptions come from the committed JSON, not a literal
+  // list in this file.  Every entry must have a reason and proof, and only
+  // `unreachable` is accepted.  X86_BUILD_VECTOR#5 is deliberately not an
+  // exception: the directed guard atom below supplies the non-power-of-two
+  // shape the 12-atom panel lacks.
+  std::string ExceptionsError;
+  std::optional<std::vector<LegalizerException>> Exceptions =
+      readLegalizerExceptions(ExceptionsError);
+  ASSERT_TRUE(Exceptions.has_value()) << ExceptionsError;
+
+  std::map<RuleKey, const LegalizerException *> Approved;
+  for (const LegalizerException &E : *Exceptions) {
+    auto TableIt = TableForSet.find(E.RuleSet);
+    ASSERT_NE(TableIt, TableForSet.end())
+        << "exception names an unknown rule set: " << E.RuleSet;
+    const RuleKey Key{TableIt->second, E.RuleIndex};
+    ASSERT_TRUE(Targets->count(Key))
+        << "exception names a rule that is not in the literal manifest: "
+        << E.RuleSet << "#" << E.RuleIndex;
+    ASSERT_TRUE(Approved.emplace(Key, &E).second)
+        << "duplicate exception for " << E.RuleSet << "#" << E.RuleIndex;
+    EXPECT_EQ(E.Kind, "unreachable")
+        << E.RuleSet << "#" << E.RuleIndex << " must be kind unreachable";
+  }
+
+  std::vector<Sigma> Sigmas;
+  Sigmas.reserve(4);
+  for (unsigned CI = 0; CI != 4; ++CI) {
+    Sigmas.push_back(makeSigma(FullConfigs[CI]));
+    ASSERT_TRUE(Sigmas.back().STI) << FullConfigs[CI].ID;
+  }
+
+  std::set<RuleKey> TargetKeys;
+  for (const auto &Entry : *Targets)
+    TargetKeys.insert(Entry.first);
+  const RuleWitnessLedger Ledger = collectRuleWitnesses(Sigmas, TargetKeys);
+  const auto &Witnesses = Ledger.Witnesses;
+  const auto &ConfigHits = Ledger.ConfigHits;
+  std::set<RuleKey> Union;
+  for (const auto &Entry : Witnesses)
+    Union.insert(Entry.first);
 
   // Every witness must reproduce the rule number it was recorded for.  This
   // catches a ledger that remembers a hit the evaluator does not actually make.
+  RuleIndexMutationsOff RecheckGuard(X86EvalRuleIndexMutations);
   unsigned RecheckFailures = 0;
   for (const auto &Entry : Witnesses) {
     const RuleKey &Key = Entry.first;
-    const Witness &W = Entry.second;
+    const RuleWitness &W = Entry.second;
     const X86Subtarget &STI = *Sigmas[W.ConfigIndex].STI;
     ArrayRef<LLT> Types(W.Point.Types, W.Point.NumTypes);
     SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
@@ -1919,28 +2154,28 @@ TEST_F(X86LegalizerDifferentialTest, LiteralRuleFirstMatchLedger) {
   llvm::outs() << "literal rule first-match ledger:\n";
   for (unsigned CI = 0; CI != 4; ++CI) {
     unsigned First = 0;
-    for (const auto &Entry : FirstConfig)
+    for (const auto &Entry : Ledger.FirstConfig)
       if (Entry.second == CI)
         ++First;
     std::set<unsigned> HitSets;
     for (const RuleKey &Key : ConfigHits[CI])
       HitSets.insert(Key.first);
     llvm::outs() << "  " << FullConfigs[CI].ID
-                 << " hit=" << ConfigHits[CI].size() << "/" << Targets.size()
+                 << " hit=" << ConfigHits[CI].size() << "/" << Targets->size()
                  << " first-match=" << First << " sets=" << HitSets.size()
                  << "/" << PerSet.size() << "\n";
   }
-  llvm::outs() << "  union=" << Union.size() << "/" << Targets.size()
-               << " not-first-match=" << (Targets.size() - Union.size())
+  llvm::outs() << "  union=" << Union.size() << "/" << Targets->size()
+               << " not-first-match=" << (Targets->size() - Union.size())
                << " per-set-sum=" << PerSetSum << "\n";
 
   unsigned UnexpectedMissing = 0;
-  for (const auto &Entry : Targets) {
+  for (const auto &Entry : *Targets) {
     const bool Hit = Union.count(Entry.first) != 0;
     const bool Known = Approved.count(Entry.first) != 0;
     if (!Hit && !Known) {
       ++UnexpectedMissing;
-      const Target &T = Entry.second;
+      const LiteralTarget &T = Entry.second;
       ADD_FAILURE() << "no first-match witness for " << T.Set << "#"
                     << T.RuleIndex << " (.td line " << T.Line
                     << "); no first-match witness over the C0-C3 domain";
@@ -1960,16 +2195,602 @@ TEST_F(X86LegalizerDifferentialTest, LiteralRuleFirstMatchLedger) {
   llvm::outs() << "\n";
   llvm::outs() << "  covered=" << Union.size()
                << " exceptions=" << Approved.size()
-               << " denominator=" << Targets.size() << "\n";
+               << " denominator=" << Targets->size() << "\n";
 
-  const size_t Reachable = Targets.size() - Approved.size();
+  const size_t Reachable = Targets->size() - Approved.size();
   EXPECT_EQ(Union.size(), Reachable);
-  EXPECT_EQ(Union.size() + Approved.size(), Targets.size());
+  EXPECT_EQ(Union.size() + Approved.size(), Targets->size());
   EXPECT_EQ(PerSetSum, Reachable);
   EXPECT_EQ(UnexpectedMissing, 0u);
   EXPECT_EQ(RecheckFailures, 0u);
 }
 
+//===----------------------------------------------------------------------===//
+// Committed witness corpus
+//===----------------------------------------------------------------------===//
+//
+// The witness is the persistent baseline the default CI walks.  It is
+// generated from the frozen reference, never hand-written: every atom records
+// the query and the reference's (Action, TypeIdx, NewType), so a change to the
+// table shows up as a diff in a checked-in file rather than as a silently
+// missing question.
+//
+// This commit lands the part that can be generated mechanically:
+//   188 per-rule first-match atoms
+//   756 boundary atoms (63 rule sets x the reviewed 12-atom panel)
+//   220 scalar address-space atoms
+// The 93 escaped descriptor atoms are deferred: they need a per-rule guard
+// search this generator does not perform yet, and inventing queries for them
+// would make the corpus claim more than it proves.
+
+// Pointer spellings carry their bit width.  A per-rule witness may be assigned
+// to the 32-bit C0 configuration while the search enumerated a 64-bit p0; the
+// committed query must rebuild that exact LLT, not a config-dependent one.
+static std::string witnessLLTName(LLT T) {
+  std::string S;
+  raw_string_ostream OS(S);
+  if (T.isPointer()) {
+    OS << "p" << T.getAddressSpace() << ":" << T.getSizeInBits();
+  } else if (T.isPointerVector()) {
+    OS << "v" << T.getNumElements() << "p"
+       << T.getElementType().getAddressSpace() << ":"
+       << T.getElementType().getSizeInBits();
+  } else if (T.isVector()) {
+    OS << "v" << T.getNumElements() << "s" << T.getScalarSizeInBits();
+  } else {
+    OS << "s" << T.getSizeInBits();
+  }
+  return OS.str();
+}
+
+static std::optional<LLT> parseWitnessLLT(StringRef S) {
+  if (S.consume_front("v")) {
+    const size_t Sep = S.find_first_of("ps");
+    if (Sep == StringRef::npos)
+      return std::nullopt;
+    unsigned Lanes = 0;
+    if (S.take_front(Sep).getAsInteger(10, Lanes))
+      return std::nullopt;
+    StringRef Elem = S.drop_front(Sep + 1);
+    if (S[Sep] == 's') {
+      unsigned Bits = 0;
+      if (Elem.getAsInteger(10, Bits))
+        return std::nullopt;
+      return LLT::fixed_vector(Lanes, Bits);
+    }
+    const size_t Colon = Elem.find(':');
+    unsigned AS = 0, Bits = 0;
+    if (Colon == StringRef::npos ||
+        Elem.take_front(Colon).getAsInteger(10, AS) ||
+        Elem.drop_front(Colon + 1).getAsInteger(10, Bits))
+      return std::nullopt;
+    return LLT::fixed_vector(Lanes, LLT::pointer(AS, Bits));
+  }
+  if (S.consume_front("p")) {
+    const size_t Colon = S.find(':');
+    unsigned AS = 0, Bits = 0;
+    if (Colon == StringRef::npos || S.take_front(Colon).getAsInteger(10, AS) ||
+        S.drop_front(Colon + 1).getAsInteger(10, Bits))
+      return std::nullopt;
+    return LLT::pointer(AS, Bits);
+  }
+  if (S.consume_front("s")) {
+    unsigned Bits = 0;
+    if (S.getAsInteger(10, Bits))
+      return std::nullopt;
+    return LLT::scalar(Bits);
+  }
+  return std::nullopt;
+}
+
+static std::string witnessQueryText(const X86TablePoint &P) {
+  std::string S;
+  raw_string_ostream OS(S);
+  OS << P.Name << " (";
+  for (unsigned I = 0; I != P.NumTypes; ++I)
+    OS << (I ? ", " : "") << witnessLLTName(P.Types[I]);
+  OS << ")";
+  if (P.HasMem)
+    OS << " mem(" << witnessLLTName(P.MemTy) << ", align " << P.Align << ")";
+  return OS.str();
+}
+
+static std::optional<LegalizeAction> parseLegalizeAction(StringRef S) {
+  return StringSwitch<std::optional<LegalizeAction>>(S)
+      .Case("Legal", Legal)
+      .Case("NarrowScalar", NarrowScalar)
+      .Case("WidenScalar", WidenScalar)
+      .Case("FewerElements", FewerElements)
+      .Case("MoreElements", MoreElements)
+      .Case("Bitcast", Bitcast)
+      .Case("Lower", Lower)
+      .Case("Libcall", Libcall)
+      .Case("Custom", Custom)
+      .Case("Unsupported", Unsupported)
+      .Default(std::nullopt);
+}
+
+struct WitnessAtom {
+  std::string Id;
+  std::string Origin;
+  std::string RuleSet;
+  int64_t RuleIndex = -1;
+  std::string ConfigID;
+  std::string QueryText;
+  X86TablePoint Point;
+  LegalizeActionStep Expected{Unsupported, 0, LLT{}};
+};
+
+// Query construction must keep the type and descriptor storage alive, so the
+// caller uses the query inside the callback instead of returning one.
+template <typename Sink>
+static void withAtomQuery(const X86TablePoint &P, Sink &&Use) {
+  ArrayRef<LLT> Types(P.Types, P.NumTypes);
+  SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+  if (P.HasMem)
+    MemDescs.emplace_back(P.MemTy, P.Align, AtomicOrdering::NotAtomic,
+                          AtomicOrdering::NotAtomic);
+  Use(LegalityQuery(P.Opcode, Types, MemDescs));
+}
+
+// Not a test.  Regenerate the witness corpus after a change that is meant to
+// be visible in review:
+//
+//   X86_WITNESS_OUT=<abs path> X86Tests --gtest_also_run_disabled_tests \
+//     --gtest_filter='*GenerateWitness*'
+//
+// The output is deterministic: atoms are sorted by (origin, rule set, rule
+// index, query text), no timestamp is written, and the expected decision comes
+// from the frozen reference.  Two runs in one tree are byte-identical.
+TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
+  const char *OutPath = std::getenv("X86_WITNESS_OUT");
+  if (!OutPath)
+    GTEST_SKIP() << "set X86_WITNESS_OUT to the absolute output path";
+
+  std::string Error;
+  std::optional<std::map<RuleKey, LiteralTarget>> Targets =
+      readLiteralTargets(Error);
+  ASSERT_TRUE(Targets.has_value()) << Error;
+  ASSERT_EQ(Targets->size(), 189u);
+
+  std::optional<std::vector<LegalizerException>> Exceptions =
+      readLegalizerExceptions(Error);
+  ASSERT_TRUE(Exceptions.has_value()) << Error;
+
+  std::map<std::string, unsigned> TableForSet;
+  for (unsigned I = 0; I != X86TestNumTables; ++I)
+    TableForSet.emplace(X86RuleIndexTableNames[I], I);
+
+  std::vector<Sigma> Sigmas;
+  Sigmas.reserve(4);
+  for (const Config &C : FullConfigs) {
+    Sigmas.push_back(makeSigma(C));
+    ASSERT_TRUE(Sigmas.back().STI) << C.ID;
+  }
+
+  std::map<std::string, std::unique_ptr<X86LegalizerInfoReference>> Oracles;
+  auto OracleFor = [&](unsigned CI) -> X86LegalizerInfoReference & {
+    auto &Oracle = Oracles[FullConfigs[CI].ID];
+    if (!Oracle)
+      Oracle = std::make_unique<X86LegalizerInfoReference>(
+          *Sigmas[CI].STI,
+          *static_cast<const X86TargetMachine *>(Sigmas[CI].TM.get()));
+    return *Oracle;
+  };
+  auto ExpectFor = [&](const X86TablePoint &P, unsigned CI) {
+    LegalizeActionStep Step(Unsupported, 0, LLT{});
+    withAtomQuery(
+        P, [&](const LegalityQuery &Q) { Step = OracleFor(CI).getAction(Q); });
+    return Step;
+  };
+
+  std::set<RuleKey> TargetKeys;
+  for (const auto &Entry : *Targets)
+    TargetKeys.insert(Entry.first);
+
+  const RuleWitnessLedger Ledger = collectRuleWitnesses(Sigmas, TargetKeys);
+  ASSERT_EQ(Ledger.Witnesses.size(), 188u);
+
+  std::set<RuleKey> Approved;
+  for (const LegalizerException &E : *Exceptions) {
+    auto TableIt = TableForSet.find(E.RuleSet);
+    ASSERT_NE(TableIt, TableForSet.end()) << E.RuleSet;
+    const RuleKey Key{TableIt->second, E.RuleIndex};
+    ASSERT_TRUE(Targets->count(Key)) << E.RuleSet << "#" << E.RuleIndex;
+    Approved.insert(Key);
+    EXPECT_EQ(Ledger.Witnesses.count(Key), 0u)
+        << "an approved exception must not also have a first-match witness";
+  }
+  ASSERT_EQ(Ledger.Witnesses.size() + Approved.size(), Targets->size())
+      << "every literal rule must be either witnessed or approved";
+
+  std::vector<WitnessAtom> Atoms;
+  Atoms.reserve(1164);
+
+  // Per-rule atoms: the first query the first-match search found for the rule,
+  // in the configuration the search assigned it.
+  for (const auto &Entry : Ledger.Witnesses) {
+    const RuleWitness &W = Entry.second;
+    const X86TestTable &T = X86TestTables[W.Table];
+    WitnessAtom A;
+    A.Origin = "rule";
+    A.RuleSet = T.Name;
+    A.RuleIndex = W.RuleIndex;
+    A.ConfigID = FullConfigs[W.ConfigIndex].ID;
+    A.Point = W.Point;
+    A.Id = "x86/rule/" + A.RuleSet + "#" + std::to_string(W.RuleIndex);
+    A.QueryText = witnessQueryText(A.Point);
+    A.Expected = ExpectFor(A.Point, W.ConfigIndex);
+    Atoms.push_back(std::move(A));
+  }
+
+  // Boundary and address-space atoms use the default configuration.
+  constexpr unsigned DefaultConfig = 2;
+  ASSERT_EQ(std::string(FullConfigs[DefaultConfig].ID), "C2");
+  const TableDomainAxis Axis = tableDomainAxis(64);
+  for (unsigned TI = 0; TI != X86TestNumTables; ++TI) {
+    const X86TestTable &T = X86TestTables[TI];
+    const std::optional<unsigned> Opcode = opcodeForName(T.Opcode);
+    ASSERT_TRUE(Opcode.has_value()) << T.Opcode;
+
+    auto MakePoint = [&](ArrayRef<LLT> Types, bool HasMem, LLT MemTy,
+                         uint64_t Align) {
+      X86TablePoint P;
+      P.Opcode = *Opcode;
+      P.Name = T.Opcode;
+      P.NumTypes = static_cast<uint8_t>(Types.size());
+      std::copy(Types.begin(), Types.end(), P.Types);
+      P.MemTy = MemTy;
+      P.Align = Align;
+      P.HasMem = HasMem;
+      return P;
+    };
+
+    enumerateWitnessBoundaryPanel(
+        T, Axis,
+        [&](unsigned PanelIndex, ArrayRef<LLT> Types, bool HasMem, LLT MemTy,
+            uint64_t Align) {
+          WitnessAtom A;
+          A.Origin = "boundary";
+          A.RuleSet = T.Name;
+          A.ConfigID = FullConfigs[DefaultConfig].ID;
+          A.Id = "x86/boundary/" + A.RuleSet + "#" + std::to_string(PanelIndex);
+          A.Point = MakePoint(Types, HasMem, MemTy, Align);
+          A.QueryText = witnessQueryText(A.Point);
+          A.Expected = ExpectFor(A.Point, DefaultConfig);
+          Atoms.push_back(std::move(A));
+        });
+
+    enumerateWitnessScalarAS(T, Axis,
+                             [&](unsigned Serial, ArrayRef<LLT> Types,
+                                 bool HasMem, LLT MemTy, uint64_t Align) {
+                               WitnessAtom A;
+                               A.Origin = "as";
+                               A.RuleSet = T.Name;
+                               A.ConfigID = FullConfigs[DefaultConfig].ID;
+                               A.Id = "x86/as/" + A.RuleSet + "#" +
+                                      std::to_string(Serial);
+                               A.Point = MakePoint(Types, HasMem, MemTy, Align);
+                               A.QueryText = witnessQueryText(A.Point);
+                               A.Expected = ExpectFor(A.Point, DefaultConfig);
+                               Atoms.push_back(std::move(A));
+                             });
+  }
+
+  unsigned RuleAtoms = 0, BoundaryAtoms = 0, ASAtoms = 0;
+  for (const WitnessAtom &A : Atoms) {
+    if (A.Origin == "rule")
+      ++RuleAtoms;
+    else if (A.Origin == "boundary")
+      ++BoundaryAtoms;
+    else if (A.Origin == "as")
+      ++ASAtoms;
+    else
+      ADD_FAILURE() << "unknown witness origin " << A.Origin;
+  }
+  EXPECT_EQ(RuleAtoms, 188u);
+  EXPECT_EQ(BoundaryAtoms, 756u);
+  EXPECT_EQ(ASAtoms, 220u);
+  EXPECT_EQ(Atoms.size(), 1164u);
+
+  std::sort(Atoms.begin(), Atoms.end(),
+            [](const WitnessAtom &L, const WitnessAtom &R) {
+              return std::tie(L.Origin, L.RuleSet, L.RuleIndex, L.QueryText) <
+                     std::tie(R.Origin, R.RuleSet, R.RuleIndex, R.QueryText);
+            });
+
+  std::optional<std::string> ReferenceText =
+      readTestSourceFile("X86LegalizerInfoReference.cpp");
+  ASSERT_TRUE(ReferenceText.has_value());
+  const std::string ReferenceSha = sha256Hex(*ReferenceText);
+  std::optional<std::string> TDText =
+      readTestSourceFile("../../../lib/Target/X86/GISel/X86LegalizerInfo.td");
+  ASSERT_TRUE(TDText.has_value());
+  const std::string TDSha = sha256Hex(*TDText);
+  static const char *Policy =
+      "witness-v1:per-rule=first-match(C2,C1,C3,C0);boundary=12-panel;"
+      "as=slot0+slot1(29)+mem;default=C2";
+  const std::string GeneratorHash =
+      sha256Hex(std::string(Policy) + "|" + ReferenceSha + "|" + TDSha);
+
+  std::error_code EC;
+  raw_fd_ostream OS(OutPath, EC);
+  ASSERT_FALSE(EC) << OutPath << ": " << EC.message();
+
+  OS << "{\n";
+  OS << "  \"schema\": \"llvm.gisel.x86-legalizer-witness\",\n";
+  OS << "  \"version\": 1,\n";
+  OS << "  \"comment\": \"Generated from X86LegalizerInfoReference by "
+        "DISABLED_GenerateWitness.  Atoms are the mechanically generated "
+        "slice of the witness corpus; the 93 escaped descriptor atoms are "
+        "still pending.\",\n";
+  OS << "  \"run\": \"X86_WITNESS_OUT=<abs path> X86Tests "
+        "--gtest_also_run_disabled_tests "
+        "--gtest_filter='*GenerateWitness*'\",\n";
+#ifdef LLVM_REVISION
+  OS << "  \"source_commit\": \"" << LLVM_REVISION << "\",\n";
+#else
+  OS << "  \"source_commit\": \"unknown\",\n";
+#endif
+  OS << "  \"reference_sha256\": \"" << ReferenceSha << "\",\n";
+  OS << "  \"generator_hash\": \"" << GeneratorHash << "\",\n";
+  OS << "  \"atom_count\": " << Atoms.size() << ",\n";
+  OS << "  \"per_rule_hits\": " << RuleAtoms << ",\n";
+  OS << "  \"boundary_atoms\": " << BoundaryAtoms << ",\n";
+  OS << "  \"as_atoms\": " << ASAtoms << ",\n";
+  OS << "  \"descriptor_atoms\": \"pending (93)\",\n";
+  OS << "  \"witness_config_default\": \"C2\",\n";
+  OS << "  \"atoms\": [\n";
+  for (size_t I = 0; I != Atoms.size(); ++I) {
+    const WitnessAtom &A = Atoms[I];
+    OS << "    {\"id\":\"" << A.Id << "\",\"origin\":\"" << A.Origin
+       << "\",\"rule_set\":\"" << A.RuleSet << "\",\"rule_index\":";
+    if (A.RuleIndex >= 0)
+      OS << A.RuleIndex;
+    else
+      OS << "null";
+    OS << ",\"config\":\"" << A.ConfigID << "\",\"query\":{\"types\":[";
+    for (unsigned T = 0; T != A.Point.NumTypes; ++T)
+      OS << (T ? "," : "") << "\"" << witnessLLTName(A.Point.Types[T]) << "\"";
+    OS << "]";
+    if (A.Point.HasMem)
+      OS << ",\"mem\":{\"type\":\"" << witnessLLTName(A.Point.MemTy)
+         << "\",\"align\":" << A.Point.Align << "}";
+    OS << "},\"expected\":";
+    renderStepJson(OS, A.Expected);
+    OS << "}" << (I + 1 == Atoms.size() ? "\n" : ",\n");
+  }
+  OS << "  ]\n}\n";
+  OS.flush();
+  ASSERT_FALSE(OS.has_error()) << OutPath;
+  llvm::outs() << "wrote " << Atoms.size() << " witness atoms to " << OutPath
+               << "\n";
+}
+
+// T1: every committed atom must get the reference's decision from the table.
+// The witness is the default-CI baseline, so this test is the one that turns
+// the generated corpus into a gate: it rebuilds each query from the committed
+// (types, memdesc, config) triple, asks the reader's table, and compares the
+// three fields with the frozen reference.  The committed `expected` is checked
+// too, so a corpus regenerated from a drifted reference cannot pass unnoticed.
+TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
+  std::optional<std::string> Text =
+      readTestSourceFile("x86-legalizer-witness.json");
+  ASSERT_TRUE(Text.has_value())
+      << "cannot read x86-legalizer-witness.json from "
+      << X86_LEGALIZER_TEST_SRC_DIR;
+  auto Value = json::parse(*Text);
+  ASSERT_TRUE(!!Value) << toString(Value.takeError());
+  const json::Object *Root = Value->getAsObject();
+  ASSERT_NE(Root, nullptr);
+  EXPECT_EQ(Root->getInteger("atom_count").value_or(-1), 1164);
+  EXPECT_EQ(Root->getInteger("per_rule_hits").value_or(-1), 188);
+  EXPECT_EQ(Root->getInteger("boundary_atoms").value_or(-1), 756);
+  EXPECT_EQ(Root->getInteger("as_atoms").value_or(-1), 220);
+  EXPECT_EQ(Root->getString("descriptor_atoms").value_or(""), "pending (93)");
+  EXPECT_EQ(Root->getString("witness_config_default").value_or(""), "C2");
+
+  const json::Array *AtomArray = Root->getArray("atoms");
+  ASSERT_NE(AtomArray, nullptr);
+  EXPECT_EQ(AtomArray->size(), 1164u);
+
+  std::string Error;
+  std::optional<std::map<RuleKey, LiteralTarget>> Targets =
+      readLiteralTargets(Error);
+  ASSERT_TRUE(Targets.has_value()) << Error;
+  std::optional<std::vector<LegalizerException>> Exceptions =
+      readLegalizerExceptions(Error);
+  ASSERT_TRUE(Exceptions.has_value()) << Error;
+
+  std::map<std::string, unsigned> TableForSet;
+  for (unsigned I = 0; I != X86TestNumTables; ++I)
+    TableForSet.emplace(X86RuleIndexTableNames[I], I);
+
+  // The manifest's literal rules minus every approved exception is the set of
+  // rules a per-rule atom must name.
+  std::set<RuleKey> ExpectedRulePairs;
+  for (const auto &Entry : *Targets)
+    ExpectedRulePairs.insert(Entry.first);
+  for (const LegalizerException &E : *Exceptions) {
+    auto TableIt = TableForSet.find(E.RuleSet);
+    ASSERT_NE(TableIt, TableForSet.end()) << E.RuleSet;
+    ASSERT_EQ(ExpectedRulePairs.erase({TableIt->second, E.RuleIndex}), 1u)
+        << "exception is not in the literal manifest: " << E.RuleSet << "#"
+        << E.RuleIndex;
+  }
+  ASSERT_EQ(ExpectedRulePairs.size(), 188u);
+
+  struct Fixture {
+    Sigma S;
+    std::unique_ptr<TableLegalizerInfoForTest> Table;
+    std::unique_ptr<X86LegalizerInfoReference> Oracle;
+  };
+  std::map<std::string, Fixture> Fixtures;
+  for (const Config &C : FullConfigs) {
+    Fixture F;
+    F.S = makeSigma(C);
+    ASSERT_TRUE(F.S.STI) << C.ID;
+    F.Table = std::make_unique<TableLegalizerInfoForTest>(*F.S.STI);
+    F.Oracle = std::make_unique<X86LegalizerInfoReference>(
+        *F.S.STI, *static_cast<const X86TargetMachine *>(F.S.TM.get()));
+    Fixtures.emplace(C.ID, std::move(F));
+  }
+
+  unsigned Atoms = 0, Diffs = 0, ExpectedDiffs = 0;
+  unsigned Hits = 0, Residuals = 0, Escapes = 0;
+  unsigned RuleAtoms = 0, BoundaryAtoms = 0, ASAtoms = 0;
+  std::set<std::string> Ids;
+  std::set<RuleKey> RulePairs;
+
+  for (const json::Value &AtomValue : *AtomArray) {
+    const json::Object *O = AtomValue.getAsObject();
+    ASSERT_NE(O, nullptr) << "atom is not an object";
+    auto Id = O->getString("id");
+    auto Origin = O->getString("origin");
+    auto RuleSet = O->getString("rule_set");
+    auto ConfigID = O->getString("config");
+    ASSERT_TRUE(Id && Origin && RuleSet && ConfigID);
+    ASSERT_TRUE(Ids.insert(Id->str()).second) << "duplicate atom id " << *Id;
+
+    auto TableIt = TableForSet.find(RuleSet->str());
+    ASSERT_NE(TableIt, TableForSet.end()) << *RuleSet;
+    const unsigned Table = TableIt->second;
+    const X86TestTable &T = X86TestTables[Table];
+    const std::optional<unsigned> Opcode = opcodeForName(T.Opcode);
+    ASSERT_TRUE(Opcode.has_value()) << T.Opcode;
+
+    int64_t RuleIndex = -1;
+    if (auto R = O->getInteger("rule_index"))
+      RuleIndex = *R;
+    else
+      ASSERT_TRUE(O->get("rule_index")) << *Id << ": missing rule_index";
+
+    const json::Object *Query = O->getObject("query");
+    ASSERT_NE(Query, nullptr) << *Id;
+    const json::Array *TypeArray = Query->getArray("types");
+    ASSERT_NE(TypeArray, nullptr) << *Id;
+    SmallVector<LLT, 3> Types;
+    for (const json::Value &TV : *TypeArray) {
+      auto Name = TV.getAsString();
+      ASSERT_TRUE(Name.has_value()) << *Id;
+      auto Ty = parseWitnessLLT(*Name);
+      ASSERT_TRUE(Ty.has_value()) << *Id << ": bad type " << *Name;
+      Types.push_back(*Ty);
+    }
+    SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+    if (const json::Object *Mem = Query->getObject("mem")) {
+      auto MemName = Mem->getString("type");
+      auto Align = Mem->getInteger("align");
+      ASSERT_TRUE(MemName && Align) << *Id;
+      auto MemTy = parseWitnessLLT(*MemName);
+      ASSERT_TRUE(MemTy.has_value()) << *Id << ": bad mem type " << *MemName;
+      MemDescs.emplace_back(*MemTy, static_cast<uint64_t>(*Align),
+                            AtomicOrdering::NotAtomic,
+                            AtomicOrdering::NotAtomic);
+    }
+    const LegalityQuery Q(*Opcode, Types, MemDescs);
+
+    const json::Object *ExpectedObj = O->getObject("expected");
+    ASSERT_NE(ExpectedObj, nullptr) << *Id;
+    auto ExpectedAction = ExpectedObj->getString("action");
+    ASSERT_TRUE(ExpectedAction.has_value()) << *Id;
+    auto Action = parseLegalizeAction(*ExpectedAction);
+    ASSERT_TRUE(Action.has_value())
+        << *Id << ": unknown expected action " << *ExpectedAction;
+    LLT NewType = LLT{};
+    if (auto To = ExpectedObj->getString("to")) {
+      auto Parsed = parseWitnessLLT(*To);
+      ASSERT_TRUE(Parsed.has_value()) << *Id << ": bad expected type " << *To;
+      NewType = *Parsed;
+    }
+    const LegalizeActionStep Expected(
+        *Action,
+        static_cast<unsigned>(ExpectedObj->getInteger("idx").value_or(0)),
+        NewType);
+
+    auto FixtureIt = Fixtures.find(ConfigID->str());
+    ASSERT_NE(FixtureIt, Fixtures.end()) << *Id << ": unknown config";
+    Fixture &F = FixtureIt->second;
+    const X86LegalizerTable::Result R = F.Table->table().query(Q);
+    const LegalizeActionStep Got(R.Action, R.TypeIdx, R.NewType);
+    const LegalizeActionStep Want = F.Oracle->getAction(Q);
+
+    StringRef Basis;
+    switch (R.Kind) {
+    case X86LegalizerTable::Answer::Hit:
+      Basis = "hit";
+      ++Hits;
+      break;
+    case X86LegalizerTable::Answer::Residual:
+      Basis = "residual";
+      ++Residuals;
+      break;
+    default:
+      Basis = "escape";
+      ++Escapes;
+      break;
+    }
+
+    ++Atoms;
+    if (Origin->str() == "rule") {
+      ++RuleAtoms;
+      ASSERT_GE(RuleIndex, 0) << *Id;
+      RulePairs.insert({Table, static_cast<unsigned>(RuleIndex)});
+    } else if (Origin->str() == "boundary") {
+      ++BoundaryAtoms;
+    } else if (Origin->str() == "as") {
+      ++ASAtoms;
+      EXPECT_EQ(R.Kind, X86LegalizerTable::Answer::Residual)
+          << "T1 rule-set=" << *RuleSet << " rule=#"
+          << (RuleIndex >= 0 ? std::to_string(RuleIndex) : "-")
+          << " atom=" << *Id
+          << ": a non-zero address space must reach the router";
+    } else {
+      ADD_FAILURE() << *Id << ": unknown origin " << *Origin;
+    }
+
+    if (!stepsAgree(Expected, Want)) {
+      ++ExpectedDiffs;
+      ADD_FAILURE() << "T1 corpus atom " << *Id
+                    << ": committed expected disagrees with the reference"
+                    << "\n  committed: " << describe(Expected)
+                    << "\n  oracle:    " << describe(Want);
+    }
+
+    if (!stepsAgree(Got, Want)) {
+      ++Diffs;
+      std::string QueryText;
+      raw_string_ostream QOS(QueryText);
+      QOS << T.Opcode << " (";
+      for (unsigned I = 0; I != Types.size(); ++I)
+        QOS << (I ? ", " : "") << witnessLLTName(Types[I]);
+      QOS << ")";
+      if (!MemDescs.empty())
+        QOS << " mem(" << witnessLLTName(MemDescs[0].MemoryTy) << ", align "
+            << MemDescs[0].AlignInBits << ")";
+      ADD_FAILURE() << "T1 rule-set=" << *RuleSet << " rule=#"
+                    << (RuleIndex >= 0 ? std::to_string(RuleIndex) : "-")
+                    << " basis=" << Basis << " origin=" << *Origin
+                    << " config=" << *ConfigID << "\n  query:  " << QueryText
+                    << "\n  table:  " << describe(Got)
+                    << "\n  oracle: " << describe(Want);
+    }
+  }
+
+  EXPECT_EQ(Atoms, 1164u);
+  EXPECT_EQ(RuleAtoms, 188u);
+  EXPECT_EQ(BoundaryAtoms, 756u);
+  EXPECT_EQ(ASAtoms, 220u);
+  EXPECT_EQ(RulePairs.size(), 188u);
+  EXPECT_EQ(RulePairs, ExpectedRulePairs)
+      << "per-rule atoms must name exactly the manifest's 188 literal rules";
+  EXPECT_EQ(ExpectedDiffs, 0u);
+  EXPECT_EQ(Diffs, 0u);
+  llvm::outs() << "witness T1: atoms=" << Atoms << " diffs=" << Diffs
+               << " hit=" << Hits << " residual=" << Residuals
+               << " escape=" << Escapes << " expected_diffs=" << ExpectedDiffs
+               << "\n";
+}
 // F1: the table's key has a single pointer class.  Every pointer collapses to
 // p0, and G_STORE's first rule is exactly `Types[0] != MemoryTy`: folding the
 // address space erases the comparison and answers (p1, p0) as if it were
