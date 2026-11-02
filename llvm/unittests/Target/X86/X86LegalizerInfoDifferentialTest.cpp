@@ -24,6 +24,7 @@
 
 #include "GISel/X86LegalizerTable.h"
 #include "X86LegalizerInfoReference.h"
+#include "X86LegalizerInfoReferenceMutants.h"
 #include "X86Subtarget.h"
 #include "X86TargetMachine.h"
 #include "x86-ctpop-atoms.h"
@@ -203,6 +204,171 @@ public:
 };
 } // namespace mutant3
 
+namespace mutant4 {
+class Mutant : public LegalizerInfo {
+  const X86Subtarget &Subtarget;
+
+public:
+  explicit Mutant(const X86Subtarget &STI) : Subtarget(STI) {
+#include "X86LegalizerInfoMutant4.inc"
+  }
+  bool legalizeCustom(LegalizerHelper &, MachineInstr &,
+                      LostDebugLocObserver &) const override {
+    return false;
+  }
+};
+} // namespace mutant4
+
+namespace mutant5 {
+class Mutant : public LegalizerInfo {
+  const X86Subtarget &Subtarget;
+
+public:
+  explicit Mutant(const X86Subtarget &STI) : Subtarget(STI) {
+#include "X86LegalizerInfoMutant5.inc"
+  }
+  bool legalizeCustom(LegalizerHelper &, MachineInstr &,
+                      LostDebugLocObserver &) const override {
+    return false;
+  }
+};
+} // namespace mutant5
+
+namespace mutant6 {
+class Mutant : public LegalizerInfo {
+  const X86Subtarget &Subtarget;
+
+public:
+  explicit Mutant(const X86Subtarget &STI) : Subtarget(STI) {
+#include "X86LegalizerInfoMutant6.inc"
+  }
+  bool legalizeCustom(LegalizerHelper &, MachineInstr &,
+                      LostDebugLocObserver &) const override {
+    return false;
+  }
+};
+} // namespace mutant6
+
+namespace mutant7 {
+class Mutant : public LegalizerInfo {
+  const X86Subtarget &Subtarget;
+
+public:
+  explicit Mutant(const X86Subtarget &STI) : Subtarget(STI) {
+#include "X86LegalizerInfoMutant7.inc"
+  }
+  bool legalizeCustom(LegalizerHelper &, MachineInstr &,
+                      LostDebugLocObserver &) const override {
+    return false;
+  }
+};
+} // namespace mutant7
+
+namespace mutant8 {
+class Mutant : public LegalizerInfo {
+  const X86Subtarget &Subtarget;
+
+public:
+  explicit Mutant(const X86Subtarget &STI) : Subtarget(STI) {
+#include "X86LegalizerInfoMutant8.inc"
+  }
+  bool legalizeCustom(LegalizerHelper &, MachineInstr &,
+                      LostDebugLocObserver &) const override {
+    return false;
+  }
+};
+} // namespace mutant8
+
+namespace mutant9 {
+class Mutant : public LegalizerInfo {
+  const X86Subtarget &Subtarget;
+
+public:
+  explicit Mutant(const X86Subtarget &STI) : Subtarget(STI) {
+#include "X86LegalizerInfoMutant9.inc"
+  }
+  bool legalizeCustom(LegalizerHelper &, MachineInstr &,
+                      LostDebugLocObserver &) const override {
+    return false;
+  }
+};
+} // namespace mutant9
+
+namespace mutant10 {
+class Mutant : public LegalizerInfo {
+  const X86Subtarget &Subtarget;
+
+public:
+  explicit Mutant(const X86Subtarget &STI) : Subtarget(STI) {
+#include "X86LegalizerInfoMutant10.inc"
+  }
+  bool legalizeCustom(LegalizerHelper &, MachineInstr &,
+                      LostDebugLocObserver &) const override {
+    return false;
+  }
+};
+} // namespace mutant10
+
+namespace mutant11 {
+class Mutant : public LegalizerInfo {
+  const X86Subtarget &Subtarget;
+
+public:
+  explicit Mutant(const X86Subtarget &STI) : Subtarget(STI) {
+#include "X86LegalizerInfoMutant11.inc"
+  }
+  bool legalizeCustom(LegalizerHelper &, MachineInstr &,
+                      LostDebugLocObserver &) const override {
+    return false;
+  }
+};
+} // namespace mutant11
+
+namespace mutant12 {
+class Mutant : public LegalizerInfo {
+  const X86Subtarget &Subtarget;
+
+public:
+  explicit Mutant(const X86Subtarget &STI) : Subtarget(STI) {
+#include "X86LegalizerInfoMutant12.inc"
+  }
+  bool legalizeCustom(LegalizerHelper &, MachineInstr &,
+                      LostDebugLocObserver &) const override {
+    return false;
+  }
+};
+} // namespace mutant12
+
+namespace mutant13 {
+class Mutant : public LegalizerInfo {
+  const X86Subtarget &Subtarget;
+
+public:
+  explicit Mutant(const X86Subtarget &STI) : Subtarget(STI) {
+#include "X86LegalizerInfoMutant13.inc"
+  }
+  bool legalizeCustom(LegalizerHelper &, MachineInstr &,
+                      LostDebugLocObserver &) const override {
+    return false;
+  }
+};
+} // namespace mutant13
+
+namespace mutant14 {
+class Mutant : public LegalizerInfo {
+  const X86Subtarget &Subtarget;
+
+public:
+  explicit Mutant(const X86Subtarget &STI) : Subtarget(STI) {
+#include "X86LegalizerInfoMutant14.inc"
+  }
+  bool legalizeCustom(LegalizerHelper &, MachineInstr &,
+                      LostDebugLocObserver &) const override {
+    return false;
+  }
+};
+} // namespace mutant14
+
 struct Config {
   const char *ID;
   const char *Triple;
@@ -244,6 +410,26 @@ static const Config FullConfigs[] = {
     {"C3", "i386", "+x87,+popcnt,+lzcnt,+bmi,+cmov", false, false, false, false,
      true},
 };
+
+// G005 feature matrix.  Six subtargets vary one feature at a time so a mutant
+// that corrupts a feature guard has a configuration that separates it from the
+// reference.  These are not witness configurations: MutationKillMatrix replays
+// every committed witness atom under each of them.
+static const Config MatrixConfigs[] = {
+    {"M0", "x86_64", "", true, false, false, false, false},
+    {"M1", "x86_64", "+popcnt", true, false, false, false, true},
+    {"M2", "x86_64", "+lzcnt", true, false, false, false, false},
+    {"M3", "x86_64", "+avx512f,+avx512vpopcntdq", true, true, true, false,
+     false},
+    {"M4", "x86_64", "+avx512f,+avx512vl", true, true, false, true, false},
+    {"M5", "x86_64", "+avx512f", true, true, false, false, false},
+};
+static const char *const MatrixConfigNames[] = {
+    "baseline",       "POPCNT-only", "LZCNT-only",
+    "VPOPCNTDQ-only", "VLX-only",    "AVX512-without-VPOPCNTDQ",
+};
+static_assert(std::size(MatrixConfigs) == std::size(MatrixConfigNames),
+              "feature matrix labels must match the configurations");
 
 struct TypeClass {
   const char *ID;
@@ -3995,120 +4181,461 @@ TEST_F(X86LegalizerDifferentialTest, ReportRoundTripsThroughJson) {
 }
 
 //===----------------------------------------------------------------------===//
-// Mutation tests
+// Mutation tests (G005)
 //===----------------------------------------------------------------------===//
 //
-// A differential harness that never fails is indistinguishable from one whose
-// two sides happen to be the same table.  These tests corrupt one rule of the
-// .td at configure time and require the harness to report exactly the atoms the
-// corruption can reach: no atom more (the comparator is not trigger-happy) and
-// no atom less (the vocabulary is wide enough to see the defect at all).
+// The differential harness is falsified by fixing a set of mutants and proving
+// every one is caught.  Fourteen mutants corrupt one rule of
+// X86LegalizerInfo.td, in fourteen different rule sets; two more corrupt the
+// frozen reference.  A mutant is killed when its first legalization step
+// differs from the frozen reference for one committed witness atom under one
+// configuration.
 //
-// The expectation is written as a predicate over (config, type), derived from
-// the rule that was corrupted, not as a list copied out of a run.
+// All 1,256 committed atoms are replayed under their own witness configuration
+// and under the six feature-matrix configurations.  The first kill in
+// (configuration, atom) order is committed to x86-legalizer-mutants.json, so
+// the evidence is reviewable, and a rerun that moves a witness fails instead
+// of silently passing with a different atom.
 
-using AtomID = std::string;
-
-struct DiffResult {
-  std::set<AtomID> Atoms;
-  std::string Report;
+struct MutantSpec {
+  const char *Id;
+  const char *Kind;
+  const char *RuleSet;
+  std::unique_ptr<LegalizerInfo> (*Make)(const X86Subtarget &,
+                                         const X86TargetMachine &);
 };
 
-// Every atom where `Mutant` and the frozen oracle disagree on the first step.
-template <typename Mutant> static DiffResult diffAgainstOracle() {
-  DiffResult R;
-  for (const Config &C : Configs) {
-    Sigma S = makeSigma(C);
-    EXPECT_TRUE(S.STI) << "no subtarget for " << C.ID;
-    if (!S.STI)
-      continue;
-    X86LegalizerInfoReference Oracle(
-        *S.STI, *static_cast<const X86TargetMachine *>(S.TM.get()));
-    Mutant M(*S.STI);
-    for (const TypeClass &T : typeClasses()) {
-      LLT Types[] = {T.Dst, T.Src};
-      LegalityQuery Q(G_CTPOP, Types);
-      LegalizeActionStep A = Oracle.getAction(Q);
-      LegalizeActionStep B = M.getAction(Q);
-      if (stepsAgree(A, B))
-        continue;
-      R.Atoms.insert(std::string(C.ID) + "/" + T.ID);
-      raw_string_ostream OS(R.Report);
-      OS << "  " << C.ID << "/" << T.ID << " expected " << describe(A)
-         << " got " << describe(B) << "\n";
+static const MutantSpec Mutants[] = {
+    {"td-01/X86LegalizerInfoMutant1", "td", "X86_CTPOP",
+     [](const X86Subtarget &STI,
+        const X86TargetMachine &) -> std::unique_ptr<LegalizerInfo> {
+       return std::make_unique<mutant1::Mutant>(STI);
+     }},
+    {"td-02/X86LegalizerInfoMutant2", "td", "X86_CTLZ",
+     [](const X86Subtarget &STI,
+        const X86TargetMachine &) -> std::unique_ptr<LegalizerInfo> {
+       return std::make_unique<mutant2::Mutant>(STI);
+     }},
+    {"td-03/X86LegalizerInfoMutant3", "td", "X86_CTTZ",
+     [](const X86Subtarget &STI,
+        const X86TargetMachine &) -> std::unique_ptr<LegalizerInfo> {
+       return std::make_unique<mutant3::Mutant>(STI);
+     }},
+    {"td-04/X86LegalizerInfoMutant4", "td", "X86_MUL",
+     [](const X86Subtarget &STI,
+        const X86TargetMachine &) -> std::unique_ptr<LegalizerInfo> {
+       return std::make_unique<mutant4::Mutant>(STI);
+     }},
+    {"td-05/X86LegalizerInfoMutant5", "td", "X86_ADD",
+     [](const X86Subtarget &STI,
+        const X86TargetMachine &) -> std::unique_ptr<LegalizerInfo> {
+       return std::make_unique<mutant5::Mutant>(STI);
+     }},
+    {"td-06/X86LegalizerInfoMutant6", "td", "X86_IMPLICIT_DEF",
+     [](const X86Subtarget &STI,
+        const X86TargetMachine &) -> std::unique_ptr<LegalizerInfo> {
+       return std::make_unique<mutant6::Mutant>(STI);
+     }},
+    {"td-07/X86LegalizerInfoMutant7", "td", "X86_SELECT",
+     [](const X86Subtarget &STI,
+        const X86TargetMachine &) -> std::unique_ptr<LegalizerInfo> {
+       return std::make_unique<mutant7::Mutant>(STI);
+     }},
+    {"td-08/X86LegalizerInfoMutant8", "td", "X86_FNEG",
+     [](const X86Subtarget &STI,
+        const X86TargetMachine &) -> std::unique_ptr<LegalizerInfo> {
+       return std::make_unique<mutant8::Mutant>(STI);
+     }},
+    {"td-09/X86LegalizerInfoMutant9", "td", "X86_CONCAT_VECTORS",
+     [](const X86Subtarget &STI,
+        const X86TargetMachine &) -> std::unique_ptr<LegalizerInfo> {
+       return std::make_unique<mutant9::Mutant>(STI);
+     }},
+    {"td-10/X86LegalizerInfoMutant10", "td", "X86_INSERT",
+     [](const X86Subtarget &STI,
+        const X86TargetMachine &) -> std::unique_ptr<LegalizerInfo> {
+       return std::make_unique<mutant10::Mutant>(STI);
+     }},
+    {"td-11/X86LegalizerInfoMutant11", "td", "X86_CTTZ_ZERO_POISON",
+     [](const X86Subtarget &STI,
+        const X86TargetMachine &) -> std::unique_ptr<LegalizerInfo> {
+       return std::make_unique<mutant11::Mutant>(STI);
+     }},
+    {"td-12/X86LegalizerInfoMutant12", "td", "X86_BSWAP",
+     [](const X86Subtarget &STI,
+        const X86TargetMachine &) -> std::unique_ptr<LegalizerInfo> {
+       return std::make_unique<mutant12::Mutant>(STI);
+     }},
+    {"td-13/X86LegalizerInfoMutant13", "td", "X86_IS_FPCLASS",
+     [](const X86Subtarget &STI,
+        const X86TargetMachine &) -> std::unique_ptr<LegalizerInfo> {
+       return std::make_unique<mutant13::Mutant>(STI);
+     }},
+    {"td-14/X86LegalizerInfoMutant14", "td", "X86_ANYEXT",
+     [](const X86Subtarget &STI,
+        const X86TargetMachine &) -> std::unique_ptr<LegalizerInfo> {
+       return std::make_unique<mutant14::Mutant>(STI);
+     }},
+    {"ref-01/X86LegalizerInfoReferenceMutant1", "reference", "X86_CTLZ",
+     [](const X86Subtarget &STI,
+        const X86TargetMachine &TM) -> std::unique_ptr<LegalizerInfo> {
+       return std::make_unique<X86LegalizerInfoReferenceMutant1>(STI, TM);
+     }},
+    {"ref-02/X86LegalizerInfoReferenceMutant2", "reference", "X86_CTPOP",
+     [](const X86Subtarget &STI,
+        const X86TargetMachine &TM) -> std::unique_ptr<LegalizerInfo> {
+       return std::make_unique<X86LegalizerInfoReferenceMutant2>(STI, TM);
+     }},
+};
+static_assert(std::size(Mutants) == 16, "the manifest is fixed at 16 mutants");
+
+// A witness configuration and the six feature-matrix configurations, in the
+// order the kill search visits them.  Matrix first: when a mutant is sensitive
+// to a feature, that is the more interesting witness than the atom's own
+// configuration.
+struct KillConfig {
+  std::string Label;
+  const Config *C;
+};
+
+static std::vector<KillConfig> makeKillConfigs() {
+  std::vector<KillConfig> ConfigsForKills;
+  for (unsigned I = 0; I != std::size(MatrixConfigs); ++I)
+    ConfigsForKills.push_back({MatrixConfigNames[I], &MatrixConfigs[I]});
+  for (const Config &C : FullConfigs)
+    ConfigsForKills.push_back({std::string("witness-") + C.ID, &C});
+  return ConfigsForKills;
+}
+
+static bool sameSubtargetConfig(const Config &A, const Config &B) {
+  return StringRef(A.Triple) == StringRef(B.Triple) &&
+         StringRef(A.FS) == StringRef(B.FS);
+}
+
+struct MutantKillRecord {
+  std::string Config;
+  std::string AtomId;
+};
+
+struct KillMatrixResult {
+  // Indexed like Mutants; engaged when at least one atom killed the mutant.
+  std::vector<std::optional<MutantKillRecord>> FirstKill;
+  // Configuration label -> the mutants that configuration kills.
+  std::map<std::string, std::set<std::string>> KilledByConfig;
+  unsigned Atoms = 0;
+};
+
+// A 64-bit pointer query against an i386 subtarget can reach clampScalarOrElt
+// with a pointer and assert inside LLT::changeElementSize.  The witness atoms
+// are all 64-bit pointers, so the i386 witness configurations are skipped for
+// them; the six feature-matrix configurations are x86_64 and still see every
+// atom.  This is a property of replaying a query outside its own subtarget,
+// not a mutant exemption.
+static bool tablePointHasPointer(const X86TablePoint &P) {
+  for (unsigned I = 0; I != P.NumTypes; ++I)
+    if (P.Types[I].isPointer() || P.Types[I].isPointerVector())
+      return true;
+  return P.HasMem && (P.MemTy.isPointer() || P.MemTy.isPointerVector());
+}
+
+static KillMatrixResult computeKillMatrix() {
+  KillMatrixResult Result;
+  Result.FirstKill.resize(std::size(Mutants));
+
+  std::string Error;
+  std::optional<std::vector<WitnessAtom>> Atoms = readWitnessAtoms(Error);
+  if (!Atoms) {
+    ADD_FAILURE() << Error;
+    return Result;
+  }
+  Result.Atoms = Atoms->size();
+
+  const std::vector<KillConfig> ConfigsForKills = makeKillConfigs();
+  std::vector<Sigma> Sigmas;
+  Sigmas.reserve(ConfigsForKills.size());
+  for (const KillConfig &KC : ConfigsForKills) {
+    Sigmas.push_back(makeSigma(*KC.C));
+    if (!Sigmas.back().STI) {
+      ADD_FAILURE() << "no subtarget for " << KC.Label;
+      return Result;
     }
   }
-  return R;
+
+  for (unsigned CI = 0; CI != ConfigsForKills.size(); ++CI) {
+    const X86TargetMachine &TM =
+        *static_cast<const X86TargetMachine *>(Sigmas[CI].TM.get());
+    X86LegalizerInfoReference Oracle(*Sigmas[CI].STI, TM);
+    std::vector<std::unique_ptr<LegalizerInfo>> Instances;
+    Instances.reserve(std::size(Mutants));
+    for (const MutantSpec &M : Mutants)
+      Instances.push_back(M.Make(*Sigmas[CI].STI, TM));
+
+    for (const WitnessAtom &A : *Atoms) {
+      if (!ConfigsForKills[CI].C->Is64 && tablePointHasPointer(A.Point))
+        continue;
+      LegalizeActionStep Want{Unsupported, 0, LLT{}};
+      withAtomQuery(A.Point, [&](const LegalityQuery &Q) {
+        Want = Oracle.getAction(Q);
+        for (unsigned MI = 0; MI != Instances.size(); ++MI) {
+          if (stepsAgree(Want, Instances[MI]->getAction(Q)))
+            continue;
+          Result.KilledByConfig[ConfigsForKills[CI].Label].insert(
+              Mutants[MI].Id);
+          if (!Result.FirstKill[MI])
+            Result.FirstKill[MI] =
+                MutantKillRecord{ConfigsForKills[CI].Label, A.Id};
+        }
+      });
+    }
+  }
+  return Result;
 }
 
-static std::set<AtomID> selectAtoms(bool (*Pred)(const Config &,
-                                                 const TypeClass &)) {
-  std::set<AtomID> S;
-  for (const Config &C : Configs)
-    for (const TypeClass &T : typeClasses())
-      if (Pred(C, T))
-        S.insert(std::string(C.ID) + "/" + T.ID);
-  return S;
+// Replay one committed (mutant, config, atom) triple.  The manifest test uses
+// this instead of trusting the computed matrix: a stale entry must fail even
+// when some other atom still kills the mutant.
+static bool reproducesKill(const MutantSpec &M, StringRef ConfigLabel,
+                           StringRef AtomId) {
+  std::string Error;
+  std::optional<std::vector<WitnessAtom>> Atoms = readWitnessAtoms(Error);
+  if (!Atoms) {
+    ADD_FAILURE() << Error;
+    return false;
+  }
+  const Config *C = nullptr;
+  for (unsigned I = 0; I != std::size(MatrixConfigs); ++I)
+    if (ConfigLabel == MatrixConfigNames[I])
+      C = &MatrixConfigs[I];
+  for (const Config &FC : FullConfigs) {
+    const std::string Label = "witness-" + std::string(FC.ID);
+    if (ConfigLabel == StringRef(Label))
+      C = &FC;
+  }
+  if (!C) {
+    ADD_FAILURE() << M.Id << ": manifest names unknown config " << ConfigLabel;
+    return false;
+  }
+  Sigma S = makeSigma(*C);
+  if (!S.STI)
+    return false;
+  const X86TargetMachine &TM =
+      *static_cast<const X86TargetMachine *>(S.TM.get());
+  X86LegalizerInfoReference Oracle(*S.STI, TM);
+  std::unique_ptr<LegalizerInfo> Mutant = M.Make(*S.STI, TM);
+  for (const WitnessAtom &A : *Atoms) {
+    if (A.Id != AtomId)
+      continue;
+    if (!C->Is64 && tablePointHasPointer(A.Point)) {
+      ADD_FAILURE() << M.Id << ": manifest pairs a 64-bit pointer atom with "
+                    << "an i386 config";
+      return false;
+    }
+    LegalizeActionStep Want{Unsupported, 0, LLT{}};
+    LegalizeActionStep Got{Unsupported, 0, LLT{}};
+    withAtomQuery(A.Point, [&](const LegalityQuery &Q) {
+      Want = Oracle.getAction(Q);
+      Got = Mutant->getAction(Q);
+    });
+    return !stepsAgree(Want, Got);
+  }
+  ADD_FAILURE() << M.Id << ": manifest names unknown atom " << AtomId;
+  return false;
 }
 
-static std::string renderSetDifference(const std::set<AtomID> &Got,
-                                       const std::set<AtomID> &Want) {
+struct ManifestEntry {
+  std::string MutantId;
+  std::string Kind;
+  std::string RuleSet;
+  std::string Config;
+  std::string AtomId;
+};
+
+static std::string renderMutantManifest(const KillMatrixResult &KM) {
+  std::vector<const MutantSpec *> Sorted;
+  Sorted.reserve(std::size(Mutants));
+  for (const MutantSpec &M : Mutants)
+    Sorted.push_back(&M);
+  std::sort(Sorted.begin(), Sorted.end(),
+            [](const MutantSpec *A, const MutantSpec *B) {
+              return StringRef(A->Id).compare(StringRef(B->Id)) < 0;
+            });
+
   std::string Out;
   raw_string_ostream OS(Out);
-  for (const AtomID &A : Got)
-    if (!Want.count(A))
-      OS << "  unexpected diff: " << A << "\n";
-  for (const AtomID &A : Want)
-    if (!Got.count(A))
-      OS << "  missed diff:     " << A << "\n";
+  OS << "{\n";
+  OS << "  \"schema\": \"llvm.gisel.x86-legalizer-mutants\",\n";
+  OS << "  \"version\": 1,\n";
+  OS << "  \"comment\": \"One killing (config, atom) pair per mutant, "
+        "replayed from x86-legalizer-witness.json by MutationKillMatrix.  "
+        "Entries are sorted by mutant_id; the first kill in (configuration, "
+        "atom) order is recorded.\",\n";
+  OS << "  \"count\": " << Sorted.size() << ",\n";
+  OS << "  \"mutants\": [\n";
+  for (size_t I = 0; I != Sorted.size(); ++I) {
+    const MutantSpec &M = *Sorted[I];
+    const unsigned Index = static_cast<unsigned>(&M - Mutants);
+    const std::optional<MutantKillRecord> &K = KM.FirstKill[Index];
+    OS << "    {\"mutant_id\": \"" << M.Id << "\", \"kind\": \"" << M.Kind
+       << "\", \"rule_set\": \"" << M.RuleSet << "\", \"config\": \""
+       << (K ? K->Config : "") << "\", \"killing_atom_id\": \""
+       << (K ? K->AtomId : "") << "\"}";
+    OS << (I + 1 == Sorted.size() ? "\n" : ",\n");
+  }
+  OS << "  ]\n}\n";
   return OS.str();
 }
 
-static void expectDiffIs(const DiffResult &R, const std::set<AtomID> &Want,
-                         const char *What) {
-  EXPECT_EQ(R.Atoms.size(), Want.size()) << What;
-  EXPECT_TRUE(R.Atoms == Want)
-      << What << ": detected set != predicted set\n"
-      << renderSetDifference(R.Atoms, Want) << "actual steps:\n"
-      << R.Report;
+// Not a test.  Regenerate the committed manifest after an intentional mutant
+// change:
+//
+//   X86_MUTANTS_OUT=<abs path> X86Tests --gtest_also_run_disabled_tests \
+//     --gtest_filter='*GenerateMutantManifest*'
+TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateMutantManifest) {
+  const char *OutPath = std::getenv("X86_MUTANTS_OUT");
+  if (!OutPath)
+    GTEST_SKIP() << "set X86_MUTANTS_OUT to the absolute output path";
+
+  const KillMatrixResult KM = computeKillMatrix();
+  for (unsigned I = 0; I != std::size(Mutants); ++I)
+    ASSERT_TRUE(KM.FirstKill[I]) << Mutants[I].Id << " was not killed";
+
+  std::error_code EC;
+  raw_fd_ostream OS(OutPath, EC);
+  ASSERT_FALSE(EC) << OutPath << ": " << EC.message();
+  OS << renderMutantManifest(KM);
+  OS.flush();
+  ASSERT_FALSE(OS.has_error()) << OutPath;
 }
 
-// TC-23: the s32 pair is dropped from the HasPOPCNT rule.  s32/s32 (T2) is the
-// only type whose sole legal path was that pair, so exactly the POPCNT targets
-// move, and they move on that type alone.  C3 has no POPCNT and must not move.
-TEST_F(X86LegalizerDifferentialTest, MutantDroppedS32PopcntPair) {
-  std::set<AtomID> Want = selectAtoms([](const Config &C, const TypeClass &T) {
-    return C.POPCNT && StringRef(T.ID) == "T2";
-  });
-  EXPECT_EQ(Want.size(), 6u) << "predicate no longer describes the corpus";
-  expectDiffIs(diffAgainstOracle<mutant1::Mutant>(), Want,
-               "dropped s32 popcnt pair");
-}
+TEST_F(X86LegalizerDifferentialTest, MutationKillMatrix) {
+  std::optional<std::string> Text =
+      readTestSourceFile("x86-legalizer-mutants.json");
+  ASSERT_TRUE(Text.has_value())
+      << "cannot read x86-legalizer-mutants.json from "
+      << X86_LEGALIZER_TEST_SRC_DIR;
+  auto Value = json::parse(*Text);
+  ASSERT_TRUE(!!Value) << toString(Value.takeError());
+  const json::Object *Root = Value->getAsObject();
+  ASSERT_NE(Root, nullptr);
+  EXPECT_EQ(Root->getString("schema").value_or(""),
+            "llvm.gisel.x86-legalizer-mutants");
+  EXPECT_EQ(Root->getInteger("version").value_or(-1), 1);
+  EXPECT_EQ(Root->getInteger("count").value_or(-1), 16);
 
-// TC-24a: HasVPOPCNTDQ was mistyped as HasAVX512 on the 512-bit rule.  Only a
-// target with AVX512 but without VPOPCNTDQ can tell the two apart, and only on
-// the two types that rule legalizes: C5/C6 x {T9,T10}.
-TEST_F(X86LegalizerDifferentialTest, MutantVpopcntdqWrittenAsAvx512) {
-  std::set<AtomID> Want = selectAtoms([](const Config &C, const TypeClass &T) {
-    StringRef Ty(T.ID);
-    return C.AVX512 && !C.VPOPCNTDQ && (Ty == "T9" || Ty == "T10");
-  });
-  EXPECT_EQ(Want.size(), 4u) << "predicate no longer describes the corpus";
-  expectDiffIs(diffAgainstOracle<mutant2::Mutant>(), Want,
-               "vpopcntdq written as avx512");
-}
+  const json::Array *Entries = Root->getArray("mutants");
+  ASSERT_NE(Entries, nullptr);
+  ASSERT_EQ(Entries->size(), 16u) << "the manifest must have exactly 16 rows";
 
-// TC-24b: VPOPCNTAndVLX was mistyped as HasVLX on the 128/256-bit rule.  Only
-// C6 (VLX without VPOPCNTDQ) can see it, on the four types that rule legalizes.
-TEST_F(X86LegalizerDifferentialTest, MutantVlxGuardWrittenAsVlxOnly) {
-  std::set<AtomID> Want = selectAtoms([](const Config &C, const TypeClass &T) {
-    StringRef Ty(T.ID);
-    return C.VLX && !C.VPOPCNTDQ &&
-           (Ty == "T5" || Ty == "T6" || Ty == "T7" || Ty == "T8");
-  });
-  EXPECT_EQ(Want.size(), 4u) << "predicate no longer describes the corpus";
-  expectDiffIs(diffAgainstOracle<mutant3::Mutant>(), Want,
-               "vlx guard widened to vlx only");
+  std::map<std::string, ManifestEntry> Manifest;
+  for (const json::Value &V : *Entries) {
+    const json::Object *O = V.getAsObject();
+    ASSERT_NE(O, nullptr);
+    ManifestEntry E;
+    E.MutantId = O->getString("mutant_id").value_or("").str();
+    E.Kind = O->getString("kind").value_or("").str();
+    E.RuleSet = O->getString("rule_set").value_or("").str();
+    E.Config = O->getString("config").value_or("").str();
+    E.AtomId = O->getString("killing_atom_id").value_or("").str();
+    EXPECT_FALSE(E.MutantId.empty());
+    EXPECT_FALSE(E.Kind.empty());
+    EXPECT_FALSE(E.RuleSet.empty());
+    EXPECT_FALSE(E.Config.empty());
+    EXPECT_FALSE(E.AtomId.empty());
+    EXPECT_TRUE(E.Kind == "td" || E.Kind == "reference") << E.MutantId;
+    EXPECT_TRUE(Manifest.emplace(E.MutantId, E).second)
+        << "duplicate mutant_id " << E.MutantId;
+  }
+  ASSERT_EQ(Manifest.size(), 16u) << "manifest mutant ids are not unique";
+
+  unsigned TDCount = 0, ReferenceCount = 0;
+  std::set<std::string> TDRuleSets;
+  for (const auto &Entry : Manifest) {
+    if (Entry.second.Kind == "td") {
+      ++TDCount;
+      TDRuleSets.insert(Entry.second.RuleSet);
+    } else if (Entry.second.Kind == "reference") {
+      ++ReferenceCount;
+    }
+  }
+  EXPECT_EQ(TDCount, 14u);
+  EXPECT_EQ(ReferenceCount, 2u);
+  EXPECT_EQ(TDRuleSets.size(), 14u)
+      << "the 14 .td mutants must cover 14 different rule sets";
+
+  const KillMatrixResult KM = computeKillMatrix();
+  ASSERT_EQ(KM.Atoms, 1256u)
+      << "the kill matrix must replay every witness atom";
+  ASSERT_EQ(std::size(Mutants), 16u);
+
+  unsigned Killed = 0;
+  for (unsigned MI = 0; MI != std::size(Mutants); ++MI) {
+    const MutantSpec &M = Mutants[MI];
+    const auto It = Manifest.find(M.Id);
+    ASSERT_TRUE(It != Manifest.end()) << "manifest is missing " << M.Id;
+    const ManifestEntry &E = It->second;
+    EXPECT_EQ(E.Kind, M.Kind) << M.Id;
+    EXPECT_EQ(E.RuleSet, M.RuleSet) << M.Id;
+
+    if (!KM.FirstKill[MI]) {
+      ADD_FAILURE() << "mutant " << M.Id << " (" << M.Kind << ", " << M.RuleSet
+                    << ") was not killed by any of " << KM.Atoms
+                    << " witness atoms under any configuration";
+      continue;
+    }
+    ++Killed;
+    const MutantKillRecord &K = *KM.FirstKill[MI];
+    EXPECT_EQ(E.Config, K.Config)
+        << M.Id << ": manifest config is stale; first kill is now at "
+        << K.Config;
+    EXPECT_EQ(E.AtomId, K.AtomId)
+        << M.Id << ": manifest killing atom moved; first kill is now "
+        << K.AtomId;
+    EXPECT_TRUE(reproducesKill(M, E.Config, E.AtomId))
+        << M.Id << ": recorded (" << E.Config << ", " << E.AtomId
+        << ") does not reproduce a kill";
+  }
+  EXPECT_EQ(Killed, 16u) << "every mutant must be killed";
+
+  // The feature matrix is only useful if each configuration separates at least
+  // one mutant from the reference.  A configuration that does not is accepted
+  // only when its feature vector is exactly a witness configuration, i.e. the
+  // witness corpus itself covers it.
+  unsigned MatrixKills = 0;
+  llvm::outs() << "feature matrix coverage:\n";
+  for (unsigned I = 0; I != std::size(MatrixConfigs); ++I) {
+    const std::string Label = MatrixConfigNames[I];
+    const auto It = KM.KilledByConfig.find(Label);
+    const unsigned KillCount =
+        It == KM.KilledByConfig.end() ? 0 : It->second.size();
+    MatrixKills += KillCount;
+    bool WitnessCovered = false;
+    for (const Config &C : FullConfigs)
+      if (sameSubtargetConfig(C, MatrixConfigs[I]))
+        WitnessCovered = true;
+    EXPECT_TRUE(KillCount > 0 || WitnessCovered)
+        << "feature-matrix config " << Label
+        << " kills no mutant and is not covered by a witness config";
+    llvm::outs() << "  " << Label << ": killed=" << KillCount
+                 << " witness_covered=" << (WitnessCovered ? "yes" : "no")
+                 << "\n";
+  }
+  EXPECT_GT(MatrixKills, 0u);
+
+  llvm::outs() << "mutant kill matrix:\n";
+  std::vector<const MutantSpec *> Sorted;
+  for (const MutantSpec &M : Mutants)
+    Sorted.push_back(&M);
+  std::sort(Sorted.begin(), Sorted.end(),
+            [](const MutantSpec *A, const MutantSpec *B) {
+              return StringRef(A->Id).compare(StringRef(B->Id)) < 0;
+            });
+  for (const MutantSpec *M : Sorted) {
+    const ManifestEntry &E = Manifest.at(M->Id);
+    llvm::outs() << "  " << M->Id << " kind=" << M->Kind
+                 << " rule_set=" << M->RuleSet << " config=" << E.Config
+                 << " atom=" << E.AtomId << "\n";
+  }
+  llvm::outs() << "mutants killed: " << Killed << "/16\n";
 }
 
 } // namespace

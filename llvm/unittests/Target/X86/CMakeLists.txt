@@ -86,21 +86,86 @@ function(x86_add_legalizer_mutant name from to)
   set(TABLEGEN_OUTPUT ${TABLEGEN_OUTPUT} PARENT_SCOPE)
 endfunction()
 
-# TC-23: drop the s32 pair from the HasPOPCNT rule.  Deleting a rule that no
-# atom reaches would be a no-op, which is why this one is named explicitly.
+# G005: fourteen mutants, each corrupting one rule in a different rule set.
+# The categories are guard reversal (7, 8), action change (12, 13, 14), pair
+# pruning (9, 10, 11) and feature-condition replacement (1..6).  Every pattern
+# below is the minimal unique text for its rule; the STREQUAL guard in
+# x86_add_legalizer_mutant turns a stale pattern into a configure error instead
+# of a silently unmutated table.
+
+# 1. X86_CTPOP: the 128/256-bit rule loses its VPOPCNTDQ half.  A target with
+# VPOPCNTDQ but without VLX can see the difference.
 x86_add_legalizer_mutant(X86LegalizerInfoMutant1
-  "LegalForPairsIf<HasPOPCNT, [LegalizeTypePair<X86_s16, X86_s16>, LegalizeTypePair<X86_s32, X86_s32>]>"
-  "LegalForPairsIf<HasPOPCNT, [LegalizeTypePair<X86_s16, X86_s16>]>")
+  "LegalForPairsIf<VPOPCNTAndVLX,"
+  "LegalForPairsIf<HasVPOPCNTDQ,")
 
-# TC-24a: a transcription slip that writes HasAVX512 where the oracle wrote
-# HasVPOPCNTDQ.  Only C5/C6 can see this.
+# 2. X86_CTLZ: HasLZCNT was written as HasPOPCNT.  Only a LZCNT target without
+# POPCNT separates the two.
 x86_add_legalizer_mutant(X86LegalizerInfoMutant2
-  "LegalForPairsIf<HasVPOPCNTDQ," "LegalForPairsIf<HasAVX512,")
+  "LegalForPairsIf<HasLZCNT, [LegalizeTypePair<X86_s16, X86_s16>, LegalizeTypePair<X86_s32, X86_s32>]>"
+  "LegalForPairsIf<HasPOPCNT, [LegalizeTypePair<X86_s16, X86_s16>, LegalizeTypePair<X86_s32, X86_s32>]>")
 
-# TC-24b: the analogous slip for the VLX-guarded 128/256-bit rule.  Only C6
-# can see this.
+# 3. X86_CTTZ: HasBMI was written as HasLZCNT.
 x86_add_legalizer_mutant(X86LegalizerInfoMutant3
-  "LegalForPairsIf<VPOPCNTAndVLX," "LegalForPairsIf<HasVLX,")
+  "LegalForPairsIf<HasBMI, [LegalizeTypePair<X86_s16, X86_s16>, LegalizeTypePair<X86_s32, X86_s32>]>"
+  "LegalForPairsIf<HasLZCNT, [LegalizeTypePair<X86_s16, X86_s16>, LegalizeTypePair<X86_s32, X86_s32>]>")
+
+# 4. X86_MUL: the pairwise s64 rule lost the DQI half of its guard.
+x86_add_legalizer_mutant(X86LegalizerInfoMutant4
+  "LegalForIf<DQIAndVLX, [X86_v2s64, X86_v4s64]>"
+  "LegalForIf<HasVLX, [X86_v2s64, X86_v4s64]>")
+
+# 5. X86_ADD: the 512-bit BWI rule was guarded by VLX instead.
+x86_add_legalizer_mutant(X86LegalizerInfoMutant5
+  "LegalForIf<HasBWI, [X86_v64s8, X86_v32s16]>"
+  "LegalForIf<HasVLX, [X86_v64s8, X86_v32s16]>")
+
+# 6. X86_IMPLICIT_DEF: s128 is no longer legal on every 64-bit target, only
+# where AVX is available.
+x86_add_legalizer_mutant(X86LegalizerInfoMutant6
+  "LegalForIf<Is64Bit, [X86_s128]>"
+  "LegalForIf<HasAVX, [X86_s128]>")
+
+# 7. X86_SELECT: the !CMOV rule was inverted to a CMOV rule.
+x86_add_legalizer_mutant(X86LegalizerInfoMutant7
+  "LegalForPairsIf<NotCMOV, [LegalizeTypePair<X86_s8, X86_s32>]>"
+  "LegalForPairsIf<HasCMOV, [LegalizeTypePair<X86_s8, X86_s32>]>")
+
+# 8. X86_FNEG: the named predicate is replaced by its logical negation,
+# !(UseX87 && !HasSSE1) == !UseX87 || HasSSE1.
+x86_add_legalizer_mutant(X86LegalizerInfoMutant8
+  "def UseX87NotSSE1 : LegalizePredicateDag<(all_of UseX87, (not HasSSE1))>;"
+  "def UseX87NotSSE1 : LegalizePredicateDag<(any_of (not UseX87), HasSSE1)>;")
+
+# 9. X86_CONCAT_VECTORS: the v32s8 <- v16s8 pair is dropped from the SSE1 rule.
+x86_add_legalizer_mutant(X86LegalizerInfoMutant9
+  "[LegalizeTypePair<X86_v32s8, X86_v16s8>, LegalizeTypePair<X86_v16s16, X86_v8s16>,"
+  "[LegalizeTypePair<X86_v16s16, X86_v8s16>,")
+
+# 10. X86_INSERT: the v64s8 <- v16s8 pair is dropped from the AVX512 rule.
+x86_add_legalizer_mutant(X86LegalizerInfoMutant10
+  "[LegalizeTypePair<X86_v64s8, X86_v16s8>,\n                     LegalizeTypePair<X86_v64s8, X86_v32s8>,"
+  "[LegalizeTypePair<X86_v64s8, X86_v32s8>,")
+
+# 11. X86_CTTZ_ZERO_POISON: the s16 pair is dropped from the unguarded rule.
+x86_add_legalizer_mutant(X86LegalizerInfoMutant11
+  "LegalForPairs<[LegalizeTypePair<X86_s16, X86_s16>, LegalizeTypePair<X86_s32, X86_s32>]>"
+  "LegalForPairs<[LegalizeTypePair<X86_s32, X86_s32>]>")
+
+# 12. X86_BSWAP: s32 is custom instead of legal.
+x86_add_legalizer_mutant(X86LegalizerInfoMutant12
+  "LegalFor<[X86_s32]>,"
+  "CustomFor<[X86_s32]>,")
+
+# 13. X86_IS_FPCLASS: the x87/64-bit lowering rule was changed to legal.
+x86_add_legalizer_mutant(X86LegalizerInfoMutant13
+  "LowerForPairsIf<Is64Bit, [LegalizeTypePair<X86_s1, X86_s32>, LegalizeTypePair<X86_s1, X86_s64>, LegalizeTypePair<X86_s1, X86_s80>]>"
+  "LegalForPairsIf<Is64Bit, [LegalizeTypePair<X86_s1, X86_s32>, LegalizeTypePair<X86_s1, X86_s64>, LegalizeTypePair<X86_s1, X86_s80>]>")
+
+# 14. X86_ANYEXT: the four legal result types are custom instead.
+x86_add_legalizer_mutant(X86LegalizerInfoMutant14
+  "LegalFor<[X86_s8, X86_s16, X86_s32, X86_s128]>,"
+  "CustomFor<[X86_s8, X86_s16, X86_s32, X86_s128]>,")
 
 # TC-29/TC-31: the SUT must be the tuple recorded in the corpus JSON.  Two of
 # the pinned inputs, the generated .inc and the Core IR, are build products, so
@@ -112,6 +177,47 @@ set(X86_LEGALIZER_CORE
     ${LLVM_BINARY_DIR}/lib/Target/X86/X86LegalizerInfo.core.json)
 set(X86_LEGALIZER_ORACLE
     ${CMAKE_CURRENT_SOURCE_DIR}/X86LegalizerInfoReference.cpp)
+
+# The independent oracle can be corrupted too.  Each copy starts as the frozen
+# reference .cpp, has its class renamed, and has exactly one builder call
+# replaced.  Both replacements must hit, or the mutant would silently test the
+# unmodified oracle.
+set(X86_LEGALIZER_REFERENCE_MUTANTS "")
+function(x86_add_legalizer_reference_mutant name from to)
+  file(READ ${X86_LEGALIZER_ORACLE} _ref)
+  string(REPLACE "X86LegalizerInfoReference" "${name}" _renamed "${_ref}")
+  if(_renamed STREQUAL _ref)
+    message(FATAL_ERROR
+      "reference mutant ${name}: class name did not match")
+  endif()
+  string(REPLACE "#include \"${name}.h\""
+                 "#include \"X86LegalizerInfoReferenceMutants.h\""
+                 _with_header "${_renamed}")
+  if(_with_header STREQUAL _renamed)
+    message(FATAL_ERROR
+      "reference mutant ${name}: include line did not match")
+  endif()
+  string(REPLACE "${from}" "${to}" _mut "${_with_header}")
+  if(_mut STREQUAL _with_header)
+    message(FATAL_ERROR
+      "reference mutant ${name}: rule pattern did not match the reference")
+  endif()
+  file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/${name}.cpp "${_mut}")
+  set(X86_LEGALIZER_REFERENCE_MUTANTS
+      ${X86_LEGALIZER_REFERENCE_MUTANTS}
+      ${CMAKE_CURRENT_BINARY_DIR}/${name}.cpp PARENT_SCOPE)
+endfunction()
+
+# Reference mutant 1: an action change (legal -> lower) on G_CTLZ.
+x86_add_legalizer_reference_mutant(X86LegalizerInfoReferenceMutant1
+  ".legalFor(HasLZCNT, {{s16, s16}, {s32, s32}})"
+  ".lowerFor(HasLZCNT, {{s16, s16}, {s32, s32}})")
+
+# Reference mutant 2: a feature-guard transcription slip (VPOPCNTDQ ->
+# AVX512) on G_CTPOP.
+x86_add_legalizer_reference_mutant(X86LegalizerInfoReferenceMutant2
+  ".legalFor(HasVPOPCNTDQ, {{v16s32, v16s32}, {v8s64, v8s64}})"
+  ".legalFor(HasAVX512, {{v16s32, v16s32}, {v8s64, v8s64}})")
 
 add_custom_command(
   OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/x86-legalizer-pins.h
@@ -162,12 +268,14 @@ set(LLVM_LINK_COMPONENTS
 
 add_llvm_unittest(X86Tests
   ${TABLEGEN_OUTPUT}
+  ${X86_LEGALIZER_REFERENCE_MUTANTS}
   x86-legalizer-pins.h
   x86-ctpop-report.h
   MachineSizeOptsTest.cpp
   TernlogTest.cpp
   X86LegalizerInfoDifferentialTest.cpp
   X86LegalizerInfoReference.cpp
+  X86LegalizerInfoReferenceMutants.h
   X86SelectionDAGTest.cpp
   )
 
