@@ -55,7 +55,10 @@ public:
     LLT NewType;
   };
 
-  explicit X86LegalizerTable(const LegalizerInfo &LI);
+  /// PointerBits is the width of address space 0 for the subtarget this
+  /// LegalizerInfo belongs to.  It is fixed for the instance and is therefore
+  /// not part of the key.
+  X86LegalizerTable(const LegalizerInfo &LI, unsigned PointerBits);
   ~X86LegalizerTable() override;
 
   /// LegalizerInfo::LegalizeTable.  Returns false when the cell is missing,
@@ -79,9 +82,10 @@ public:
 private:
   uint16_t fill(unsigned Table, const LegalityQuery &Q, unsigned L0,
                 unsigned L1) const;
-  static LLT representative(unsigned ClassID);
+  LLT representative(unsigned ClassID) const;
 
   const LegalizerInfo &LI;
+  const unsigned PointerBits;
   mutable std::vector<std::vector<uint16_t>> Cells;
   mutable std::vector<LegalizeActionStep> Steps;
   mutable uint64_t Hits = 0, Escapes = 0, Outsides = 0, PointerVectors = 0,

@@ -7,7 +7,7 @@
 ; RUN: llc < %s -mtriple=x86_64-unknown-linux-gnu -mcpu=x86-64-v4 \
 ; RUN:     -x86-gisel-table-check -o /dev/null 2>&1 | FileCheck %s
 ; RUN: llc < %s -mtriple=i386-unknown-linux-gnu \
-; RUN:     -x86-gisel-table-check -o /dev/null 2>&1 | FileCheck %s --check-prefix=I386
+; RUN:     -x86-gisel-table-check -o /dev/null 2>&1 | FileCheck %s
 
 ; The table is filled from the rule chains and then asked the same questions
 ; the domain enumerates.  A mismatch means the key merges two shapes the rules
@@ -15,7 +15,6 @@
 ; invent an answer the chain would not give.
 ;
 ; CHECK: x86-gisel-table-check: points {{[0-9]+}} compared {{[1-9][0-9][0-9]+}} mismatches 0
-; I386: x86-gisel-table-check: no 32-bit domain yet, skipping
 
 define void @f() {
   ret void

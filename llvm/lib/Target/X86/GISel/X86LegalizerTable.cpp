@@ -33,6 +33,13 @@ struct LegalizerTypeClass {
 
 } // namespace
 
+// The generated file fills in the classes and the per-opcode descriptors; the
+// shape of a descriptor is part of the reader, not of the generator.
+struct LegalizerTableDesc {
+  uint8_t Slots[2]; // which type slots the key reads
+  uint8_t Dims[2];  // class count per key slot
+};
+
 #include "X86LegalizerTable.inc"
 
 namespace {
@@ -54,8 +61,10 @@ int classifyType(LLT T) {
   unsigned Bits;
   unsigned Lanes = 1;
   if (T.isPointer()) {
-    Kind = Kind_Pointer;
-    Bits = T.getSizeInBits().getFixedValue();
+    // There is one pointer class per LegalizerInfo instance.  Its width is
+    // fixed for that instance, so it must not be part of the key: p0 is the
+    // same class whether the subtarget is 32- or 64-bit.
+    return X86TypeClasses[0].Kind == Kind_Pointer ? 0 : kUnknownClass;
   } else if (T.isVector()) {
     if (T.isScalableVector())
       return kUnknownClass;
@@ -75,16 +84,6 @@ int classifyType(LLT T) {
   return kUnknownClass;
 }
 
-/// Inverse of a table's global -> local map.  Local classes are a partition of
-/// the global ones, so the first hit is the only hit.
-unsigned localToGlobal(const LegalizerTableDesc &D, unsigned Slot,
-                       unsigned Local) {
-  for (unsigned G = 0; G < X86NumTypeClasses; ++G)
-    if (D.Local[Slot][G] == Local)
-      return G;
-  llvm_unreachable("local class has no global representative");
-}
-
 struct X86TablePoint {
   unsigned Opcode;
   const char *Name;
@@ -96,14 +95,15 @@ struct X86TablePoint {
 
 #include "X86LegalizerTablePoints.inc"
 
-X86LegalizerTable::X86LegalizerTable(const LegalizerInfo &LI)
-    : LI(LI), Cells(X86NumTables) {}
+X86LegalizerTable::X86LegalizerTable(const LegalizerInfo &LI,
+                                     unsigned PointerBits)
+    : LI(LI), PointerBits(PointerBits), Cells(X86NumTables) {}
 
-LLT X86LegalizerTable::representative(unsigned ClassID) {
+LLT X86LegalizerTable::representative(unsigned ClassID) const {
   const LegalizerTypeClass &C = X86TypeClasses[ClassID];
   switch (C.Kind) {
   case Kind_Pointer:
-    return LLT::pointer(0, C.ElemBits);
+    return LLT::pointer(0, PointerBits);
   case Kind_Vector:
     return LLT::fixed_vector(C.Lanes, C.ElemBits);
   default:
@@ -115,9 +115,9 @@ uint16_t X86LegalizerTable::fill(unsigned Table, const LegalityQuery &Q,
                                  unsigned L0, unsigned L1) const {
   const LegalizerTableDesc &D = X86Tables[Table];
   SmallVector<LLT, 4> Types(Q.Types.begin(), Q.Types.end());
-  Types[D.Slots[0]] = representative(localToGlobal(D, 0, L0));
-  if (D.Dims[1] > 1)
-    Types[D.Slots[1]] = representative(localToGlobal(D, 1, L1));
+  Types[D.Slots[0]] = representative(L0);
+  if (D.Dims[1] > 1 && Types.size() > D.Slots[1])
+    Types[D.Slots[1]] = representative(L1);
 
   // Same question, asked with the class representatives instead of the actual
   // types: that is what makes one cell stand for the whole class pair.  The
@@ -144,10 +144,11 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
   const int C0 = Q.Types.size() > D.Slots[0]
                      ? classifyType(Q.Types[D.Slots[0]])
                      : kUnknownClass;
+  // A unary query has no slot 1.  The descriptor is uniform, so missing slot 1
+  // maps to class 0; the rules in a unary rule set cannot read it.
   int C1 = 0;
-  if (D.Dims[1] > 1)
-    C1 = Q.Types.size() > D.Slots[1] ? classifyType(Q.Types[D.Slots[1]])
-                                     : kUnknownClass;
+  if (D.Dims[1] > 1 && Q.Types.size() > D.Slots[1])
+    C1 = classifyType(Q.Types[D.Slots[1]]);
 
   if (C0 == kPointerVectorClass || C1 == kPointerVectorClass) {
     ++PointerVectors;
@@ -160,21 +161,8 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
     return R;
   }
 
-  const uint8_t L0 = D.Local[0][C0];
-  if (L0 == 0xFF) {
-    ++Outsides;
-    R.Kind = Answer::Outside;
-    return R;
-  }
-  uint8_t L1 = 0;
-  if (D.Dims[1] > 1) {
-    L1 = D.Local[1][C1];
-    if (L1 == 0xFF) {
-      ++Outsides;
-      R.Kind = Answer::Outside;
-      return R;
-    }
-  }
+  const uint8_t L0 = C0;
+  const uint8_t L1 = D.Dims[1] > 1 ? C1 : 0;
 
   std::vector<uint16_t> &Row = Cells[Table];
   if (Row.empty())
@@ -218,7 +206,7 @@ X86LegalizerTable::~X86LegalizerTable() {
 void X86LegalizerTable::selfCheck(raw_ostream &OS) {
   SmallVector<X86TablePoint, 0> Points;
   Points.reserve(X86NumTablePoints);
-  x86CollectTablePoints(Points);
+  x86CollectTablePoints(Points, PointerBits);
 
   unsigned Compared = 0;
   unsigned Mismatches = 0;
