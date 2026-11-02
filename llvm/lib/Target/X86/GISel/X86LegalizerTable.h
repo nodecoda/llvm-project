@@ -41,13 +41,15 @@ public:
   enum class Answer : uint8_t {
     /// The cell held an answer; the result carries it.
     Hit,
-    /// The cell is opaque: the caller must fall back to the rule chain.
+    /// A keyed type is outside the classes the table was built for, so the
+    /// generated evaluator was asked directly.  The answer is still the
+    /// table's own compilation of the rules -- there is no chain behind it.
+    Residual,
+    /// The evaluator declined: the rule set has no table translation.
     Escape,
-    /// A keyed type is not one of the classes the table was built for.
+    /// The query is malformed for this table (a memory rule with no
+    /// descriptor).
     Outside,
-    /// A keyed type is a vector of pointers whose shape the class list does
-    /// not name.  Kept apart from Outside so the gap is counted, not hidden.
-    PointerVector,
     /// The table has no entry for this opcode at all.
     Untabulated,
   };
@@ -69,8 +71,8 @@ public:
                     unsigned PointerBits);
   ~X86LegalizerTable() override;
 
-  /// LegalizerInfo::LegalizeTable.  Returns false when the cell is missing,
-  /// opaque, or out of the table's domain; the caller then uses the rules.
+  /// LegalizerInfo::LegalizeTable.  True when the table or its evaluator
+  /// answered; false only for a malformed query or an opcode it does not know.
   bool lookup(const LegalityQuery &Query, LegalizeActionStep &Step) const override;
 
   Result query(const LegalityQuery &Q) const;
@@ -81,6 +83,7 @@ public:
   void selfCheck(raw_ostream &OS);
 
   uint64_t hits() const { return Hits; }
+  uint64_t residuals() const { return Residuals; }
   uint64_t escapes() const { return Escapes; }
   uint64_t outside() const { return Outsides; }
   uint64_t pointerVectors() const { return PointerVectors; }
@@ -98,8 +101,8 @@ private:
   const unsigned PointerBits;
   mutable std::vector<std::vector<uint16_t>> Cells;
   mutable std::vector<LegalizeActionStep> Steps;
-  mutable uint64_t Hits = 0, Escapes = 0, Outsides = 0, PointerVectors = 0,
-                   Untabulated = 0, Fills = 0;
+  mutable uint64_t Hits = 0, Residuals = 0, Escapes = 0, Outsides = 0,
+                   PointerVectors = 0, Untabulated = 0, Fills = 0;
 };
 
 } // namespace llvm

@@ -1,7 +1,7 @@
-; RUN: llc < %s -mtriple=x86_64-unknown-linux-gnu -x86-gisel-table \
-; RUN:     -x86-gisel-table-stats -o /dev/null 2>&1 | FileCheck %s
-; RUN: llc < %s -mtriple=i386-unknown-linux-gnu -x86-gisel-table \
-; RUN:     -x86-gisel-table-stats -o /dev/null 2>&1 | FileCheck %s
+; RUN: llc < %s -mtriple=x86_64-unknown-linux-gnu -global-isel -x86-gisel-table-stats \
+; RUN:     -o /dev/null 2>&1 | FileCheck %s
+; RUN: llc < %s -mtriple=i386-unknown-linux-gnu -global-isel -x86-gisel-table-stats \
+; RUN:     -o /dev/null 2>&1 | FileCheck %s
 
 ; Loads and stores with a memory descriptor are tabulated: the key carries the
 ; descriptor's LLT (matched by identity, not by size, because G_STORE asks
@@ -12,7 +12,7 @@
 ; query the rules can answer.  The hit count is not checked: it depends on how
 ; often the legalizer revisits a value.
 
-; CHECK: x86-gisel-table: hit {{[0-9]+}} escape 0 outside 0 ptrvec 0 untabulated 0
+; CHECK: x86-gisel-table: hit {{[0-9]+}} residual 0 escape 0 outside 0 ptrvec 0 untabulated 0
 
 define void @copy8(ptr %d, ptr %s) {
   %v = load i8, ptr %s

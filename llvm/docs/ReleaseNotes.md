@@ -370,6 +370,12 @@ Makes programs 10x faster by doing Special New Thing.
 
 ### Changes to the X86 Backend
 
+* GlobalISel legalizer queries are now answered from a table generated from the
+  TableGen rule sets.  Queries outside the generated type classes are answered
+  by the same generated evaluator, so the rule chain is no longer built at
+  runtime; it is kept only as the reference used by
+  `-x86-gisel-table-check`.
+
 * Added assembler and code generation support for the `AVX10_V2_AUX`
   instruction set.
 * The AMX intrinsics that name tile registers (`llvm.x86.tileloadd64`,
