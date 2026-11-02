@@ -12,11 +12,14 @@
 /// wins for this shape" by indexing a table instead of walking the comparison
 /// chain: one classify per keyed slot and one array load per query.
 ///
-/// The table is filled lazily, one cell at a time, from whatever the rule
-/// chain answers for that cell's key.  Filling from the chain means the table
-/// cannot invent an answer the chain would not give; what it *can* expose is
-/// a key that merges two types the rules treat differently, which is exactly
-/// what selfCheck() is for.
+/// The table is filled lazily, one cell at a time, by the evaluator the table
+/// generator emits for the rule set: the same guards and mutations the chain
+/// runs, written out against the same prologue.  Typing a query by its class
+/// representatives is what makes one cell stand for the whole class pair, so
+/// the table can still expose a key that merges two types the rules treat
+/// differently -- which is exactly what selfCheck() is for.  A rule set the
+/// generator cannot translate is opaque: the reader reports it as an escape
+/// and the chain answers.
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_LIB_TARGET_X86_GISEL_X86LEGALIZERTABLE_H
@@ -30,6 +33,7 @@
 namespace llvm {
 
 class raw_ostream;
+class X86Subtarget;
 
 class X86LegalizerTable : public LegalizerInfo::LegalizeTable {
 public:
@@ -55,10 +59,14 @@ public:
     LLT NewType;
   };
 
-  /// PointerBits is the width of address space 0 for the subtarget this
-  /// LegalizerInfo belongs to.  It is fixed for the instance and is therefore
-  /// not part of the key.
-  X86LegalizerTable(const LegalizerInfo &LI, unsigned PointerBits);
+  /// Subtarget is the machine the rules were built for: feature guards and
+  /// the pointer type are evaluated against it, exactly as the generated rule
+  /// chain does.
+  ///
+  /// PointerBits is the width of address space 0 for that subtarget.  It is
+  /// fixed for the instance and is therefore not part of the key.
+  X86LegalizerTable(const LegalizerInfo &LI, const X86Subtarget &Subtarget,
+                    unsigned PointerBits);
   ~X86LegalizerTable() override;
 
   /// LegalizerInfo::LegalizeTable.  Returns false when the cell is missing,
@@ -86,6 +94,7 @@ private:
   LLT representative(unsigned ClassID) const;
 
   const LegalizerInfo &LI;
+  const X86Subtarget &Subtarget;
   const unsigned PointerBits;
   mutable std::vector<std::vector<uint16_t>> Cells;
   mutable std::vector<LegalizeActionStep> Steps;
