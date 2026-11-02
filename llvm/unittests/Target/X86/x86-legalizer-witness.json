@@ -1,9 +1,9 @@
 {
   "schema": "llvm.gisel.x86-legalizer-witness",
   "version": 1,
-  "comment": "Generated from X86LegalizerInfoReference by DISABLED_GenerateWitness.  A literal rule has a first-match witness; every escaped rule whose guard an LLT can satisfy has a descriptor atom.  X86_ADD#9 clamps to fewer than two s64 lanes, which no fixed vector can have, so the generator reports it.",
+  "comment": "Generated from X86LegalizerInfoReference by DISABLED_GenerateWitness.  A literal rule has a first-match witness; every escaped rule whose guard an LLT can satisfy has a descriptor atom.  An escaped rule whose guard no LLT can satisfy is reported as a descriptor exception when it is approved as unreachable.",
   "run": "X86_WITNESS_OUT=<abs path> X86Tests --gtest_also_run_disabled_tests --gtest_filter='*GenerateWitness*'",
-  "source_commit": "6cfec1d4b1c9f1c056e30bb99824fa68a39c7980",
+  "source_commit": "bcb24b6a91b90638db36d78f1c4635b2251f7db2",
   "reference_sha256": "e9776b42efebd104e69f0af6a89f69f9ed95cd7f8700c11c6289876cec66ea85",
   "generator_hash": "97782a2f9ae2affbed3f2da8b3a34174f47200f643063b3330dd7e58da86af68",
   "atom_count": 1256,
@@ -11,6 +11,7 @@
   "boundary_atoms": 756,
   "as_atoms": 220,
   "descriptor_atoms": 92,
+  "descriptor_exceptions": 1,
   "witness_config_default": "C2",
   "atoms": [
     {"id":"x86/as/X86_ADD#0","origin":"as","rule_set":"X86_ADD","rule_index":null,"config":"C2","query":{"types":["p1:64"]},"expected":{"action":"Unsupported"}},

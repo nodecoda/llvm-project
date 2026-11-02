@@ -2013,6 +2013,14 @@ readEscapeTargets(std::string &Error) {
   return Targets;
 }
 
+static bool isEscapedTarget(ArrayRef<EscapeTarget> Escapes, StringRef RuleSet,
+                            unsigned RuleIndex) {
+  for (const EscapeTarget &E : Escapes)
+    if (E.RuleSet == RuleSet && E.RuleIndex == RuleIndex)
+      return true;
+  return false;
+}
+
 struct RuleWitness {
   unsigned Table = 0;
   unsigned RuleIndex = 0;
@@ -2164,6 +2172,9 @@ TEST_F(X86LegalizerDifferentialTest, LiteralRuleFirstMatchLedger) {
   std::optional<std::vector<LegalizerException>> Exceptions =
       readLegalizerExceptions(ExceptionsError);
   ASSERT_TRUE(Exceptions.has_value()) << ExceptionsError;
+  std::optional<std::vector<EscapeTarget>> EscapeTargets =
+      readEscapeTargets(ExceptionsError);
+  ASSERT_TRUE(EscapeTargets.has_value()) << ExceptionsError;
 
   std::map<RuleKey, const LegalizerException *> Approved;
   for (const LegalizerException &E : *Exceptions) {
@@ -2171,9 +2182,17 @@ TEST_F(X86LegalizerDifferentialTest, LiteralRuleFirstMatchLedger) {
     ASSERT_NE(TableIt, TableForSet.end())
         << "exception names an unknown rule set: " << E.RuleSet;
     const RuleKey Key{TableIt->second, E.RuleIndex};
-    ASSERT_TRUE(Targets->count(Key))
-        << "exception names a rule that is not in the literal manifest: "
+    const bool IsLiteral = Targets->count(Key) != 0;
+    const bool IsEscaped =
+        isEscapedTarget(*EscapeTargets, E.RuleSet, E.RuleIndex);
+    ASSERT_NE(IsLiteral, IsEscaped)
+        << "exception names a rule that is neither a literal nor an escaped "
+           "rule: "
         << E.RuleSet << "#" << E.RuleIndex;
+    // An escaped rule's exception belongs to the descriptor ledger, not the
+    // literal first-match ledger.
+    if (!IsLiteral)
+      continue;
     ASSERT_TRUE(Approved.emplace(Key, &E).second)
         << "duplicate exception for " << E.RuleSet << "#" << E.RuleIndex;
     EXPECT_EQ(E.Kind, "unreachable")
@@ -2434,15 +2453,6 @@ static void withAtomQuery(const X86TablePoint &P, Sink &&Use) {
   Use(LegalityQuery(P.Opcode, Types, MemDescs));
 }
 
-// Escaped rules whose firing condition no LLT can satisfy.  A fixed vector
-// has at least two elements (a one-element vector is the scalar itself), so
-// X86_ADD#9's "fewer than 2 s64 lanes" clamp is vacuous: v1s64 cannot be
-// built.  The generator reports the miss instead of inventing a query; making
-// it a formal coverage exception is a decision above this test.
-static bool knownUnwitnessableEscape(StringRef RuleSet, unsigned RuleIndex) {
-  return RuleSet == "X86_ADD" && RuleIndex == 9;
-}
-
 // Not a test.  Regenerate the witness corpus after a change that is meant to
 // be visible in review:
 //
@@ -2505,17 +2515,27 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
   const RuleWitnessLedger Ledger = collectRuleWitnesses(Sigmas, TargetKeys);
   ASSERT_EQ(Ledger.Witnesses.size(), 188u);
 
-  std::set<RuleKey> Approved;
+  std::set<RuleKey> ApprovedLiteral, ApprovedEscaped;
   for (const LegalizerException &E : *Exceptions) {
     auto TableIt = TableForSet.find(E.RuleSet);
     ASSERT_NE(TableIt, TableForSet.end()) << E.RuleSet;
     const RuleKey Key{TableIt->second, E.RuleIndex};
-    ASSERT_TRUE(Targets->count(Key)) << E.RuleSet << "#" << E.RuleIndex;
-    Approved.insert(Key);
-    EXPECT_EQ(Ledger.Witnesses.count(Key), 0u)
-        << "an approved exception must not also have a first-match witness";
+    const bool IsLiteral = Targets->count(Key) != 0;
+    const bool IsEscaped = isEscapedTarget(*Escapes, E.RuleSet, E.RuleIndex);
+    ASSERT_NE(IsLiteral, IsEscaped)
+        << "exception names a rule that is neither a literal nor an escaped "
+           "rule: "
+        << E.RuleSet << "#" << E.RuleIndex;
+    if (IsLiteral) {
+      ApprovedLiteral.insert(Key);
+      EXPECT_EQ(Ledger.Witnesses.count(Key), 0u)
+          << "an approved exception must not also have a first-match witness";
+    } else {
+      ASSERT_TRUE(ApprovedEscaped.insert(Key).second)
+          << "duplicate exception for " << E.RuleSet << "#" << E.RuleIndex;
+    }
   }
-  ASSERT_EQ(Ledger.Witnesses.size() + Approved.size(), Targets->size())
+  ASSERT_EQ(Ledger.Witnesses.size() + ApprovedLiteral.size(), Targets->size())
       << "every literal rule must be either witnessed or approved";
 
   std::vector<WitnessAtom> Atoms;
@@ -2600,8 +2620,8 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
   std::map<std::string, std::string> UsedKeys;
   for (const WitnessAtom &A : Atoms)
     UsedKeys.emplace(witnessQueryKey(A), A.Origin + " " + A.Id);
-  unsigned DescriptorAtoms = 0, Collisions = 0, Unmatched = 0;
-  unsigned KnownUnwitnessable = 0;
+  unsigned DescriptorAtoms = 0, DescriptorExceptions = 0, Collisions = 0,
+           Unmatched = 0;
   // Only the rule identity matters here, so mutations stay off, exactly as in
   // the first-match search.
   RuleIndexMutationsOff MutationsOffGuard(X86EvalRuleIndexMutations);
@@ -2680,10 +2700,13 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
     if (Found) {
       ++DescriptorAtoms;
     } else if (Collisions == 0) {
-      if (knownUnwitnessableEscape(E.RuleSet, E.RuleIndex)) {
-        ++KnownUnwitnessable;
-        llvm::outs() << "descriptor miss: " << E.RuleSet << "#" << E.RuleIndex
-                     << " has no LLT that satisfies its guard\n";
+      // An escaped rule whose guard no LLT can satisfy is skipped only when it
+      // is registered as an `unreachable` exception.  An unregistered miss is
+      // still a hard failure.
+      if (ApprovedEscaped.count({TI, E.RuleIndex})) {
+        ++DescriptorExceptions;
+        llvm::outs() << "descriptor exception: " << E.RuleSet << "#"
+                     << E.RuleIndex << "\n";
       } else {
         ++Unmatched;
         ADD_FAILURE() << "no guard trigger for escape " << E.RuleSet << "#"
@@ -2694,9 +2717,10 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
   ASSERT_EQ(Collisions, 0u)
       << "a descriptor query duplicated a per-rule, boundary or AS atom";
   ASSERT_EQ(Unmatched, 0u) << "an escaped rule's guard was not reachable";
-  EXPECT_EQ(KnownUnwitnessable, 1u)
-      << "the documented un-witnessable escaped rule changed";
-  EXPECT_EQ(DescriptorAtoms + KnownUnwitnessable, 93u);
+  EXPECT_EQ(DescriptorExceptions, ApprovedEscaped.size())
+      << "an approved escaped exception did not miss its guard";
+  EXPECT_EQ(DescriptorAtoms + DescriptorExceptions, Escapes->size())
+      << "every escaped rule must have a descriptor atom or an exception";
 
   unsigned RuleAtoms = 0, BoundaryAtoms = 0, ASAtoms = 0, DescriptorCount = 0;
   for (const WitnessAtom &A : Atoms) {
@@ -2715,7 +2739,7 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
   EXPECT_EQ(BoundaryAtoms, 756u);
   EXPECT_EQ(ASAtoms, 220u);
   EXPECT_EQ(DescriptorCount, DescriptorAtoms);
-  EXPECT_EQ(DescriptorCount + KnownUnwitnessable, 93u);
+  EXPECT_EQ(DescriptorCount + DescriptorExceptions, Escapes->size());
   EXPECT_EQ(Atoms.size(), 1256u);
 
   std::sort(Atoms.begin(), Atoms.end(),
@@ -2748,8 +2772,9 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
   OS << "  \"comment\": \"Generated from X86LegalizerInfoReference by "
         "DISABLED_GenerateWitness.  A literal rule has a first-match "
         "witness; every escaped rule whose guard an LLT can satisfy has a "
-        "descriptor atom.  X86_ADD#9 clamps to fewer than two s64 lanes, "
-        "which no fixed vector can have, so the generator reports it.\",\n";
+        "descriptor atom.  An escaped rule whose guard no LLT can satisfy is "
+        "reported as a descriptor exception when it is approved as "
+        "unreachable.\",\n";
   OS << "  \"run\": \"X86_WITNESS_OUT=<abs path> X86Tests "
         "--gtest_also_run_disabled_tests "
         "--gtest_filter='*GenerateWitness*'\",\n";
@@ -2765,6 +2790,7 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
   OS << "  \"boundary_atoms\": " << BoundaryAtoms << ",\n";
   OS << "  \"as_atoms\": " << ASAtoms << ",\n";
   OS << "  \"descriptor_atoms\": " << DescriptorCount << ",\n";
+  OS << "  \"descriptor_exceptions\": " << DescriptorExceptions << ",\n";
   OS << "  \"witness_config_default\": \"C2\",\n";
   OS << "  \"atoms\": [\n";
   for (size_t I = 0; I != Atoms.size(); ++I) {
@@ -2793,6 +2819,7 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
   ASSERT_FALSE(OS.has_error()) << OutPath;
   llvm::outs() << "wrote " << Atoms.size()
                << " witness atoms (descriptor=" << DescriptorCount
+               << " exceptions=" << DescriptorExceptions
                << " collisions=" << Collisions << ") to " << OutPath << "\n";
 }
 
@@ -2817,6 +2844,7 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
   EXPECT_EQ(Root->getInteger("boundary_atoms").value_or(-1), 756);
   EXPECT_EQ(Root->getInteger("as_atoms").value_or(-1), 220);
   EXPECT_EQ(Root->getInteger("descriptor_atoms").value_or(-1), 92);
+  EXPECT_EQ(Root->getInteger("descriptor_exceptions").value_or(-1), 1);
   EXPECT_EQ(Root->getString("witness_config_default").value_or(""), "C2");
 
   const json::Array *AtomArray = Root->getArray("atoms");
@@ -2838,10 +2866,11 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
   for (unsigned I = 0; I != X86TestNumTables; ++I)
     TableForSet.emplace(X86RuleIndexTableNames[I], I);
 
-  // Every escaped rule is the denominator of the descriptor slice.  X86_ADD#9
-  // is the one rule whose guard no LLT satisfies (a fixed vector has at least
-  // two elements, so "fewer than 2 s64 lanes" cannot happen); it is excluded
-  // from the expected set and named here so it cannot be lost silently.
+  // Every escaped rule is the denominator of the descriptor slice.  An
+  // escaped rule whose guard no LLT can satisfy must be approved as
+  // `unreachable` in the exceptions file; it is then removed from the expected
+  // descriptor set instead of being named here.  A miss without an approved
+  // exception is a hard failure.
   std::set<RuleKey> ExpectedEscapePairs;
   for (const EscapeTarget &E : *EscapeTargets) {
     auto TableIt = TableForSet.find(E.RuleSet);
@@ -2849,25 +2878,33 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
     ExpectedEscapePairs.insert({TableIt->second, E.RuleIndex});
   }
   ASSERT_EQ(ExpectedEscapePairs.size(), 93u);
-  auto AddTable = TableForSet.find("X86_ADD");
-  ASSERT_NE(AddTable, TableForSet.end());
-  ASSERT_TRUE(knownUnwitnessableEscape("X86_ADD", 9));
-  ASSERT_EQ(ExpectedEscapePairs.erase({AddTable->second, 9u}), 1u);
-  ASSERT_EQ(ExpectedEscapePairs.size(), 92u);
 
-  // The manifest's literal rules minus every approved exception is the set of
-  // rules a per-rule atom must name.
+  // The manifest's literal rules minus every approved literal exception is the
+  // set of rules a per-rule atom must name; approved escaped exceptions leave
+  // the descriptor denominator instead.
   std::set<RuleKey> ExpectedRulePairs;
   for (const auto &Entry : *Targets)
     ExpectedRulePairs.insert(Entry.first);
+  std::set<RuleKey> ApprovedEscapePairs;
   for (const LegalizerException &E : *Exceptions) {
     auto TableIt = TableForSet.find(E.RuleSet);
     ASSERT_NE(TableIt, TableForSet.end()) << E.RuleSet;
-    ASSERT_EQ(ExpectedRulePairs.erase({TableIt->second, E.RuleIndex}), 1u)
-        << "exception is not in the literal manifest: " << E.RuleSet << "#"
-        << E.RuleIndex;
+    const RuleKey Key{TableIt->second, E.RuleIndex};
+    if (Targets->count(Key)) {
+      ASSERT_EQ(ExpectedRulePairs.erase(Key), 1u)
+          << "exception is not in the literal manifest: " << E.RuleSet << "#"
+          << E.RuleIndex;
+    } else {
+      ASSERT_EQ(ExpectedEscapePairs.erase(Key), 1u)
+          << "exception is neither literal nor escaped: " << E.RuleSet << "#"
+          << E.RuleIndex;
+      ASSERT_TRUE(ApprovedEscapePairs.insert(Key).second)
+          << "duplicate exception for " << E.RuleSet << "#" << E.RuleIndex;
+    }
   }
   ASSERT_EQ(ExpectedRulePairs.size(), 188u);
+  ASSERT_EQ(ExpectedEscapePairs.size(), 92u);
+  ASSERT_EQ(ApprovedEscapePairs.size(), 1u);
 
   struct Fixture {
     Sigma S;
@@ -3077,14 +3114,25 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
       << "per-rule atoms must name exactly the manifest's 188 literal rules";
   EXPECT_EQ(DescriptorPairs.size(), 92u);
   EXPECT_EQ(DescriptorPairs, ExpectedEscapePairs)
-      << "descriptor atoms must name every witnessable escaped rule; only the "
-         "documented un-witnessable X86_ADD#9 may be absent";
+      << "descriptor atoms must name every witnessable escaped rule; only "
+         "approved unreachable exceptions may be absent";
+  for (const LegalizerException &E : *Exceptions) {
+    auto TableIt = TableForSet.find(E.RuleSet);
+    ASSERT_NE(TableIt, TableForSet.end()) << E.RuleSet;
+    EXPECT_EQ(DescriptorPairs.count({TableIt->second, E.RuleIndex}), 0u)
+        << "approved exception " << E.RuleSet << "#" << E.RuleIndex
+        << " unexpectedly has a descriptor atom";
+  }
+  EXPECT_EQ(DescriptorPairs.size() + ApprovedEscapePairs.size(), 93u)
+      << "covered escapes plus approved unreachable exceptions must equal the "
+         "escaped denominator";
   EXPECT_EQ(Collisions, 0u);
   EXPECT_EQ(ExpectedDiffs, 0u);
   EXPECT_EQ(Diffs, 0u);
   llvm::outs() << "witness T1: atoms=" << Atoms << " diffs=" << Diffs
                << " hit=" << Hits << " residual=" << Residuals
                << " escape=" << Escapes << " descriptor=" << DescriptorAtoms
+               << " descriptor_exceptions=" << ApprovedEscapePairs.size()
                << " collisions=" << Collisions
                << " expected_diffs=" << ExpectedDiffs << "\n";
 }

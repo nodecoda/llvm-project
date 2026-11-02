@@ -12,6 +12,16 @@
       "linked_ledger": "LiteralRuleFirstMatchLedger",
       "approver": "nodecoda",
       "PR": "TBD"
+    },
+    {
+      "kind": "unreachable",
+      "rule_set": "X86_ADD",
+      "rule_index": 9,
+      "reason": "ClampMinNumElements<0, X86_s64, 2> guard requires a fixed vector of s64 with fewer than 2 elements, which LLT cannot represent.",
+      "proof": "Generated guard X86EvalRuleGuard10_9 is isFixedVector && element==s64 && numElements<2; LLT::fixed_vector requires at least 2 lanes; exhaustive C0-C3 domain search (class-pair+boundary+AS+guard atoms) finds no trigger.",
+      "linked_ledger": "WitnessDescriptorAtoms",
+      "approver": "nodecoda",
+      "PR": "TBD"
     }
   ]
 }
