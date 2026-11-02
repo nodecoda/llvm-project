@@ -22,6 +22,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "GISel/X86LegalizerTable.h"
 #include "X86LegalizerInfoReference.h"
 #include "X86Subtarget.h"
 #include "X86TargetMachine.h"
@@ -66,6 +67,30 @@ public:
 
   // Never executed: the test only calls getAction().  The base default is
   // llvm_unreachable, so override with a safe no-op.
+  bool legalizeCustom(LegalizerHelper &, MachineInstr &,
+                      LostDebugLocObserver &) const override {
+    return false;
+  }
+};
+
+// The table reader installed on the same generated fragments.  Its answers are
+// compared through query() directly: getAction() falls back to the chain when
+// the table declines, which would make a decline look like agreement.
+class TableLegalizerInfoForTest : public LegalizerInfo {
+  const X86Subtarget &Subtarget;
+  X86LegalizerTable *TablePtr = nullptr;
+
+public:
+  explicit TableLegalizerInfoForTest(const X86Subtarget &STI) : Subtarget(STI) {
+#include "X86LegalizerInfo.inc"
+    auto T = std::make_unique<X86LegalizerTable>(
+        *this, Subtarget.isTarget64BitLP64() ? 64 : 32);
+    TablePtr = T.get();
+    setTable(std::move(T));
+  }
+
+  const X86LegalizerTable &table() const { return *TablePtr; }
+
   bool legalizeCustom(LegalizerHelper &, MachineInstr &,
                       LostDebugLocObserver &) const override {
     return false;
@@ -440,6 +465,47 @@ TEST_F(X86LegalizerDifferentialTest, FirstStepDifferential) {
   // comparing.
   EXPECT_EQ(R.Customs, 0u) << "the tables answered Custom\n" << R.Diagnostics;
   EXPECT_EQ(R.Diffs, 0u) << R.Diagnostics;
+}
+
+// The table must agree with the oracle on every atom it claims to answer.
+// Declines are allowed -- the class list deliberately does not cover odd
+// scalar widths -- but they are counted, so a table that silently stopped
+// hitting most of the corpus would fail instead of looking clean.
+TEST_F(X86LegalizerDifferentialTest, TableAnswersCorpus) {
+  unsigned Hits = 0, Declines = 0, Diffs = 0;
+  std::string Diagnostics;
+  raw_string_ostream Diag(Diagnostics);
+  for (const Config &C : Configs) {
+    Sigma S = makeSigma(C);
+    ASSERT_TRUE(S.STI) << C.ID;
+    X86LegalizerInfoReference Oracle(
+        *S.STI, *static_cast<const X86TargetMachine *>(S.TM.get()));
+    TableLegalizerInfoForTest Table(*S.STI);
+    for (const TypeClass &T : typeClasses()) {
+      LLT Types[] = {T.Dst, T.Src};
+      LegalityQuery Q(G_CTPOP, Types);
+      X86LegalizerTable::Result R = Table.table().query(Q);
+      if (R.Kind != X86LegalizerTable::Answer::Hit) {
+        ++Declines;
+        continue;
+      }
+      ++Hits;
+      LegalizeActionStep Got(R.Action, R.TypeIdx, R.NewType);
+      LegalizeActionStep Want = Oracle.getAction(Q);
+      if (stepsAgree(Got, Want))
+        continue;
+      ++Diffs;
+      Diag << C.ID << "/" << T.ID << ": table " << describe(Got) << ", oracle "
+           << describe(Want) << "\n";
+    }
+  }
+  EXPECT_EQ(Hits + Declines, 126u);
+  EXPECT_EQ(Diffs, 0u) << Diag.str();
+  // s7, s24 and s200 are the only corpus types outside the class list, so the
+  // remaining 105 atoms must be answered by the table, not by a fallback.
+  EXPECT_EQ(Hits, 105u)
+      << "table declined more atoms than the 21 non-class ones";
+  EXPECT_EQ(Declines, 21u);
 }
 
 // TC-27: the report is a pure function of the corpus and the tables, so two
