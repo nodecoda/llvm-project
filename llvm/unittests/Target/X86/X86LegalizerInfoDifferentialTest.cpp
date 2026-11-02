@@ -1393,10 +1393,15 @@ TEST_F(X86LegalizerDifferentialTest, FrozenCorpusMatchesJson) {
 // two runs in one process are byte-identical (TC-27) and the same text is what
 // a `--json` CLI would print (TC-26).
 
+// A step's new type can be a pointer vector (G_IMPLICIT_DEF clamps one), so
+// it is spelled with the same full-fidelity LLT names as a query.  The
+// non-pointer spellings are identical to shortLLT's.
+static std::string witnessLLTName(LLT T);
+
 static void renderStepJson(raw_ostream &OS, const LegalizeActionStep &S) {
   OS << "{\"action\":\"" << S.Action << "\"";
   if (actionCarriesType(S.Action))
-    OS << ",\"idx\":" << S.TypeIdx << ",\"to\":\"" << shortLLT(S.NewType)
+    OS << ",\"idx\":" << S.TypeIdx << ",\"to\":\"" << witnessLLTName(S.NewType)
        << "\"";
   OS << "}";
 }
@@ -1856,6 +1861,14 @@ static ArrayRef<GuardAtom> guardAtoms() {
   static const GuardAtom Atoms[] = {
       {"G_BUILD_VECTOR", LLT::fixed_vector(3, 1)},
       {"G_BUILD_VECTOR", LLT::fixed_vector(3, LLT::pointer(0, 64))},
+      // The escaped clamp rules name lane counts outside the class list.  On
+      // the low side, G_ADD#7 and G_MUL#9 want an s16 vector narrower than 8
+      // lanes; on the high side, G_MUL#14 clamps an s64 vector wider than 8.
+      // The class list starts at v8s16 and stops at v8s64, so these are the
+      // first shapes each guard can fire on.
+      {"G_ADD", LLT::fixed_vector(2, 16)},
+      {"G_MUL", LLT::fixed_vector(2, 16)},
+      {"G_MUL", LLT::fixed_vector(16, 64)},
   };
   return Atoms;
 }
@@ -1943,6 +1956,63 @@ readLiteralTargets(std::string &Error) {
   return Targets;
 }
 
+// One escaped rule: the .td rule could not be written as a literal Core IR
+// entry, so it gets a descriptor atom instead of a per-rule first-match atom.
+struct EscapeTarget {
+  std::string RuleSet;
+  unsigned RuleIndex = 0;
+};
+
+// The escape list is the other half of the .td denominator.  The literal
+// manifest names 189 rules; these 93 are the same rule sets' remaining rules,
+// named by the (def, rule_index) pair the Core IR records.
+static std::optional<std::vector<EscapeTarget>>
+readEscapeTargets(std::string &Error) {
+  auto CoreBuffer = MemoryBuffer::getFile(X86_LEGALIZER_CORE_JSON);
+  if (!CoreBuffer) {
+    Error = std::string("cannot read ") + X86_LEGALIZER_CORE_JSON;
+    return std::nullopt;
+  }
+  auto CoreValue = json::parse((*CoreBuffer)->getBuffer());
+  if (!CoreValue) {
+    Error = toString(CoreValue.takeError());
+    return std::nullopt;
+  }
+  const json::Object *Core = CoreValue->getAsObject();
+  if (!Core) {
+    Error = "core.json top level is not an object";
+    return std::nullopt;
+  }
+  const json::Array *Escapes = Core->getArray("escapes");
+  if (!Escapes) {
+    Error = "core.json has no 'escapes'";
+    return std::nullopt;
+  }
+
+  std::vector<EscapeTarget> Targets;
+  Targets.reserve(Escapes->size());
+  for (const json::Value &EscapeValue : *Escapes) {
+    const json::Object *Escape = EscapeValue.getAsObject();
+    if (!Escape) {
+      Error = "escape is not an object";
+      return std::nullopt;
+    }
+    auto RuleSet = Escape->getString("ruleset");
+    if (!RuleSet) {
+      Error = "escape has no 'ruleset'";
+      return std::nullopt;
+    }
+    auto RuleIndex = Escape->getInteger("rule_index");
+    if (!RuleIndex || *RuleIndex < 0) {
+      Error = "escape has no non-negative 'rule_index'";
+      return std::nullopt;
+    }
+    Targets.push_back(
+        EscapeTarget{RuleSet->str(), static_cast<unsigned>(*RuleIndex)});
+  }
+  return Targets;
+}
+
 struct RuleWitness {
   unsigned Table = 0;
   unsigned RuleIndex = 0;
@@ -1972,6 +2042,14 @@ struct RuleIndexMutationsOff {
 // decision and the reference applies the mutation.
 static bool stepAppliesMutation(const LegalizeActionStep &Step) {
   return actionCarriesType(Step.Action);
+}
+
+// The element-size mutations rebuild an LLT whose element type may not be a
+// pointer, so they assert on pointer and pointer-vector types.  The
+// element-count mutations build a fresh vector instead and accept a pointer
+// element type, so they are safe on pointer vectors.
+static bool actionChangesElementSize(LegalizeAction Action) {
+  return Action == NarrowScalar || Action == WidenScalar;
 }
 
 static bool queryHasPointer(ArrayRef<LLT> Types, bool HasMem, LLT MemTy) {
@@ -2295,6 +2373,23 @@ static std::string witnessQueryText(const X86TablePoint &P) {
   return OS.str();
 }
 
+// Normalized identity of a witness query.  Two atoms with the same key ask
+// the same subtarget the same question, so they are the same evidence no
+// matter which origin produced them.  The configuration is part of the key:
+// the same shape can get a different answer from C0 than from C2.
+static std::string witnessQueryKey(StringRef ConfigID, StringRef Opcode,
+                                   ArrayRef<LLT> Types, bool HasMem, LLT MemTy,
+                                   uint64_t Align) {
+  std::string S;
+  raw_string_ostream OS(S);
+  OS << ConfigID << "|" << Opcode << "|";
+  for (const LLT &T : Types)
+    OS << witnessLLTName(T) << ",";
+  if (HasMem)
+    OS << "|mem:" << witnessLLTName(MemTy) << "@" << Align;
+  return OS.str();
+}
+
 static std::optional<LegalizeAction> parseLegalizeAction(StringRef S) {
   return StringSwitch<std::optional<LegalizeAction>>(S)
       .Case("Legal", Legal)
@@ -2321,6 +2416,12 @@ struct WitnessAtom {
   LegalizeActionStep Expected{Unsupported, 0, LLT{}};
 };
 
+static std::string witnessQueryKey(const WitnessAtom &A) {
+  return witnessQueryKey(A.ConfigID, A.Point.Name,
+                         ArrayRef<LLT>(A.Point.Types, A.Point.NumTypes),
+                         A.Point.HasMem, A.Point.MemTy, A.Point.Align);
+}
+
 // Query construction must keep the type and descriptor storage alive, so the
 // caller uses the query inside the callback instead of returning one.
 template <typename Sink>
@@ -2331,6 +2432,15 @@ static void withAtomQuery(const X86TablePoint &P, Sink &&Use) {
     MemDescs.emplace_back(P.MemTy, P.Align, AtomicOrdering::NotAtomic,
                           AtomicOrdering::NotAtomic);
   Use(LegalityQuery(P.Opcode, Types, MemDescs));
+}
+
+// Escaped rules whose firing condition no LLT can satisfy.  A fixed vector
+// has at least two elements (a one-element vector is the scalar itself), so
+// X86_ADD#9's "fewer than 2 s64 lanes" clamp is vacuous: v1s64 cannot be
+// built.  The generator reports the miss instead of inventing a query; making
+// it a formal coverage exception is a decision above this test.
+static bool knownUnwitnessableEscape(StringRef RuleSet, unsigned RuleIndex) {
+  return RuleSet == "X86_ADD" && RuleIndex == 9;
 }
 
 // Not a test.  Regenerate the witness corpus after a change that is meant to
@@ -2356,6 +2466,10 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
   std::optional<std::vector<LegalizerException>> Exceptions =
       readLegalizerExceptions(Error);
   ASSERT_TRUE(Exceptions.has_value()) << Error;
+
+  std::optional<std::vector<EscapeTarget>> Escapes = readEscapeTargets(Error);
+  ASSERT_TRUE(Escapes.has_value()) << Error;
+  ASSERT_EQ(Escapes->size(), 93u);
 
   std::map<std::string, unsigned> TableForSet;
   for (unsigned I = 0; I != X86TestNumTables; ++I)
@@ -2405,7 +2519,7 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
       << "every literal rule must be either witnessed or approved";
 
   std::vector<WitnessAtom> Atoms;
-  Atoms.reserve(1164);
+  Atoms.reserve(1256);
 
   // Per-rule atoms: the first query the first-match search found for the rule,
   // in the configuration the search assigned it.
@@ -2477,7 +2591,114 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
                              });
   }
 
-  unsigned RuleAtoms = 0, BoundaryAtoms = 0, ASAtoms = 0;
+  // Descriptor atoms: an escaped rule has no literal Core IR entry, so its
+  // evidence is a query that makes the rule's own guard true.  The search
+  // walks the full domain plus the directed guard atoms, trying C0..C3 in
+  // order, and records the reference's decision for the query it finds.  A
+  // descriptor query must not duplicate a per-rule, boundary or address-space
+  // atom: two origins for one query would not be independent evidence.
+  std::map<std::string, std::string> UsedKeys;
+  for (const WitnessAtom &A : Atoms)
+    UsedKeys.emplace(witnessQueryKey(A), A.Origin + " " + A.Id);
+  unsigned DescriptorAtoms = 0, Collisions = 0, Unmatched = 0;
+  unsigned KnownUnwitnessable = 0;
+  // Only the rule identity matters here, so mutations stay off, exactly as in
+  // the first-match search.
+  RuleIndexMutationsOff MutationsOffGuard(X86EvalRuleIndexMutations);
+  for (const EscapeTarget &E : *Escapes) {
+    auto TableIt = TableForSet.find(E.RuleSet);
+    ASSERT_NE(TableIt, TableForSet.end()) << E.RuleSet;
+    const unsigned TI = TableIt->second;
+    ASSERT_LT(E.RuleIndex, X86RuleIndexNumRules[TI])
+        << E.RuleSet << "#" << E.RuleIndex;
+    const X86TestTable &T = X86TestTables[TI];
+    const std::optional<unsigned> Opcode = opcodeForName(T.Opcode);
+    ASSERT_TRUE(Opcode.has_value()) << T.Opcode;
+
+    bool Found = false;
+    for (unsigned CI = 0; CI != 4 && !Found && Collisions == 0; ++CI) {
+      const X86Subtarget &STI = *Sigmas[CI].STI;
+      auto Consider = [&](ArrayRef<LLT> Types, bool HasMem, LLT MemTy,
+                          uint64_t Align) {
+        if (Found || Collisions != 0)
+          return;
+        SmallVector<LLT, 3> TypeVec(Types.begin(), Types.end());
+        SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+        if (HasMem)
+          MemDescs.emplace_back(MemTy, Align, AtomicOrdering::NotAtomic,
+                                AtomicOrdering::NotAtomic);
+        const LegalityQuery Q(*Opcode, TypeVec, MemDescs);
+        if (!X86EvalRuleGuard(TI, E.RuleIndex, STI, Q))
+          return;
+        // The atom records the reference's decision, and the reference
+        // applies the first match's mutation.  A mutating step on a pointer
+        // shape asserts inside LLT, so that shape cannot be a witness.
+        const std::optional<RuleHit> Hit = queryRuleIndex(TI, STI, Q);
+        if (!Hit)
+          return;
+        if (actionChangesElementSize(Hit->Step.Action) &&
+            queryHasPointer(TypeVec, HasMem, MemTy))
+          return;
+        WitnessAtom A;
+        A.Origin = "escape:" + E.RuleSet + "#" + std::to_string(E.RuleIndex);
+        A.RuleSet = E.RuleSet;
+        A.RuleIndex = E.RuleIndex;
+        A.ConfigID = FullConfigs[CI].ID;
+        A.Id = "x86/escape/" + E.RuleSet + "#" + std::to_string(E.RuleIndex);
+        A.Point.Opcode = *Opcode;
+        A.Point.Name = T.Opcode;
+        A.Point.NumTypes = static_cast<uint8_t>(TypeVec.size());
+        std::copy(TypeVec.begin(), TypeVec.end(), A.Point.Types);
+        A.Point.MemTy = MemTy;
+        A.Point.Align = Align;
+        A.Point.HasMem = HasMem;
+        A.QueryText = witnessQueryText(A.Point);
+        A.Expected = ExpectFor(A.Point, CI);
+        // Two escaped rules can share a trigger (a clamp's two rules, for
+        // example): that is still one atom per rule.  Reusing a per-rule,
+        // boundary or AS query is not allowed, because the corpus would then
+        // offer one shape as evidence for two different claims.
+        const std::string Key = witnessQueryKey(A);
+        auto Prev = UsedKeys.find(Key);
+        if (Prev != UsedKeys.end()) {
+          ++Collisions;
+          ADD_FAILURE() << "descriptor collision: " << A.Origin
+                        << " reuses the query of " << Prev->second;
+          return;
+        }
+        Atoms.push_back(std::move(A));
+        Found = true;
+      };
+      enumerateTableDomain(
+          TI, 64,
+          [&](DomainKind, ArrayRef<LLT> Types, bool HasMem, LLT MemTy,
+              uint64_t Align) { Consider(Types, HasMem, MemTy, Align); });
+      for (const GuardAtom &Atom : guardAtoms())
+        if (StringRef(T.Opcode) == Atom.Opcode && !Found)
+          Consider(ArrayRef<LLT>(&Atom.Type, 1), false, LLT{}, 0);
+    }
+    if (Found) {
+      ++DescriptorAtoms;
+    } else if (Collisions == 0) {
+      if (knownUnwitnessableEscape(E.RuleSet, E.RuleIndex)) {
+        ++KnownUnwitnessable;
+        llvm::outs() << "descriptor miss: " << E.RuleSet << "#" << E.RuleIndex
+                     << " has no LLT that satisfies its guard\n";
+      } else {
+        ++Unmatched;
+        ADD_FAILURE() << "no guard trigger for escape " << E.RuleSet << "#"
+                      << E.RuleIndex << " in the C0..C3 full domain";
+      }
+    }
+  }
+  ASSERT_EQ(Collisions, 0u)
+      << "a descriptor query duplicated a per-rule, boundary or AS atom";
+  ASSERT_EQ(Unmatched, 0u) << "an escaped rule's guard was not reachable";
+  EXPECT_EQ(KnownUnwitnessable, 1u)
+      << "the documented un-witnessable escaped rule changed";
+  EXPECT_EQ(DescriptorAtoms + KnownUnwitnessable, 93u);
+
+  unsigned RuleAtoms = 0, BoundaryAtoms = 0, ASAtoms = 0, DescriptorCount = 0;
   for (const WitnessAtom &A : Atoms) {
     if (A.Origin == "rule")
       ++RuleAtoms;
@@ -2485,13 +2706,17 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
       ++BoundaryAtoms;
     else if (A.Origin == "as")
       ++ASAtoms;
+    else if (StringRef(A.Origin).starts_with("escape:"))
+      ++DescriptorCount;
     else
       ADD_FAILURE() << "unknown witness origin " << A.Origin;
   }
   EXPECT_EQ(RuleAtoms, 188u);
   EXPECT_EQ(BoundaryAtoms, 756u);
   EXPECT_EQ(ASAtoms, 220u);
-  EXPECT_EQ(Atoms.size(), 1164u);
+  EXPECT_EQ(DescriptorCount, DescriptorAtoms);
+  EXPECT_EQ(DescriptorCount + KnownUnwitnessable, 93u);
+  EXPECT_EQ(Atoms.size(), 1256u);
 
   std::sort(Atoms.begin(), Atoms.end(),
             [](const WitnessAtom &L, const WitnessAtom &R) {
@@ -2521,9 +2746,10 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
   OS << "  \"schema\": \"llvm.gisel.x86-legalizer-witness\",\n";
   OS << "  \"version\": 1,\n";
   OS << "  \"comment\": \"Generated from X86LegalizerInfoReference by "
-        "DISABLED_GenerateWitness.  Atoms are the mechanically generated "
-        "slice of the witness corpus; the 93 escaped descriptor atoms are "
-        "still pending.\",\n";
+        "DISABLED_GenerateWitness.  A literal rule has a first-match "
+        "witness; every escaped rule whose guard an LLT can satisfy has a "
+        "descriptor atom.  X86_ADD#9 clamps to fewer than two s64 lanes, "
+        "which no fixed vector can have, so the generator reports it.\",\n";
   OS << "  \"run\": \"X86_WITNESS_OUT=<abs path> X86Tests "
         "--gtest_also_run_disabled_tests "
         "--gtest_filter='*GenerateWitness*'\",\n";
@@ -2538,7 +2764,7 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
   OS << "  \"per_rule_hits\": " << RuleAtoms << ",\n";
   OS << "  \"boundary_atoms\": " << BoundaryAtoms << ",\n";
   OS << "  \"as_atoms\": " << ASAtoms << ",\n";
-  OS << "  \"descriptor_atoms\": \"pending (93)\",\n";
+  OS << "  \"descriptor_atoms\": " << DescriptorCount << ",\n";
   OS << "  \"witness_config_default\": \"C2\",\n";
   OS << "  \"atoms\": [\n";
   for (size_t I = 0; I != Atoms.size(); ++I) {
@@ -2549,6 +2775,8 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
       OS << A.RuleIndex;
     else
       OS << "null";
+    if (StringRef(A.Origin).starts_with("escape:"))
+      OS << ",\"basis\":\"escape\"";
     OS << ",\"config\":\"" << A.ConfigID << "\",\"query\":{\"types\":[";
     for (unsigned T = 0; T != A.Point.NumTypes; ++T)
       OS << (T ? "," : "") << "\"" << witnessLLTName(A.Point.Types[T]) << "\"";
@@ -2563,8 +2791,9 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
   OS << "  ]\n}\n";
   OS.flush();
   ASSERT_FALSE(OS.has_error()) << OutPath;
-  llvm::outs() << "wrote " << Atoms.size() << " witness atoms to " << OutPath
-               << "\n";
+  llvm::outs() << "wrote " << Atoms.size()
+               << " witness atoms (descriptor=" << DescriptorCount
+               << " collisions=" << Collisions << ") to " << OutPath << "\n";
 }
 
 // T1: every committed atom must get the reference's decision from the table.
@@ -2583,16 +2812,16 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
   ASSERT_TRUE(!!Value) << toString(Value.takeError());
   const json::Object *Root = Value->getAsObject();
   ASSERT_NE(Root, nullptr);
-  EXPECT_EQ(Root->getInteger("atom_count").value_or(-1), 1164);
+  EXPECT_EQ(Root->getInteger("atom_count").value_or(-1), 1256);
   EXPECT_EQ(Root->getInteger("per_rule_hits").value_or(-1), 188);
   EXPECT_EQ(Root->getInteger("boundary_atoms").value_or(-1), 756);
   EXPECT_EQ(Root->getInteger("as_atoms").value_or(-1), 220);
-  EXPECT_EQ(Root->getString("descriptor_atoms").value_or(""), "pending (93)");
+  EXPECT_EQ(Root->getInteger("descriptor_atoms").value_or(-1), 92);
   EXPECT_EQ(Root->getString("witness_config_default").value_or(""), "C2");
 
   const json::Array *AtomArray = Root->getArray("atoms");
   ASSERT_NE(AtomArray, nullptr);
-  EXPECT_EQ(AtomArray->size(), 1164u);
+  EXPECT_EQ(AtomArray->size(), 1256u);
 
   std::string Error;
   std::optional<std::map<RuleKey, LiteralTarget>> Targets =
@@ -2601,10 +2830,30 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
   std::optional<std::vector<LegalizerException>> Exceptions =
       readLegalizerExceptions(Error);
   ASSERT_TRUE(Exceptions.has_value()) << Error;
+  std::optional<std::vector<EscapeTarget>> EscapeTargets =
+      readEscapeTargets(Error);
+  ASSERT_TRUE(EscapeTargets.has_value()) << Error;
 
   std::map<std::string, unsigned> TableForSet;
   for (unsigned I = 0; I != X86TestNumTables; ++I)
     TableForSet.emplace(X86RuleIndexTableNames[I], I);
+
+  // Every escaped rule is the denominator of the descriptor slice.  X86_ADD#9
+  // is the one rule whose guard no LLT satisfies (a fixed vector has at least
+  // two elements, so "fewer than 2 s64 lanes" cannot happen); it is excluded
+  // from the expected set and named here so it cannot be lost silently.
+  std::set<RuleKey> ExpectedEscapePairs;
+  for (const EscapeTarget &E : *EscapeTargets) {
+    auto TableIt = TableForSet.find(E.RuleSet);
+    ASSERT_NE(TableIt, TableForSet.end()) << E.RuleSet;
+    ExpectedEscapePairs.insert({TableIt->second, E.RuleIndex});
+  }
+  ASSERT_EQ(ExpectedEscapePairs.size(), 93u);
+  auto AddTable = TableForSet.find("X86_ADD");
+  ASSERT_NE(AddTable, TableForSet.end());
+  ASSERT_TRUE(knownUnwitnessableEscape("X86_ADD", 9));
+  ASSERT_EQ(ExpectedEscapePairs.erase({AddTable->second, 9u}), 1u);
+  ASSERT_EQ(ExpectedEscapePairs.size(), 92u);
 
   // The manifest's literal rules minus every approved exception is the set of
   // rules a per-rule atom must name.
@@ -2638,9 +2887,15 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
 
   unsigned Atoms = 0, Diffs = 0, ExpectedDiffs = 0;
   unsigned Hits = 0, Residuals = 0, Escapes = 0;
-  unsigned RuleAtoms = 0, BoundaryAtoms = 0, ASAtoms = 0;
+  unsigned RuleAtoms = 0, BoundaryAtoms = 0, ASAtoms = 0, DescriptorAtoms = 0;
   std::set<std::string> Ids;
-  std::set<RuleKey> RulePairs;
+  std::set<RuleKey> RulePairs, DescriptorPairs;
+  struct AtomKey {
+    std::string Key;
+    std::string Origin;
+    bool Descriptor = false;
+  };
+  std::vector<AtomKey> Keys;
 
   for (const json::Value &AtomValue : *AtomArray) {
     const json::Object *O = AtomValue.getAsObject();
@@ -2732,6 +2987,7 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
     }
 
     ++Atoms;
+    const bool IsDescriptor = StringRef(Origin->str()).starts_with("escape:");
     if (Origin->str() == "rule") {
       ++RuleAtoms;
       ASSERT_GE(RuleIndex, 0) << *Id;
@@ -2745,9 +3001,25 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
           << (RuleIndex >= 0 ? std::to_string(RuleIndex) : "-")
           << " atom=" << *Id
           << ": a non-zero address space must reach the router";
+    } else if (IsDescriptor) {
+      ++DescriptorAtoms;
+      ASSERT_GE(RuleIndex, 0) << *Id;
+      auto BasisText = O->getString("basis");
+      ASSERT_TRUE(BasisText.has_value()) << *Id << ": descriptor has no basis";
+      EXPECT_EQ(BasisText->str(), "escape") << *Id;
+      EXPECT_TRUE(X86EvalRuleGuard(Table, static_cast<unsigned>(RuleIndex),
+                                   *F.S.STI, Q))
+          << *Id << ": descriptor query does not fire the rule guard";
+      DescriptorPairs.insert({Table, static_cast<unsigned>(RuleIndex)});
     } else {
       ADD_FAILURE() << *Id << ": unknown origin " << *Origin;
     }
+
+    Keys.push_back(
+        {witnessQueryKey(*ConfigID, T.Opcode, Types, !MemDescs.empty(),
+                         MemDescs.empty() ? LLT{} : MemDescs[0].MemoryTy,
+                         MemDescs.empty() ? 0 : MemDescs[0].AlignInBits),
+         Origin->str(), IsDescriptor});
 
     if (!stepsAgree(Expected, Want)) {
       ++ExpectedDiffs;
@@ -2777,19 +3049,44 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
     }
   }
 
-  EXPECT_EQ(Atoms, 1164u);
+  // A descriptor atom must not reuse a query that already has a per-rule,
+  // boundary or address-space origin: the corpus would then offer the same
+  // shape as evidence for two different claims.
+  std::map<std::string, std::string> NonDescriptorKeys;
+  for (const AtomKey &K : Keys)
+    if (!K.Descriptor)
+      NonDescriptorKeys.emplace(K.Key, K.Origin);
+  unsigned Collisions = 0;
+  for (const AtomKey &K : Keys)
+    if (K.Descriptor) {
+      auto It = NonDescriptorKeys.find(K.Key);
+      if (It == NonDescriptorKeys.end())
+        continue;
+      ++Collisions;
+      ADD_FAILURE() << "descriptor atom " << K.Origin << " duplicates "
+                    << It->second;
+    }
+
+  EXPECT_EQ(Atoms, 1256u);
   EXPECT_EQ(RuleAtoms, 188u);
   EXPECT_EQ(BoundaryAtoms, 756u);
   EXPECT_EQ(ASAtoms, 220u);
+  EXPECT_EQ(DescriptorAtoms, 92u);
   EXPECT_EQ(RulePairs.size(), 188u);
   EXPECT_EQ(RulePairs, ExpectedRulePairs)
       << "per-rule atoms must name exactly the manifest's 188 literal rules";
+  EXPECT_EQ(DescriptorPairs.size(), 92u);
+  EXPECT_EQ(DescriptorPairs, ExpectedEscapePairs)
+      << "descriptor atoms must name every witnessable escaped rule; only the "
+         "documented un-witnessable X86_ADD#9 may be absent";
+  EXPECT_EQ(Collisions, 0u);
   EXPECT_EQ(ExpectedDiffs, 0u);
   EXPECT_EQ(Diffs, 0u);
   llvm::outs() << "witness T1: atoms=" << Atoms << " diffs=" << Diffs
                << " hit=" << Hits << " residual=" << Residuals
-               << " escape=" << Escapes << " expected_diffs=" << ExpectedDiffs
-               << "\n";
+               << " escape=" << Escapes << " descriptor=" << DescriptorAtoms
+               << " collisions=" << Collisions
+               << " expected_diffs=" << ExpectedDiffs << "\n";
 }
 // F1: the table's key has a single pointer class.  Every pointer collapses to
 // p0, and G_STORE's first rule is exactly `Types[0] != MemoryTy`: folding the

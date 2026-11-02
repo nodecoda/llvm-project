@@ -2573,8 +2573,13 @@ class LegalizerTableEmitterImpl {
   /// opaque and the reader falls back to the chain for it.
   /// With RuleIdx set the emitted statements store the step and the rule's
   /// position instead of returning it, for -gen-legalizer-rule-index.
+  /// With GuardOnly set the emitted statements test the rule's guard and
+  /// return true on a match instead of applying the step.  That is the
+  /// condition the chain tests before it commits to the rule, with no
+  /// mutation, for the rule-index backend's per-rule guard evaluators.
   bool translateRule(const Record &Rule, std::string &Out, std::string &Why,
-                     const unsigned *RuleIdx = nullptr) {
+                     const unsigned *RuleIdx = nullptr,
+                     bool GuardOnly = false) {
     const std::string RuleIdxText = RuleIdx ? std::to_string(*RuleIdx) : "";
     const std::string MutationsFlag =
         RuleIdx ? TablePrefix + "EvalRuleIndexMutations" : "";
@@ -2600,7 +2605,10 @@ class LegalizerTableEmitterImpl {
       std::string Buf;
       raw_string_ostream OS(Buf);
       OS << "  if ((" << Text << ")(Q)) {\n";
-      emitStep(OS, Action, "    ", "", RuleIdxText);
+      if (GuardOnly)
+        OS << "    return true;\n";
+      else
+        emitStep(OS, Action, "    ", "", RuleIdxText);
       OS << "  }\n";
       OS.flush();
       Out = std::move(Buf);
@@ -2627,13 +2635,19 @@ class LegalizerTableEmitterImpl {
     raw_string_ostream OS(Buf);
     auto EmitIf = [&](StringRef Cond, StringRef Act, StringRef Mut = "") {
       OS << "  if (" << Cond << ") {\n";
-      emitStep(OS, Act, "    ", Mut, RuleIdxText, MutationsFlag);
+      if (GuardOnly)
+        OS << "    return true;\n";
+      else
+        emitStep(OS, Act, "    ", Mut, RuleIdxText, MutationsFlag);
       OS << "  }\n";
     };
     auto EmitTypedIf = [&](StringRef Cond, StringRef Act, StringRef Idx,
                            StringRef Ty) {
       OS << "  if (" << Cond << ") {\n";
-      emitTypedStep(OS, Act, "    ", Idx, Ty, RuleIdxText);
+      if (GuardOnly)
+        OS << "    return true;\n";
+      else
+        emitTypedStep(OS, Act, "    ", Idx, Ty, RuleIdxText);
       OS << "  }\n";
     };
     auto Finish = [&]() {
@@ -2647,7 +2661,10 @@ class LegalizerTableEmitterImpl {
         Name == "custom" || Name == "unsupported") {
       if (!Args.empty() || !Guard.empty())
         return Fail();
-      emitStep(OS, Action, "  ", "", RuleIdxText);
+      if (GuardOnly)
+        OS << "  return true;\n";
+      else
+        emitStep(OS, Action, "  ", "", RuleIdxText);
       return Finish();
     }
 
@@ -2707,7 +2724,10 @@ class LegalizerTableEmitterImpl {
       OS << "      if ("
          << conjunction(Guard, "typeIs(0, T0)(Q) && typeIs(1, T1)(Q)")
          << ") {\n";
-      emitStep(OS, Action, "        ", "", RuleIdxText);
+      if (GuardOnly)
+        OS << "        return true;\n";
+      else
+        emitStep(OS, Action, "        ", "", RuleIdxText);
       OS << "      }\n";
       return Finish();
     }
@@ -3166,6 +3186,52 @@ public:
       OS << Bodies[I];
       OS << "  return false;\n}\n";
     }
+
+    // One guard evaluator per rule, named by (rule set, position).  The body
+    // is the condition the chain tests before committing to the rule; the
+    // step and its mutation are omitted, so probing a shape the real chain
+    // would never see cannot assert while a test looks for a trigger.
+    OS << "\n// One guard evaluator per rule, named by (table, position).  "
+          "The body is\n// the rule's firing condition with no mutation "
+          "applied.\n";
+    for (size_t I = 0; I != Tables.size(); ++I) {
+      std::vector<const Record *> Rules =
+          Tables[I]->getValueAsListOfDefs("Rules");
+      for (unsigned R = 0; R != Rules.size(); ++R) {
+        std::string Text, Reason;
+        OS << "static bool " << P << "EvalRuleGuard" << I << "_" << R
+           << "(const " << P
+           << "Subtarget &Subtarget,\n"
+              "    const LegalityQuery &Q) {\n";
+        EmitPrologue(OS);
+        if (translateRule(*Rules[R], Text, Reason, nullptr, true))
+          OS << Text;
+        else
+          OS << "  // " << Reason << "\n";
+        OS << "  return false;\n}\n";
+      }
+    }
+
+    // The dispatch the test calls: (table, position) is the pair the Core IR
+    // records as (def, rule_index), so a test can name a rule without
+    // re-deriving its position.
+    OS << "\n/// Evaluate one rule's guard; false for an unknown rule.\n";
+    OS << "static bool " << P
+       << "EvalRuleGuard(unsigned Table, unsigned RuleIndex,\n"
+          "                          const "
+       << P
+       << "Subtarget &Subtarget,\n"
+          "                          const LegalityQuery &Q) {\n";
+    OS << "  switch (Table) {\n";
+    for (size_t I = 0; I != Tables.size(); ++I) {
+      OS << "  case " << I << ": // " << Tables[I]->getName() << "\n";
+      OS << "    switch (RuleIndex) {\n";
+      for (unsigned R = 0; R != NumRules[I]; ++R)
+        OS << "    case " << R << ": return " << P << "EvalRuleGuard" << I
+           << "_" << R << "(Subtarget, Q);\n";
+      OS << "    default: return false;\n    }\n";
+    }
+    OS << "  default: return false;\n  }\n}\n";
 
     // The test's own map from opcode to rule set, plus the rule counts the
     // index is bounded by.  The reader keys by class and never needs either.
