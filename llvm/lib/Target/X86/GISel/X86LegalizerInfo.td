@@ -23,14 +23,13 @@
 // target .td that pulls in llvm/Target/Target.td.
 //
 // LegalizeOpaqueRule is the escape hatch for guards that are still raw C++.
-// Two of the 309 rules need it, and each one is a guard the vocabulary cannot
-// spell yet: G_STORE compares Types[0] against MMODescrs[0].MemoryTy, and
-// G_EXTRACT selects its type slots from Query.Opcode.  G_LROUND used to be the
-// third -- its guard could be written down but its mutation (a constant
-// pair<unsigned, LLT>) had no rule form; it is now a minScalarIf, which the
-// C++ builder implements as the same widen.  The merge/unmerge width check
-// used to be the fourth; it is now a sizeIs dag, which is the same predicate
-// the C++ wrote by hand.
+// No rule needs it now.  G_LROUND's mutation had no rule form until minScalarIf
+// was added; the merge/unmerge width check became a sizeIs dag; G_STORE's
+// value-is-memory-type comparison is a guard the table emits verbatim; and
+// G_EXTRACT/G_INSERT selected their slots from Query.Opcode, which is now one
+// rule set per opcode.  The class stays for the next guard the vocabulary
+// cannot spell, and the table generator refuses a rule set that uses it to
+// read something the key does not carry.
 //
 // Four `for (Op : {...})` loops in the former C++ produced one rule set per
 // opcode.  Each loop body existed once, so its members could not disagree;
@@ -846,29 +845,52 @@ def X86_BUILD_VECTOR : LegalizeRuleSet<["G_BUILD_VECTOR"]> {
   ];
 }
 
-def X86_EXTRACT : LegalizeRuleSet<["G_EXTRACT", "G_INSERT"]> {
+// G_EXTRACT takes the narrow value in slot 0 and the wide value in slot 1;
+// G_INSERT takes them the other way round.  Both accept the same relation, so
+// each side writes the pair list in its own slot order.  The former opaque
+// body picked the slots from Query.Opcode, which a table keyed on types
+// cannot do, so the two opcodes have one rule set each.
+def X86_EXTRACT : LegalizeRuleSet<["G_EXTRACT"]> {
   let Rules = [
-    LegalizeOpaqueRule<BuilderLegalIf, [{
+    LegalForPairsIf<HasAVX,
+                    [LegalizeTypePair<X86_v16s8, X86_v32s8>,
+                     LegalizeTypePair<X86_v8s16, X86_v16s16>,
+                     LegalizeTypePair<X86_v4s32, X86_v8s32>,
+                     LegalizeTypePair<X86_v2s64, X86_v4s64>]>,
+    LegalForPairsIf<HasAVX512,
+                    [LegalizeTypePair<X86_v16s8, X86_v64s8>,
+                     LegalizeTypePair<X86_v32s8, X86_v64s8>,
+                     LegalizeTypePair<X86_v8s16, X86_v32s16>,
+                     LegalizeTypePair<X86_v16s16, X86_v32s16>,
+                     LegalizeTypePair<X86_v4s32, X86_v16s32>,
+                     LegalizeTypePair<X86_v8s32, X86_v16s32>,
+                     LegalizeTypePair<X86_v2s64, X86_v8s64>,
+                     LegalizeTypePair<X86_v4s64, X86_v8s64>]>,
+    // G_EXTRACT also has an immediate, which the pair rules do not read.  An
+    // explicit terminal rule marks it covered; falling off the end would say
+    // the same thing, but the verifier cannot see that.
+    Unsupported,
+  ];
+}
 
-      [=](const LegalityQuery &Query) {
-              unsigned SubIdx = Query.Opcode == G_EXTRACT ? 0 : 1;
-              unsigned FullIdx = Query.Opcode == G_EXTRACT ? 1 : 0;
-              return (HasAVX && typePairInSet(SubIdx, FullIdx,
-                                              {{X86_v16s8, X86_v32s8},
-                                               {X86_v8s16, X86_v16s16},
-                                               {X86_v4s32, X86_v8s32},
-                                               {X86_v2s64, X86_v4s64}})(Query)) ||
-                     (HasAVX512 && typePairInSet(SubIdx, FullIdx,
-                                                 {{X86_v16s8, X86_v64s8},
-                                                  {X86_v32s8, X86_v64s8},
-                                                  {X86_v8s16, X86_v32s16},
-                                                  {X86_v16s16, X86_v32s16},
-                                                  {X86_v4s32, X86_v16s32},
-                                                  {X86_v8s32, X86_v16s32},
-                                                  {X86_v2s64, X86_v8s64},
-                                                  {X86_v4s64, X86_v8s64}})(Query));
-            }
-    }]>,
+def X86_INSERT : LegalizeRuleSet<["G_INSERT"]> {
+  let Rules = [
+    LegalForPairsIf<HasAVX,
+                    [LegalizeTypePair<X86_v32s8, X86_v16s8>,
+                     LegalizeTypePair<X86_v16s16, X86_v8s16>,
+                     LegalizeTypePair<X86_v8s32, X86_v4s32>,
+                     LegalizeTypePair<X86_v4s64, X86_v2s64>]>,
+    LegalForPairsIf<HasAVX512,
+                    [LegalizeTypePair<X86_v64s8, X86_v16s8>,
+                     LegalizeTypePair<X86_v64s8, X86_v32s8>,
+                     LegalizeTypePair<X86_v32s16, X86_v8s16>,
+                     LegalizeTypePair<X86_v32s16, X86_v16s16>,
+                     LegalizeTypePair<X86_v16s32, X86_v4s32>,
+                     LegalizeTypePair<X86_v16s32, X86_v8s32>,
+                     LegalizeTypePair<X86_v8s64, X86_v2s64>,
+                     LegalizeTypePair<X86_v8s64, X86_v4s64>]>,
+    // See G_EXTRACT: the immediate operand is not read by these rules.
+    Unsupported,
   ];
 }
 
