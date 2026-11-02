@@ -84,7 +84,7 @@ public:
   explicit TableLegalizerInfoForTest(const X86Subtarget &STI) : Subtarget(STI) {
 #include "X86LegalizerInfo.inc"
     auto T = std::make_unique<X86LegalizerTable>(
-        *this, Subtarget.isTarget64BitLP64() ? 64 : 32);
+        *this, Subtarget, Subtarget.isTarget64BitLP64() ? 64 : 32);
     TablePtr = T.get();
     setTable(std::move(T));
   }

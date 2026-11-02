@@ -9,12 +9,19 @@
 ; RUN: llc < %s -mtriple=i386-unknown-linux-gnu \
 ; RUN:     -x86-gisel-table-check -o /dev/null 2>&1 | FileCheck %s
 
-; The table is filled from the rule chains and then asked the same questions
-; the domain enumerates.  A mismatch means the key merges two shapes the rules
-; treat differently, which is the only way this table can be wrong: it cannot
-; invent an answer the chain would not give.
+; The table is answered by the evaluator the table generator emits for each
+; rule set -- the chain's guards and mutations written out, not the chain
+; itself -- and the same questions the domain enumerates are put to both.  A
+; mismatch means the key merges two shapes the rules treat differently, which
+; is the only way this table can be wrong: the evaluator cannot invent an
+; answer the chain would not give.
 ;
-; CHECK: x86-gisel-table-check: points {{[0-9]+}} compared {{[1-9][0-9][0-9]+}} mismatches 0
+; Two points are skipped: G_LROUND and G_LLROUND.  Their rule set is opaque
+; because the first rule returns a pair<unsigned, LLT> mutation, which the
+; table's step cannot express yet, so the reader declines and the chain
+; answers those.
+;
+; CHECK: x86-gisel-table-check: points 487 compared 485 mismatches 0 skipped 2 outside 0 ptrvec 0 untabulated 0
 
 define void @f() {
   ret void
