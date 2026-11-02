@@ -1055,14 +1055,14 @@ std::string elementTypeIs(unsigned Idx, StringRef Ty) {
          std::to_string(Idx) + ",\"" + Ty.str() + "\"]}";
 }
 
-/// Types[Other].getScalarSizeInBits() > Types[Idx].getSizeInBits()
+/// Types[Other].getScalarSizeInBits() > Types[Idx].getScalarSizeInBits()
 std::string scalarSizeLargerThanSlot(unsigned Other, unsigned Idx) {
   return "{\"kind\":\"leaf\",\"name\":\"scalarSizeLargerThanSlot\","
          "\"args\":[" +
          std::to_string(Other) + "," + std::to_string(Idx) + "]}";
 }
 
-/// Types[Other].getScalarSizeInBits() < Types[Idx].getSizeInBits()
+/// Types[Other].getScalarSizeInBits() < Types[Idx].getScalarSizeInBits()
 std::string scalarSizeSmallerThanSlot(unsigned Other, unsigned Idx) {
   return "{\"kind\":\"leaf\",\"name\":\"scalarSizeSmallerThanSlot\","
          "\"args\":[" +
