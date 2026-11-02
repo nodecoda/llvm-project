@@ -2161,6 +2161,29 @@ class LegalizerTableEmitterImpl {
     llvm_unreachable("bad table type kind");
   }
 
+  /// The same spelling for the test-only metadata, where the reader's enum is
+  /// not visible.
+  static std::string testTypeKindName(TableTypeKind K, StringRef Prefix) {
+    StringRef Suffix;
+    switch (K) {
+    case TablePointer:
+      Suffix = "TestKind_Pointer";
+      break;
+    case TableScalar:
+      Suffix = "TestKind_Scalar";
+      break;
+    case TableVector:
+      Suffix = "TestKind_Vector";
+      break;
+    case TablePtrVector:
+      Suffix = "TestKind_PtrVector";
+      break;
+    default:
+      llvm_unreachable("bad table type kind");
+    }
+    return (Prefix + Suffix).str();
+  }
+
   /// True when a predicate record reads the memory descriptor, directly or as
   /// a dag leaf.  Such a rule set needs the descriptor axis in its key.
   static bool predicateReadsMemDesc(const Record *P) {
@@ -3044,6 +3067,9 @@ public:
   /// Nothing here is part of the table reader: no production TU includes this
   /// file, and the table the target builds is the one run() emits.
   void runRuleIndex(raw_ostream &OS) {
+    collectClasses();
+    collectMemClasses();
+
     std::vector<const Record *> RuleSets =
         Records.getAllDerivedDefinitions("LegalizeRuleSet");
     llvm::sort(RuleSets, LessRecordByID());
@@ -3139,6 +3165,90 @@ public:
       for (StringRef Opcode : Tables[I]->getValueAsListOfStrings("Opcodes"))
         OS << "  case TargetOpcode::" << Opcode << ": return " << I << ";\n";
     OS << "  default: return -1;\n  }\n}\n";
+
+    // The domain enumeration needs the axes and the per-table shape, not just
+    // the evaluators.  Emit them from the same data run() uses, so a class
+    // cannot be added to the table and silently omitted from the test domain.
+    OS << "\n// TEST-ONLY domain metadata.  The type axis, the descriptor "
+          "axis and the\n// shape of every table, from the same data the "
+          "reader's arrays use.  The\n// test enumerates the domain from "
+          "these, never from a copy.\n";
+    OS << "enum " << P << "TestTypeKind : uint8_t {\n";
+    OS << "  " << P << "TestKind_Pointer = 0,\n";
+    OS << "  " << P << "TestKind_Scalar = 1,\n";
+    OS << "  " << P << "TestKind_Vector = 2,\n";
+    OS << "  " << P << "TestKind_PtrVector = 3,\n";
+    OS << "};\n";
+    OS << "struct " << P << "TestTypeClass {\n";
+    OS << "  uint8_t Kind;\n";
+    OS << "  uint16_t ElemBits;\n";
+    OS << "  uint16_t Lanes;\n";
+    OS << "};\n";
+    OS << "struct " << P << "TestTable {\n";
+    OS << "  const char *Name;\n";
+    OS << "  const char *Opcode;\n";
+    OS << "  uint8_t Slots[2];\n";
+    OS << "  uint8_t Dims[2];\n";
+    OS << "  bool HasMem;\n";
+    OS << "  uint16_t MemDim;\n";
+    OS << "  uint16_t NumRules;\n";
+    OS << "  uint8_t NumSlots;\n";
+    OS << "};\n\n";
+
+    OS << "static constexpr " << P << "TestTypeClass " << P
+       << "TestTypeClasses[] = {\n";
+    for (size_t I = 0; I != Classes.size(); ++I) {
+      const TableType &C = Classes[I];
+      OS << "  /*" << I << "*/ {" << testTypeKindName(C.Kind, P) << ", "
+         << C.ElemBits << ", " << C.Lanes << "}, // " << C.Name << "\n";
+    }
+    OS << "};\n";
+    OS << "static constexpr unsigned " << P << "TestNumTypeClasses = sizeof("
+       << P << "TestTypeClasses) / sizeof(" << P << "TestTypeClasses[0]);\n\n";
+
+    OS << "static constexpr " << P << "TestTypeClass " << P
+       << "TestMemClasses[] = {\n";
+    for (size_t I = 0; I != MemClasses.size(); ++I) {
+      const TableType &C = MemClasses[I];
+      OS << "  /*" << I << "*/ {" << testTypeKindName(C.Kind, P) << ", "
+         << C.ElemBits << ", " << C.Lanes << "}, // " << C.Name << "\n";
+    }
+    OS << "};\n";
+    OS << "static constexpr unsigned " << P << "TestNumMemClasses = sizeof("
+       << P << "TestMemClasses) / sizeof(" << P << "TestMemClasses[0]);\n\n";
+
+    std::vector<unsigned> Aligns = alignThresholds();
+    OS << "static constexpr unsigned " << P << "TestAlignThresholds[] = {";
+    for (size_t I = 0; I != Aligns.size(); ++I) {
+      if (I)
+        OS << ", ";
+      OS << Aligns[I];
+    }
+    OS << "};\n";
+    OS << "static constexpr unsigned " << P << "TestNumAlignClasses = sizeof("
+       << P << "TestAlignThresholds) / sizeof(" << P
+       << "TestAlignThresholds[0]) + 1;\n\n";
+
+    OS << "static constexpr " << P << "TestTable " << P
+       << "TestTables[] = "
+          "{\n";
+    for (size_t I = 0; I != Tables.size(); ++I) {
+      const bool HasMem = needsMemDesc(*Tables[I]);
+      const std::vector<StringRef> Opcodes =
+          Tables[I]->getValueAsListOfStrings("Opcodes");
+      if (Opcodes.empty())
+        PrintFatalError(Tables[I]->getLoc(),
+                        "a tabulated rule set must name an opcode");
+      OS << "  /*" << I << "*/ {\"" << Tables[I]->getName() << "\", \""
+         << Opcodes.front() << "\", {0, 1}, {" << Classes.size() << ", "
+         << Classes.size() << "}, " << (HasMem ? "true" : "false") << ", "
+         << (HasMem ? MemClasses.size() * (Aligns.size() + 1) : 0) << ", "
+         << NumRules[I] << ", " << testArityOf(*Tables[I]) << "}, // "
+         << Tables[I]->getName() << "\n";
+    }
+    OS << "};\n";
+    OS << "static constexpr unsigned " << P << "TestNumTables = sizeof(" << P
+       << "TestTables) / sizeof(" << P << "TestTables[0]);\n";
 
     OS << "\n/// Answer one query from a tabulated rule set and report the "
           "first\n/// matching rule.  False means no rule matched, or the "
@@ -3251,6 +3361,95 @@ public:
           Arity = std::max(Arity, unsigned(Arg->getValueAsInt("Value") + 1));
       scanPredicate(Rule->getValueAsOptionalDef("Pred"), Arity);
       scanSlots(Rule->getValueAsString("OpaqueArgs"), Arity);
+    }
+    return std::min(Arity, 3u);
+  }
+
+  /// Slot numbers in a rendered predicate or mutation.  Unlike scanSlots this
+  /// accepts a call with one numeric argument, e.g. sizeNotPow2(1), because
+  /// the domain metadata must see every slot a rule reads, not only the ones a
+  /// comma-separated call spells.
+  static void scanSlotNumbers(StringRef S, unsigned &Arity) {
+    for (size_t I = 0; I < S.size(); ++I) {
+      if (S[I] != '(')
+        continue;
+      size_t J = I + 1;
+      while (J < S.size() && isSpace(S[J]))
+        ++J;
+      if (J >= S.size() || !isDigit(S[J]))
+        continue;
+      unsigned V = 0;
+      while (J < S.size() && isDigit(S[J]))
+        V = V * 10 + (S[J++] - '0');
+      while (J < S.size() && isSpace(S[J]))
+        ++J;
+      if (J < S.size() && (S[J] == ',' || S[J] == ')'))
+        Arity = std::max(Arity, V + 1);
+    }
+    for (size_t P = S.find("Types["); P != StringRef::npos;
+         P = S.find("Types[", P + 1)) {
+      size_t J = P + 6;
+      unsigned V = 0;
+      while (J < S.size() && isDigit(S[J]))
+        V = V * 10 + (S[J++] - '0');
+      Arity = std::max(Arity, V + 1);
+    }
+  }
+
+  static void scanPredicateSlots(const Record *P, unsigned &Arity) {
+    if (!P)
+      return;
+    if (P->isSubClassOf("LegalizeTypePredicate"))
+      scanSlotNumbers(P->getValueAsString("Call"), Arity);
+    else if (P->isSubClassOf("LegalizeQueryPredicate"))
+      scanSlotNumbers(P->getValueAsString("Expr"), Arity);
+    if (P->isSubClassOf("LegalizeQueryPredicateDag") ||
+        P->isSubClassOf("LegalizePredicateDag")) {
+      std::function<void(const Init *)> Walk = [&](const Init *I) {
+        if (const auto *D = dyn_cast<DagInit>(I)) {
+          for (const Init *Arg : D->getArgs())
+            Walk(Arg);
+          return;
+        }
+        if (const auto *Def = dyn_cast<DefInit>(I))
+          if (Def->getDef() != P)
+            scanPredicateSlots(Def->getDef(), Arity);
+      };
+      Walk(P->getValueAsDag("CondDag"));
+    }
+  }
+
+  /// The number of type slots a rule set's rules actually read, including the
+  /// two slots a LegalizeTypePair or a LegalizeMemDesc names.  arityOf() feeds
+  /// the point emitter and is deliberately conservative about the latter; the
+  /// domain metadata needs the exact split between one-slot and two-slot rule
+  /// sets.
+  static unsigned testArityOf(const Record &RuleSet) {
+    unsigned Arity = 1;
+    for (const Record *Rule : RuleSet.getValueAsListOfDefs("Rules")) {
+      const std::vector<const Record *> Args =
+          Rule->getValueAsListOfDefs("Args");
+      // legalForCartesianProduct gives one type slot per type-list argument,
+      // so a product of two lists is a two-slot query even though no single
+      // argument names slot 1.
+      if (builderName(*Rule) == "legalForCartesianProduct") {
+        unsigned Lists = 0;
+        for (const Record *Arg : Args)
+          if (Arg->isSubClassOf("LegalizeNamedTypeList") ||
+              Arg->isSubClassOf("LegalizeInlineTypeList") ||
+              Arg->isSubClassOf("LegalizeTypeListChoice"))
+            ++Lists;
+        Arity = std::max(Arity, Lists);
+      }
+      for (const Record *Arg : Args) {
+        if (Arg->isSubClassOf("LegalizeArgIndex"))
+          Arity = std::max(Arity, unsigned(Arg->getValueAsInt("Value") + 1));
+        else if (Arg->isSubClassOf("LegalizeTypePair") ||
+                 Arg->isSubClassOf("LegalizeMemDesc"))
+          Arity = std::max(Arity, 2u);
+      }
+      scanPredicateSlots(Rule->getValueAsOptionalDef("Pred"), Arity);
+      scanSlotNumbers(Rule->getValueAsString("OpaqueArgs"), Arity);
     }
     return std::min(Arity, 3u);
   }
