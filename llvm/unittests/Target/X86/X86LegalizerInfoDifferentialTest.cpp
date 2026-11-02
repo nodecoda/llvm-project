@@ -39,8 +39,10 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/MC/TargetRegistry.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Program.h"
 #include "llvm/Support/SHA256.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/VCSRevision.h"
@@ -842,9 +844,9 @@ static void enumerateClassPairPoints(const X86TestTable &T,
 // directions for a two-slot one.  A memory rule set alternates the panel
 // between the value type and the descriptor's memory type.
 template <typename Sink>
-static void enumerateBoundaryPoints(const X86TestTable &T,
-                                    const TableDomainAxis &A, Sink &&Emit) {
-  const ArrayRef<LLT> Boundary = boundaryPanel();
+static void enumerateBoundaryPanelPoints(const X86TestTable &T,
+                                         const TableDomainAxis &A,
+                                         ArrayRef<LLT> Boundary, Sink &&Emit) {
   if (T.HasMem) {
     for (const LLT &C : A.Classes)
       for (const LLT &B : Boundary)
@@ -862,6 +864,14 @@ static void enumerateBoundaryPoints(const X86TestTable &T,
         Emit(ArrayRef<LLT>({B, C}), false, LLT{}, 0);
       }
   }
+}
+
+// The 12-atom witness/full path is unchanged; the deep panel reuses the same
+// shape with a larger, reviewed panel.
+template <typename Sink>
+static void enumerateBoundaryPoints(const X86TestTable &T,
+                                    const TableDomainAxis &A, Sink &&Emit) {
+  enumerateBoundaryPanelPoints(T, A, boundaryPanel(), std::forward<Sink>(Emit));
 }
 
 // Scalar address-space points.  A non-zero AS is answered by the evaluator on
@@ -6125,6 +6135,1022 @@ TEST_F(X86LegalizerDifferentialTest, TableFillsAreBoundedAndStable) {
                << " stable=yes\n";
 }
 
+//===----------------------------------------------------------------------===//
+// Two-layer corpus: generated full artifact and reviewed deep panel
+//===----------------------------------------------------------------------===//
+//
+// The witness corpus is the default-CI baseline.  The full corpus is a nightly
+// artifact generated outside the source tree; the deep panel is a small,
+// reviewed source artifact that widens the boundary axis without making the
+// committed corpus large.
+
+// FNV-1a over the bytes of a string.  fnv1a64Step() hashes an integer's eight
+// bytes; the artifact hashes must be a function of the emitted text and must
+// not depend on host endianness.
+static uint64_t fnv1a64Text(uint64_t Hash, StringRef Text) {
+  for (unsigned char C : Text) {
+    Hash ^= C;
+    Hash *= Fnv1a64Prime;
+  }
+  return Hash;
+}
+
+// The working tree may be dirty, but the commit is still useful provenance.
+// `git` is optional: a build without it omits the field, as the schema allows.
+static std::optional<std::string> readGitHeadCommit() {
+  auto Git = sys::findProgramByName("git");
+  if (!Git)
+    return std::nullopt;
+  SmallVector<char, 128> TempPath;
+  if (sys::fs::createTemporaryFile("x86-legalizer-head", "txt", TempPath))
+    return std::nullopt;
+  const StringRef TempRef(TempPath.data(), TempPath.size());
+  SmallVector<StringRef, 6> Args{*Git, "-C", X86_LEGALIZER_TEST_SRC_DIR,
+                                 "rev-parse", "HEAD"};
+  std::optional<StringRef> Redirects[3] = {std::nullopt, TempRef, StringRef()};
+  const int RC = sys::ExecuteAndWait(*Git, Args, std::nullopt, Redirects);
+  std::optional<std::string> Result;
+  if (RC == 0) {
+    auto Buffer = MemoryBuffer::getFile(TempRef);
+    if (Buffer) {
+      StringRef Text = (*Buffer)->getBuffer().trim();
+      if (!Text.empty())
+        Result = Text.str();
+    }
+  }
+  sys::fs::remove(TempRef);
+  return Result;
+}
+
+static StringRef domainOriginName(DomainKind Kind) {
+  switch (Kind) {
+  case DomainKind::ClassPair:
+    return "classpair";
+  case DomainKind::Boundary:
+    return "boundary";
+  case DomainKind::AScalar:
+    return "as-scalar";
+  case DomainKind::ASVector:
+    return "as-vector";
+  }
+  llvm_unreachable("bad domain kind");
+}
+
+// Failure-message query text shared by the full and deep corpora.
+static std::string formatQueryText(StringRef RuleSet, ArrayRef<LLT> Types,
+                                   ArrayRef<LegalityQuery::MemDesc> MemDescs) {
+  std::string Text;
+  raw_string_ostream OS(Text);
+  OS << RuleSet << " (";
+  for (unsigned I = 0; I != Types.size(); ++I)
+    OS << (I ? ", " : "") << witnessLLTName(Types[I]);
+  OS << ")";
+  if (!MemDescs.empty())
+    OS << " mem(" << witnessLLTName(MemDescs[0].MemoryTy) << ", align "
+       << MemDescs[0].AlignInBits << ")";
+  return OS.str();
+}
+
+// The 60-atom deep panel.  It starts from the reviewed 12-atom panel and adds
+// scalars the X86TypeClasses vocabulary does not name (s2, s5, s512, ...) and
+// vector lane counts / element widths outside the class grid (v8s8, v5s32,
+// v2s128, ...).  The result is sorted by its canonical spelling so the
+// committed artifact is reproducible without relying on hash iteration order.
+static std::vector<LLT> deepPanelAtoms() {
+  std::vector<LLT> Panel(boundaryPanel().begin(), boundaryPanel().end());
+  static const unsigned ExtraScalars[] = {
+      2,  4,  5,  6,  9,   12,  15,  17,  20,  23,  31,  40,
+      48, 63, 72, 96, 127, 160, 192, 224, 255, 384, 512, 1024};
+  for (unsigned Bits : ExtraScalars)
+    Panel.push_back(LLT::scalar(Bits));
+  static const std::pair<unsigned, unsigned> ExtraVectors[] = {
+      {2, 8},  {3, 8},   {8, 8},   {2, 16},  {3, 16},  {4, 16},
+      {6, 16}, {7, 16},  {12, 16}, {64, 16}, {5, 32},  {6, 32},
+      {7, 32}, {12, 32}, {32, 32}, {3, 64},  {5, 64},  {6, 64},
+      {7, 64}, {16, 64}, {32, 64}, {2, 128}, {3, 128}, {4, 128}};
+  for (const auto &V : ExtraVectors)
+    Panel.push_back(LLT::fixed_vector(V.first, V.second));
+  std::sort(Panel.begin(), Panel.end(),
+            [](LLT L, LLT R) { return witnessLLTName(L) < witnessLLTName(R); });
+  return Panel;
+}
+
+static std::optional<std::vector<LLT>> readDeepPanel(std::string &Error) {
+  std::optional<std::string> Text =
+      readTestSourceFile("x86-legalizer-deep-panel.json");
+  if (!Text) {
+    Error = "cannot read x86-legalizer-deep-panel.json from " +
+            std::string(X86_LEGALIZER_TEST_SRC_DIR);
+    return std::nullopt;
+  }
+  auto Value = json::parse(*Text);
+  if (!Value) {
+    Error = toString(Value.takeError());
+    return std::nullopt;
+  }
+  const json::Object *Root = Value->getAsObject();
+  if (!Root) {
+    Error = "deep panel root is not an object";
+    return std::nullopt;
+  }
+  if (Root->getString("schema").value_or("") !=
+      "llvm.gisel.x86-legalizer-deep-panel") {
+    Error = "deep panel has the wrong schema";
+    return std::nullopt;
+  }
+  if (Root->getInteger("atom_count").value_or(-1) != 60) {
+    Error = "deep panel must record atom_count 60";
+    return std::nullopt;
+  }
+  if (Root->getString("reviewed_by").value_or("").empty()) {
+    Error = "deep panel must record reviewed_by";
+    return std::nullopt;
+  }
+  const json::Array *AtomArray = Root->getArray("atoms");
+  if (!AtomArray) {
+    Error = "deep panel has no atoms array";
+    return std::nullopt;
+  }
+  std::vector<LLT> Panel;
+  std::set<std::string> Names;
+  std::string ListText;
+  Panel.reserve(AtomArray->size());
+  for (const json::Value &AtomValue : *AtomArray) {
+    auto Name = AtomValue.getAsString();
+    if (!Name) {
+      Error = "deep panel atom is not a string";
+      return std::nullopt;
+    }
+    auto Ty = parseWitnessLLT(*Name);
+    if (!Ty) {
+      Error = "bad deep panel LLT " + Name->str();
+      return std::nullopt;
+    }
+    if (!Names.insert(Name->str()).second) {
+      Error = "duplicate deep panel LLT " + Name->str();
+      return std::nullopt;
+    }
+    ListText += Name->str();
+    ListText += '\n';
+    Panel.push_back(*Ty);
+  }
+  if (Panel.size() != 60) {
+    Error = "deep panel must have 60 atoms";
+    return std::nullopt;
+  }
+  if (Root->getString("sha256").value_or("") != sha256Hex(ListText)) {
+    Error = "deep panel sha256 does not match the atom list";
+    return std::nullopt;
+  }
+  const std::string GeneratorHash =
+      utohexstr(fnv1a64Text(Fnv1a64Offset, ListText), /*LowerCase=*/true, 16);
+  if (Root->getString("generator_hash").value_or("") != GeneratorHash) {
+    Error = "deep panel generator_hash does not match the atom list";
+    return std::nullopt;
+  }
+  return Panel;
+}
+
+// (rule_set, rule_index) -> the single slot the rule mutates.  Only rules
+// whose mutation is applied to a pointer are trimmed; everything else stays
+// in the corpus.
+using MutationTargetMap = std::map<std::pair<std::string, unsigned>, unsigned>;
+
+static std::optional<MutationTargetMap>
+readMutationTargets(std::string &Error) {
+  auto Buffer = MemoryBuffer::getFile(X86_LEGALIZER_CORE_JSON);
+  if (!Buffer) {
+    Error = std::string("cannot read ") + X86_LEGALIZER_CORE_JSON;
+    return std::nullopt;
+  }
+  auto Value = json::parse((*Buffer)->getBuffer());
+  if (!Value) {
+    Error = toString(Value.takeError());
+    return std::nullopt;
+  }
+  const json::Object *Root = Value->getAsObject();
+  if (!Root) {
+    Error = "core.json top level is not an object";
+    return std::nullopt;
+  }
+  const json::Array *Rulesets = Root->getArray("rulesets");
+  if (!Rulesets) {
+    Error = "core.json has no 'rulesets'";
+    return std::nullopt;
+  }
+
+  MutationTargetMap Targets;
+  for (const json::Value &RulesetValue : *Rulesets) {
+    const json::Object *Ruleset = RulesetValue.getAsObject();
+    if (!Ruleset) {
+      Error = "core.json ruleset is not an object";
+      return std::nullopt;
+    }
+    auto Def = Ruleset->getString("def");
+    const json::Array *Rules = Ruleset->getArray("rules");
+    if (!Def || !Rules) {
+      Error = "core.json ruleset has no def/rules";
+      return std::nullopt;
+    }
+    for (const json::Value &RuleValue : *Rules) {
+      const json::Object *Rule = RuleValue.getAsObject();
+      if (!Rule)
+        continue;
+      const json::Object *Mutation = Rule->getObject("mutation");
+      if (!Mutation)
+        continue;
+      if (Mutation->get("targets")) {
+        Error = "core.json rule " + Def->str() +
+                " carries multiple mutation targets";
+        return std::nullopt;
+      }
+      auto Target = Mutation->getInteger("target");
+      auto RuleIndex = Rule->getInteger("rule_index");
+      if (!Target || !RuleIndex || *Target < 0 || *RuleIndex < 0) {
+        Error = "core.json rule " + Def->str() +
+                " has an invalid mutation target or rule_index";
+        return std::nullopt;
+      }
+      const auto Key =
+          std::make_pair(Def->str(), static_cast<unsigned>(*RuleIndex));
+      const unsigned Slot = static_cast<unsigned>(*Target);
+      auto It = Targets.find(Key);
+      if (It != Targets.end() && It->second != Slot) {
+        Error = "core.json rule " + Def->str() + "#" +
+                std::to_string(*RuleIndex) + " maps to two mutation targets";
+        return std::nullopt;
+      }
+      Targets[Key] = Slot;
+    }
+  }
+  return Targets;
+}
+
+// Canonical generation parameters shared by the generator, the artifact
+// checker, and the committed manifest.  The digest covers these values plus
+// the exact atom text; provenance (generator_base_commit) is excluded so a
+// dirty worktree does not change it.
+static std::string fullConfigsJson() {
+  std::string Text;
+  raw_string_ostream OS(Text);
+  OS << "[";
+  for (unsigned I = 0; I != std::size(FullConfigs); ++I)
+    OS << (I ? ", " : "") << "\"" << FullConfigs[I].ID << "\"";
+  OS << "]";
+  return OS.str();
+}
+
+static constexpr StringLiteral FullSamplingPolicy =
+    "class-pair + 12-atom boundary panel + scalar/pointer-vector AS";
+static constexpr StringLiteral FullDomainFormula = "4*(182712+23388+436)";
+static constexpr StringLiteral TrimReasonText =
+    "the first matching rule applies WidenScalar or NarrowScalar to a pointer "
+    "slot; LLT::changeElementSize rejects pointer and pointer-vector types, "
+    "so the frozen reference cannot answer this query";
+
+struct CorpusDigestInput {
+  std::string GeneratorHash;
+  uint64_t DomainAtomsRaw = 0;
+  uint64_t TrimmedUnevaluable = 0;
+  std::string TrimReason;
+  std::string TrimExample;
+};
+
+static std::string corpusDigestText(const CorpusDigestInput &I) {
+  std::string Text;
+  raw_string_ostream OS(Text);
+  OS << "generator_hash " << I.GeneratorHash << "\n"
+     << "domain_atoms_raw " << I.DomainAtomsRaw << "\n"
+     << "trimmed_unevaluable " << I.TrimmedUnevaluable << "\n"
+     << "trim_reason " << I.TrimReason << "\n"
+     << "trim_example " << I.TrimExample << "\n"
+     << "configs " << fullConfigsJson() << "\n"
+     << "sampling_policy " << FullSamplingPolicy << "\n"
+     << "domain_formula " << FullDomainFormula << "\n";
+  return OS.str();
+}
+
+static std::string corpusDigest(const CorpusDigestInput &I,
+                                StringRef AtomsText) {
+  SHA256 Hasher;
+  Hasher.update(corpusDigestText(I));
+  Hasher.update(AtomsText);
+  return toHex(Hasher.final(), /*LowerCase=*/true);
+}
+
+// Parse the committed artifact manifest.  It is a flat `key value` record; the
+// differential cross-checks it against the artifact, and the default suite
+// checks its internal invariants.
+static std::optional<std::map<std::string, std::string>>
+readFullCorpusManifest(std::string &Error) {
+  std::optional<std::string> Text =
+      readTestSourceFile("x86-legalizer-full.sha256");
+  if (!Text) {
+    Error = "cannot read x86-legalizer-full.sha256 from " +
+            std::string(X86_LEGALIZER_TEST_SRC_DIR);
+    return std::nullopt;
+  }
+  std::map<std::string, std::string> Manifest;
+  SmallVector<StringRef, 16> Lines;
+  StringRef(*Text).split(Lines, '\n');
+  for (StringRef Line : Lines) {
+    Line = Line.trim();
+    if (Line.empty())
+      continue;
+    auto Split = Line.split(' ');
+    if (Split.second.empty()) {
+      Error = "manifest line has no value: " + Line.str();
+      return std::nullopt;
+    }
+    Manifest[Split.first.str()] = Split.second.trim().str();
+  }
+  return Manifest;
+}
+
+// The first-match rule is found with mutations off, so the probe itself cannot
+// assert on a pointer.  Only the rule identity, its declared target slot, and
+// whether its action changes element size are used; the expected decision is
+// never computed for a trimmed point.
+struct FirstMatchMutation {
+  unsigned RuleIndex = 0;
+  unsigned TargetSlot = 0;
+  bool TargetOutOfRange = false;
+  bool TargetIsPointer = false;
+  bool ActionChangesElementSize = false;
+};
+
+static FirstMatchMutation firstMatchMutation(unsigned Table,
+                                             const X86Subtarget &STI,
+                                             const LegalityQuery &Q,
+                                             const MutationTargetMap &Targets) {
+  FirstMatchMutation M;
+  unsigned RuleIndex = 0;
+  LegalizeActionStep Step(Unsupported, 0, LLT{});
+  {
+    RuleIndexMutationsOff Guard(X86EvalRuleIndexMutations);
+    if (!X86EvalRuleIndex(Table, STI, Q, RuleIndex, Step))
+      return M;
+  }
+  M.RuleIndex = RuleIndex;
+  M.ActionChangesElementSize = actionChangesElementSize(Step.Action);
+  auto It = Targets.find({X86TestTables[Table].Name, RuleIndex});
+  if (It == Targets.end())
+    return M;
+  M.TargetSlot = It->second;
+  if (M.TargetSlot >= Q.Types.size()) {
+    M.TargetOutOfRange = true;
+    return M;
+  }
+  const LLT TargetTy = Q.Types[M.TargetSlot];
+  M.TargetIsPointer = TargetTy.isPointer() || TargetTy.isPointerVector();
+  return M;
+}
+
+// Not a test.  Generate the nightly artifact outside the source tree:
+//
+//   X86_LEGALIZER_FULL_OUT=<abs path> X86Tests \
+//     --gtest_also_run_disabled_tests --gtest_filter='*GenerateFullCorpus*'
+//
+// The artifact is never committed.  Its sha256 and generation parameters are
+// recorded in x86-legalizer-full.sha256.
+TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateFullCorpus) {
+  const char *OutPath = std::getenv("X86_LEGALIZER_FULL_OUT");
+  if (!OutPath)
+    GTEST_SKIP() << "set X86_LEGALIZER_FULL_OUT to the absolute output path";
+
+  const auto Started = std::chrono::steady_clock::now();
+
+  std::vector<Sigma> Sigmas;
+  Sigmas.reserve(std::size(FullConfigs));
+  std::vector<std::unique_ptr<X86LegalizerInfoReference>> Oracles;
+  Oracles.reserve(std::size(FullConfigs));
+  for (const Config &C : FullConfigs) {
+    Sigmas.push_back(makeSigma(C));
+    ASSERT_TRUE(Sigmas.back().STI) << C.ID;
+    Oracles.push_back(std::make_unique<X86LegalizerInfoReference>(
+        *Sigmas.back().STI,
+        *static_cast<const X86TargetMachine *>(Sigmas.back().TM.get())));
+  }
+
+  std::string Error;
+  std::optional<MutationTargetMap> Targets = readMutationTargets(Error);
+  ASSERT_TRUE(Targets.has_value()) << Error;
+  ASSERT_EQ(Targets->size(), 63u)
+      << "core.json must map exactly 63 (rule_set, rule_index) mutations";
+
+  std::string AtomsText;
+  AtomsText.reserve(192 * 1024 * 1024);
+  uint64_t RawAtomCount = 0;
+  uint64_t AtomCount = 0;
+  uint64_t TrimmedUnevaluable = 0;
+  std::string TrimExample;
+  uint64_t GeneratorHash = Fnv1a64Offset;
+  for (unsigned CI = 0; CI != std::size(FullConfigs); ++CI) {
+    const unsigned PointerBits = FullConfigs[CI].Is64 ? 64 : 32;
+    for (unsigned TI = 0; TI != X86TestNumTables; ++TI) {
+      const X86TestTable &T = X86TestTables[TI];
+      const std::optional<unsigned> Opcode = opcodeForName(T.Opcode);
+      ASSERT_TRUE(Opcode.has_value()) << T.Opcode;
+      uint64_t Serial = 0;
+      auto Emit = [&](DomainKind Kind, ArrayRef<LLT> Types, bool HasMem,
+                      LLT MemTy, uint64_t Align) {
+        X86TablePoint P;
+        ASSERT_LE(Types.size(), std::size(P.Types));
+        P.Opcode = *Opcode;
+        P.Name = T.Opcode;
+        P.NumTypes = static_cast<uint8_t>(Types.size());
+        std::copy(Types.begin(), Types.end(), P.Types);
+        P.MemTy = MemTy;
+        P.Align = Align;
+        P.HasMem = HasMem;
+        FirstMatchMutation Mutation;
+        withAtomQuery(P, [&](const LegalityQuery &Q) {
+          Mutation = firstMatchMutation(TI, *Sigmas[CI].STI, Q, *Targets);
+        });
+        ++RawAtomCount;
+        if (Mutation.TargetOutOfRange) {
+          ADD_FAILURE() << "core.json mutation target " << Mutation.TargetSlot
+                        << " is outside the query arity for "
+                        << FullConfigs[CI].ID << "/" << T.Name << " rule #"
+                        << Mutation.RuleIndex << " " << witnessQueryText(P);
+          return;
+        }
+        if (Mutation.TargetIsPointer && Mutation.ActionChangesElementSize) {
+          ++TrimmedUnevaluable;
+          if (TrimExample.empty())
+            TrimExample = std::string(FullConfigs[CI].ID) + "/" + T.Name + "/" +
+                          witnessQueryText(P);
+          return;
+        }
+        LegalizeActionStep Step(Unsupported, 0, LLT{});
+        withAtomQuery(P, [&](const LegalityQuery &Q) {
+          Step = Oracles[CI]->getAction(Q);
+        });
+
+        const std::string Id = "full/" + std::string(FullConfigs[CI].ID) + "/" +
+                               T.Name + "#" + std::to_string(Serial);
+        ++Serial;
+        GeneratorHash = fnv1a64Text(GeneratorHash, Id);
+        GeneratorHash = fnv1a64Text(GeneratorHash, "\n");
+
+        std::string Atom;
+        raw_string_ostream OS(Atom);
+        OS << "    {\"id\":\"" << Id
+           << "\",\"origin\":\"full:" << domainOriginName(Kind)
+           << "\",\"rule_set\":\"" << T.Name << "\",\"config\":\""
+           << FullConfigs[CI].ID << "\",\"query\":{\"types\":[";
+        for (unsigned I = 0; I != P.NumTypes; ++I)
+          OS << (I ? "," : "") << "\"" << witnessLLTName(P.Types[I]) << "\"";
+        OS << "]";
+        if (P.HasMem)
+          OS << ",\"mem\":{\"type\":\"" << witnessLLTName(P.MemTy)
+             << "\",\"align\":" << P.Align << "}";
+        OS << "},\"expected\":";
+        renderStepJson(OS, Step);
+        OS << "}";
+        OS.flush();
+        if (AtomCount != 0)
+          AtomsText += ",\n";
+        AtomsText += Atom;
+        ++AtomCount;
+      };
+      enumerateTableDomain(TI, PointerBits, Emit);
+    }
+  }
+
+  ASSERT_EQ(RawAtomCount, 826144u)
+      << "the raw full denominator is a hard contract, not a measurement";
+  ASSERT_EQ(AtomCount + TrimmedUnevaluable, RawAtomCount)
+      << "every raw atom must be either emitted or counted as trimmed";
+  const std::string GeneratorHashText =
+      utohexstr(GeneratorHash, /*LowerCase=*/true, 16);
+
+  std::string TrimLogJson;
+  {
+    raw_string_ostream T(TrimLogJson);
+    if (TrimmedUnevaluable != 0)
+      T << "{\"reason\":\"" << TrimReasonText
+        << "\",\"example\":\"" << TrimExample
+        << "\",\"count\":" << TrimmedUnevaluable << "}";
+    T.flush();
+  }
+
+  // The integrity digest covers the generation parameters and the atom text
+  // only.  Provenance (generator_base_commit) is excluded so the digest is
+  // reproducible before the change set is committed.
+  CorpusDigestInput DigestInput;
+  DigestInput.GeneratorHash = GeneratorHashText;
+  DigestInput.DomainAtomsRaw = RawAtomCount;
+  DigestInput.TrimmedUnevaluable = TrimmedUnevaluable;
+  DigestInput.TrimReason = TrimmedUnevaluable != 0 ? TrimReasonText.str() : "";
+  DigestInput.TrimExample = TrimExample;
+  const std::string Sha = corpusDigest(DigestInput, AtomsText);
+
+  static constexpr StringLiteral AtomsPrefix = "  \"atoms\": [\n";
+  static constexpr StringLiteral AtomsSuffix = "\n  ]\n}\n";
+
+  std::string Header;
+  raw_string_ostream H(Header);
+  H << "{\n";
+  H << "  \"schema\": \"llvm.gisel.x86-legalizer-full\",\n";
+  H << "  \"version\": 1,\n";
+  H << "  \"comment\": \"Generated by DISABLED_GenerateFullCorpus from the "
+       "frozen reference.  Nightly artifact; never commit it.\",\n";
+  if (std::optional<std::string> Commit = readGitHeadCommit()) {
+    H << "  \"generator_base_commit\": \"" << *Commit << "\",\n";
+    H << "  \"generator_base_commit_note\": \"HEAD the working tree was "
+         "based on; uncommitted changes are not represented\",\n";
+  }
+  H << "  \"domain_atoms_raw\": " << RawAtomCount << ",\n";
+  H << "  \"atom_count\": " << AtomCount << ",\n";
+  H << "  \"trimmed_unevaluable\": " << TrimmedUnevaluable << ",\n";
+  H << "  \"trim_log\": [" << TrimLogJson << "],\n";
+  H << "  \"configs\": " << fullConfigsJson() << ",\n";
+  H << "  \"sampling_policy\": \"" << FullSamplingPolicy << "\",\n";
+  H << "  \"domain_formula\": \"" << FullDomainFormula << "\",\n";
+  H << "  \"generator_hash\": \"" << GeneratorHashText << "\",\n";
+  H << "  \"sha256\": \"" << Sha << "\",\n";
+  H.flush();
+  const uint64_t Bytes = Header.size() + AtomsPrefix.size() + AtomsText.size() +
+                         AtomsSuffix.size();
+
+  std::error_code EC;
+  raw_fd_ostream Out(OutPath, EC);
+  ASSERT_FALSE(EC) << OutPath << ": " << EC.message();
+  Out << Header << AtomsPrefix << AtomsText << AtomsSuffix;
+  Out.flush();
+  ASSERT_FALSE(Out.has_error()) << OutPath;
+
+  const auto ElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - Started)
+                             .count();
+  llvm::outs() << "full-corpus-generate: domain_atoms_raw=" << RawAtomCount
+               << " trimmed_unevaluable=" << TrimmedUnevaluable
+               << " atoms=" << AtomCount << " bytes=" << Bytes
+               << " elapsed_ms=" << ElapsedMs << " sha256=" << Sha
+               << " generator_hash=" << GeneratorHashText << " path=" << OutPath
+               << "\n";
+}
+
+TEST_F(X86LegalizerDifferentialTest, DISABLED_FullCorpusDifferential) {
+  const char *InPath = std::getenv("X86_LEGALIZER_FULL_IN");
+  if (!InPath)
+    GTEST_SKIP() << "set X86_LEGALIZER_FULL_IN to the generated artifact";
+
+  const auto Started = std::chrono::steady_clock::now();
+  auto Buffer = MemoryBuffer::getFile(InPath);
+  ASSERT_TRUE(Buffer) << InPath << ": " << Buffer.getError().message();
+  const StringRef Text = (*Buffer)->getBuffer();
+  const std::string InputSha = sha256Hex(Text);
+
+  auto Value = json::parse(Text);
+  ASSERT_TRUE(!!Value) << toString(Value.takeError());
+  const json::Object *Root = Value->getAsObject();
+  ASSERT_NE(Root, nullptr);
+  EXPECT_EQ(Root->getString("schema").value_or(""),
+            "llvm.gisel.x86-legalizer-full");
+  EXPECT_EQ(Root->getInteger("version").value_or(-1), 1);
+  auto RawCount = Root->getInteger("domain_atoms_raw");
+  auto TrimmedCount = Root->getInteger("trimmed_unevaluable");
+  auto AtomCount = Root->getInteger("atom_count");
+  ASSERT_TRUE(RawCount && TrimmedCount && AtomCount);
+  EXPECT_EQ(*RawCount, 826144);
+  EXPECT_EQ(*AtomCount + *TrimmedCount, *RawCount);
+  const json::Array *AtomArray = Root->getArray("atoms");
+  ASSERT_NE(AtomArray, nullptr);
+  ASSERT_EQ(AtomArray->size(), static_cast<size_t>(*AtomCount));
+  const json::Array *TrimLog = Root->getArray("trim_log");
+  ASSERT_NE(TrimLog, nullptr);
+  EXPECT_EQ(TrimLog->empty(), *TrimmedCount == 0);
+  ASSERT_LE(TrimLog->size(), 1u);
+  std::string TrimReason;
+  std::string TrimExample;
+  if (!TrimLog->empty()) {
+    const json::Object *Entry = (*TrimLog)[0].getAsObject();
+    ASSERT_NE(Entry, nullptr);
+    auto Reason = Entry->getString("reason");
+    auto Example = Entry->getString("example");
+    auto Count = Entry->getInteger("count");
+    ASSERT_TRUE(Reason && Example && Count);
+    EXPECT_EQ(static_cast<uint64_t>(*Count),
+              static_cast<uint64_t>(*TrimmedCount));
+    TrimReason = Reason->str();
+    TrimExample = Example->str();
+  }
+
+  // The digest covers the generation parameters and the exact atom text.
+  static constexpr StringLiteral AtomsPrefix = "  \"atoms\": [\n";
+  static constexpr StringLiteral AtomsSuffix = "\n  ]\n}\n";
+  const size_t AtomsBegin = Text.find(AtomsPrefix);
+  const size_t AtomsEnd = Text.rfind(AtomsSuffix);
+  ASSERT_NE(AtomsBegin, StringRef::npos) << "artifact has no atoms array";
+  ASSERT_NE(AtomsEnd, StringRef::npos) << "artifact has no atoms terminator";
+  ASSERT_GT(AtomsEnd, AtomsBegin);
+  const StringRef AtomText =
+      Text.substr(AtomsBegin + AtomsPrefix.size(),
+                  AtomsEnd - AtomsBegin - AtomsPrefix.size());
+
+  CorpusDigestInput DigestInput;
+  DigestInput.GeneratorHash =
+      Root->getString("generator_hash").value_or("").str();
+  DigestInput.DomainAtomsRaw = *RawCount;
+  DigestInput.TrimmedUnevaluable = *TrimmedCount;
+  DigestInput.TrimReason = TrimReason;
+  DigestInput.TrimExample = TrimExample;
+  const std::string RecomputedSha = corpusDigest(DigestInput, AtomText);
+  EXPECT_EQ(Root->getString("sha256").value_or(""), RecomputedSha)
+      << "artifact sha256 does not match its atoms and generation parameters";
+
+  std::string ManifestError;
+  std::optional<std::map<std::string, std::string>> Manifest =
+      readFullCorpusManifest(ManifestError);
+  ASSERT_TRUE(Manifest.has_value()) << ManifestError;
+  EXPECT_EQ((*Manifest)["schema"],
+            "llvm.gisel.x86-legalizer-full-manifest");
+  EXPECT_EQ((*Manifest)["version"], "1");
+  EXPECT_EQ((*Manifest)["sha256"], RecomputedSha);
+  EXPECT_EQ((*Manifest)["atom_count"], std::to_string(*AtomCount));
+  EXPECT_EQ((*Manifest)["domain_atoms_raw"], std::to_string(*RawCount));
+  EXPECT_EQ((*Manifest)["trimmed_unevaluable"], std::to_string(*TrimmedCount));
+  EXPECT_EQ((*Manifest)["generator_hash"], DigestInput.GeneratorHash);
+
+  struct Fixture {
+    Sigma S;
+    std::unique_ptr<TableLegalizerInfoForTest> Table;
+    std::unique_ptr<X86LegalizerInfoReference> Oracle;
+    std::string TableConfig;
+    unsigned TableIndex = ~0u;
+  };
+  std::map<std::string, Fixture> Fixtures;
+  for (const Config &C : FullConfigs) {
+    Fixture F;
+    F.S = makeSigma(C);
+    ASSERT_TRUE(F.S.STI) << C.ID;
+    F.Oracle = std::make_unique<X86LegalizerInfoReference>(
+        *F.S.STI, *static_cast<const X86TargetMachine *>(F.S.TM.get()));
+    Fixtures.emplace(C.ID, std::move(F));
+  }
+
+  std::map<std::string, unsigned> TableForSet;
+  for (unsigned I = 0; I != X86TestNumTables; ++I)
+    TableForSet.emplace(X86RuleIndexTableNames[I], I);
+
+  std::string TargetsError;
+  std::optional<MutationTargetMap> MutationTargets =
+      readMutationTargets(TargetsError);
+  ASSERT_TRUE(MutationTargets.has_value()) << TargetsError;
+  ASSERT_EQ(MutationTargets->size(), 63u);
+
+  uint64_t Atoms = 0, Diffs = 0, ExpectedDiffs = 0;
+  uint64_t Hits = 0, Residuals = 0, Escapes = 0;
+  std::set<std::string> Ids;
+
+  for (const json::Value &AtomValue : *AtomArray) {
+    const json::Object *O = AtomValue.getAsObject();
+    ASSERT_NE(O, nullptr) << "atom is not an object";
+    auto Id = O->getString("id");
+    auto RuleSet = O->getString("rule_set");
+    auto ConfigID = O->getString("config");
+    ASSERT_TRUE(Id && RuleSet && ConfigID);
+    ASSERT_TRUE(Ids.insert(Id->str()).second) << "duplicate atom id " << *Id;
+
+    const json::Object *Query = O->getObject("query");
+    ASSERT_NE(Query, nullptr) << *Id;
+    const json::Array *TypeArray = Query->getArray("types");
+    ASSERT_NE(TypeArray, nullptr) << *Id;
+    SmallVector<LLT, 3> Types;
+    for (const json::Value &TV : *TypeArray) {
+      auto Name = TV.getAsString();
+      ASSERT_TRUE(Name.has_value()) << *Id;
+      auto Ty = parseWitnessLLT(*Name);
+      ASSERT_TRUE(Ty.has_value()) << *Id << ": bad type " << *Name;
+      Types.push_back(*Ty);
+    }
+    SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+    if (const json::Object *Mem = Query->getObject("mem")) {
+      auto MemName = Mem->getString("type");
+      auto Align = Mem->getInteger("align");
+      ASSERT_TRUE(MemName && Align) << *Id;
+      auto MemTy = parseWitnessLLT(*MemName);
+      ASSERT_TRUE(MemTy.has_value()) << *Id << ": bad mem type " << *MemName;
+      MemDescs.emplace_back(*MemTy, static_cast<uint64_t>(*Align),
+                            AtomicOrdering::NotAtomic,
+                            AtomicOrdering::NotAtomic);
+    }
+
+    const json::Object *ExpectedObj = O->getObject("expected");
+    ASSERT_NE(ExpectedObj, nullptr) << *Id;
+    auto ExpectedAction = ExpectedObj->getString("action");
+    ASSERT_TRUE(ExpectedAction.has_value()) << *Id;
+    auto Action = parseLegalizeAction(*ExpectedAction);
+    ASSERT_TRUE(Action.has_value())
+        << *Id << ": unknown expected action " << *ExpectedAction;
+    LLT NewType = LLT{};
+    if (auto To = ExpectedObj->getString("to")) {
+      auto Parsed = parseWitnessLLT(*To);
+      ASSERT_TRUE(Parsed.has_value()) << *Id << ": bad expected type " << *To;
+      NewType = *Parsed;
+    }
+    const LegalizeActionStep Expected(
+        *Action,
+        static_cast<unsigned>(ExpectedObj->getInteger("idx").value_or(0)),
+        NewType);
+
+    auto FixtureIt = Fixtures.find(ConfigID->str());
+    ASSERT_NE(FixtureIt, Fixtures.end()) << *Id << ": unknown config";
+    Fixture &F = FixtureIt->second;
+
+    auto TableIt = TableForSet.find(RuleSet->str());
+    ASSERT_NE(TableIt, TableForSet.end()) << *RuleSet;
+    const std::optional<unsigned> Opcode =
+        opcodeForName(X86TestTables[TableIt->second].Opcode);
+    ASSERT_TRUE(Opcode.has_value()) << X86TestTables[TableIt->second].Opcode;
+
+    SmallVector<LLT, 3> TypeVec(Types.begin(), Types.end());
+    const LegalityQuery Q(*Opcode, TypeVec, MemDescs);
+    const FirstMatchMutation Mutation =
+        firstMatchMutation(TableIt->second, *F.S.STI, Q, *MutationTargets);
+    if (Mutation.TargetOutOfRange) {
+      ADD_FAILURE() << "artifact atom " << *Id << " targets slot "
+                    << Mutation.TargetSlot << " but the query has "
+                    << Types.size() << " types";
+      continue;
+    }
+    if (Mutation.TargetIsPointer && Mutation.ActionChangesElementSize) {
+      ADD_FAILURE() << "artifact atom " << *Id
+                    << " is a pointer element-size query that should have "
+                       "been trimmed (rule #"
+                    << Mutation.RuleIndex << ", target slot "
+                    << Mutation.TargetSlot << ")";
+      continue;
+    }
+    // One table instance per rule set: a fresh table has at most 24*24*48
+    // cells, so its uint16_t Steps index cannot overflow.
+    if (!F.Table || F.TableConfig != ConfigID->str() ||
+        F.TableIndex != TableIt->second) {
+      F.Table = std::make_unique<TableLegalizerInfoForTest>(*F.S.STI);
+      F.TableConfig = ConfigID->str();
+      F.TableIndex = TableIt->second;
+    }
+    const X86LegalizerTable::Result R = F.Table->table().query(Q);
+    const LegalizeActionStep Got(R.Action, R.TypeIdx, R.NewType);
+    const LegalizeActionStep Want = F.Oracle->getAction(Q);
+
+    switch (R.Kind) {
+    case X86LegalizerTable::Answer::Hit:
+      ++Hits;
+      break;
+    case X86LegalizerTable::Answer::Residual:
+      ++Residuals;
+      break;
+    default:
+      ++Escapes;
+      break;
+    }
+
+    if (!stepsAgree(Expected, Want)) {
+      ++ExpectedDiffs;
+      ADD_FAILURE() << "full corpus atom " << *Id << " rule-set=" << *RuleSet
+                    << " config=" << *ConfigID << "\n  query:    "
+                    << formatQueryText(*RuleSet, Types, MemDescs)
+                    << "\n  committed: " << describe(Expected)
+                    << "\n  oracle:    " << describe(Want);
+    }
+    if (!stepsAgree(Got, Want)) {
+      ++Diffs;
+      ADD_FAILURE() << "full corpus atom " << *Id << " rule-set=" << *RuleSet
+                    << " config=" << *ConfigID << "\n  query:    "
+                    << formatQueryText(*RuleSet, Types, MemDescs)
+                    << "\n  expected: " << describe(Expected)
+                    << "\n  table:    " << describe(Got)
+                    << "\n  oracle:   " << describe(Want);
+    }
+    ++Atoms;
+  }
+
+  EXPECT_EQ(Atoms, static_cast<uint64_t>(*AtomCount));
+  EXPECT_EQ(Diffs, 0u);
+  EXPECT_EQ(ExpectedDiffs, 0u);
+  EXPECT_EQ(Escapes, 0u) << "the table must answer every non-trimmed atom";
+  const auto ElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - Started)
+                             .count();
+  llvm::outs() << "full-corpus: domain_atoms_raw=" << *RawCount
+               << " trimmed_unevaluable=" << *TrimmedCount << " atoms=" << Atoms
+               << " diffs=" << Diffs << " expected_diffs=" << ExpectedDiffs
+               << " hit=" << Hits << " residual=" << Residuals
+               << " escape=" << Escapes << " elapsed_ms=" << ElapsedMs
+               << " sha256=" << InputSha << "\n";
+}
+
+TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateDeepPanel) {
+  const char *OutPath = std::getenv("X86_LEGALIZER_DEEP_OUT");
+  if (!OutPath)
+    GTEST_SKIP() << "set X86_LEGALIZER_DEEP_OUT to the absolute output path";
+
+  const std::vector<LLT> Panel = deepPanelAtoms();
+  ASSERT_EQ(Panel.size(), 60u);
+  std::set<std::string> Names;
+  std::string ListText;
+  for (LLT T : Panel) {
+    ASSERT_TRUE(T.isValid());
+    EXPECT_TRUE(Names.insert(witnessLLTName(T)).second)
+        << "duplicate deep panel LLT " << witnessLLTName(T);
+    ListText += witnessLLTName(T);
+    ListText += '\n';
+  }
+  ASSERT_EQ(Names.size(), 60u);
+  const std::string ListSha = sha256Hex(ListText);
+  const std::string GeneratorHash =
+      utohexstr(fnv1a64Text(Fnv1a64Offset, ListText), /*LowerCase=*/true, 16);
+
+  std::string Json;
+  raw_string_ostream OS(Json);
+  OS << "{\n";
+  OS << "  \"schema\": \"llvm.gisel.x86-legalizer-deep-panel\",\n";
+  OS << "  \"version\": 1,\n";
+  OS << "  \"comment\": \"Reviewed 60-atom boundary panel: the 12-atom "
+        "reviewed panel plus 48 scalars and vectors outside the 24-class "
+        "grid.  Generated by DISABLED_GenerateDeepPanel; do not "
+        "hand-edit.\",\n";
+  OS << "  \"reviewed_by\": \"nodecoda\",\n";
+  OS << "  \"atom_count\": 60,\n";
+  OS << "  \"sha256\": \"" << ListSha << "\",\n";
+  OS << "  \"generator_hash\": \"" << GeneratorHash << "\",\n";
+  OS << "  \"atoms\": [\n";
+  for (size_t I = 0; I != Panel.size(); ++I)
+    OS << "    \"" << witnessLLTName(Panel[I]) << "\""
+       << (I + 1 == Panel.size() ? "\n" : ",\n");
+  OS << "  ]\n}\n";
+  OS.flush();
+
+  std::error_code EC;
+  raw_fd_ostream Out(OutPath, EC);
+  ASSERT_FALSE(EC) << OutPath << ": " << EC.message();
+  Out << Json;
+  Out.flush();
+  ASSERT_FALSE(Out.has_error()) << OutPath;
+
+  llvm::outs() << "deep-panel-generate: atoms=" << Panel.size()
+               << " bytes=" << Json.size() << " sha256=" << ListSha
+               << " generator_hash=" << GeneratorHash << " path=" << OutPath
+               << "\n";
+}
+
+TEST_F(X86LegalizerDifferentialTest, DISABLED_DeepPanelDifferential) {
+  std::string Error;
+  std::optional<std::vector<LLT>> CommittedPanel = readDeepPanel(Error);
+  ASSERT_TRUE(CommittedPanel.has_value()) << Error;
+  ASSERT_EQ(CommittedPanel->size(), 60u);
+  const ArrayRef<LLT> Panel(*CommittedPanel);
+
+  std::string TargetsError;
+  std::optional<MutationTargetMap> MutationTargets =
+      readMutationTargets(TargetsError);
+  ASSERT_TRUE(MutationTargets.has_value()) << TargetsError;
+  ASSERT_EQ(MutationTargets->size(), 63u);
+
+  const auto Started = std::chrono::steady_clock::now();
+  uint64_t RawAtoms = 0, TrimmedUnevaluable = 0;
+  uint64_t Atoms = 0, Hits = 0, Residuals = 0, Escapes = 0, Diffs = 0;
+  std::string TrimExample;
+
+  static const unsigned DeepConfigs[] = {1, 2, 3};
+  for (unsigned CI : DeepConfigs) {
+    Sigma S = makeSigma(FullConfigs[CI]);
+    ASSERT_TRUE(S.STI) << FullConfigs[CI].ID;
+    X86LegalizerInfoReference Oracle(
+        *S.STI, *static_cast<const X86TargetMachine *>(S.TM.get()));
+    const unsigned PointerBits = FullConfigs[CI].Is64 ? 64 : 32;
+    const TableDomainAxis A = tableDomainAxis(PointerBits);
+
+    for (unsigned TI = 0; TI != X86TestNumTables; ++TI) {
+      TableLegalizerInfoForTest Table(*S.STI);
+      const X86TestTable &T = X86TestTables[TI];
+      const std::optional<unsigned> Opcode = opcodeForName(T.Opcode);
+      ASSERT_TRUE(Opcode.has_value()) << T.Opcode;
+      auto Consider = [&](ArrayRef<LLT> Types, bool HasMem, LLT MemTy,
+                          uint64_t Align) {
+        SmallVector<LLT, 3> TypeVec(Types.begin(), Types.end());
+        SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+        if (HasMem)
+          MemDescs.emplace_back(MemTy, Align, AtomicOrdering::NotAtomic,
+                                AtomicOrdering::NotAtomic);
+        const LegalityQuery Q(*Opcode, TypeVec, MemDescs);
+        ++RawAtoms;
+        const FirstMatchMutation Mutation =
+            firstMatchMutation(TI, *S.STI, Q, *MutationTargets);
+        if (Mutation.TargetOutOfRange) {
+          ADD_FAILURE() << "core.json mutation target " << Mutation.TargetSlot
+                        << " is outside the query arity for "
+                        << FullConfigs[CI].ID << "/" << T.Name << " rule #"
+                        << Mutation.RuleIndex;
+          return;
+        }
+        if (Mutation.TargetIsPointer && Mutation.ActionChangesElementSize) {
+          ++TrimmedUnevaluable;
+          if (TrimExample.empty())
+            TrimExample = std::string(FullConfigs[CI].ID) + "/" + T.Name +
+                          " " + formatQueryText(T.Opcode, TypeVec, MemDescs);
+          return;
+        }
+        const X86LegalizerTable::Result R = Table.table().query(Q);
+        const LegalizeActionStep Got(R.Action, R.TypeIdx, R.NewType);
+        const LegalizeActionStep Want = Oracle.getAction(Q);
+        switch (R.Kind) {
+        case X86LegalizerTable::Answer::Hit:
+          ++Hits;
+          break;
+        case X86LegalizerTable::Answer::Residual:
+          ++Residuals;
+          break;
+        default:
+          ++Escapes;
+          break;
+        }
+        if (!stepsAgree(Got, Want)) {
+          ++Diffs;
+          ADD_FAILURE() << "deep atom rule-set=" << T.Name
+                        << " config=" << FullConfigs[CI].ID
+                        << "\n  query:    "
+                        << formatQueryText(T.Opcode, TypeVec, MemDescs)
+                        << "\n  table:    " << describe(Got)
+                        << "\n  oracle:   " << describe(Want);
+        }
+        ++Atoms;
+      };
+      enumerateClassPairPoints(T, A, Consider);
+      enumerateBoundaryPanelPoints(T, A, Panel, Consider);
+      enumerateScalarASPoints(T, A, Consider);
+      enumerateVectorASPoints(T, A, Consider);
+    }
+  }
+
+  EXPECT_EQ(RawAtoms, 900264u);
+  EXPECT_EQ(Atoms + TrimmedUnevaluable, RawAtoms);
+  EXPECT_EQ(Diffs, 0u);
+  EXPECT_EQ(Escapes, 0u) << "the table must answer every non-trimmed atom";
+  const auto ElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - Started)
+                             .count();
+  llvm::outs() << "deep-panel: domain_atoms_raw=" << RawAtoms
+               << " trimmed_unevaluable=" << TrimmedUnevaluable << " atoms=" << Atoms
+               << " hit=" << Hits << " residual=" << Residuals
+               << " escape=" << Escapes << " diffs=" << Diffs
+               << " elapsed_ms=" << ElapsedMs << "\n";
+  if (TrimmedUnevaluable != 0)
+    llvm::outs() << "deep-panel trim example: " << TrimExample << "\n";
+}
+
+TEST_F(X86LegalizerDifferentialTest, DeepPanelMatchesGenerator) {
+  std::string Error;
+  std::optional<std::vector<LLT>> Committed = readDeepPanel(Error);
+  ASSERT_TRUE(Committed.has_value()) << Error;
+  const std::vector<LLT> Generated = deepPanelAtoms();
+  ASSERT_EQ(Committed->size(), Generated.size());
+  for (size_t I = 0; I != Generated.size(); ++I)
+    EXPECT_EQ(witnessLLTName((*Committed)[I]), witnessLLTName(Generated[I]))
+        << "committed deep panel differs from deepPanelAtoms() at index " << I;
+  llvm::outs() << "deep-panel-committed: atoms=" << Committed->size() << "\n";
+}
+
+TEST_F(X86LegalizerDifferentialTest, FullCorpusManifestIsConsistent) {
+  std::string Error;
+  std::optional<std::map<std::string, std::string>> Manifest =
+      readFullCorpusManifest(Error);
+  ASSERT_TRUE(Manifest.has_value()) << Error;
+
+  auto Number = [&](StringRef Key) -> std::optional<uint64_t> {
+    auto It = Manifest->find(Key.str());
+    if (It == Manifest->end())
+      return std::nullopt;
+    uint64_t Value = 0;
+    if (StringRef(It->second).getAsInteger(10, Value))
+      return std::nullopt;
+    return Value;
+  };
+  auto Raw = Number("domain_atoms_raw");
+  auto Atoms = Number("atom_count");
+  auto Trimmed = Number("trimmed_unevaluable");
+  ASSERT_TRUE(Raw.has_value()) << "missing domain_atoms_raw";
+  ASSERT_TRUE(Atoms.has_value()) << "missing atom_count";
+  ASSERT_TRUE(Trimmed.has_value()) << "missing trimmed_unevaluable";
+  EXPECT_EQ(*Atoms + *Trimmed, *Raw);
+  EXPECT_LT(*Trimmed, *Raw);
+
+  EXPECT_EQ((*Manifest)["schema"],
+            "llvm.gisel.x86-legalizer-full-manifest");
+  EXPECT_EQ((*Manifest)["version"], "1");
+  const std::string &Digest = (*Manifest)["sha256"];
+  EXPECT_EQ(Digest.size(), 64u);
+  EXPECT_EQ(Digest.find_first_not_of("0123456789abcdef"), std::string::npos);
+  EXPECT_EQ((*Manifest)["sha256_scope"],
+            "atoms+generation-parameters (generator_base_commit excluded)");
+  EXPECT_EQ((*Manifest)["generator_hash"].size(), 16u);
+  llvm::outs() << "full-corpus-manifest: raw=" << *Raw << " atoms=" << *Atoms
+               << " trimmed=" << *Trimmed << " sha256=" << Digest << "\n";
+}
+
 TEST_F(X86LegalizerDifferentialTest, CiBudgetsAreRecorded) {
   std::optional<std::string> Text =
       readTestSourceFile("x86-legalizer-ci-budgets.json");
@@ -6148,8 +7174,11 @@ TEST_F(X86LegalizerDifferentialTest, CiBudgetsAreRecorded) {
   const json::Object *Measured = Root->getObject("measured");
   ASSERT_TRUE(Measured) << "missing measured";
   static const char *const MeasuredKeys[] = {
-      "x86tests_ms",        "globalisel_lit_ms", "tablegen_lit_ms",
-      "x86_codegen_lit_ms", "fuzz_smoke_ms",     "fuzz_nightly_ms",
+      "x86tests_ms",           "globalisel_lit_ms", "tablegen_lit_ms",
+      "x86_codegen_lit_ms",    "fuzz_smoke_ms",     "fuzz_nightly_ms",
+      "full_corpus_ms",        "full_corpus_bytes", "full_corpus_atoms",
+      "full_domain_atoms_raw", "full_trimmed_unevaluable", "deep_panel_ms",
+      "deep_panel_atoms",      "deep_domain_atoms_raw", "deep_trimmed_unevaluable",
   };
   std::string Summary;
   raw_string_ostream OS(Summary);
@@ -6189,12 +7218,35 @@ TEST_F(X86LegalizerDifferentialTest, CiBudgetsAreRecorded) {
   EXPECT_EQ(*FullCorpusMinutes, 30u);
   EXPECT_EQ(*DeepPanelHours, 2u);
 
+  std::optional<uint64_t> FullAtoms =
+      getJSONUInt(*Measured, "full_corpus_atoms");
+  std::optional<uint64_t> FullRaw =
+      getJSONUInt(*Measured, "full_domain_atoms_raw");
+  std::optional<uint64_t> FullTrimmed =
+      getJSONUInt(*Measured, "full_trimmed_unevaluable");
+  std::optional<uint64_t> DeepAtoms =
+      getJSONUInt(*Measured, "deep_panel_atoms");
+  std::optional<uint64_t> DeepRaw =
+      getJSONUInt(*Measured, "deep_domain_atoms_raw");
+  std::optional<uint64_t> DeepTrimmed =
+      getJSONUInt(*Measured, "deep_trimmed_unevaluable");
+  ASSERT_TRUE(FullAtoms.has_value()) << "missing full_corpus_atoms";
+  ASSERT_TRUE(FullRaw.has_value()) << "missing full_domain_atoms_raw";
+  ASSERT_TRUE(FullTrimmed.has_value()) << "missing full_trimmed_unevaluable";
+  ASSERT_TRUE(DeepAtoms.has_value()) << "missing deep_panel_atoms";
+  ASSERT_TRUE(DeepRaw.has_value()) << "missing deep_domain_atoms_raw";
+  ASSERT_TRUE(DeepTrimmed.has_value()) << "missing deep_trimmed_unevaluable";
+  EXPECT_EQ(*FullRaw, 826144u);
+  EXPECT_EQ(*FullAtoms + *FullTrimmed, *FullRaw);
+  EXPECT_LT(*FullTrimmed, *FullRaw);
+  EXPECT_EQ(*DeepRaw, 900264u);
+  EXPECT_EQ(*DeepAtoms + *DeepTrimmed, *DeepRaw);
+  EXPECT_LT(*DeepTrimmed, *DeepRaw);
+
   const json::Object *Pending = Root->getObject("pending_g008");
   ASSERT_TRUE(Pending) << "missing pending_g008";
-  EXPECT_TRUE(Pending->getString("full_corpus").has_value())
-      << "pending_g008 does not name the full corpus";
-  EXPECT_TRUE(Pending->getString("deep_panel").has_value())
-      << "pending_g008 does not name the deep panel";
+  EXPECT_EQ(Pending->size(), 0u)
+      << "pending_g008 must be empty once both workloads are measured";
 }
 
 } // namespace

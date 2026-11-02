@@ -1,0 +1,14 @@
+schema llvm.gisel.x86-legalizer-full-manifest
+version 1
+sha256 f12433f2bc850170e425b064b0fe1b5c4e749e506e393f8b846881ae29f5c221
+sha256_scope atoms+generation-parameters (generator_base_commit excluded)
+atom_count 825448
+domain_atoms_raw 826144
+trimmed_unevaluable 696
+trim_reason the first matching rule applies WidenScalar or NarrowScalar to a pointer slot; LLT::changeElementSize rejects pointer and pointer-vector types, so the frozen reference cannot answer this query
+trim_example C1/X86_CTPOP/G_CTPOP (p0:64, s16)
+configs ["C0", "C1", "C2", "C3"]
+sampling_policy class-pair + 12-atom boundary panel + scalar/pointer-vector AS
+domain_formula 4*(182712+23388+436)
+generator_hash 70db5b32fc31ed0d
+generator_base_commit d4be756f7669a812a44eae7f713d5f6a0cfca122

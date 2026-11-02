@@ -13,7 +13,16 @@
     "tablegen_lit_ms": 6533,
     "x86_codegen_lit_ms": 31928,
     "fuzz_smoke_ms": 4,
-    "fuzz_nightly_ms": 7
+    "fuzz_nightly_ms": 7,
+    "full_corpus_ms": 14753,
+    "full_corpus_bytes": 170742010,
+    "full_corpus_atoms": 825448,
+    "full_domain_atoms_raw": 826144,
+    "deep_panel_ms": 681,
+    "deep_panel_atoms": 899064,
+    "deep_domain_atoms_raw": 900264,
+    "full_trimmed_unevaluable": 696,
+    "deep_trimmed_unevaluable": 1200
   },
   "budgets": {
     "x86tests_target_ms": 5000,
@@ -23,9 +32,6 @@
     "full_corpus_minutes": 30,
     "deep_panel_hours": 2
   },
-  "pending_g008": {
-    "full_corpus": "measured when the full corpus lands",
-    "deep_panel": "measured when the deep panel lands"
-  },
+  "pending_g008": {},
   "hard_limit_rule": "Exceeding 10s requires reducing the witness or moving tests to nightly plus an approver entry; the budget itself must not be raised."
 }
