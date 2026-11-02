@@ -668,6 +668,17 @@ class WidenScalarOrEltToNextPow2<int Idx, int Min = 0>
 class MinScalar<int Idx, LegalizeArgType Ty>
     : LegalizeCall<BuilderMinScalar, [LegalizeArgIndex<Idx>, Ty]>;
 
+/// Both halves of the clamp, with a query-time guard.  The predicate is the
+/// one the C++ builder's lambda adds: the slot has to be a scalar narrower
+/// (wider) than the bound, and the guard has to hold.
+class MinScalarIf<LegalizeQueryPredicateBase P, int Idx, LegalizeArgType Ty>
+    : LegalizeQueryGuardedCall<BuilderMinScalarIf, P,
+                               [LegalizeArgIndex<Idx>, Ty]>;
+
+class MaxScalarIf<LegalizeQueryPredicateBase P, int Idx, LegalizeArgType Ty>
+    : LegalizeQueryGuardedCall<BuilderMaxScalarIf, P,
+                               [LegalizeArgIndex<Idx>, Ty]>;
+
 class MaxScalar<int Idx, LegalizeArgType Ty>
     : LegalizeCall<BuilderMaxScalar, [LegalizeArgIndex<Idx>, Ty]>;
 
