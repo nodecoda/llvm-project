@@ -16,12 +16,11 @@
 ; is the only way this table can be wrong: the evaluator cannot invent an
 ; answer the chain would not give.
 ;
-; Two points are skipped: G_LROUND and G_LLROUND.  Their rule set is opaque
-; because the first rule returns a pair<unsigned, LLT> mutation, which the
-; table's step cannot express yet, so the reader declines and the chain
-; answers those.
+; Every tabulated rule set has an evaluator, so no enumerated point is
+; skipped: points == compared.  A skipped point would mean a rule set the
+; generator cannot translate, which is a gap to close rather than to allow.
 ;
-; CHECK: x86-gisel-table-check: points 487 compared 485 mismatches 0 skipped 2 outside 0 ptrvec 0 untabulated 0
+; CHECK: x86-gisel-table-check: points 487 compared 487 mismatches 0 skipped 0 outside 0 ptrvec 0 untabulated 0
 
 define void @f() {
   ret void

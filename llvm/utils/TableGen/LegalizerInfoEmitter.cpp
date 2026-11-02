@@ -336,6 +336,13 @@ static void renderPredicate(const Record &P, raw_ostream &OS) {
     OS << squashSpace(P.getValueAsString("Expr"));
     return;
   }
+  // A named type predicate is a query predicate too.  As a dag leaf it is
+  // emitted by the walker above; standing alone it is the callable its Call
+  // text names.
+  if (P.isSubClassOf("LegalizeTypePredicate")) {
+    OS << squashSpace(P.getValueAsString("Call"));
+    return;
+  }
   PrintFatalError(&P, "unknown LegalizePredicate record");
 }
 
@@ -1274,7 +1281,14 @@ void predicateJson(const RecordKeeper &Records, const Record &P,
     };
     Out = Walk(*D);
     return;
-  }  if (P.isSubClassOf("LegalizeOpaqueBool") ||
+  }
+  if (P.isSubClassOf("LegalizeTypePredicate")) {
+    // A named type predicate standing alone is the same leaf a dag would
+    // carry; only its position in the tree differs.
+    Out = typePredicateJson(Records, P);
+    return;
+  }
+  if (P.isSubClassOf("LegalizeOpaqueBool") ||
       P.isSubClassOf("LegalizeQueryPredicate")) {
     // Escape: raw C++.  It has no Core IR form by construction.
     Out = "{\"kind\":\"leaf\",\"name\":\"opaque\",\"args\":[\"" +
@@ -1604,6 +1618,19 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
     std::string Ty0 = Ty(1);
     Out.push_back({"NarrowScalar", Idx,
                    WithPred(scalarWiderThan(Idx, lltBits(Ty0))),
+                   mutationJson(Idx, "set_elem_type", Ty0)});
+    return;
+  }
+  // The guarded forms are minScalar/maxScalar with the query predicate
+  // conjoined; scalarNarrowerThan/scalarWiderThan already require a scalar,
+  // so the C++ lambda's isScalar() check needs no separate leaf here.
+  if (Builder == "BuilderMinScalarIf" || Builder == "BuilderMaxScalarIf") {
+    const bool Min = Builder == "BuilderMinScalarIf";
+    unsigned Idx = Int(0);
+    std::string Ty0 = Ty(1);
+    Out.push_back({Min ? "WidenScalar" : "NarrowScalar", Idx,
+                   WithPred(Min ? scalarNarrowerThan(Idx, lltBits(Ty0))
+                                : scalarWiderThan(Idx, lltBits(Ty0))),
                    mutationJson(Idx, "set_elem_type", Ty0)});
     return;
   }
@@ -2494,6 +2521,23 @@ class LegalizerTableEmitterImpl {
       return Finish();
     }
 
+    // minScalarIf / maxScalarIf: the builder's lambda adds the scalar and
+    // the direction check on top of the query guard.
+    if (Name == "minScalarIf" || Name == "maxScalarIf") {
+      NeedArgs(2);
+      const bool Min = Name == "minScalarIf";
+      const std::string Idx = IdxOf(0);
+      const std::string Ty = typeText(*Args[1]);
+      const std::string V = "Q.Types[" + Idx + "]";
+      EmitIf(conjunction(Guard, V + ".isScalar() && " + V +
+                                    ".getSizeInBits() " +
+                                    (Min ? "< " : "> ") + "(" + Ty +
+                                    ").getSizeInBits()"),
+             Min ? "WidenScalar" : "NarrowScalar",
+             "LegalizeMutations::changeElementSizeTo(" + Idx + ", " + Ty + ")");
+      return Finish();
+    }
+
     if (Name == "minScalar" || Name == "maxScalar") {
       NeedArgs(2);
       const bool Min = Name == "minScalar";
@@ -2606,6 +2650,21 @@ class LegalizerTableEmitterImpl {
     return Fail();
   }
 
+  /// True when the rule set's last rule always matches.  The evaluator's final
+  /// Unsupported return would then be dead code, so it is left out.
+  static bool endsUnconditional(const Record &RuleSet) {
+    std::vector<const Record *> Rules = RuleSet.getValueAsListOfDefs("Rules");
+    if (Rules.empty())
+      return false;
+    const Record &Last = *Rules.back();
+    if (!Last.getValueAsString("OpaqueArgs").empty() ||
+        Last.getValueAsOptionalDef("Pred") ||
+        !Last.getValueAsListOfDefs("Args").empty())
+      return false;
+    StringRef Name = builderName(Last);
+    return Name == "alwaysLegal" || Name == "lower" || Name == "libcall" ||
+           Name == "custom" || Name == "unsupported";
+  }
 
 public:
   explicit LegalizerTableEmitterImpl(const RecordKeeper &RK) : Records(RK) {
@@ -2675,6 +2734,7 @@ public:
     // out.  They are keyed like the descriptors above, so a table answer is a
     // property of the .td rules, not of a second description of them.
     std::vector<bool> Opaque(Tables.size(), false);
+    std::vector<bool> Tail(Tables.size(), false);
     std::vector<std::string> Why(Tables.size());
     std::vector<std::string> Bodies(Tables.size());
     for (size_t I = 0; I != Tables.size(); ++I) {
@@ -2688,6 +2748,7 @@ public:
         }
         Bodies[I] += Text;
       }
+      Tail[I] = !Opaque[I] && endsUnconditional(*Tables[I]);
     }
 
     OS << "\n// One evaluator per tabulated rule set.  Each begins with the "
@@ -2707,7 +2768,8 @@ public:
       OS << "    const " << P << "Subtarget &Subtarget, const LegalityQuery &Q) {\n";
       EmitPrologue(OS);
       OS << Bodies[I];
-      OS << "  return {LegalizeActions::Unsupported, 0, LLT{}};\n";
+      if (!Tail[I])
+        OS << "  return {LegalizeActions::Unsupported, 0, LLT{}};\n";
       OS << "}\n";
     }
 
