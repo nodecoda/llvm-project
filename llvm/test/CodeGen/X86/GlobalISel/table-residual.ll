@@ -8,7 +8,7 @@
 ; rule chain: the generated evaluator answers the concrete query instead.
 ; These functions walk that residual path, so the codegen has to complete.
 ;
-; CHECK: x86-gisel-table: hit {{[0-9]+}} residual {{[1-9][0-9]*}} escape 0 outside 0 ptrvec 0 untabulated 0
+; CHECK: x86-gisel-table: hit {{[0-9]+}} residual {{[1-9][0-9]*}} escape 0 outside 0 ptrvec 0 addrspace {{[0-9]+}} untabulated 0
 
 define i12 @add12(i12 %a, i12 %b) {
   %r = add i12 %a, %b
