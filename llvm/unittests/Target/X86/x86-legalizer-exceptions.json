@@ -1,0 +1,17 @@
+{
+  "schema": "llvm.gisel.legalizer-exceptions",
+  "version": 1,
+  "comment": "Approved coverage exceptions. An entry without proof is a failure.",
+  "exceptions": [
+    {
+      "kind": "unreachable",
+      "rule_set": "X86_IMPLICIT_DEF",
+      "rule_index": 14,
+      "reason": "ScalarizeIf scalarOrEltWiderThan(0,64) on vectors is shadowed by escaped rule 7 ClampScalarOrElt<0,s8,sMaxScalar>, whose guard is a strict superset.",
+      "proof": "core.json escapes[rule_set=X86_IMPLICIT_DEF, rule_index=7] reason contains clampScalarOrElt; literal rule 14 predicate is opaque anonymous_31 && isVector with anonymous_31 = scalarOrEltWiderThan(0,64); exhaustive C0-C3 first-match search finds no query whose first match is 14.",
+      "linked_ledger": "LiteralRuleFirstMatchLedger",
+      "approver": "nodecoda",
+      "PR": "TBD"
+    }
+  ]
+}

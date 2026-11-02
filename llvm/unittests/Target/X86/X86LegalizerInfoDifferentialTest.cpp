@@ -1597,11 +1597,136 @@ TEST_F(X86LegalizerDifferentialTest, RuleIndexPinsFirstMatch) {
   }
 }
 
+//===----------------------------------------------------------------------===//
+// Approved coverage exceptions
+//===----------------------------------------------------------------------===//
+//
+// A literal rule that cannot first-match in the fixed C0-C3 domain is a hole in
+// the ledger, so it must be approved explicitly instead of silently skipped.
+// The committed file names the rule, why the domain cannot reach it, and the
+// evidence.  A missing field or an empty reason/proof is a failure, and so is
+// an entry for a rule the domain does reach: a stale exception hides a
+// regression exactly like an unexplained miss.
+
+struct LegalizerException {
+  std::string Kind;
+  std::string RuleSet;
+  unsigned RuleIndex = 0;
+  std::string Reason;
+  std::string Proof;
+  std::string LinkedLedger;
+  std::string Approver;
+  std::string PR;
+};
+
+static std::optional<std::vector<LegalizerException>>
+readLegalizerExceptions(std::string &Error) {
+  std::optional<std::string> Text =
+      readTestSourceFile("x86-legalizer-exceptions.json");
+  if (!Text) {
+    Error = "cannot read x86-legalizer-exceptions.json from " +
+            std::string(X86_LEGALIZER_TEST_SRC_DIR);
+    return std::nullopt;
+  }
+  auto Value = json::parse(*Text);
+  if (!Value) {
+    Error = toString(Value.takeError());
+    return std::nullopt;
+  }
+  const json::Object *Root = Value->getAsObject();
+  if (!Root) {
+    Error = "top level is not an object";
+    return std::nullopt;
+  }
+  auto Schema = Root->getString("schema");
+  if (!Schema || *Schema != "llvm.gisel.legalizer-exceptions") {
+    Error = "schema must be llvm.gisel.legalizer-exceptions";
+    return std::nullopt;
+  }
+  auto Version = Root->getInteger("version");
+  if (!Version || *Version != 1) {
+    Error = "version must be 1";
+    return std::nullopt;
+  }
+  const json::Array *Entries = Root->getArray("exceptions");
+  if (!Entries) {
+    Error = "missing field 'exceptions'";
+    return std::nullopt;
+  }
+
+  auto Required = [&](const json::Object &O, StringRef Key,
+                      std::string &Out) -> bool {
+    auto S = O.getString(Key);
+    if (!S) {
+      Error = "missing field '" + Key.str() + "'";
+      return false;
+    }
+    Out = S->str();
+    return true;
+  };
+
+  std::vector<LegalizerException> Out;
+  for (const json::Value &V : *Entries) {
+    const json::Object *O = V.getAsObject();
+    if (!O) {
+      Error = "exception is not an object";
+      return std::nullopt;
+    }
+    LegalizerException E;
+    if (!Required(*O, "kind", E.Kind) || !Required(*O, "rule_set", E.RuleSet) ||
+        !Required(*O, "reason", E.Reason) || !Required(*O, "proof", E.Proof) ||
+        !Required(*O, "linked_ledger", E.LinkedLedger) ||
+        !Required(*O, "approver", E.Approver) || !Required(*O, "PR", E.PR))
+      return std::nullopt;
+    auto RuleIndex = O->getInteger("rule_index");
+    if (!RuleIndex || *RuleIndex < 0) {
+      Error = "missing or negative field 'rule_index'";
+      return std::nullopt;
+    }
+    E.RuleIndex = static_cast<unsigned>(*RuleIndex);
+    const std::string Name = E.RuleSet + "#" + std::to_string(E.RuleIndex);
+    if (E.Kind != "unreachable") {
+      Error =
+          Name + ": only kind 'unreachable' is accepted, got '" + E.Kind + "'";
+      return std::nullopt;
+    }
+    if (E.Reason.empty()) {
+      Error = Name + ": empty 'reason'";
+      return std::nullopt;
+    }
+    if (E.Proof.empty()) {
+      Error = Name + ": empty 'proof'";
+      return std::nullopt;
+    }
+    Out.push_back(E);
+  }
+  return Out;
+}
+
+// Directed guard atoms.  These are not boundary points and do not change the
+// domain counts; they exist so a rule whose guard is only reachable on a shape
+// outside the 12-atom panel still earns a first-match witness.
+// X86_BUILD_VECTOR#5 (numElementsNotPow2) needs a non-power-of-two lane count
+// whose element type no earlier clamp rule names.  v3s1 and v3p0 are the two
+// such shapes; the clamp rules only name s8/s16/s32/s64 elements.
+struct GuardAtom {
+  const char *Opcode;
+  LLT Type;
+};
+
+static ArrayRef<GuardAtom> guardAtoms() {
+  static const GuardAtom Atoms[] = {
+      {"G_BUILD_VECTOR", LLT::fixed_vector(3, 1)},
+      {"G_BUILD_VECTOR", LLT::fixed_vector(3, LLT::pointer(0, 64))},
+  };
+  return Atoms;
+}
+
 // The denominator is the manifest's 189 literal `.td` rules, keyed by the same
 // (ruleSet, ruleIndex) the Core IR records.  The ledger records the first-match
-// witness of every rule the fixed C0-C3 domain can reach and names the rules it
-// cannot, so a new miss is a hard failure rather than a silently reduced
-// denominator.
+// witness of every rule the domain can reach.  A rule that cannot first-match
+// must be approved in x86-legalizer-exceptions.json, so a new miss is a hard
+// failure rather than a silently reduced denominator.
 TEST_F(X86LegalizerDifferentialTest, LiteralRuleFirstMatchLedger) {
   auto CoreBuffer = MemoryBuffer::getFile(X86_LEGALIZER_CORE_JSON);
   ASSERT_TRUE(!!CoreBuffer) << X86_LEGALIZER_CORE_JSON;
@@ -1650,23 +1775,30 @@ TEST_F(X86LegalizerDifferentialTest, LiteralRuleFirstMatchLedger) {
       << "literal rule denominator must be the manifest's 189 distinct "
          "(def, rule_index) pairs";
 
-  // Two literal rules cannot be first-match in the fixed domain:
-  //
-  //   X86_IMPLICIT_DEF#14 (ScalarizeIf<scalarOrEltWiderThan(0, 64)>): its
-  //   guard is a strict subset of escaped rule #7's clamp-max guard
-  //   (scalarOrEltWiderThan(0, sMaxScalar), s32/s64), and #7 precedes it.
-  //   A v2s128/v3s128 probe still reports #7.
-  //
-  //   X86_BUILD_VECTOR#5 (MoreElementsToNextPow2): every vector class rep is
-  //   power-of-two-laned and caught by an earlier clamp; the only non-pow2
-  //   panel atom (v3s32) is caught by #3.  The rule is reachable with v3s1 or
-  //   v3p0, but those shapes are outside the fixed 12-atom panel.
-  //
-  // Any other miss fails, and so does one of these becoming reachable: the
-  // manifest and this list must be updated together.
-  auto RuleSetID = [&](StringRef Name) { return TableForSet.at(Name.str()); };
-  const std::set<RuleKey> KnownNotFirstMatch = {
-      {RuleSetID("X86_IMPLICIT_DEF"), 14}, {RuleSetID("X86_BUILD_VECTOR"), 5}};
+  // Approved coverage exceptions come from the committed JSON, not a literal
+  // list in this file.  Every entry must have a reason and proof, and only
+  // `unreachable` is accepted.  X86_BUILD_VECTOR#5 is deliberately not an
+  // exception: the directed guard atom below supplies the non-power-of-two
+  // shape the 12-atom panel lacks.
+  std::string ExceptionsError;
+  std::optional<std::vector<LegalizerException>> Exceptions =
+      readLegalizerExceptions(ExceptionsError);
+  ASSERT_TRUE(Exceptions.has_value()) << ExceptionsError;
+
+  std::map<RuleKey, const LegalizerException *> Approved;
+  for (const LegalizerException &E : *Exceptions) {
+    auto TableIt = TableForSet.find(E.RuleSet);
+    ASSERT_NE(TableIt, TableForSet.end())
+        << "exception names an unknown rule set: " << E.RuleSet;
+    const RuleKey Key{TableIt->second, E.RuleIndex};
+    ASSERT_TRUE(Targets.count(Key))
+        << "exception names a rule that is not in the literal manifest: "
+        << E.RuleSet << "#" << E.RuleIndex;
+    ASSERT_TRUE(Approved.emplace(Key, &E).second)
+        << "duplicate exception for " << E.RuleSet << "#" << E.RuleIndex;
+    EXPECT_EQ(E.Kind, "unreachable")
+        << E.RuleSet << "#" << E.RuleIndex << " must be kind unreachable";
+  }
 
   std::vector<Sigma> Sigmas;
   Sigmas.reserve(4);
@@ -1706,41 +1838,50 @@ TEST_F(X86LegalizerDifferentialTest, LiteralRuleFirstMatchLedger) {
       const std::optional<unsigned> Opcode = opcodeForName(T.Opcode);
       ASSERT_TRUE(Opcode.has_value()) << T.Opcode;
 
+      auto Consider = [&](ArrayRef<LLT> Types, bool HasMem, LLT MemTy,
+                          uint64_t Align) {
+        EXPECT_LE(Types.size(), 3u);
+        SmallVector<LLT, 3> TypeVec(Types.begin(), Types.end());
+        SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+        if (HasMem)
+          MemDescs.emplace_back(MemTy, Align, AtomicOrdering::NotAtomic,
+                                AtomicOrdering::NotAtomic);
+        const LegalityQuery Q(*Opcode, TypeVec, MemDescs);
+        const std::optional<RuleHit> Hit = queryRuleIndex(TI, STI, Q);
+        if (!Hit)
+          return;
+        EXPECT_EQ(Hit->RuleSet, TI);
+        EXPECT_LT(Hit->RuleIndex, X86RuleIndexNumRules[TI]);
+        const RuleKey Key{TI, Hit->RuleIndex};
+        if (!Targets.count(Key))
+          return;
+        ConfigHits[CI].insert(Key);
+        Union.insert(Key);
+        FirstConfig.emplace(Key, CI);
+        if (Witnesses.count(Key))
+          return;
+        Witness W;
+        W.ConfigIndex = CI;
+        W.Point.Opcode = *Opcode;
+        W.Point.Name = T.Opcode;
+        W.Point.NumTypes = static_cast<uint8_t>(Types.size());
+        std::copy(Types.begin(), Types.end(), W.Point.Types);
+        W.Point.MemTy = MemTy;
+        W.Point.Align = Align;
+        W.Point.HasMem = HasMem;
+        Witnesses.emplace(Key, W);
+      };
+
       enumerateTableDomain(
           TI, 64,
           [&](DomainKind, ArrayRef<LLT> Types, bool HasMem, LLT MemTy,
-              uint64_t Align) {
-            EXPECT_LE(Types.size(), 3u);
-            SmallVector<LLT, 3> TypeVec(Types.begin(), Types.end());
-            SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
-            if (HasMem)
-              MemDescs.emplace_back(MemTy, Align, AtomicOrdering::NotAtomic,
-                                    AtomicOrdering::NotAtomic);
-            const LegalityQuery Q(*Opcode, TypeVec, MemDescs);
-            const std::optional<RuleHit> Hit = queryRuleIndex(TI, STI, Q);
-            if (!Hit)
-              return;
-            EXPECT_EQ(Hit->RuleSet, TI);
-            EXPECT_LT(Hit->RuleIndex, X86RuleIndexNumRules[TI]);
-            const RuleKey Key{TI, Hit->RuleIndex};
-            if (!Targets.count(Key))
-              return;
-            ConfigHits[CI].insert(Key);
-            Union.insert(Key);
-            FirstConfig.emplace(Key, CI);
-            if (Witnesses.count(Key))
-              return;
-            Witness W;
-            W.ConfigIndex = CI;
-            W.Point.Opcode = *Opcode;
-            W.Point.Name = T.Opcode;
-            W.Point.NumTypes = static_cast<uint8_t>(Types.size());
-            std::copy(Types.begin(), Types.end(), W.Point.Types);
-            W.Point.MemTy = MemTy;
-            W.Point.Align = Align;
-            W.Point.HasMem = HasMem;
-            Witnesses.emplace(Key, W);
-          });
+              uint64_t Align) { Consider(Types, HasMem, MemTy, Align); });
+
+      // Directed guard atoms join the first-match search only.  They are not
+      // boundary points, so the domain counts above are unchanged.
+      for (const GuardAtom &Atom : guardAtoms())
+        if (StringRef(T.Opcode) == Atom.Opcode)
+          Consider(ArrayRef<LLT>(&Atom.Type, 1), false, LLT{}, 0);
     }
   }
 
@@ -1796,7 +1937,7 @@ TEST_F(X86LegalizerDifferentialTest, LiteralRuleFirstMatchLedger) {
   unsigned UnexpectedMissing = 0;
   for (const auto &Entry : Targets) {
     const bool Hit = Union.count(Entry.first) != 0;
-    const bool Known = KnownNotFirstMatch.count(Entry.first) != 0;
+    const bool Known = Approved.count(Entry.first) != 0;
     if (!Hit && !Known) {
       ++UnexpectedMissing;
       const Target &T = Entry.second;
@@ -1812,14 +1953,18 @@ TEST_F(X86LegalizerDifferentialTest, LiteralRuleFirstMatchLedger) {
                        "the manifest";
   }
 
-  llvm::outs() << "  not-first-match=" << KnownNotFirstMatch.size() << ":";
-  for (const RuleKey &Key : KnownNotFirstMatch)
-    llvm::outs() << " " << X86RuleIndexTableNames[Key.first] << "#"
-                 << Key.second;
+  llvm::outs() << "  exceptions=" << Approved.size() << ":";
+  for (const auto &Entry : Approved)
+    llvm::outs() << " " << X86RuleIndexTableNames[Entry.first.first] << "#"
+                 << Entry.first.second;
   llvm::outs() << "\n";
+  llvm::outs() << "  covered=" << Union.size()
+               << " exceptions=" << Approved.size()
+               << " denominator=" << Targets.size() << "\n";
 
-  const size_t Reachable = Targets.size() - KnownNotFirstMatch.size();
+  const size_t Reachable = Targets.size() - Approved.size();
   EXPECT_EQ(Union.size(), Reachable);
+  EXPECT_EQ(Union.size() + Approved.size(), Targets.size());
   EXPECT_EQ(PerSetSum, Reachable);
   EXPECT_EQ(UnexpectedMissing, 0u);
   EXPECT_EQ(RecheckFailures, 0u);
