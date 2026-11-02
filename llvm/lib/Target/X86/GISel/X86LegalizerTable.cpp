@@ -221,6 +221,15 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
                             AtomicOrdering::NotAtomic);
     const LegalityQuery Q(P.Opcode, Types, MemDescs);
 
+    if (X86GISelTableStats) {
+      errs() << "x86-gisel-table-check: " << P.Name << " (";
+      for (unsigned I = 0; I != P.NumTypes; ++I) {
+        if (I)
+          errs() << ", ";
+        P.Types[I].print(errs());
+      }
+      errs() << ")\n";
+    }
     const LegalizeActionStep ChainStep = LI.getAction(Q);
     const Result R = query(Q);
     if (R.Kind != Answer::Hit) {
