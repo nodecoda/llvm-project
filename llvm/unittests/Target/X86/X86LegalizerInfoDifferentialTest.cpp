@@ -584,6 +584,125 @@ TEST(ReferenceProvenance, ArtifactIsConsistent) {
   }
 }
 
+// The manifest records the coverage denominators derived from the Core IR.
+// Recompute every field from the build product; the .td text is deliberately
+// not parsed here, and no source text is pinned.
+TEST(RuleCountsManifest, MatchesCoreIR) {
+  auto ManifestText = readTestSourceFile("x86-legalizer-rule-counts.json");
+  ASSERT_TRUE(ManifestText.has_value());
+  auto ManifestValue = json::parse(*ManifestText);
+  ASSERT_TRUE(!!ManifestValue) << toString(ManifestValue.takeError());
+  const json::Object *M = ManifestValue->getAsObject();
+  ASSERT_NE(M, nullptr);
+
+  auto CoreBuffer = MemoryBuffer::getFile(X86_LEGALIZER_CORE_JSON);
+  ASSERT_TRUE(!!CoreBuffer) << X86_LEGALIZER_CORE_JSON;
+  auto CoreValue = json::parse((*CoreBuffer)->getBuffer());
+  ASSERT_TRUE(!!CoreValue) << toString(CoreValue.takeError());
+  const json::Object *Core = CoreValue->getAsObject();
+  ASSERT_NE(Core, nullptr);
+
+  const json::Array *Rulesets = Core->getArray("rulesets");
+  ASSERT_NE(Rulesets, nullptr);
+  const json::Array *Escapes = Core->getArray("escapes");
+  ASSERT_NE(Escapes, nullptr);
+
+  std::set<std::pair<std::string, int64_t>> LiteralRules;
+  std::set<std::string> LiteralSetNames;
+  int64_t CoreEntryCount = 0;
+  for (const json::Value &RulesetValue : *Rulesets) {
+    const json::Object *Ruleset = RulesetValue.getAsObject();
+    ASSERT_NE(Ruleset, nullptr);
+    auto Def = Ruleset->getString("def");
+    ASSERT_TRUE(Def.has_value());
+    LiteralSetNames.insert(Def->str());
+    const json::Array *Rules = Ruleset->getArray("rules");
+    ASSERT_NE(Rules, nullptr);
+    for (const json::Value &RuleValue : *Rules) {
+      const json::Object *Rule = RuleValue.getAsObject();
+      ASSERT_NE(Rule, nullptr);
+      auto RuleIndex = Rule->getInteger("rule_index");
+      ASSERT_TRUE(RuleIndex.has_value());
+      LiteralRules.emplace(Def->str(), *RuleIndex);
+      ++CoreEntryCount;
+    }
+  }
+
+  int64_t EscapedInLiteralSets = 0;
+  std::set<std::string> EscapedSetNames;
+  for (const json::Value &EscapeValue : *Escapes) {
+    const json::Object *Escape = EscapeValue.getAsObject();
+    ASSERT_NE(Escape, nullptr);
+    auto Ruleset = Escape->getString("ruleset");
+    ASSERT_TRUE(Ruleset.has_value());
+    EscapedSetNames.insert(Ruleset->str());
+    if (LiteralSetNames.count(Ruleset->str()))
+      ++EscapedInLiteralSets;
+  }
+
+  std::set<std::string> OnlyEscapedSetNames;
+  for (const std::string &Name : EscapedSetNames)
+    if (!LiteralSetNames.count(Name))
+      OnlyEscapedSetNames.insert(Name);
+
+  const int64_t LiteralRuleCount = static_cast<int64_t>(LiteralRules.size());
+  const int64_t LiteralSetCount = static_cast<int64_t>(LiteralSetNames.size());
+  const int64_t EscapedRuleCount = static_cast<int64_t>(Escapes->size());
+  const int64_t EscapedInAllEscapedSets =
+      EscapedRuleCount - EscapedInLiteralSets;
+  const int64_t OnlyEscapedSetCount =
+      static_cast<int64_t>(OnlyEscapedSetNames.size());
+  const int64_t TableCount = LiteralSetCount + OnlyEscapedSetCount;
+  const int64_t TDRuleCount = LiteralRuleCount + EscapedRuleCount;
+
+  auto ExpectField = [](const char *Name, int64_t Manifest,
+                        int64_t Recomputed) {
+    EXPECT_EQ(Manifest, Recomputed)
+        << "field " << Name << ": manifest=" << Manifest
+        << " recomputed=" << Recomputed;
+  };
+
+  ExpectField("table_count", M->getInteger("table_count").value_or(-1),
+              TableCount);
+  ExpectField("literal_bearing_rule_set_count",
+              M->getInteger("literal_bearing_rule_set_count").value_or(-1),
+              LiteralSetCount);
+  ExpectField("literal_td_rule_count",
+              M->getInteger("literal_td_rule_count").value_or(-1),
+              LiteralRuleCount);
+  ExpectField("core_entry_count",
+              M->getInteger("core_entry_count").value_or(-1), CoreEntryCount);
+  ExpectField("all_escaped_rule_set_count",
+              M->getInteger("all_escaped_rule_set_count").value_or(-1),
+              OnlyEscapedSetCount);
+  ExpectField("escaped_td_rule_count",
+              M->getInteger("escaped_td_rule_count").value_or(-1),
+              EscapedRuleCount);
+  ExpectField("escaped_in_literal_sets",
+              M->getInteger("escaped_in_literal_sets").value_or(-1),
+              EscapedInLiteralSets);
+  ExpectField("escaped_in_all_escaped_sets",
+              M->getInteger("escaped_in_all_escaped_sets").value_or(-1),
+              EscapedInAllEscapedSets);
+  ExpectField("td_rule_count", M->getInteger("td_rule_count").value_or(-1),
+              TDRuleCount);
+
+  EXPECT_EQ(TDRuleCount, LiteralRuleCount + EscapedRuleCount);
+  EXPECT_EQ(EscapedRuleCount, EscapedInLiteralSets + EscapedInAllEscapedSets);
+  EXPECT_EQ(TableCount, LiteralSetCount + OnlyEscapedSetCount);
+
+  // The eight rule sets that only occur in the escape list, sorted.
+  const std::vector<std::string> ExpectedOnlyEscaped = {
+      "X86_CONSTANT_POOL", "X86_FPEXTLOAD",    "X86_FPTRUNCSTORE",
+      "X86_FRAME_INDEX",   "X86_GLOBAL_VALUE", "X86_INTTOPTR",
+      "X86_SEXTLOAD",      "X86_ZEXTLOAD"};
+  std::vector<std::string> ActualOnlyEscaped(OnlyEscapedSetNames.begin(),
+                                             OnlyEscapedSetNames.end());
+  ASSERT_EQ(ActualOnlyEscaped.size(), ExpectedOnlyEscaped.size());
+  for (size_t I = 0; I < ExpectedOnlyEscaped.size(); ++I)
+    EXPECT_EQ(ActualOnlyEscaped[I], ExpectedOnlyEscaped[I]) << "index " << I;
+}
+
 TEST_F(X86LegalizerDifferentialTest, ReferenceBehaviorFingerprint) {
   auto ProvText = readTestSourceFile("x86-legalizer-reference-provenance.json");
   ASSERT_TRUE(ProvText.has_value());

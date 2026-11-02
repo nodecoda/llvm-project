@@ -161,4 +161,5 @@ add_llvm_unittest(X86Tests
   )
 
 target_compile_definitions(X86Tests PRIVATE
-  X86_LEGALIZER_TEST_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+  X86_LEGALIZER_TEST_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+  X86_LEGALIZER_CORE_JSON="${LLVM_BINARY_DIR}/lib/Target/X86/X86LegalizerInfo.core.json")
