@@ -31,6 +31,9 @@ enum LegalizerTypeClassKind : uint8_t {
   Kind_Pointer = 0,
   Kind_Scalar = 1,
   Kind_Vector = 2,
+  /// A vector whose element type is a pointer.  It is a distinct LLT from an
+  /// integer vector of the same shape, so both axes keep it as its own class.
+  Kind_PtrVector = 3,
 };
 
 struct LegalizerTypeClass {
@@ -41,11 +44,16 @@ struct LegalizerTypeClass {
 
 } // namespace
 
+/// A rule set whose key has no memory-descriptor axis.
+constexpr uint8_t kNoMemDesc = 0xFF;
+
 // The generated file fills in the classes and the per-opcode descriptors; the
 // shape of a descriptor is part of the reader, not of the generator.
 struct LegalizerTableDesc {
   uint8_t Slots[2]; // which type slots the key reads
   uint8_t Dims[2];  // class count per key slot
+  uint8_t MemSlot;  // which MMODescr the key reads, or kNoMemDesc
+  uint16_t MemDim;  // class count of the descriptor axis (0 without one)
 };
 
 #include "X86LegalizerTable.inc"
@@ -61,14 +69,17 @@ int classifyType(LLT T) {
   if (!T.isValid())
     return kUnknownClass;
   // A vector of pointers is a different LLT from a vector of integers of the
-  // same shape, and the class list cannot tell them apart yet.  Refuse rather
-  // than merge two types the rules distinguish.
-  if (T.isPointerVector())
-    return kPointerVectorClass;
+  // same shape: kind 3 keeps them apart.  A shape the class list does not name
+  // is refused rather than merged with an integer vector.
   uint8_t Kind;
-  unsigned Bits;
+  unsigned Bits = 0;
   unsigned Lanes = 1;
-  if (T.isPointer()) {
+  if (T.isPointerVector()) {
+    if (T.isScalableVector())
+      return kUnknownClass;
+    Kind = Kind_PtrVector;
+    Lanes = T.getNumElements();
+  } else if (T.isPointer()) {
     // There is one pointer class per LegalizerInfo instance.  Its width is
     // fixed for that instance, so it must not be part of the key: p0 is the
     // same class whether the subtarget is 32- or 64-bit.
@@ -89,7 +100,53 @@ int classifyType(LLT T) {
     if (X86TypeClasses[I].Kind == Kind && X86TypeClasses[I].ElemBits == Bits &&
         X86TypeClasses[I].Lanes == Lanes)
       return static_cast<int>(I);
+  return Kind == Kind_PtrVector ? kPointerVectorClass : kUnknownClass;
+}
+
+/// Class of a memory descriptor's LLT, or kUnknownClass.  This axis keeps the
+/// LLT's identity, including a vector of pointers: G_STORE asks whether the
+/// value type *is* the memory type, so a shape-only class would merge types
+/// the rules distinguish.
+int classifyMemType(LLT T) {
+  if (!T.isValid())
+    return kUnknownClass;
+  uint8_t Kind;
+  unsigned Bits = 0;
+  unsigned Lanes = 1;
+  if (T.isPointerVector()) {
+    if (T.isScalableVector())
+      return kUnknownClass;
+    Kind = Kind_PtrVector;
+    Lanes = T.getNumElements();
+  } else if (T.isPointer()) {
+    Kind = Kind_Pointer;
+  } else if (T.isVector()) {
+    if (T.isScalableVector())
+      return kUnknownClass;
+    Kind = Kind_Vector;
+    Bits = T.getScalarSizeInBits();
+    Lanes = T.getNumElements();
+  } else if (T.isScalar()) {
+    Kind = Kind_Scalar;
+    Bits = T.getSizeInBits().getFixedValue();
+  } else {
+    return kUnknownClass;
+  }
+  for (unsigned I = 0; I < X86NumMemClasses; ++I)
+    if (X86MemClasses[I].Kind == Kind && X86MemClasses[I].ElemBits == Bits &&
+        X86MemClasses[I].Lanes == Lanes)
+      return static_cast<int>(I);
   return kUnknownClass;
+}
+
+/// Alignment class: how many of the generated thresholds the alignment meets.
+/// The memdesc predicates only ask `Align >= threshold`, so the prefix is the
+/// whole answer.
+unsigned alignClass(uint64_t Align) {
+  unsigned N = 0;
+  while (N < X86NumAlignClasses - 1 && Align >= X86AlignThresholds[N])
+    ++N;
+  return N;
 }
 
 struct X86TablePoint {
@@ -97,6 +154,9 @@ struct X86TablePoint {
   const char *Name;
   uint8_t NumTypes;
   LLT Types[3];
+  LLT MemTy;     // valid when HasMem
+  uint64_t Align;
+  bool HasMem;
 };
 
 } // namespace
@@ -116,29 +176,58 @@ LLT X86LegalizerTable::representative(unsigned ClassID) const {
     return LLT::pointer(0, PointerBits);
   case Kind_Vector:
     return LLT::fixed_vector(C.Lanes, C.ElemBits);
+  case Kind_PtrVector:
+    return LLT::fixed_vector(C.Lanes, LLT::pointer(0, PointerBits));
+  default:
+    return LLT::scalar(C.ElemBits);
+  }
+}
+
+LLT X86LegalizerTable::memRepresentative(unsigned ClassID) const {
+  const LegalizerTypeClass &C = X86MemClasses[ClassID];
+  switch (C.Kind) {
+  case Kind_Pointer:
+    return LLT::pointer(0, PointerBits);
+  case Kind_Vector:
+    return LLT::fixed_vector(C.Lanes, C.ElemBits);
+  case Kind_PtrVector:
+    return LLT::fixed_vector(C.Lanes, LLT::pointer(0, PointerBits));
   default:
     return LLT::scalar(C.ElemBits);
   }
 }
 
 uint16_t X86LegalizerTable::fill(unsigned Table, const LegalityQuery &Q,
-                                 unsigned L0, unsigned L1) const {
+                                 unsigned L0, unsigned L1,
+                                 unsigned MemClass) const {
   const LegalizerTableDesc &D = X86Tables[Table];
   SmallVector<LLT, 4> Types(Q.Types.begin(), Q.Types.end());
   Types[D.Slots[0]] = representative(L0);
   if (D.Dims[1] > 1 && Types.size() > D.Slots[1])
     Types[D.Slots[1]] = representative(L1);
 
+  SmallVector<LegalityQuery::MemDesc, 1> MemDescs(Q.MMODescrs.begin(),
+                                                  Q.MMODescrs.end());
+  if (D.MemDim) {
+    if (D.MemSlot >= MemDescs.size())
+      return kOpaqueCell;
+    const unsigned Align = MemClass % X86NumAlignClasses;
+    const LLT MemTy = memRepresentative(MemClass / X86NumAlignClasses);
+    const uint64_t AlignInBits = Align ? X86AlignThresholds[Align - 1] : 0;
+    const LegalityQuery::MemDesc &Src = MemDescs[D.MemSlot];
+    MemDescs[D.MemSlot] = LegalityQuery::MemDesc(
+        MemTy, AlignInBits, Src.Ordering, Src.FailureOrdering);
+  }
+
   // Same question, asked with the class representatives instead of the actual
-  // types: that is what makes one cell stand for the whole class pair.  The
+  // types: that is what makes one cell stand for the whole class tuple.  The
   // answer comes from the rule set's generated evaluator, not from
   // LegalizeRuleSet::apply(): the table is a compilation of the rules, so a
   // hit costs one switch, one classify per key slot and one call, with no
   // comparison chain behind it.  Going through LI.getAction() would also
   // re-enter this table and recurse.
-  std::optional<LegalizeActionStep> Step =
-      X86EvalTable(Table, Subtarget,
-                   LegalityQuery(Q.Opcode, Types, Q.MMODescrs, Q.Immediates));
+  std::optional<LegalizeActionStep> Step = X86EvalTable(
+      Table, Subtarget, LegalityQuery(Q.Opcode, Types, MemDescs, Q.Immediates));
   if (!Step)
     return kOpaqueCell;
   ++Fills;
@@ -178,12 +267,31 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
   const uint8_t L0 = C0;
   const uint8_t L1 = D.Dims[1] > 1 ? C1 : 0;
 
+  unsigned MemClass = 0;
+  if (D.MemDim) {
+    if (D.MemSlot >= Q.MMODescrs.size()) {
+      ++Outsides;
+      R.Kind = Answer::Outside;
+      return R;
+    }
+    const LegalityQuery::MemDesc &MD = Q.MMODescrs[D.MemSlot];
+    const int CM = classifyMemType(MD.MemoryTy);
+    if (CM < 0) {
+      ++Outsides;
+      R.Kind = Answer::Outside;
+      return R;
+    }
+    MemClass = CM * X86NumAlignClasses + alignClass(MD.AlignInBits);
+  }
+
+  const size_t MemDim = D.MemDim ? D.MemDim : 1;
   std::vector<uint16_t> &Row = Cells[Table];
   if (Row.empty())
-    Row.assign(static_cast<size_t>(D.Dims[0]) * D.Dims[1], 0);
-  uint16_t &Cell = Row[static_cast<size_t>(L0) * D.Dims[1] + L1];
+    Row.assign(static_cast<size_t>(D.Dims[0]) * D.Dims[1] * MemDim, 0);
+  uint16_t &Cell =
+      Row[(static_cast<size_t>(L0) * D.Dims[1] + L1) * MemDim + MemClass];
   if (!Cell)
-    Cell = fill(Table, Q, L0, L1);
+    Cell = fill(Table, Q, L0, L1, MemClass);
 
   if (Cell == kOpaqueCell) {
     ++Escapes;
@@ -227,11 +335,11 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
   unsigned Skipped = 0;
   for (const X86TablePoint &P : Points) {
     ArrayRef<LLT> Types(P.Types, P.NumTypes);
-    // The enumerated domain carries no memdesc; the two rule sets that read
-    // one get a fixed, sized memory type so both paths see the same question.
+    // A memdesc point carries the descriptor it was generated from, so the
+    // chain and the table are asked the same question.
     SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
-    if (P.Opcode == TargetOpcode::G_LOAD || P.Opcode == TargetOpcode::G_STORE)
-      MemDescs.emplace_back(Types[0], 8, AtomicOrdering::NotAtomic,
+    if (P.HasMem)
+      MemDescs.emplace_back(P.MemTy, P.Align, AtomicOrdering::NotAtomic,
                             AtomicOrdering::NotAtomic);
     const LegalityQuery Q(P.Opcode, Types, MemDescs);
 

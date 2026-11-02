@@ -20,7 +20,7 @@
 ; skipped: points == compared.  A skipped point would mean a rule set the
 ; generator cannot translate, which is a gap to close rather than to allow.
 ;
-; CHECK: x86-gisel-table-check: points 487 compared 487 mismatches 0 skipped 0 outside 0 ptrvec 0 untabulated 0
+; CHECK: x86-gisel-table-check: points 560 compared 560 mismatches 0 skipped 0 outside 0 ptrvec 0 untabulated 0
 
 define void @f() {
   ret void
