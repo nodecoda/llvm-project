@@ -97,6 +97,7 @@ public:
   }
 
   const X86LegalizerTable &table() const { return *TablePtr; }
+  X86LegalizerTable &mutableTable() { return *TablePtr; }
 
   bool legalizeCustom(LegalizerHelper &, MachineInstr &,
                       LostDebugLocObserver &) const override {
@@ -935,6 +936,44 @@ TEST_F(X86LegalizerDifferentialTest, TableAnswersCorpus) {
   EXPECT_EQ(Declines, 21u);
 }
 
+// One G_STORE probe shared by the address-space tests: the table result and the
+// oracle answer for the same query, with the memory descriptor alignment the
+// generated points use.
+struct StoreProbe {
+  X86LegalizerTable::Result TableResult;
+  LegalizeActionStep OracleStep;
+};
+
+static StoreProbe probeStore(const X86LegalizerTable &Table,
+                             const X86LegalizerInfoReference &Oracle,
+                             LLT ValueTy, LLT PtrTy, LLT MemTy) {
+  LLT Types[] = {ValueTy, PtrTy};
+  LegalityQuery::MemDesc MemDescs[] = {{MemTy, /*AlignInBits=*/8,
+                                        AtomicOrdering::NotAtomic,
+                                        AtomicOrdering::NotAtomic}};
+  LegalityQuery Q(G_STORE, Types, MemDescs);
+  return {Table.query(Q), Oracle.getAction(Q)};
+}
+
+// Every enumerated domain point must agree with the rule chain.  selfCheck()
+// reports a mismatch with report_fatal_error, so the count assertions here are
+// the non-fatal half of the same contract.
+TEST_F(X86LegalizerDifferentialTest, SelfCheckDomainSmoke) {
+  const Config &C = Configs[0];
+  Sigma S = makeSigma(C);
+  ASSERT_TRUE(S.STI) << C.ID;
+  TableLegalizerInfoForTest Table(*S.STI);
+
+  std::string Log;
+  raw_string_ostream OS(Log);
+  Table.mutableTable().selfCheck(OS);
+  OS.flush();
+
+  EXPECT_NE(Log.find("points 1397"), std::string::npos) << Log;
+  EXPECT_NE(Log.find("mismatches 0"), std::string::npos) << Log;
+  EXPECT_NE(Log.find("skipped 0"), std::string::npos) << Log;
+}
+
 // F1: the table's key has a single pointer class.  Every pointer collapses to
 // p0, and G_STORE's first rule is exactly `Types[0] != MemoryTy`: folding the
 // address space erases the comparison and answers (p1, p0) as if it were
@@ -952,21 +991,17 @@ TEST_F(X86LegalizerDifferentialTest, AddressSpaceGoesResidual) {
   const LLT V2P1 = LLT::fixed_vector(2, P1);
 
   auto Ask = [&](LLT ValueTy, LLT PtrTy, LLT MemTy, const char *Name) {
-    LLT Types[] = {ValueTy, PtrTy};
-    LegalityQuery::MemDesc MemDescs[] = {{MemTy, /*AlignInBits=*/8,
-                                          AtomicOrdering::NotAtomic,
-                                          AtomicOrdering::NotAtomic}};
-    LegalityQuery Q(G_STORE, Types, MemDescs);
-
-    X86LegalizerTable::Result R = Table.table().query(Q);
-    EXPECT_EQ(R.Kind, X86LegalizerTable::Answer::Residual)
+    const StoreProbe Probe =
+        probeStore(Table.table(), Oracle, ValueTy, PtrTy, MemTy);
+    EXPECT_EQ(Probe.TableResult.Kind, X86LegalizerTable::Answer::Residual)
         << Name << ": a non-zero address space must not use a table cell";
 
-    LegalizeActionStep Got(R.Action, R.TypeIdx, R.NewType);
-    LegalizeActionStep Want = Oracle.getAction(Q);
-    EXPECT_TRUE(stepsAgree(Got, Want))
-        << Name << ": table " << describe(Got) << ", oracle " << describe(Want);
-    return Want;
+    LegalizeActionStep Got(Probe.TableResult.Action, Probe.TableResult.TypeIdx,
+                           Probe.TableResult.NewType);
+    EXPECT_TRUE(stepsAgree(Got, Probe.OracleStep))
+        << Name << ": table " << describe(Got) << ", oracle "
+        << describe(Probe.OracleStep);
+    return Probe.OracleStep;
   };
 
   // Value type and memory type agree.  The oracle's Type != MemoryTy guard
@@ -988,6 +1023,35 @@ TEST_F(X86LegalizerDifferentialTest, AddressSpaceGoesResidual) {
 
   // Pointer vectors carry their address space in the element type.
   Ask(V2P1, P0, V2P1, "G_STORE (v2p1, p0) m(v2p1)");
+}
+
+// F1's discriminator is exactly the pair the table's folded pointer class
+// cannot see: (p1, p1) m(p1) and (p1, p0) m(p0) both go residual, but the
+// oracle's Type != MemoryTy guard makes the second one Custom.
+TEST_F(X86LegalizerDifferentialTest, F1Repro) {
+  const Config &C = Configs[0];
+  Sigma S = makeSigma(C);
+  ASSERT_TRUE(S.STI) << C.ID;
+  X86LegalizerInfoReference Oracle(
+      *S.STI, *static_cast<const X86TargetMachine *>(S.TM.get()));
+  TableLegalizerInfoForTest Table(*S.STI);
+
+  const LLT P0 = LLT::pointer(0, 64), P1 = LLT::pointer(1, 64);
+
+  const StoreProbe SameAS = probeStore(Table.table(), Oracle, P1, P1, P1);
+  const StoreProbe DifferentAS = probeStore(Table.table(), Oracle, P1, P0, P0);
+
+  EXPECT_EQ(SameAS.TableResult.Kind, X86LegalizerTable::Answer::Residual)
+      << "G_STORE (p1, p1) m(p1)";
+  EXPECT_EQ(DifferentAS.TableResult.Kind, X86LegalizerTable::Answer::Residual)
+      << "G_STORE (p1, p0) m(p0)";
+
+  EXPECT_FALSE(stepsAgree(SameAS.OracleStep, DifferentAS.OracleStep))
+      << "the oracle must distinguish (p1, p1) from (p1, p0): "
+      << describe(SameAS.OracleStep) << " vs "
+      << describe(DifferentAS.OracleStep);
+  EXPECT_EQ(DifferentAS.OracleStep.Action, Custom)
+      << "G_STORE's type != memory-type guard must fire";
 }
 
 // TC-27: the report is a pure function of the corpus and the tables, so two
