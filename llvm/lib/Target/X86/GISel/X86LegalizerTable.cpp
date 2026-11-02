@@ -7,11 +7,19 @@
 //===----------------------------------------------------------------------===//
 
 #include "X86LegalizerTable.h"
+#include "X86Subtarget.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <optional>
+
 using namespace llvm;
+// The generated evaluators are the rule chain written out: they name the
+// actions, the predicates and the mutations the C++ builders would have used.
+using namespace llvm::LegalizeActions;
+using namespace llvm::LegalityPredicates;
+using namespace llvm::LegalizeMutations;
 
 static cl::opt<bool> X86GISelTableStats(
     "x86-gisel-table-stats", cl::Hidden, cl::init(false),
@@ -96,8 +104,10 @@ struct X86TablePoint {
 #include "X86LegalizerTablePoints.inc"
 
 X86LegalizerTable::X86LegalizerTable(const LegalizerInfo &LI,
+                                     const X86Subtarget &Subtarget,
                                      unsigned PointerBits)
-    : LI(LI), PointerBits(PointerBits), Cells(X86NumTables) {}
+    : LI(LI), Subtarget(Subtarget), PointerBits(PointerBits),
+      Cells(X86NumTables) {}
 
 LLT X86LegalizerTable::representative(unsigned ClassID) const {
   const LegalizerTypeClass &C = X86TypeClasses[ClassID];
@@ -121,13 +131,18 @@ uint16_t X86LegalizerTable::fill(unsigned Table, const LegalityQuery &Q,
 
   // Same question, asked with the class representatives instead of the actual
   // types: that is what makes one cell stand for the whole class pair.  The
-  // rules are asked directly -- going through LI.getAction() would re-enter
-  // this table and recurse.
-  LegalizeActionStep Step =
-      LI.getActionDefinitions(Q.Opcode)
-          .apply(LegalityQuery(Q.Opcode, Types, Q.MMODescrs, Q.Immediates));
+  // answer comes from the rule set's generated evaluator, not from
+  // LegalizeRuleSet::apply(): the table is a compilation of the rules, so a
+  // hit costs one switch, one classify per key slot and one call, with no
+  // comparison chain behind it.  Going through LI.getAction() would also
+  // re-enter this table and recurse.
+  std::optional<LegalizeActionStep> Step =
+      X86EvalTable(Table, Subtarget,
+                   LegalityQuery(Q.Opcode, Types, Q.MMODescrs, Q.Immediates));
+  if (!Step)
+    return kOpaqueCell;
   ++Fills;
-  Steps.push_back(Step);
+  Steps.push_back(*Step);
   return static_cast<uint16_t>(Steps.size());
 }
 

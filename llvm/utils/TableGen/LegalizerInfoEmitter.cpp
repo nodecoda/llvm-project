@@ -271,7 +271,12 @@ void LegalizerInfoEmitter::emitFeatures(raw_ostream &OS) {
 /// walked by the shared emitPredicateDag(); a leaf is either a cached bool
 /// (LegalizeFeature) or verbatim text (LegalizeOpaqueBool and
 /// LegalizeQueryPredicate).
-void LegalizerInfoEmitter::emitPredicate(const Record &P, raw_ostream &OS) {
+///
+/// The expression names the prologue identifiers (`Is64Bit`, `X86_s32`) and,
+/// for a query dag, takes a lambda whose parameter is called `Query`.  Both
+/// emitters that render rules (-gen-legalizer and -gen-legalizer-table) emit
+/// that same prologue, so this is shared rather than duplicated.
+static void renderPredicate(const Record &P, raw_ostream &OS) {
   if (P.isSubClassOf("LegalizeBoolPredicateDag") ||
       P.isSubClassOf("LegalizeQueryPredicateDag")) {
     // A query dag renders as the lambda the C++ builders take; a bool dag
@@ -332,6 +337,10 @@ void LegalizerInfoEmitter::emitPredicate(const Record &P, raw_ostream &OS) {
     return;
   }
   PrintFatalError(&P, "unknown LegalizePredicate record");
+}
+
+void LegalizerInfoEmitter::emitPredicate(const Record &P, raw_ostream &OS) {
+  renderPredicate(P, OS);
 }
 
 /// Emit the LLT constants and named type lists, in .td order.  Like a feature,
@@ -2227,6 +2236,377 @@ class LegalizerTableEmitterImpl {
     }
   }
 
+  /// ---------------------------------------------------------------------
+  /// Evaluators
+  ///
+  /// The table does not "run the chain and cache the answer": the code below
+  /// is the chain itself, with each guard and mutation written out against the
+  /// same prologue -gen-legalizer emits.  A rule set with a rule this cannot
+  /// translate is opaque, and the reader falls back to the chain for it.
+  /// ---------------------------------------------------------------------
+
+  /// C++ expression for one type argument.  An inline type is parenthesized so
+  /// it can stand as an argument or before a method call.
+  static std::string typeText(const Record &Arg) {
+    if (Arg.isSubClassOf("LegalizeNamedType"))
+      return Arg.getName().str();
+    if (Arg.isSubClassOf("LegalizeInlineType"))
+      return "(" + squashSpace(Arg.getValueAsString("Text")) + ")";
+    PrintFatalError(Arg.getLoc(), "the table evaluator cannot name the type '" +
+                                      Arg.getName() + "'");
+  }
+
+  /// Elements of a named or inline type list, as C++ expressions.
+  static std::vector<std::string> listElements(const Record &List) {
+    std::vector<std::string> Out;
+    for (const Record *E : List.getValueAsListOfDefs("Elems"))
+      Out.push_back(typeText(*E));
+    return Out;
+  }
+
+  /// C++ expression usable as the range of a range-for over a type list: the
+  /// identifier a named list was declared with, a conditional between two of
+  /// them, or a braced list for an inline one.
+  static std::string typeListText(const Record &Arg) {
+    if (Arg.isSubClassOf("LegalizeNamedTypeList"))
+      return Arg.getName().str();
+    if (Arg.isSubClassOf("LegalizeTypeListChoice"))
+      return "(" + squashSpace(Arg.getValueAsString("Text")) + ")";
+    if (Arg.isSubClassOf("LegalizeInlineTypeList")) {
+      std::string S = "{";
+      StringRef Sep;
+      for (const std::string &E : listElements(Arg)) {
+        S += Sep.str();
+        S += E;
+        Sep = ", ";
+      }
+      return S + "}";
+    }
+    PrintFatalError(Arg.getLoc(),
+                    "the table evaluator cannot name the type list '" +
+                        Arg.getName() + "'");
+  }
+
+  /// A lane count argument: a literal, or the C++ text the .td carried.
+  static std::string laneText(const Record &Arg) {
+    if (Arg.isSubClassOf("LegalizeArgLanes"))
+      return std::to_string(Arg.getValueAsInt("Value"));
+    if (Arg.isSubClassOf("LegalizeRawArg"))
+      return "(" + squashSpace(Arg.getValueAsString("Text")) + ")";
+    PrintFatalError(Arg.getLoc(),
+                    "the table evaluator cannot read a lane count from '" +
+                        Arg.getName() + "'");
+  }
+
+  /// One type-slot test.  The same predicate the chain stores, called on the
+  /// query.
+  static std::string typeIsAt(StringRef Idx, const Record &Ty) {
+    return "typeIs(" + Idx.str() + ", " + typeText(Ty) + ")(Q)";
+  }
+
+  /// The rule's guard as a complete C++ boolean expression.  A cached bool is
+  /// used as it stands; a query predicate renders as a callable, so it is
+  /// called with the query.
+  static std::string guardText(const Record &Rule) {
+    const Record *P = Rule.getValueAsOptionalDef("Pred");
+    if (!P)
+      return "";
+    std::string S;
+    raw_string_ostream OS(S);
+    renderPredicate(*P, OS);
+    OS.flush();
+    if (P->isSubClassOf("LegalizeQueryPredicateBase"))
+      return "(" + S + ")(Q)";
+    return S;
+  }
+
+  static std::string conjunction(StringRef A, StringRef B) {
+    if (A.empty())
+      return B.str();
+    if (B.empty())
+      return A.str();
+    return ("(" + A + ") && (" + B + ")").str();
+  }
+
+  /// One returned step.  Without a mutation the step is the action alone; with
+  /// one, the mutation is called on the query exactly as the chain would.
+  static void emitStep(raw_ostream &OS, StringRef Action, StringRef Indent,
+                       StringRef Mutation) {
+    if (Mutation.empty()) {
+      OS << Indent << "return {LegalizeActions::" << Action << ", 0, LLT{}};\n";
+      return;
+    }
+    OS << Indent << "auto M = (" << Mutation << ")(Q);\n";
+    OS << Indent << "return {LegalizeActions::" << Action
+       << ", M.first, M.second};\n";
+  }
+
+  /// One returned step whose new type is spelled out rather than computed by a
+  /// mutation factory: the clamp builders produce their type inline.
+  static void emitTypedStep(raw_ostream &OS, StringRef Action, StringRef Indent,
+                            StringRef TypeIdx, StringRef NewType) {
+    OS << Indent << "return {LegalizeActions::" << Action << ", " << TypeIdx
+       << ", " << NewType << "};\n";
+  }
+
+  /// Translate one rule into the statements an evaluator runs.  Returns false
+  /// when the builder has no table translation; the whole rule set is then
+  /// opaque and the reader falls back to the chain for it.
+  bool translateRule(const Record &Rule, std::string &Out, std::string &Why) {
+    StringRef Name = builderName(Rule);
+    std::vector<const Record *> Args = Rule.getValueAsListOfDefs("Args");
+    if (!Rule.getValueAsString("OpaqueArgs").empty()) {
+      Why = "'" + Name.str() + "' carries an opaque body";
+      return false;
+    }
+
+    const Record *B = Rule.getValueAsDef("Builder");
+    StringRef Action = B->getValueAsDef("Action")->getValueAsString("Name");
+    const std::string Guard = guardText(Rule);
+
+    auto Fail = [&]() {
+      Why = "'" + Name.str() + "' has no table translation";
+      return false;
+    };
+    auto IdxOf = [&](size_t I) {
+      return std::to_string(Args[I]->getValueAsInt("Value"));
+    };
+    auto NeedArgs = [&](size_t N) {
+      if (Args.size() != N)
+        PrintFatalError(Rule.getLoc(), "legalizer builder '" + Name + "' has " +
+                                           std::to_string(Args.size()) +
+                                           " arguments; the table evaluator "
+                                           "expected " +
+                                           std::to_string(N));
+    };
+
+    std::string Buf;
+    raw_string_ostream OS(Buf);
+    auto EmitIf = [&](StringRef Cond, StringRef Act, StringRef Mut = "") {
+      OS << "  if (" << Cond << ") {\n";
+      emitStep(OS, Act, "    ", Mut);
+      OS << "  }\n";
+    };
+    auto EmitTypedIf = [&](StringRef Cond, StringRef Act, StringRef Idx,
+                           StringRef Ty) {
+      OS << "  if (" << Cond << ") {\n";
+      emitTypedStep(OS, Act, "    ", Idx, Ty);
+      OS << "  }\n";
+    };
+    auto Finish = [&]() {
+      OS.flush();
+      Out = std::move(Buf);
+      return true;
+    };
+
+    // An action with no guard, no arguments and no mutation.
+    if (Name == "alwaysLegal" || Name == "lower" || Name == "libcall" ||
+        Name == "custom" || Name == "unsupported") {
+      if (!Args.empty() || !Guard.empty())
+        return Fail();
+      emitStep(OS, Action, "  ", "");
+      return Finish();
+    }
+
+    // An action whose only guard is a query predicate (legalIf, lowerIf, ...).
+    if (Name == "legalIf" || Name == "lowerIf" || Name == "customIf" ||
+        Name == "widenScalarIf" || Name == "narrowScalarIf" ||
+        Name == "libcallIf" || Name == "fewerElementsIf" ||
+        Name == "moreElementsIf" || Name == "unsupportedIf") {
+      if (!Args.empty() || Guard.empty())
+        return Fail();
+      EmitIf(Guard, Action);
+      return Finish();
+    }
+
+    // legalFor / lowerFor / libcallFor / customFor: one type in slot 0, or a
+    // list of pairs, depending on the arguments.
+    if (Name == "legalFor" || Name == "lowerFor" || Name == "libcallFor" ||
+        Name == "customFor") {
+      if (Args.empty())
+        return Fail();
+      const bool Pairs = Args.front()->isSubClassOf("LegalizeTypePair");
+      std::string Cond;
+      StringRef Sep;
+      for (const Record *A : Args) {
+        Cond += Sep.str();
+        if (Pairs) {
+          if (!A->isSubClassOf("LegalizeTypePair"))
+            return Fail();
+          Cond += "(" + typeIsAt("0", *A->getValueAsDef("Type0")) + " && " +
+                  typeIsAt("1", *A->getValueAsDef("Type1")) + ")";
+        } else if (A->isSubClassOf("LegalizeNamedTypeList") ||
+                   A->isSubClassOf("LegalizeInlineTypeList")) {
+          std::string Or;
+          StringRef Sep2;
+          for (const std::string &E : listElements(*A)) {
+            Or += Sep2.str();
+            Or += "typeIs(0, " + E + ")(Q)";
+            Sep2 = " || ";
+          }
+          Cond += "(" + Or + ")";
+        } else {
+          Cond += "typeIs(0, " + typeText(*A) + ")(Q)";
+        }
+        Sep = " || ";
+      }
+      EmitIf(conjunction(Guard, Cond), Action);
+      return Finish();
+    }
+
+    // The cartesian-product builders: one nested loop per list, so the answer
+    // is per query type rather than per class pair.
+    if (Name == "legalForCartesianProduct" ||
+        Name == "customForCartesianProduct") {
+      NeedArgs(2);
+      OS << "  for (const LLT T0 : " << typeListText(*Args[0]) << ")\n";
+      OS << "    for (const LLT T1 : " << typeListText(*Args[1]) << ")\n";
+      OS << "      if ("
+         << conjunction(Guard, "typeIs(0, T0)(Q) && typeIs(1, T1)(Q)")
+         << ") {\n";
+      emitStep(OS, Action, "        ", "");
+      OS << "      }\n";
+      return Finish();
+    }
+
+    // clampScalar expands to minScalar + maxScalar; clampScalarOrElt to the
+    // scalar-or-element pair.  Both directions share one mutation.
+    if (Name == "clampScalar" || Name == "clampScalarOrElt") {
+      NeedArgs(3);
+      const bool OrElt = Name == "clampScalarOrElt";
+      const std::string Idx = IdxOf(0);
+      const std::string Min = typeText(*Args[1]);
+      const std::string Max = typeText(*Args[2]);
+      const StringRef Size =
+          OrElt ? "getScalarSizeInBits()" : "getSizeInBits()";
+      EmitIf(conjunction(Guard, std::string(OrElt ? "scalarOrEltNarrowerThan"
+                                                  : "scalarNarrowerThan") +
+                                    "(" + Idx + ", (" + Min + ")." + Size.str() +
+                                    ")(Q)"),
+             "WidenScalar",
+             "LegalizeMutations::changeElementSizeTo(" + Idx + ", " + Min + ")");
+      EmitIf(conjunction(Guard, std::string(OrElt ? "scalarOrEltWiderThan"
+                                                  : "scalarWiderThan") +
+                                    "(" + Idx + ", (" + Max + ")." + Size.str() +
+                                    ")(Q)"),
+             "NarrowScalar",
+             "LegalizeMutations::changeElementSizeTo(" + Idx + ", " + Max + ")");
+      return Finish();
+    }
+
+    if (Name == "minScalar" || Name == "maxScalar") {
+      NeedArgs(2);
+      const bool Min = Name == "minScalar";
+      const std::string Idx = IdxOf(0);
+      const std::string Ty = typeText(*Args[1]);
+      EmitIf(conjunction(Guard, std::string(Min ? "scalarNarrowerThan"
+                                                : "scalarWiderThan") +
+                                    "(" + Idx + ", (" + Ty +
+                                    ").getSizeInBits())(Q)"),
+             Min ? "WidenScalar" : "NarrowScalar",
+             "LegalizeMutations::changeElementSizeTo(" + Idx + ", " + Ty + ")");
+      return Finish();
+    }
+
+    // scalarSameSizeAs expands to minScalarSameAs + maxScalarSameAs.
+    if (Name == "scalarSameSizeAs") {
+      NeedArgs(2);
+      const std::string Idx = IdxOf(0);
+      const std::string Other = IdxOf(1);
+      const std::string Mut =
+          "LegalizeMutations::changeElementSizeTo(" + Idx + ", " + Other + ")";
+      const std::string This = "Q.Types[" + Idx + "].getScalarSizeInBits()";
+      const std::string That = "Q.Types[" + Other + "].getScalarSizeInBits()";
+      EmitIf(conjunction(Guard, That + " > " + This), "WidenScalar", Mut);
+      EmitIf(conjunction(Guard, That + " < " + This), "NarrowScalar", Mut);
+      return Finish();
+    }
+
+    if (Name == "scalarize" || Name == "scalarizeIf") {
+      NeedArgs(1);
+      const std::string Idx = IdxOf(0);
+      EmitIf(conjunction(Guard, "isVector(" + Idx + ")(Q)"), "FewerElements",
+             "LegalizeMutations::scalarize(" + Idx + ")");
+      return Finish();
+    }
+
+    if (Name == "moreElementsToNextPow2") {
+      NeedArgs(1);
+      const std::string Idx = IdxOf(0);
+      EmitIf(conjunction(Guard, "numElementsNotPow2(" + Idx + ")(Q)"),
+             "MoreElements",
+             "LegalizeMutations::moreElementsToNextPow2(" + Idx + ")");
+      return Finish();
+    }
+
+    if (Name == "widenScalarToNextPow2" ||
+        Name == "widenScalarOrEltToNextPow2") {
+      if (Args.empty() || Args.size() > 2)
+        return Fail();
+      const std::string Idx = IdxOf(0);
+      const std::string Min =
+          Args.size() > 1 ? std::to_string(Args[1]->getValueAsInt("Value"))
+                          : "0";
+      EmitIf(conjunction(Guard,
+                         std::string(Name == "widenScalarToNextPow2"
+                                         ? "sizeNotPow2"
+                                         : "scalarOrEltSizeNotPow2") +
+                             "(" + Idx + ")(Q)"),
+             "WidenScalar",
+             "LegalizeMutations::widenScalarOrEltToNextPow2(" + Idx + ", " +
+                 Min + ")");
+      return Finish();
+    }
+
+    // clampNumElements expands to clampMinNumElements + clampMaxNumElements.
+    if (Name == "clampNumElements") {
+      NeedArgs(3);
+      const std::string Idx = IdxOf(0);
+      const std::string Min = typeText(*Args[1]);
+      const std::string Max = typeText(*Args[2]);
+      const std::string V = "Q.Types[" + Idx + "]";
+      EmitTypedIf(conjunction(Guard, V + ".isFixedVector() && " + V +
+                                         ".getElementType() == (" + Min +
+                                         ").getElementType() && " + V +
+                                         ".getNumElements() < (" + Min +
+                                         ").getNumElements()"),
+                  "MoreElements", Idx,
+                  "LLT::fixed_vector((" + Min + ").getNumElements(), " + V +
+                      ".getElementType())");
+      EmitTypedIf(conjunction(Guard, V + ".isFixedVector() && " + V +
+                                         ".getElementType() == (" + Max +
+                                         ").getElementType() && " + V +
+                                         ".getNumElements() > (" + Max +
+                                         ").getNumElements()"),
+                  "FewerElements", Idx,
+                  "LLT::scalarOrVector(ElementCount::getFixed((" + Max +
+                      ").getNumElements()), " + V + ".getElementType())");
+      return Finish();
+    }
+
+    if (Name == "clampMinNumElements" || Name == "clampMaxNumElements") {
+      NeedArgs(3);
+      const bool MinSide = Name == "clampMinNumElements";
+      const std::string Idx = IdxOf(0);
+      const std::string Elt = typeText(*Args[1]);
+      const std::string Lanes = laneText(*Args[2]);
+      const std::string V = "Q.Types[" + Idx + "]";
+      EmitTypedIf(conjunction(Guard, V + ".isFixedVector() && " + V +
+                                         ".getElementType() == " + Elt +
+                                         " && " + V + ".getNumElements() " +
+                                         (MinSide ? "< " : "> ") + Lanes),
+                  MinSide ? "MoreElements" : "FewerElements", Idx,
+                  MinSide ? "LLT::fixed_vector(" + Lanes + ", " + V +
+                                ".getElementType())"
+                          : "LLT::scalarOrVector(ElementCount::getFixed(" +
+                                Lanes + "), " + V + ".getElementType())");
+      return Finish();
+    }
+
+    return Fail();
+  }
+
+
 public:
   explicit LegalizerTableEmitterImpl(const RecordKeeper &RK) : Records(RK) {
     for (const Record *T :
@@ -2253,6 +2633,8 @@ public:
     OS << "//===-- " << P << "LegalizerTable.inc - generated table data "
           "-----*- C++ -*-===//\n";
     OS << "//\n// Generated by llvm-tblgen -gen-legalizer-table.  Do not edit.\n";
+    OS << "// Type classes, per-opcode descriptors and the per-rule-set "
+          "evaluators.\n";
     OS << "//\n//===----------------------------------------------------------------------===//\n\n";
 
     OS << "static constexpr LegalizerTypeClass " << P
@@ -2288,6 +2670,97 @@ public:
       for (StringRef Opcode : Tables[I]->getValueAsListOfStrings("Opcodes"))
         OS << "  case TargetOpcode::" << Opcode << ": return " << I << ";\n";
     OS << "  default: return -1;\n  }\n}\n";
+
+    // The evaluators are the rule chain with its guards and mutations written
+    // out.  They are keyed like the descriptors above, so a table answer is a
+    // property of the .td rules, not of a second description of them.
+    std::vector<bool> Opaque(Tables.size(), false);
+    std::vector<std::string> Why(Tables.size());
+    std::vector<std::string> Bodies(Tables.size());
+    for (size_t I = 0; I != Tables.size(); ++I) {
+      for (const Record *Rule : Tables[I]->getValueAsListOfDefs("Rules")) {
+        std::string Text, Reason;
+        if (!translateRule(*Rule, Text, Reason)) {
+          Opaque[I] = true;
+          Why[I] = Reason;
+          Bodies[I].clear();
+          break;
+        }
+        Bodies[I] += Text;
+      }
+    }
+
+    OS << "\n// One evaluator per tabulated rule set.  Each begins with the "
+          "same prologue\n// -gen-legalizer emits: the feature bools and LLT "
+          "constants the .td rules\n// are written in terms of, so the table "
+          "cannot disagree with the chain\n// about what a type or a feature "
+          "means.\n";
+    for (size_t I = 0; I != Tables.size(); ++I) {
+      OS << "\n";
+      if (Opaque[I]) {
+        OS << "// " << Tables[I]->getName()
+           << " is opaque: " << Why[I]
+           << ".\n// The reader falls back to the rule chain for this rule set.\n";
+        continue;
+      }
+      OS << "static LegalizeActionStep " << P << "Eval" << I << "(\n";
+      OS << "    const " << P << "Subtarget &Subtarget, const LegalityQuery &Q) {\n";
+      EmitPrologue(OS);
+      OS << Bodies[I];
+      OS << "  return {LegalizeActions::Unsupported, 0, LLT{}};\n";
+      OS << "}\n";
+    }
+
+    OS << "\n/// Answer one query from a tabulated rule set.  False means "
+          "the rule set\n/// is opaque, and the caller uses the rule chain "
+          "instead.\n";
+    OS << "static std::optional<LegalizeActionStep> " << P
+       << "EvalTable(unsigned Table, const " << P << "Subtarget &Subtarget,\n"
+          "                         const LegalityQuery &Q) {\n";
+    OS << "  switch (Table) {\n";
+    for (size_t I = 0; I != Tables.size(); ++I) {
+      OS << "  case " << I << ": // " << Tables[I]->getName() << "\n";
+      if (Opaque[I]) {
+        OS << "    return std::nullopt;\n";
+      } else {
+        OS << "    return " << P << "Eval" << I << "(Subtarget, Q);\n";
+      }
+    }
+    OS << "  default:\n    return std::nullopt;\n  }\n}\n";
+  }
+
+  /// Emit the identifiers a rule, an evaluator and -gen-legalizer all refer to:
+  /// the feature bools, the LLT constants and the named type lists.  The
+  /// -gen-legalizer emitter filters the features down to the ones it uses; an
+  /// evaluator declares all of them, so every one is marked maybe_unused and
+  /// the .td order is preserved (a type is named by the record's identifier,
+  /// so a type declared below its first use would not compile).
+  void EmitPrologue(raw_ostream &OS) {
+    std::vector<const Record *> Features =
+        Records.getAllDerivedDefinitions("LegalizeFeature");
+    llvm::sort(Features, LessRecordByID());
+    for (const Record *F : Features)
+      OS << "  [[maybe_unused]] const bool " << F->getName() << " = "
+         << squashSpace(F->getValueAsString("Cond")) << ";\n";
+
+    std::vector<const Record *> Types =
+        Records.getAllDerivedDefinitions("LegalizeNamedType");
+    llvm::sort(Types, LessRecordByID());
+    for (const Record *T : Types)
+      OS << "  [[maybe_unused]] const LLT " << T->getName() << " = "
+         << squashSpace(T->getValueAsString("Expr")) << ";\n";
+
+    std::vector<const Record *> Lists =
+        Records.getAllDerivedDefinitions("LegalizeNamedTypeList");
+    llvm::sort(Lists, LessRecordByID());
+    for (const Record *L : Lists) {
+      SmallVector<StringRef, 8> Elems;
+      for (const Record *E : L->getValueAsListOfDefs("Elems"))
+        Elems.push_back(E->getName());
+      OS << "  [[maybe_unused]] const std::initializer_list<LLT> "
+         << L->getName() << " = {" << join(Elems, ", ") << "};\n";
+    }
+    OS << "\n";
   }
 
   /// Slots a predicate, an opaque body or a mutation index names.  The table
