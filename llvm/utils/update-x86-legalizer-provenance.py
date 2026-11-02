@@ -13,7 +13,7 @@ reviewable, deterministic artifacts under llvm/unittests/Target/X86:
       point with address space 1 ("as").
 
   x86-legalizer-llt-literals.json
-      The LLT::... spellings the reference source uses.
+      The distinct LLT::... spellings the reference source uses.
 
   x86-legalizer-reference-provenance.json
       Source identity, the builder signatures, hashes of the behavior
@@ -426,10 +426,12 @@ def extract_builders(source):
 
 
 def extract_literals(source):
-    literals = []
+    # This artifact is a set of spellings, not a count of call sites: a
+    # repeated LLT::... expression collapses to one entry.
+    literals = set()
     for match in re.finditer(r"LLT::[A-Za-z_]\w*\(", source):
         end = find_matching_paren(source, match.end() - 1)
-        literals.append(normalize_ws(source[match.start():end + 1]))
+        literals.add(normalize_ws(source[match.start():end + 1]))
     return sorted(literals)
 
 

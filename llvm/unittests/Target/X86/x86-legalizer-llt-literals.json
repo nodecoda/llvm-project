@@ -2,7 +2,7 @@
   "schema": "llvm-x86-legalizer-llt-literals",
   "version": 1,
   "source": "X86LegalizerInfoReference.cpp",
-  "count": 25,
+  "count": 24,
   "literals": [
     "LLT::fixed_vector(16, 16)",
     "LLT::fixed_vector(16, 32)",
@@ -24,7 +24,6 @@
     "LLT::scalar(1)",
     "LLT::scalar(128)",
     "LLT::scalar(16)",
-    "LLT::scalar(32)",
     "LLT::scalar(32)",
     "LLT::scalar(64)",
     "LLT::scalar(8)",

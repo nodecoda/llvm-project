@@ -575,7 +575,7 @@ TEST(ReferenceProvenance, ArtifactIsConsistent) {
   const json::Array *LiteralArray = L->getArray("literals");
   ASSERT_NE(LiteralArray, nullptr);
   EXPECT_EQ(L->getInteger("count").value_or(-1), (int64_t)LiteralArray->size());
-  EXPECT_EQ(LiteralArray->size(), 25u);
+  EXPECT_EQ(LiteralArray->size(), 24u);
   for (const json::Value &V : *LiteralArray) {
     auto S = V.getAsString();
     ASSERT_TRUE(S.has_value());
