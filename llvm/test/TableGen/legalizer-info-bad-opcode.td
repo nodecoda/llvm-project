@@ -6,7 +6,7 @@
 include "llvm/Target/LegalizerInfo.td"
 
 def Bad : LegalizeRuleSet<["X86_CTPOP"]> {
-  let Rules = [LegalFor<True, ["s32, s32"]>];
+  let Rules = [Lower];
 }
 
 // CHECK: error: 'X86_CTPOP' is not a generic opcode
