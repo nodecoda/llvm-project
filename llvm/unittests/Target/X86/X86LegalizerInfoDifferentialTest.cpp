@@ -2453,6 +2453,160 @@ static void withAtomQuery(const X86TablePoint &P, Sink &&Use) {
   Use(LegalityQuery(P.Opcode, Types, MemDescs));
 }
 
+// Reconstruct the committed witness corpus as table points.  The T2 property
+// tests walk the same atoms T1 walks, but ask a different question of each
+// one, so they share this reader instead of growing a second JSON parser.
+static std::optional<std::vector<WitnessAtom>>
+readWitnessAtoms(std::string &Error) {
+  std::optional<std::string> Text =
+      readTestSourceFile("x86-legalizer-witness.json");
+  if (!Text) {
+    Error = "cannot read x86-legalizer-witness.json from " +
+            std::string(X86_LEGALIZER_TEST_SRC_DIR);
+    return std::nullopt;
+  }
+  auto Value = json::parse(*Text);
+  if (!Value) {
+    Error = toString(Value.takeError());
+    return std::nullopt;
+  }
+  const json::Object *Root = Value->getAsObject();
+  if (!Root) {
+    Error = "witness root is not an object";
+    return std::nullopt;
+  }
+  const json::Array *AtomArray = Root->getArray("atoms");
+  if (!AtomArray) {
+    Error = "witness has no atoms array";
+    return std::nullopt;
+  }
+
+  std::map<std::string, unsigned> TableForSet;
+  for (unsigned I = 0; I != X86TestNumTables; ++I)
+    TableForSet.emplace(X86RuleIndexTableNames[I], I);
+
+  std::vector<WitnessAtom> Atoms;
+  Atoms.reserve(AtomArray->size());
+  for (const json::Value &AtomValue : *AtomArray) {
+    const json::Object *O = AtomValue.getAsObject();
+    if (!O) {
+      Error = "witness atom is not an object";
+      return std::nullopt;
+    }
+    auto Id = O->getString("id");
+    auto Origin = O->getString("origin");
+    auto RuleSet = O->getString("rule_set");
+    auto ConfigID = O->getString("config");
+    if (!Id || !Origin || !RuleSet || !ConfigID) {
+      Error = "witness atom is missing id/origin/rule_set/config";
+      return std::nullopt;
+    }
+    auto TableIt = TableForSet.find(RuleSet->str());
+    if (TableIt == TableForSet.end()) {
+      Error = "unknown rule set " + RuleSet->str();
+      return std::nullopt;
+    }
+    const X86TestTable &T = X86TestTables[TableIt->second];
+    std::optional<unsigned> Opcode = opcodeForName(T.Opcode);
+    if (!Opcode) {
+      Error = "no TargetOpcode for " + std::string(T.Opcode);
+      return std::nullopt;
+    }
+
+    const json::Object *Query = O->getObject("query");
+    if (!Query) {
+      Error = Id->str() + " has no query";
+      return std::nullopt;
+    }
+    const json::Array *TypeArray = Query->getArray("types");
+    if (!TypeArray) {
+      Error = Id->str() + " has no types";
+      return std::nullopt;
+    }
+    if (TypeArray->size() > 3) {
+      Error = Id->str() + " has more than three types";
+      return std::nullopt;
+    }
+
+    WitnessAtom A;
+    A.Point.Opcode = 0;
+    A.Point.Name = nullptr;
+    A.Point.NumTypes = 0;
+    A.Point.Align = 0;
+    A.Point.HasMem = false;
+    A.Id = Id->str();
+    A.Origin = Origin->str();
+    A.RuleSet = RuleSet->str();
+    if (auto R = O->getInteger("rule_index"))
+      A.RuleIndex = *R;
+    A.ConfigID = ConfigID->str();
+    A.Point.Opcode = *Opcode;
+    A.Point.Name = T.Opcode;
+    A.Point.NumTypes = static_cast<uint8_t>(TypeArray->size());
+    for (unsigned I = 0; I != TypeArray->size(); ++I) {
+      auto Name = (*TypeArray)[I].getAsString();
+      if (!Name) {
+        Error = Id->str() + " has a non-string type";
+        return std::nullopt;
+      }
+      auto Ty = parseWitnessLLT(*Name);
+      if (!Ty) {
+        Error = Id->str() + ": bad type " + Name->str();
+        return std::nullopt;
+      }
+      A.Point.Types[I] = *Ty;
+    }
+    if (const json::Object *Mem = Query->getObject("mem")) {
+      auto MemName = Mem->getString("type");
+      auto Align = Mem->getInteger("align");
+      if (!MemName || !Align) {
+        Error = Id->str() + ": bad memdesc";
+        return std::nullopt;
+      }
+      auto MemTy = parseWitnessLLT(*MemName);
+      if (!MemTy) {
+        Error = Id->str() + ": bad mem type " + MemName->str();
+        return std::nullopt;
+      }
+      A.Point.MemTy = *MemTy;
+      A.Point.Align = static_cast<uint64_t>(*Align);
+      A.Point.HasMem = true;
+    }
+
+    const json::Object *ExpectedObj = O->getObject("expected");
+    if (!ExpectedObj) {
+      Error = Id->str() + " has no expected";
+      return std::nullopt;
+    }
+    auto ExpectedAction = ExpectedObj->getString("action");
+    if (!ExpectedAction) {
+      Error = Id->str() + ": missing expected action";
+      return std::nullopt;
+    }
+    auto Action = parseLegalizeAction(*ExpectedAction);
+    if (!Action) {
+      Error = Id->str() + ": unknown expected action " + ExpectedAction->str();
+      return std::nullopt;
+    }
+    LLT NewType = LLT{};
+    if (auto To = ExpectedObj->getString("to")) {
+      auto Parsed = parseWitnessLLT(*To);
+      if (!Parsed) {
+        Error = Id->str() + ": bad expected type " + To->str();
+        return std::nullopt;
+      }
+      NewType = *Parsed;
+    }
+    A.Expected = LegalizeActionStep(
+        *Action,
+        static_cast<unsigned>(ExpectedObj->getInteger("idx").value_or(0)),
+        NewType);
+    A.QueryText = witnessQueryText(A.Point);
+    Atoms.push_back(std::move(A));
+  }
+  return Atoms;
+}
+
 // Not a test.  Regenerate the witness corpus after a change that is meant to
 // be visible in review:
 //
@@ -3136,6 +3290,398 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
                << " collisions=" << Collisions
                << " expected_diffs=" << ExpectedDiffs << "\n";
 }
+
+//===----------------------------------------------------------------------===//
+// T2 properties
+//===----------------------------------------------------------------------===//
+//
+// T1 asks "is this witness's whole step right?".  T2 asks narrower questions
+// that a table can get wrong without failing any single witness: an address
+// space must never be folded back into a table cell, a memory descriptor's
+// address space must be routed like the value's, and a named-type predicate
+// must still agree after its slot-0 representative is replaced by another
+// member of the same 24-class vocabulary.
+
+class X86LegalizerProperties : public X86LegalizerDifferentialTest {};
+
+struct PropertyFixture {
+  Sigma S;
+  std::unique_ptr<TableLegalizerInfoForTest> Table;
+  std::unique_ptr<X86LegalizerInfoReference> Oracle;
+};
+
+static std::optional<PropertyFixture> makePropertyFixture(const Config &C) {
+  PropertyFixture F;
+  F.S = makeSigma(C);
+  if (!F.S.STI)
+    return std::nullopt;
+  F.Table = std::make_unique<TableLegalizerInfoForTest>(*F.S.STI);
+  F.Oracle = std::make_unique<X86LegalizerInfoReference>(
+      *F.S.STI, *static_cast<const X86TargetMachine *>(F.S.TM.get()));
+  return std::move(F);
+}
+
+static std::map<std::string, PropertyFixture> makePropertyFixtures() {
+  std::map<std::string, PropertyFixture> Fixtures;
+  for (const Config &C : FullConfigs) {
+    std::optional<PropertyFixture> F = makePropertyFixture(C);
+    if (!F)
+      continue;
+    Fixtures.emplace(C.ID, std::move(*F));
+  }
+  return Fixtures;
+}
+
+static const Config *findFullConfig(StringRef ID) {
+  for (const Config &C : FullConfigs)
+    if (ID == C.ID)
+      return &C;
+  return nullptr;
+}
+
+static const char *answerName(X86LegalizerTable::Answer A) {
+  switch (A) {
+  case X86LegalizerTable::Answer::Hit:
+    return "Hit";
+  case X86LegalizerTable::Answer::Residual:
+    return "Residual";
+  case X86LegalizerTable::Answer::Escape:
+    return "Escape";
+  case X86LegalizerTable::Answer::Outside:
+    return "Outside";
+  case X86LegalizerTable::Answer::Untabulated:
+    return "Untabulated";
+  }
+  return "?";
+}
+
+// One property point.  `RequireResidual` is the AS contract: a query whose
+// keyed types, memory descriptor or pointer-vector element carries a non-zero
+// address space must leave the table cell and be answered on the original
+// query.  Every point also requires the table's step to equal the reference,
+// so a residual fallback cannot hide a wrong decision.
+static LegalizeActionStep
+checkPropertyPoint(const char *TestName, StringRef RuleSet, int64_t RuleIndex,
+                   StringRef Origin, StringRef ConfigID, const X86TablePoint &P,
+                   bool RequireResidual, const PropertyFixture &F,
+                   unsigned &Checks, unsigned &Violations) {
+  ++Checks;
+  X86LegalizerTable::Result R;
+  LegalizeActionStep Want(Unsupported, 0, LLT{});
+  withAtomQuery(P, [&](const LegalityQuery &Q) {
+    R = F.Table->table().query(Q);
+    Want = F.Oracle->getAction(Q);
+  });
+  const LegalizeActionStep Got(R.Action, R.TypeIdx, R.NewType);
+  const bool KindOk =
+      !RequireResidual || R.Kind == X86LegalizerTable::Answer::Residual;
+  if (KindOk && stepsAgree(Got, Want))
+    return Want;
+  ++Violations;
+  ADD_FAILURE() << TestName << " rule-set=" << RuleSet << " rule=#"
+                << (RuleIndex >= 0 ? std::to_string(RuleIndex) : "-")
+                << " origin=" << Origin << " config=" << ConfigID
+                << "\n  query:  " << witnessQueryText(P)
+                << "\n  table:  " << describe(Got) << " [" << answerName(R.Kind)
+                << "]"
+                << "\n  reference: " << describe(Want);
+  return Want;
+}
+
+// Every origin=as witness atom must be residual and agree with the reference,
+// and every descriptor's p0 representative must still be a table Hit.  The
+// two halves are complementary: the first proves the router fires, the second
+// proves it does not over-fire on address space 0.
+TEST_F(X86LegalizerProperties, AddressSpaceSoundness) {
+  std::string Error;
+  std::optional<std::vector<WitnessAtom>> Atoms = readWitnessAtoms(Error);
+  ASSERT_TRUE(Atoms.has_value()) << Error;
+
+  std::map<std::string, PropertyFixture> Fixtures = makePropertyFixtures();
+  ASSERT_EQ(Fixtures.size(), 4u);
+
+  unsigned Checks = 0, Violations = 0, ASAtoms = 0;
+  for (const WitnessAtom &A : *Atoms) {
+    if (A.Origin != "as")
+      continue;
+    ++ASAtoms;
+    auto It = Fixtures.find(A.ConfigID);
+    ASSERT_NE(It, Fixtures.end()) << A.Id << ": unknown config " << A.ConfigID;
+    checkPropertyPoint("AddressSpaceSoundness", A.RuleSet, A.RuleIndex,
+                       A.Origin, A.ConfigID, A.Point, /*RequireResidual=*/true,
+                       It->second, Checks, Violations);
+  }
+  EXPECT_EQ(ASAtoms, 220u);
+
+  // The 63 descriptors' p0 representatives are the `kind=hit` behavior
+  // queries: classifiable types, address space 0, no pointer vector.
+  auto QueriesText = readTestSourceFile("x86-legalizer-behavior-queries.json");
+  ASSERT_TRUE(QueriesText.has_value());
+  auto QueriesValue = json::parse(*QueriesText);
+  ASSERT_TRUE(!!QueriesValue) << toString(QueriesValue.takeError());
+  const json::Object *Root = QueriesValue->getAsObject();
+  ASSERT_NE(Root, nullptr);
+  const json::Array *QueryArray = Root->getArray("queries");
+  ASSERT_NE(QueryArray, nullptr);
+
+  unsigned Descriptors = 0;
+  for (const json::Value &V : *QueryArray) {
+    const json::Object *O = V.getAsObject();
+    ASSERT_NE(O, nullptr);
+    std::optional<BehaviorQuery> BQ = parseBehaviorQuery(*O);
+    ASSERT_TRUE(BQ.has_value());
+    if (BQ->Kind != "hit")
+      continue;
+    ++Descriptors;
+    const Config *C = findFullConfig(BQ->Config);
+    ASSERT_NE(C, nullptr) << BQ->Config;
+    auto FixtureIt = Fixtures.find(BQ->Config);
+    ASSERT_NE(FixtureIt, Fixtures.end()) << BQ->Config;
+    SmallVector<LLT, 3> Types;
+    SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+    std::optional<unsigned> Opcode =
+        buildBehaviorQuery(*BQ, C->Is64 ? 64 : 32, Types, MemDescs);
+    ASSERT_TRUE(Opcode.has_value()) << BQ->Opcode;
+    const LegalityQuery Q(*Opcode, Types, MemDescs);
+    const X86LegalizerTable::Result R =
+        FixtureIt->second.Table->table().query(Q);
+    ++Checks;
+    if (R.Kind == X86LegalizerTable::Answer::Hit)
+      continue;
+    ++Violations;
+    ADD_FAILURE() << "AddressSpaceSoundness rule-set=" << BQ->Descriptor
+                  << " rule=#- origin=p0-representative config=" << BQ->Config
+                  << "\n  query:  " << BQ->Id
+                  << "\n  table:  " << answerName(R.Kind)
+                  << "\n  reference: Answer::Hit expected for p0";
+  }
+  EXPECT_EQ(Descriptors, 63u);
+
+  llvm::outs() << "AddressSpaceSoundness: checks=" << Checks
+               << " violations=" << Violations << " as-atoms=" << ASAtoms
+               << " descriptors=" << Descriptors << "\n";
+  EXPECT_EQ(Violations, 0u);
+}
+
+// A memory rule set's descriptor is a second address-space carrier.  The four
+// points below pin both carriers: value AS, memory AS, and their combination.
+// The reference's G_STORE guard `Types[0] != MemoryTy` makes (p1)[mem p0] and
+// (p1)[mem p1] distinguishable decisions; a router that only looks at
+// Q.Types would answer both from the same (p1, p0) cell.
+TEST_F(X86LegalizerProperties, MemSymmetricAddressSpace) {
+  std::optional<PropertyFixture> F = makePropertyFixture(FullConfigs[2]);
+  ASSERT_TRUE(F.has_value()) << FullConfigs[2].ID;
+  const Config &C = FullConfigs[2];
+  const TableDomainAxis A = tableDomainAxis(64);
+  const uint64_t Align = alignForClass(1);
+
+  unsigned Checks = 0, Violations = 0, MemSets = 0, DistinguishingMemSets = 0;
+  for (unsigned TI = 0; TI != X86TestNumTables; ++TI) {
+    const X86TestTable &T = X86TestTables[TI];
+    if (!T.HasMem)
+      continue;
+    ++MemSets;
+    const std::optional<unsigned> Opcode = opcodeForName(T.Opcode);
+    ASSERT_TRUE(Opcode.has_value()) << T.Opcode;
+    auto MakePoint = [&](LLT Value, LLT Ptr, LLT Mem) {
+      X86TablePoint P;
+      P.Opcode = *Opcode;
+      P.Name = T.Opcode;
+      P.NumTypes = 2;
+      P.Types[0] = Value;
+      P.Types[1] = Ptr;
+      P.MemTy = Mem;
+      P.Align = Align;
+      P.HasMem = true;
+      return P;
+    };
+
+    const X86TablePoint P0M1 = MakePoint(A.P0, A.P0, A.P1);
+    const X86TablePoint P1M0 = MakePoint(A.P1, A.P0, A.P0);
+    const X86TablePoint P1M1 = MakePoint(A.P1, A.P0, A.P1);
+    const X86TablePoint P1M2 = MakePoint(A.P1, A.P0, A.P2);
+
+    checkPropertyPoint("MemSymmetricAddressSpace", T.Name, -1,
+                       "value=p0 mem=p1", C.ID, P0M1, /*RequireResidual=*/true,
+                       *F, Checks, Violations);
+    const LegalizeActionStep W1M0 = checkPropertyPoint(
+        "MemSymmetricAddressSpace", T.Name, -1, "value=p1 mem=p0", C.ID, P1M0,
+        /*RequireResidual=*/true, *F, Checks, Violations);
+    const LegalizeActionStep W1M1 = checkPropertyPoint(
+        "MemSymmetricAddressSpace", T.Name, -1, "value=p1 mem=p1", C.ID, P1M1,
+        /*RequireResidual=*/true, *F, Checks, Violations);
+    checkPropertyPoint("MemSymmetricAddressSpace", T.Name, -1,
+                       "value=p1 mem=p2", C.ID, P1M2, /*RequireResidual=*/true,
+                       *F, Checks, Violations);
+
+    if (!stepsAgree(W1M0, W1M1)) {
+      ++DistinguishingMemSets;
+      continue;
+    }
+    // The `Types[0] != MemoryTy` guard lives in the store rules; the other
+    // five memory sets have no such decision to distinguish, so the
+    // discriminator is asserted where the reference actually encodes it.
+    if (StringRef(T.Name) != "X86_STORE")
+      continue;
+    ++Violations;
+    ADD_FAILURE() << "MemSymmetricAddressSpace rule-set=" << T.Name
+                  << " rule=#- origin=mem-symmetric config=" << C.ID
+                  << "\n  reference decisions must differ: " << describe(W1M0)
+                  << " vs " << describe(W1M1);
+  }
+  EXPECT_EQ(MemSets, 6u);
+  EXPECT_GE(DistinguishingMemSets, 1u);
+
+  llvm::outs() << "MemSymmetricAddressSpace: checks=" << Checks
+               << " violations=" << Violations << " mem-sets=" << MemSets
+               << " distinguishing-mem-sets=" << DistinguishingMemSets << "\n";
+  EXPECT_EQ(Violations, 0u);
+}
+
+// Pointer vectors carry the address space in their element type, not in the
+// pointer class.  Every rule set gets a v2p1 and v4p1 slot-0 point; the 34
+// rule sets that read slot 1 get the same two types in slot 1.
+TEST_F(X86LegalizerProperties, PointerVectorAddressSpace) {
+  std::optional<PropertyFixture> F = makePropertyFixture(FullConfigs[2]);
+  ASSERT_TRUE(F.has_value()) << FullConfigs[2].ID;
+  const Config &C = FullConfigs[2];
+  const TableDomainAxis A = tableDomainAxis(64);
+  const uint64_t Align = alignForClass(1);
+
+  unsigned Checks = 0, Violations = 0, Slot0Sets = 0, Slot1Sets = 0;
+  for (unsigned TI = 0; TI != X86TestNumTables; ++TI) {
+    const X86TestTable &T = X86TestTables[TI];
+    const std::optional<unsigned> Opcode = opcodeForName(T.Opcode);
+    ASSERT_TRUE(Opcode.has_value()) << T.Opcode;
+    auto MakePoint = [&](ArrayRef<LLT> Types, bool HasMem, LLT MemTy) {
+      X86TablePoint P;
+      P.Opcode = *Opcode;
+      P.Name = T.Opcode;
+      P.NumTypes = static_cast<uint8_t>(Types.size());
+      std::copy(Types.begin(), Types.end(), P.Types);
+      P.MemTy = MemTy;
+      P.Align = Align;
+      P.HasMem = HasMem;
+      return P;
+    };
+    const bool HasMem = T.HasMem;
+    const LLT MemTy = HasMem ? A.P0 : LLT{};
+
+    ++Slot0Sets;
+    if (T.NumSlots == 1) {
+      checkPropertyPoint("PointerVectorAddressSpace", T.Name, -1,
+                         "ptr-vector-slot0", C.ID,
+                         MakePoint({A.V2P1}, false, LLT{}),
+                         /*RequireResidual=*/true, *F, Checks, Violations);
+      checkPropertyPoint("PointerVectorAddressSpace", T.Name, -1,
+                         "ptr-vector-slot0", C.ID,
+                         MakePoint({A.V4P1}, false, LLT{}),
+                         /*RequireResidual=*/true, *F, Checks, Violations);
+    } else {
+      checkPropertyPoint("PointerVectorAddressSpace", T.Name, -1,
+                         "ptr-vector-slot0", C.ID,
+                         MakePoint({A.V2P1, A.P0}, HasMem, MemTy),
+                         /*RequireResidual=*/true, *F, Checks, Violations);
+      checkPropertyPoint("PointerVectorAddressSpace", T.Name, -1,
+                         "ptr-vector-slot0", C.ID,
+                         MakePoint({A.V4P1, A.P0}, HasMem, MemTy),
+                         /*RequireResidual=*/true, *F, Checks, Violations);
+    }
+
+    if (T.NumSlots < 2)
+      continue;
+    ++Slot1Sets;
+    checkPropertyPoint("PointerVectorAddressSpace", T.Name, -1,
+                       "ptr-vector-slot1", C.ID,
+                       MakePoint({A.P0, A.V2P1}, HasMem, MemTy),
+                       /*RequireResidual=*/true, *F, Checks, Violations);
+    checkPropertyPoint("PointerVectorAddressSpace", T.Name, -1,
+                       "ptr-vector-slot1", C.ID,
+                       MakePoint({A.P0, A.V4P1}, HasMem, MemTy),
+                       /*RequireResidual=*/true, *F, Checks, Violations);
+  }
+  EXPECT_EQ(Slot0Sets, 63u);
+  EXPECT_EQ(Slot1Sets, 34u);
+  EXPECT_EQ(Checks, 63u * 2 + 34u * 2);
+
+  llvm::outs() << "PointerVectorAddressSpace: checks=" << Checks
+               << " violations=" << Violations << " slot0-sets=" << Slot0Sets
+               << " slot1-sets=" << Slot1Sets << "\n";
+  EXPECT_EQ(Violations, 0u);
+}
+
+// A named type (`sMaxScalar`, `s32MaxVector`, ...) is expanded against the
+// configuration before any rule compares it.  Relativizing a per-rule witness
+// by replacing slot 0 with another member of the same 24-class vocabulary
+// keeps the query shape but changes the named-type expansion; the table and
+// the reference must still agree.  This does not require the same action as
+// the original witness -- only that both sides answer the new query alike.
+//
+// The generated test metadata exposes the class kind (Pointer/Scalar/Vector/
+// PtrVector) but not the .td named-type list membership, so the replacement
+// stays inside the same kind.  A pointer has no same-kind peer and falls back
+// to s64; a scalar or vector outside the class list falls back to s32 or
+// v4s32, which are 24-class members of the same kind.
+TEST_F(X86LegalizerProperties, NamedTypeRelativization) {
+  std::string Error;
+  std::optional<std::vector<WitnessAtom>> Atoms = readWitnessAtoms(Error);
+  ASSERT_TRUE(Atoms.has_value()) << Error;
+
+  std::map<std::string, PropertyFixture> Fixtures = makePropertyFixtures();
+  ASSERT_EQ(Fixtures.size(), 4u);
+
+  const std::vector<LLT> Reps = typeClassReps(64);
+  ASSERT_EQ(Reps.size(), 24u);
+  auto Replacement = [&](LLT T) {
+    int Found = -1;
+    for (unsigned I = 0; I != Reps.size(); ++I)
+      if (Reps[I] == T) {
+        Found = static_cast<int>(I);
+        break;
+      }
+    if (Found >= 0) {
+      const uint8_t Kind = X86TestTypeClasses[Found].Kind;
+      for (unsigned Step = 1; Step != Reps.size(); ++Step) {
+        const unsigned J = (static_cast<unsigned>(Found) + Step) % Reps.size();
+        if (X86TestTypeClasses[J].Kind == Kind)
+          return Reps[J];
+      }
+    }
+    // A pointer has no other member of its kind; s64 is the pointer-sized
+    // scalar the named-type lists also contain.
+    if (T.isPointer())
+      return LLT::scalar(64);
+    if (T.isPointerVector())
+      return LLT::fixed_vector(2, LLT::pointer(0, 64));
+    if (T.isVector())
+      return LLT::fixed_vector(4, 32);
+    return LLT::scalar(32);
+  };
+
+  unsigned Checks = 0, Violations = 0, RuleAtoms = 0;
+  for (const WitnessAtom &A : *Atoms) {
+    if (A.Origin != "rule")
+      continue;
+    ++RuleAtoms;
+    auto It = Fixtures.find(A.ConfigID);
+    ASSERT_NE(It, Fixtures.end()) << A.Id << ": unknown config " << A.ConfigID;
+    X86TablePoint P = A.Point;
+    const LLT Before = P.Types[0];
+    const LLT After = Replacement(Before);
+    EXPECT_NE(After, Before) << A.Id << ": slot-0 substitution was a no-op";
+    P.Types[0] = After;
+    checkPropertyPoint("NamedTypeRelativization", A.RuleSet, A.RuleIndex,
+                       "named-type", A.ConfigID, P, /*RequireResidual=*/false,
+                       It->second, Checks, Violations);
+  }
+  EXPECT_EQ(RuleAtoms, 188u);
+
+  llvm::outs() << "NamedTypeRelativization: checks=" << Checks
+               << " violations=" << Violations << " rule-atoms=" << RuleAtoms
+               << "\n";
+  EXPECT_EQ(Violations, 0u);
+}
+
 // F1: the table's key has a single pointer class.  Every pointer collapses to
 // p0, and G_STORE's first rule is exactly `Types[0] != MemoryTy`: folding the
 // address space erases the comparison and answers (p1, p0) as if it were
