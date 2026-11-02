@@ -45,8 +45,8 @@ public:
     Escape,
     /// A keyed type is not one of the classes the table was built for.
     Outside,
-    /// A keyed type is a vector of pointers, which the class list cannot
-    /// express yet.  Kept apart from Outside so the gap is counted, not hidden.
+    /// A keyed type is a vector of pointers whose shape the class list does
+    /// not name.  Kept apart from Outside so the gap is counted, not hidden.
     PointerVector,
     /// The table has no entry for this opcode at all.
     Untabulated,
@@ -89,8 +89,9 @@ public:
 
 private:
   uint16_t fill(unsigned Table, const LegalityQuery &Q, unsigned L0,
-                unsigned L1) const;
+                unsigned L1, unsigned MemClass) const;
   LLT representative(unsigned ClassID) const;
+  LLT memRepresentative(unsigned ClassID) const;
 
   const LegalizerInfo &LI;
   const X86Subtarget &Subtarget;

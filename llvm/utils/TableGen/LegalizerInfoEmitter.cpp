@@ -1983,6 +1983,11 @@ class LegalizerTableEmitterImpl {
   const RecordKeeper &Records;
   std::map<std::string, const Record *> NamedTypes;
   std::vector<TableType> Classes;
+  /// The classes of the memory-descriptor axis.  Unlike a type slot, a
+  /// descriptor is compared with the chain's TypePairAndMemDesc, which keeps
+  /// the memory type's identity, so a vector of pointers is its own class
+  /// here rather than an "outside" answer.
+  std::vector<TableType> MemClasses;
 
   bool resolve(StringRef Expr, StringRef Root, SmallVectorImpl<TableType> &Out,
                unsigned Depth) {
@@ -2071,8 +2076,9 @@ class LegalizerTableEmitterImpl {
         PrintFatalError(T->getLoc(),
                         "cannot derive a table type class from '" + Expr + "'");
       for (const TableType &R : Resolved) {
-        if (R.Kind == TablePtrVector)
-          continue;
+        // A vector of pointers is a distinct LLT from an integer vector of
+        // the same shape, and the class kind keeps them apart, so it belongs
+        // in the type axis too.
         if (!Seen.insert({R.Kind, R.ElemBits, R.Lanes}).second)
           continue;
         Out.push_back(R);
@@ -2080,51 +2086,157 @@ class LegalizerTableEmitterImpl {
       Classes.insert(Classes.end(), Out.begin(), Out.end());
     }
 
-    auto Rank = [](TableTypeKind K) {
-      switch (K) {
-      case TablePointer:
-        return 0;
-      case TableScalar:
-        return 1;
-      case TableVector:
-        return 2;
-      case TablePtrVector:
-        return 3;
-      }
-      llvm_unreachable("bad table type kind");
-    };
-    llvm::sort(Classes, [&](const TableType &A, const TableType &B) {
-      if (Rank(A.Kind) != Rank(B.Kind))
-        return Rank(A.Kind) < Rank(B.Kind);
-      if (A.ElemBits != B.ElemBits)
-        return A.ElemBits < B.ElemBits;
-      return A.Lanes < B.Lanes;
-    });
+    llvm::sort(Classes, lessTypeClass);
     if (Classes.empty() || Classes.front().Kind != TablePointer)
       PrintFatalError("a legalizer table needs a pointer type class");
   }
 
-  static bool hasMemDescArg(const Record &Rule) {
-    for (const Record *Arg : Rule.getValueAsListOfDefs("Args"))
-      if (Arg->isSubClassOf("LegalizeMemDesc"))
+  static int typeRank(TableTypeKind K) {
+    switch (K) {
+    case TablePointer:
+      return 0;
+    case TableScalar:
+      return 1;
+    case TableVector:
+      return 2;
+    case TablePtrVector:
+      return 3;
+    }
+    llvm_unreachable("bad table type kind");
+  }
+
+  static bool lessTypeClass(const TableType &A, const TableType &B) {
+    if (typeRank(A.Kind) != typeRank(B.Kind))
+      return typeRank(A.Kind) < typeRank(B.Kind);
+    if (A.ElemBits != B.ElemBits)
+      return A.ElemBits < B.ElemBits;
+    return A.Lanes < B.Lanes;
+  }
+
+  /// Collect the classes of the memory-descriptor axis.
+  ///
+  /// A descriptor carries an LLT, and the rules key on its identity: the
+  /// memdesc guards compare the memory type by size, but G_STORE's guard says
+  /// "the value type is the memory type", which is an identity comparison.  So
+  /// this axis uses full LLT classes, including vectors of pointers.  The
+  /// classes come from the same named types as the type axis, so a memory type
+  /// the .td never names is outside the table and falls back to the chain.
+  void collectMemClasses() {
+    std::vector<const Record *> Types =
+        Records.getAllDerivedDefinitions("LegalizeNamedType");
+    llvm::sort(Types, LessRecordByID());
+
+    std::set<std::tuple<int, unsigned, unsigned>> Seen;
+    for (const Record *T : Types) {
+      SmallVector<TableType, 4> Resolved;
+      if (!resolve(T->getValueAsString("Expr"), T->getName(), Resolved, 0))
+        PrintFatalError(T->getLoc(),
+                        "cannot derive a memory type class from '" +
+                            T->getValueAsString("Expr") + "'");
+      for (const TableType &R : Resolved)
+        if (Seen.insert({R.Kind, R.ElemBits, R.Lanes}).second)
+          MemClasses.push_back(R);
+    }
+    // The pointer class is the one width the .td leaves to the subtarget, and
+    // it is also the self-check probe for a memdesc rule set.
+    if (Seen.insert({TablePointer, 0, 1}).second)
+      MemClasses.push_back({TablePointer, 0, 1, "p0"});
+    llvm::sort(MemClasses, lessTypeClass);
+    // Keep the generated arrays well-formed when nothing names a descriptor.
+    if (MemClasses.empty())
+      MemClasses.push_back(Classes.front());
+  }
+
+  static StringRef tableTypeKindName(TableTypeKind K) {
+    switch (K) {
+    case TablePointer:
+      return "Kind_Pointer";
+    case TableScalar:
+      return "Kind_Scalar";
+    case TableVector:
+      return "Kind_Vector";
+    case TablePtrVector:
+      return "Kind_PtrVector";
+    }
+    llvm_unreachable("bad table type kind");
+  }
+
+  /// True when a predicate record reads the memory descriptor, directly or as
+  /// a dag leaf.  Such a rule set needs the descriptor axis in its key.
+  static bool predicateReadsMemDesc(const Record *P) {
+    if (!P)
+      return false;
+    if (P->isSubClassOf("LegalizeQueryPredicate"))
+      return P->getValueAsString("Expr").contains("MMODescrs");
+    if (P->isSubClassOf("LegalizeTypePredicate"))
+      return P->getValueAsString("Call").contains("MMODescrs");
+    bool Found = false;
+    if (P->isSubClassOf("LegalizeQueryPredicateDag") ||
+        P->isSubClassOf("LegalizeBoolPredicateDag")) {
+      std::function<void(const Init *)> Walk = [&](const Init *I) {
+        if (const auto *D = dyn_cast<DagInit>(I)) {
+          for (const Init *Arg : D->getArgs())
+            Walk(Arg);
+          return;
+        }
+        if (const auto *Def = dyn_cast<DefInit>(I))
+          if (Def->getDef() != P)
+            Found |= predicateReadsMemDesc(Def->getDef());
+      };
+      Walk(P->getValueAsDag("CondDag"));
+    }
+    return Found;
+  }
+
+  /// True when the rule set's key needs the memory descriptor: either a rule
+  /// names one, or a guard reads one.
+  static bool needsMemDesc(const Record &RuleSet) {
+    for (const Record *Rule : RuleSet.getValueAsListOfDefs("Rules")) {
+      for (const Record *Arg : Rule->getValueAsListOfDefs("Args"))
+        if (Arg->isSubClassOf("LegalizeMemDesc"))
+          return true;
+      if (Rule->getValueAsString("OpaqueArgs").contains("MMODescrs"))
         return true;
+      if (predicateReadsMemDesc(Rule->getValueAsOptionalDef("Pred")))
+        return true;
+    }
     return false;
   }
 
+  /// True when a rule reads something the key does not carry.  The memory
+  /// descriptor is part of the key (see needsMemDesc), so a guard may read
+  /// MMODescrs[0]; a type slot past 1 or the opcode is still an escape.
   static bool hasOpaqueEscape(const Record &Rule) {
     if (!Rule.isSubClassOf("LegalizeOpaqueRule"))
       return false;
     StringRef Body = Rule.getValueAsString("OpaqueArgs");
-    return Body.contains("MMODescrs") || Body.contains("Query.Opcode") ||
-           Body.contains("Opcode ==") || Body.contains("Types[2]") ||
-           Body.contains("Types[3]");
+    return Body.contains("Query.Opcode") || Body.contains("Opcode ==") ||
+           Body.contains("Types[2]") || Body.contains("Types[3]") ||
+           Body.contains("MMODescrs[1]");
   }
 
   static bool tabulated(const Record &RuleSet) {
     for (const Record *Rule : RuleSet.getValueAsListOfDefs("Rules"))
-      if (hasMemDescArg(*Rule) || hasOpaqueEscape(*Rule))
+      if (hasOpaqueEscape(*Rule))
         return false;
     return true;
+  }
+
+  /// The alignment thresholds the tabulated memdesc rules name.  A query's
+  /// alignment is classified by how many of them it meets; that is enough
+  /// because TypePairAndMemDesc::isCompatible only asks Align >= Entry.Align.
+  std::vector<unsigned> alignThresholds() {
+    std::set<unsigned> Thresholds;
+    for (const Record *RS :
+         Records.getAllDerivedDefinitions("LegalizeRuleSet")) {
+      if (!tabulated(*RS) || !needsMemDesc(*RS))
+        continue;
+      for (const Record *Rule : RS->getValueAsListOfDefs("Rules"))
+        for (const Record *Arg : Rule->getValueAsListOfDefs("Args"))
+          if (Arg->isSubClassOf("LegalizeMemDesc"))
+            Thresholds.insert(Arg->getValueAsInt("Align"));
+    }
+    return std::vector<unsigned>(Thresholds.begin(), Thresholds.end());
   }
 
   /// C++ spelling of a resolved class.  The pointer width is a parameter of
@@ -2146,11 +2258,20 @@ class LegalizerTableEmitterImpl {
     llvm_unreachable("bad table type kind");
   }
 
+  /// One query shape a rule names, with the memory descriptor it names (if
+  /// any).  The descriptor is a separate axis of the key, not a type slot: the
+  /// builder takes it as an MMO index.
+  struct RuleTuple {
+    std::vector<TableType> Types;
+    bool HasMem = false;
+    TableType MemTy{TableScalar, 0, 0, ""};
+    unsigned Align = 0;
+  };
+
   /// Type tuples a rule names as a complete query shape.  A builder that takes
   /// two separate type arguments (ClampScalar's bounds) names bounds, not a
   /// query, so only list/pair/memdesc arguments are used.
-  void collectRuleTuples(const Record &Rule,
-                         std::vector<std::vector<TableType>> &Out) {
+  void collectRuleTuples(const Record &Rule, std::vector<RuleTuple> &Out) {
     std::vector<const Record *> Args = Rule.getValueAsListOfDefs("Args");
     // A builder that takes a slot index treats its type arguments as bounds
     // (ClampScalar<0, s8, sMaxScalar>), not as a query shape.  Without an
@@ -2219,7 +2340,7 @@ class LegalizerTableEmitterImpl {
       std::vector<TableType> Cur;
       std::function<void(size_t)> Product = [&](size_t I) {
         if (I == Lists.size()) {
-          Out.push_back(Cur);
+          Out.push_back({Cur});
           return;
         }
         for (const TableType &T : Lists[I]) {
@@ -2239,26 +2360,35 @@ class LegalizerTableEmitterImpl {
         std::vector<TableType> L;
         ExpandList(*Arg, L);
         for (const TableType &T : L)
-          Out.push_back({T});
+          Out.push_back({{T}});
       } else if (Arg->isSubClassOf("LegalizeTypePair")) {
         std::vector<TableType> Ty;
         ResolveOne(*Arg->getValueAsDef("Type0"), Ty);
         ResolveOne(*Arg->getValueAsDef("Type1"), Ty);
-        Out.push_back(Ty);
+        Out.push_back({Ty});
       } else if (Arg->isSubClassOf("LegalizeMemDesc")) {
         // The memory type is part of MMODescr, not of Types; the query shape
-        // the reader sees is (value, pointer).
-        std::vector<TableType> Ty;
-        ResolveOne(*Arg->getValueAsDef("Type0"), Ty);
-        ResolveOne(*Arg->getValueAsDef("Type1"), Ty);
-        Out.push_back(Ty);
+        // the reader sees is (value, pointer) plus the descriptor.
+        RuleTuple T;
+        ResolveOne(*Arg->getValueAsDef("Type0"), T.Types);
+        ResolveOne(*Arg->getValueAsDef("Type1"), T.Types);
+        std::vector<TableType> Mem;
+        const Record *MemTy = Arg->getValueAsDef("MemTy");
+        ResolveOne(*MemTy, Mem);
+        if (Mem.size() != 1)
+          PrintFatalError(Arg->getLoc(),
+                          "a memory type has to name exactly one class");
+        T.HasMem = true;
+        T.MemTy = Mem.front();
+        T.Align = Arg->getValueAsInt("Align");
+        Out.push_back(T);
       } else if (!HasIndex &&
                  (Arg->isSubClassOf("LegalizeNamedType") ||
                   Arg->isSubClassOf("LegalizeInlineType"))) {
         std::vector<TableType> Ty;
         ResolveOne(*Arg, Ty);
         for (const TableType &T : Ty)
-          Out.push_back({T});
+          Out.push_back({{T}});
       }
     }
   }
@@ -2382,14 +2512,33 @@ class LegalizerTableEmitterImpl {
   bool translateRule(const Record &Rule, std::string &Out, std::string &Why) {
     StringRef Name = builderName(Rule);
     std::vector<const Record *> Args = Rule.getValueAsListOfDefs("Args");
-    if (!Rule.getValueAsString("OpaqueArgs").empty()) {
-      Why = "'" + Name.str() + "' carries an opaque body";
-      return false;
-    }
-
     const Record *B = Rule.getValueAsDef("Builder");
     StringRef Action = B->getValueAsDef("Action")->getValueAsString("Name");
     const std::string Guard = guardText(Rule);
+
+    // An opaque body is a query predicate, and the rule builder takes it as a
+    // guard.  The table evaluator has the query, so it can call the body the
+    // same way the chain does: `if ((<body>)(Q))`.  Only guard-only builders
+    // qualify; one whose action needs a mutation would lose it here.
+    if (StringRef Body = Rule.getValueAsString("OpaqueArgs");
+        !Body.empty()) {
+      if (!B->getValueAsDef("Action")->getValueAsString("Mutation").empty()) {
+        Why = "'" + Name.str() + "' carries an opaque body and a mutation";
+        return false;
+      }
+      std::string Text;
+      raw_string_ostream BOS(Text);
+      emitOpaqueBody(BOS, Body);
+      BOS.flush();
+      std::string Buf;
+      raw_string_ostream OS(Buf);
+      OS << "  if ((" << Text << ")(Q)) {\n";
+      emitStep(OS, Action, "    ", "");
+      OS << "  }\n";
+      OS.flush();
+      Out = std::move(Buf);
+      return true;
+    }
 
     auto Fail = [&]() {
       Why = "'" + Name.str() + "' has no table translation";
@@ -2493,6 +2642,30 @@ class LegalizerTableEmitterImpl {
          << ") {\n";
       emitStep(OS, Action, "        ", "");
       OS << "      }\n";
+      return Finish();
+    }
+
+    // legalForTypesWithMemDesc: the chain's guard is exactly the factory call
+    // this rule set would have made, and the evaluator receives the query, so
+    // the descriptor is compared rather than approximated by the key.
+    if (Name == "legalForTypesWithMemDesc") {
+      if (Args.empty() || !all_of(Args, [](const Record *A) {
+            return A->isSubClassOf("LegalizeMemDesc");
+          }))
+        return Fail();
+      std::string List;
+      StringRef Sep;
+      for (const Record *A : Args) {
+        List += Sep.str();
+        List += "{" + typeText(*A->getValueAsDef("Type0")) + ", " +
+                typeText(*A->getValueAsDef("Type1")) + ", " +
+                typeText(*A->getValueAsDef("MemTy")) + ", " +
+                std::to_string(A->getValueAsInt("Align")) + "}";
+        Sep = ", ";
+      }
+      EmitIf(conjunction(Guard, "typePairAndMemDescInSet(0, 1, 0, {" + List +
+                                    "})(Q)"),
+             Action);
       return Finish();
     }
 
@@ -2675,6 +2848,7 @@ public:
 
   void run(raw_ostream &OS) {
     collectClasses();
+    collectMemClasses();
 
     std::vector<const Record *> RuleSets =
         Records.getAllDerivedDefinitions("LegalizeRuleSet");
@@ -2700,25 +2874,57 @@ public:
        << "TypeClasses[] = {\n";
     for (size_t I = 0; I != Classes.size(); ++I) {
       const TableType &C = Classes[I];
-      StringRef Kind = C.Kind == TablePointer ? "Kind_Pointer"
-                       : C.Kind == TableScalar ? "Kind_Scalar"
-                                               : "Kind_Vector";
-      OS << "  /*" << I << "*/ {" << Kind << ", " << C.ElemBits << ", "
-         << C.Lanes << "}, // " << C.Name << "\n";
+      OS << "  /*" << I << "*/ {" << tableTypeKindName(C.Kind) << ", "
+         << C.ElemBits << ", " << C.Lanes << "}, // " << C.Name << "\n";
     }
     OS << "};\n";
     OS << "static constexpr unsigned " << P
        << "NumTypeClasses = sizeof(" << P << "TypeClasses) / sizeof(" << P
        << "TypeClasses[0]);\n\n";
 
-    OS << "// The key is uniform for now: slots 0 and 1, partitioned by the full "
-          "class list.\n";
-    OS << "// A rule set that needs more than that is not in this table (see "
-          "the emitter).\n";
+    // The descriptor's memory type is matched by identity, so it has its own
+    // class list.
+    OS << "// Classes of the memory-descriptor axis (the descriptor's LLT).\n";
+    OS << "static constexpr LegalizerTypeClass " << P << "MemClasses[] = {\n";
+    for (size_t I = 0; I != MemClasses.size(); ++I) {
+      const TableType &C = MemClasses[I];
+      OS << "  /*" << I << "*/ {" << tableTypeKindName(C.Kind) << ", "
+         << C.ElemBits << ", " << C.Lanes << "}, // " << C.Name << "\n";
+    }
+    OS << "};\n";
+    OS << "static constexpr unsigned " << P
+       << "NumMemClasses = sizeof(" << P << "MemClasses) / sizeof(" << P
+       << "MemClasses[0]);\n\n";
+
+    // A memory descriptor is a separate axis: the type slots stay 0 and 1,
+    // and a rule set that reads MMODescr[0] keys on the descriptor too.
+    std::vector<unsigned> Aligns = alignThresholds();
+    std::string AlignList;
+    for (unsigned A : Aligns) {
+      if (!AlignList.empty())
+        AlignList += ", ";
+      AlignList += std::to_string(A);
+    }
+    OS << "// Alignment classes for the memory-descriptor axis: a query meets a\n"
+          "// prefix of the thresholds, because TypePairAndMemDesc only asks\n"
+          "// Align >= Entry.Align.\n";
+    OS << "static constexpr unsigned " << P << "AlignThresholds[] = {"
+       << AlignList << "};\n";
+    OS << "static constexpr unsigned " << P
+       << "NumAlignClasses = sizeof(" << P << "AlignThresholds) / sizeof(" << P
+       << "AlignThresholds[0]) + 1;\n\n";
+
+    OS << "// Slots 0 and 1, partitioned by the full class list; a rule set that\n"
+          "// reads a memory descriptor adds the descriptor axis.  A rule set\n"
+          "// that needs anything else is not in this table (see the emitter).\n";
     OS << "static constexpr LegalizerTableDesc " << P << "Tables[] = {\n";
-    for (size_t I = 0; I != Tables.size(); ++I)
+    for (size_t I = 0; I != Tables.size(); ++I) {
+      const bool HasMem = needsMemDesc(*Tables[I]);
       OS << "  /*" << I << "*/ {{0, 1}, {" << Classes.size() << ", "
-         << Classes.size() << "}}, // " << Tables[I]->getName() << "\n";
+         << Classes.size() << "}, " << (HasMem ? "0" : "kNoMemDesc") << ", "
+         << (HasMem ? P + "NumMemClasses * " + P + "NumAlignClasses" : "0")
+         << "}, // " << Tables[I]->getName() << "\n";
+    }
     OS << "};\n";
     OS << "static constexpr unsigned " << P << "NumTables = sizeof(" << P
        << "Tables) / sizeof(" << P << "Tables[0]);\n\n";
@@ -2898,6 +3104,7 @@ public:
     struct DomainPoint {
       std::string Text;
       unsigned NumTypes;
+      std::string Mem;
     };
 
     // Opcode -> distinct query shapes, in first-seen order.
@@ -2912,12 +3119,13 @@ public:
         continue;
 
       unsigned Arity = arityOf(*RS);
-      std::vector<std::vector<TableType>> Tuples;
+      std::vector<RuleTuple> Tuples;
       for (const Record *Rule : RS->getValueAsListOfDefs("Rules"))
         collectRuleTuples(*Rule, Tuples);
-      for (const std::vector<TableType> &Tuple : Tuples)
-        Arity = std::max(Arity, unsigned(Tuple.size()));
+      for (const RuleTuple &Tuple : Tuples)
+        Arity = std::max(Arity, unsigned(Tuple.Types.size()));
 
+      const bool HasMem = needsMemDesc(*RS);
       TableType Ptr{TablePointer, 0, 1, "p0"};
       for (StringRef Opcode : RS->getValueAsListOfStrings("Opcodes")) {
         std::string Op = Opcode.str();
@@ -2925,29 +3133,45 @@ public:
           Opcodes.push_back(Op);
         auto &List = Points[Op];
         auto &SeenSet = Seen[Op];
-        auto Add = [&](const std::vector<TableType> &Tuple) {
-          if (Tuple.empty() || Tuple.size() > 3)
+        auto Add = [&](const RuleTuple &Tuple) {
+          if (Tuple.Types.empty() || Tuple.Types.size() > 3)
             return;
           std::string Key;
-          for (const TableType &T : Tuple)
+          for (const TableType &T : Tuple.Types)
             Key += render(T) + "|";
+          if (Tuple.HasMem)
+            Key += render(Tuple.MemTy) + "@" + std::to_string(Tuple.Align);
           if (!SeenSet.insert(Key).second)
             return;
           std::string S = "{";
           for (size_t I = 0; I != 3; ++I) {
             if (I)
               S += ", ";
-            S += I < Tuple.size() ? render(Tuple[I]) : "LLT()";
+            S += I < Tuple.Types.size() ? render(Tuple.Types[I]) : "LLT()";
           }
           S += "}";
-          List.push_back({S, static_cast<unsigned>(Tuple.size())});
+          std::string Mem =
+              Tuple.HasMem ? render(Tuple.MemTy) + ", " +
+                                 std::to_string(Tuple.Align) + ", true"
+                           : "LLT(), 0, false";
+          List.push_back(
+              {S, static_cast<unsigned>(Tuple.Types.size()), std::move(Mem)});
         };
 
         // Every opcode gets a pointer probe with the arity of its guards: the
-        // pointer class is the one class whose width is not in the .td.
-        Add(std::vector<TableType>(Arity, Ptr));
-        for (const std::vector<TableType> &Tuple : Tuples)
-          if (Tuple.size() == Arity)
+        // pointer class is the one class whose width is not in the .td.  A
+        // memdesc rule set needs a descriptor with the probe, or the chain
+        // would read MMODescr[0] of a query that has none.
+        RuleTuple Probe;
+        Probe.Types.assign(Arity, Ptr);
+        Probe.HasMem = HasMem;
+        if (HasMem) {
+          Probe.MemTy = Ptr;
+          Probe.Align = 1;
+        }
+        Add(Probe);
+        for (const RuleTuple &Tuple : Tuples)
+          if (Tuple.Types.size() == Arity)
             Add(Tuple);
       }
     }
@@ -2972,7 +3196,7 @@ public:
     for (StringRef Op : Opcodes)
       for (const DomainPoint &P : Points[Op.str()])
         OS << "  Out.push_back({TargetOpcode::" << Op << ", \"" << Op << "\", "
-           << P.NumTypes << ", " << P.Text << "});\n";
+           << P.NumTypes << ", " << P.Text << ", " << P.Mem << "});\n";
     OS << "}\n";
   }
 };
