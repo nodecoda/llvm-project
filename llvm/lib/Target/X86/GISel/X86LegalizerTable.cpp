@@ -63,7 +63,7 @@ namespace {
 
 constexpr int kUnknownClass = -1;
 constexpr int kPointerVectorClass = -2;
-constexpr uint16_t kOpaqueCell = 0xFFFF;
+constexpr uint32_t kOpaqueCell = 0xFFFFFFFFu;
 
 /// Class of a type, or kUnknownClass / kPointerVectorClass.
 int classifyType(LLT T) {
@@ -210,7 +210,7 @@ LLT X86LegalizerTable::memRepresentative(unsigned ClassID) const {
   }
 }
 
-uint16_t X86LegalizerTable::fill(unsigned Table, const LegalityQuery &Q,
+uint32_t X86LegalizerTable::fill(unsigned Table, const LegalityQuery &Q,
                                  unsigned L0, unsigned L1,
                                  unsigned MemClass) const {
   const LegalizerTableDesc &D = X86Tables[Table];
@@ -245,7 +245,9 @@ uint16_t X86LegalizerTable::fill(unsigned Table, const LegalityQuery &Q,
     return kOpaqueCell;
   ++Fills;
   Steps.push_back(*Step);
-  return static_cast<uint16_t>(Steps.size());
+  if (Steps.size() >= static_cast<size_t>(kOpaqueCell))
+    return kOpaqueCell;
+  return static_cast<uint32_t>(Steps.size());
 }
 
 X86LegalizerTable::Result
@@ -328,10 +330,10 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
   }
 
   const size_t MemDim = D.MemDim ? D.MemDim : 1;
-  std::vector<uint16_t> &Row = Cells[Table];
+  std::vector<uint32_t> &Row = Cells[Table];
   if (Row.empty())
     Row.assign(static_cast<size_t>(D.Dims[0]) * D.Dims[1] * MemDim, 0);
-  uint16_t &Cell =
+  uint32_t &Cell =
       Row[(static_cast<size_t>(L0) * D.Dims[1] + L1) * MemDim + MemClass];
   if (!Cell)
     Cell = fill(Table, Q, L0, L1, MemClass);

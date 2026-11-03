@@ -90,7 +90,7 @@ public:
   void selfCheck(raw_ostream &OS);
 
 private:
-  uint16_t fill(unsigned Table, const LegalityQuery &Q, unsigned L0,
+  uint32_t fill(unsigned Table, const LegalityQuery &Q, unsigned L0,
                 unsigned L1, unsigned MemClass) const;
   LLT representative(unsigned ClassID) const;
   LLT memRepresentative(unsigned ClassID) const;
@@ -98,7 +98,7 @@ private:
   const LegalizerInfo &LI;
   const X86Subtarget &Subtarget;
   const unsigned PointerBits;
-  mutable std::vector<std::vector<uint16_t>> Cells;
+  mutable std::vector<std::vector<uint32_t>> Cells;
   mutable std::vector<LegalizeActionStep> Steps;
   mutable uint64_t Hits = 0, Residuals = 0, Escapes = 0, Outsides = 0,
                    PointerVectors = 0, AddressSpaceResiduals = 0,
