@@ -4631,6 +4631,13 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_BenchmarkChainVersusTable) {
       break;
     }
   }
+  // The hit set is not homogeneous: the memory rule sets key on a second axis
+  // (24 memory classes x 2 align classes), so their rows are 48x larger and
+  // their cells are almost never reused.  Split the cost the same way a
+  // reader would: does the query carry a memory descriptor or not?
+  std::vector<unsigned> HitMemQueries, HitNoMemQueries;
+  for (unsigned I : HitQueries)
+    (Queries[I].Mem.empty() ? HitNoMemQueries : HitMemQueries).push_back(I);
   auto SweepSubset = [&](const std::vector<unsigned> &Subset) {
     return [&] {
       for (unsigned I : Subset)
@@ -4638,6 +4645,10 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_BenchmarkChainVersusTable) {
     };
   };
   const double HitNs = BestOf(SweepSubset(HitQueries));
+  const double HitMemNs =
+      HitMemQueries.empty() ? 0.0 : BestOf(SweepSubset(HitMemQueries));
+  const double HitNoMemNs =
+      HitNoMemQueries.empty() ? 0.0 : BestOf(SweepSubset(HitNoMemQueries));
   const double ResidualNs = BestOf(SweepSubset(ResidualQueries));
   const double OtherNs =
       OtherQueries.empty() ? 0.0 : BestOf(SweepSubset(OtherQueries));
@@ -4713,6 +4724,14 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_BenchmarkChainVersusTable) {
                << " ns/cell)\n";
   llvm::outs() << "  hit   (" << HitQueries.size() << "): "
                << format("%.1f", PerQuery(HitNs, HitQueries.size())) << " ns/query\n";
+  if (!HitMemQueries.empty())
+    llvm::outs() << "  hit memdesc (" << HitMemQueries.size() << "): "
+                 << format("%.1f", PerQuery(HitMemNs, HitMemQueries.size()))
+                 << " ns/query\n";
+  if (!HitNoMemQueries.empty())
+    llvm::outs() << "  hit no memdesc (" << HitNoMemQueries.size() << "): "
+                 << format("%.1f", PerQuery(HitNoMemNs, HitNoMemQueries.size()))
+                 << " ns/query\n";
   if (!HotSet.empty())
     llvm::outs() << "  hit hot (" << HotSet.size() << " queries, "
                  << HotRounds << " rounds): " << format("%.1f", HotNs)
