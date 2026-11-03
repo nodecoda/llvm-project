@@ -17,10 +17,10 @@ def p0_bound
     : LegalizeNamedType<"LLT::pointer(0, Is64Bit ? 64 : 32)">;
 def v2p0
     : LegalizeNamedType<"LLT::fixed_vector(2, LLT::pointer(0, Is64Bit ? 64 : 32))">;
-// A select that produces a whole LLT is not a type spelling and escapes.
-def s_select
-    : LegalizeNamedType<"Is64Bit ? LLT::scalar(64) : LLT::scalar(32)">;
 def Is64Bit : LegalizeFeature<"Subtarget.is64Bit()">;
+// A select value type keeps its guards in Core IR instead of picking the type
+// of whichever configuration generated the file.
+def s_select : LegalizeSelectType<[Is64Bit], [s64], s32>;
 
 def Test_STORE : LegalizeRuleSet<["G_STORE"]> {
   let Rules = [LegalForMemDesc<[LegalizeMemDesc<s32, p0, s32, 32>]>];
@@ -39,9 +39,15 @@ def Test_PTRMEM : LegalizeRuleSet<["G_SEXTLOAD"]> {
                                 LegalizeMemDesc<s64, p0_bound, v2p0, 64>]>];
 }
 
-// An unrepresentable tuple escapes as a whole instead of being approximated.
+// A value type may be a select type...
+def Test_SELECT_VALUE : LegalizeRuleSet<["G_FPEXT"]> {
+  let Rules = [LegalForMemDesc<[LegalizeMemDesc<s_select, s32, s32, 32>]>];
+}
+
+// ...but the memory axis still needs a literal size, so an unrepresentable
+// tuple escapes as a whole instead of being approximated.
 def Test_ESCAPE : LegalizeRuleSet<["G_ZEXTLOAD"]> {
-  let Rules = [LegalForMemDesc<[LegalizeMemDesc<s32, s_select, s32, 32>]>];
+  let Rules = [LegalForMemDesc<[LegalizeMemDesc<s32, s32, s_select, 32>]>];
 }
 
 // CHECK:      {"kind":"leaf","name":"typeIs","args":[0,"s32"]}
@@ -62,6 +68,9 @@ def Test_ESCAPE : LegalizeRuleSet<["G_ZEXTLOAD"]> {
 // CHECK:      {"kind":"leaf","name":"typeIs","args":[0,"s64"]}
 // CHECK-SAME: {"kind":"leaf","name":"memSizePtr","args":[0,2,64]}
 // CHECK-SAME: "ruleset": "Test_PTRMEM"
+
+// CHECK:      {"select":{"cond":{"kind":"leaf","name":"hasFeature","args":["Subtarget.is64Bit()"]},"then":"s64","else":"s32"}}
+// CHECK-SAME: "ruleset": "Test_SELECT_VALUE"
 
 // CHECK: "kind": "nonliteral_type"
 // CHECK-SAME: "ruleset": "Test_ESCAPE"

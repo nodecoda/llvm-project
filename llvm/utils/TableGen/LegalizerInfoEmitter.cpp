@@ -350,6 +350,29 @@ void LegalizerInfoEmitter::emitPredicate(const Record &P, raw_ostream &OS) {
   renderPredicate(P, OS);
 }
 
+/// `(A ? X : (B ? Y : Z))` from a priority list.  Used for a select type, a
+/// select type list and a select lane count, so the three spellings cannot
+/// disagree about which guard wins.
+static std::string selectText(const Record &Select, StringRef ThenField,
+                              StringRef ElseField) {
+  std::vector<const Record *> Conds = Select.getValueAsListOfDefs("Conds");
+  std::vector<const Record *> Thens = Select.getValueAsListOfDefs(ThenField);
+  if (Conds.size() != Thens.size())
+    PrintFatalError(Select.getLoc(), "'" + Select.getName() +
+                                         "' has " + std::to_string(Conds.size()) +
+                                         " guards but " +
+                                         std::to_string(Thens.size()) + " values");
+  std::string Expr = Select.getValueAsDef(ElseField)->getName().str();
+  for (size_t I = Conds.size(); I-- > 0;) {
+    std::string Cond;
+    raw_string_ostream C(Cond);
+    renderPredicate(*Conds[I], C);
+    C.flush();
+    Expr = "(" + Cond + " ? " + Thens[I]->getName().str() + " : " + Expr + ")";
+  }
+  return Expr;
+}
+
 /// Emit the LLT constants and named type lists, in .td order.  Like a feature,
 /// the record name is the C++ identifier; a type declared after one that uses
 /// it would generate code that does not compile, which is why the names are
@@ -358,9 +381,14 @@ void LegalizerInfoEmitter::emitTypes(raw_ostream &OS) {
   std::vector<const Record *> Types =
       Records.getAllDerivedDefinitions("LegalizeNamedType");
   llvm::sort(Types, LessRecordByID());
-  for (const Record *T : Types)
-    OS << "  const LLT " << T->getName() << " = " << T->getValueAsString("Expr")
-       << ";\n";
+  for (const Record *T : Types) {
+    OS << "  const LLT " << T->getName() << " = ";
+    if (T->isSubClassOf("LegalizeSelectType"))
+      OS << selectText(*T, "Types", "Otherwise");
+    else
+      OS << T->getValueAsString("Expr");
+    OS << ";\n";
+  }
   if (!Types.empty())
     OS << "\n";
 
@@ -430,6 +458,7 @@ static StringRef shapeOf(const Record &Arg) {
   if (Arg.isSubClassOf("LegalizeArgBits"))
     return "ShapeBits";
   if (Arg.isSubClassOf("LegalizeArgLanes") ||
+      Arg.isSubClassOf("LegalizeSelectLanes") ||
       Arg.isSubClassOf("LegalizeRawArg"))
     return "ShapeLanes";
   if (Arg.isSubClassOf("LegalizeNamedType") ||
@@ -441,7 +470,7 @@ static StringRef shapeOf(const Record &Arg) {
     return "ShapeMemDescList";
   if (Arg.isSubClassOf("LegalizeNamedTypeList") ||
       Arg.isSubClassOf("LegalizeInlineTypeList") ||
-      Arg.isSubClassOf("LegalizeTypeListChoice"))
+      Arg.isSubClassOf("LegalizeSelectTypeList"))
     return "ShapeTypeList";
   // A bare LegalizeArgInt is deliberately not accepted: it is the class whose
   // three meanings (slot, bit width, lane count) the subclasses exist to tell
@@ -610,9 +639,12 @@ void LegalizerInfoEmitter::emitArg(const Record &Arg, raw_ostream &OS) {
     OS << Arg.getName();
     return;
   }
-  if (Arg.isSubClassOf("LegalizeInlineType") ||
-      Arg.isSubClassOf("LegalizeTypeListChoice")) {
+  if (Arg.isSubClassOf("LegalizeInlineType")) {
     OS << Arg.getValueAsString("Text");
+    return;
+  }
+  if (Arg.isSubClassOf("LegalizeSelectTypeList")) {
+    OS << selectText(Arg, "Lists", "Otherwise");
     return;
   }
   if (Arg.isSubClassOf("LegalizeInlineTypeList")) {
@@ -642,6 +674,25 @@ void LegalizerInfoEmitter::emitArg(const Record &Arg, raw_ostream &OS) {
     if (!Comment.empty())
       OS << "/*" << Comment << "=*/";
     OS << Arg.getValueAsInt("Value");
+    return;
+  }
+  if (Arg.isSubClassOf("LegalizeSelectLanes")) {
+    std::vector<const Record *> Conds = Arg.getValueAsListOfDefs("Conds");
+    std::vector<int64_t> Values = Arg.getValueAsListOfInts("Values");
+    if (Conds.size() != Values.size())
+      PrintFatalError(Arg.getLoc(),
+                      "'" + Arg.getName() + "' has " +
+                          std::to_string(Conds.size()) + " guards but " +
+                          std::to_string(Values.size()) + " values");
+    std::string Expr = std::to_string(Arg.getValueAsInt("Otherwise"));
+    for (size_t I = Conds.size(); I-- > 0;) {
+      std::string Cond;
+      raw_string_ostream C(Cond);
+      renderPredicate(*Conds[I], C);
+      C.flush();
+      Expr = "(" + Cond + " ? " + std::to_string(Values[I]) + " : " + Expr + ")";
+    }
+    OS << Expr;
     return;
   }
   if (Arg.isSubClassOf("LegalizeRawArg")) {
@@ -780,6 +831,23 @@ void LegalizerInfoEmitter::run(raw_ostream &OS) {
   CheckDeclarationOrder("LegalizeNamedType", "Expr");
   CheckDeclarationOrder("LegalizeFeature", "Cond");
 
+  for (const Record *SEL :
+       Records.getAllDerivedDefinitions("LegalizeSelectType")) {
+    for (const Record *T : SEL->getValueAsListOfDefs("Types"))
+      if (T->getID() > SEL->getID())
+        PrintFatalError(SEL->getLoc(),
+                        "'" + T->getName() + "' is used by '" +
+                            SEL->getName() +
+                            "' but declared below it; the fragment is emitted "
+                            "in .td order");
+    const Record *O = SEL->getValueAsDef("Otherwise");
+    if (O->getID() > SEL->getID())
+      PrintFatalError(SEL->getLoc(),
+                      "'" + O->getName() + "' is used by '" + SEL->getName() +
+                          "' but declared below it; the fragment is emitted "
+                          "in .td order");
+  }
+
   // Everything a feature name can be written in: a predicate dag's leaves, and
   // the C++ text the escape hatches carry.
   auto CollectUsed = [&](StringRef Text) {
@@ -812,8 +880,17 @@ void LegalizerInfoEmitter::run(raw_ostream &OS) {
   for (const Record *X : Records.getAllDerivedDefinitions("LegalizeInlineType"))
     CollectUsed(X->getValueAsString("Text"));
   for (const Record *X :
-       Records.getAllDerivedDefinitions("LegalizeTypeListChoice"))
-    CollectUsed(X->getValueAsString("Text"));
+       Records.getAllDerivedDefinitions("LegalizeSelectType"))
+    for (const Record *Cond : X->getValueAsListOfDefs("Conds"))
+      collectPredicateFeatures(Cond, UsedFeatures);
+  for (const Record *X :
+       Records.getAllDerivedDefinitions("LegalizeSelectTypeList"))
+    for (const Record *Cond : X->getValueAsListOfDefs("Conds"))
+      collectPredicateFeatures(Cond, UsedFeatures);
+  for (const Record *X :
+       Records.getAllDerivedDefinitions("LegalizeSelectLanes"))
+    for (const Record *Cond : X->getValueAsListOfDefs("Conds"))
+      collectPredicateFeatures(Cond, UsedFeatures);
   for (const Record *X : Records.getAllDerivedDefinitions("LegalizeRawArg"))
     CollectUsed(X->getValueAsString("Text"));
 
@@ -955,6 +1032,11 @@ std::string jsonEscaped(StringRef S) {
   return Buf;
 }
 
+void predicateJson(const RecordKeeper &Records, const Record &P,
+                  std::string &Out);
+std::string coreTypeValue(const RecordKeeper &Records, const Record &Ty);
+std::string jsonStringValue(StringRef S);
+
 /// Canonical Core IR spelling for a literal LLT expression, or "" when the
 /// expression has no literal form.  A pointer whose width is computed from the
 /// subtarget is still representable: `LLT::pointer(0, <expr>)` becomes `p0:*`
@@ -1033,9 +1115,198 @@ unsigned lltPtrLanes(StringRef S) {
     return 0;
   return Lanes;
 }
-std::string typeIs(unsigned Idx, StringRef Ty) {
+
+/// Core IR value for one type position.  A literal type is its canonical
+/// spelling; a select type is a nested `select` node whose branches are values
+/// as well.  The guards are never folded: the file is generated once and read
+/// under many configurations.
+std::string coreTypeValue(const RecordKeeper &Records, const Record &Ty) {
+  if (Ty.isSubClassOf("LegalizeSelectType")) {
+    std::vector<const Record *> Conds = Ty.getValueAsListOfDefs("Conds");
+    std::vector<const Record *> Types = Ty.getValueAsListOfDefs("Types");
+    if (Conds.size() != Types.size())
+      PrintFatalError(Ty.getLoc(), "'" + Ty.getName() + "' has " +
+                                       std::to_string(Conds.size()) +
+                                       " guards but " +
+                                       std::to_string(Types.size()) + " types");
+    std::string Value = coreTypeValue(Records, *Ty.getValueAsDef("Otherwise"));
+    if (Value.empty())
+      return "";
+    for (size_t I = Conds.size(); I-- > 0;) {
+      std::string Cond;
+      predicateJson(Records, *Conds[I], Cond);
+      std::string Branch = coreTypeValue(Records, *Types[I]);
+      if (Branch.empty())
+        return "";
+      Value = "{\"select\":{\"cond\":" + Cond + ",\"then\":" + Branch +
+              ",\"else\":" + Value + "}}";
+    }
+    return Value;
+  }
+  if (!Ty.isSubClassOf("LegalizeNamedType"))
+    return "";
+  std::string Norm = normalizeLlt(Ty.getValueAsString("Expr"), &Records);
+  if (Norm.empty())
+    return "";
+  return jsonStringValue(Norm);
+}
+
+/// Bit count of a type as a Core IR value.  A select type keeps its guards, so
+/// `clampScalar` can compare against `Is64Bit ? 64 : 32` without choosing one.
+std::string coreTypeBitsValue(const RecordKeeper &Records, const Record &Ty) {
+  if (Ty.isSubClassOf("LegalizeSelectType")) {
+    std::vector<const Record *> Conds = Ty.getValueAsListOfDefs("Conds");
+    std::vector<const Record *> Types = Ty.getValueAsListOfDefs("Types");
+    if (Conds.size() != Types.size())
+      return "";
+    std::string Value =
+        coreTypeBitsValue(Records, *Ty.getValueAsDef("Otherwise"));
+    if (Value.empty())
+      return "";
+    for (size_t I = Conds.size(); I-- > 0;) {
+      std::string Cond;
+      predicateJson(Records, *Conds[I], Cond);
+      std::string Branch = coreTypeBitsValue(Records, *Types[I]);
+      if (Branch.empty())
+        return "";
+      Value = "{\"select\":{\"cond\":" + Cond + ",\"then\":" + Branch +
+              ",\"else\":" + Value + "}}";
+    }
+    return Value;
+  }
+  if (!Ty.isSubClassOf("LegalizeNamedType"))
+    return "";
+  std::string Norm = normalizeLlt(Ty.getValueAsString("Expr"), &Records);
+  unsigned Bits = Norm.empty() ? 0 : lltBits(Norm);
+  if (Bits == 0)
+    return "";
+  return jsonStringValue(std::to_string(Bits));
+}
+
+/// Lane count of a type as a Core IR value.
+std::string coreTypeLanesValue(const RecordKeeper &Records, const Record &Ty) {
+  if (Ty.isSubClassOf("LegalizeSelectType")) {
+    std::vector<const Record *> Conds = Ty.getValueAsListOfDefs("Conds");
+    std::vector<const Record *> Types = Ty.getValueAsListOfDefs("Types");
+    if (Conds.size() != Types.size())
+      return "";
+    std::string Value =
+        coreTypeLanesValue(Records, *Ty.getValueAsDef("Otherwise"));
+    if (Value.empty())
+      return "";
+    for (size_t I = Conds.size(); I-- > 0;) {
+      std::string Cond;
+      predicateJson(Records, *Conds[I], Cond);
+      std::string Branch = coreTypeLanesValue(Records, *Types[I]);
+      if (Branch.empty())
+        return "";
+      Value = "{\"select\":{\"cond\":" + Cond + ",\"then\":" + Branch +
+              ",\"else\":" + Value + "}}";
+    }
+    return Value;
+  }
+  if (!Ty.isSubClassOf("LegalizeNamedType"))
+    return "";
+  std::string Norm = normalizeLlt(Ty.getValueAsString("Expr"), &Records);
+  if (Norm.empty())
+    return "";
+  return std::to_string(lltLanes(Norm));
+}
+
+/// Core IR value for a lane count: a number or a select over numbers.
+std::string coreLanesValue(const RecordKeeper &Records, const Record &Arg) {
+  if (Arg.isSubClassOf("LegalizeArgLanes"))
+    return std::to_string(Arg.getValueAsInt("Value"));
+  if (!Arg.isSubClassOf("LegalizeSelectLanes"))
+    return "";
+  std::vector<const Record *> Conds = Arg.getValueAsListOfDefs("Conds");
+  std::vector<int64_t> Values = Arg.getValueAsListOfInts("Values");
+  if (Conds.size() != Values.size())
+    PrintFatalError(Arg.getLoc(), "'" + Arg.getName() + "' has " +
+                                      std::to_string(Conds.size()) +
+                                      " guards but " +
+                                      std::to_string(Values.size()) + " values");
+  std::string Value = std::to_string(Arg.getValueAsInt("Otherwise"));
+  for (size_t I = Conds.size(); I-- > 0;) {
+    std::string Cond;
+    predicateJson(Records, *Conds[I], Cond);
+    Value = "{\"select\":{\"cond\":" + Cond + ",\"then\":" +
+            std::to_string(Values[I]) + ",\"else\":" + Value + "}}";
+  }
+  return Value;
+}
+
+/// Core IR value for a type list: an array or a select over arrays.
+std::string coreTypeListValue(const RecordKeeper &Records,
+                              const Record &List) {
+  if (List.isSubClassOf("LegalizeSelectTypeList")) {
+    std::vector<const Record *> Conds = List.getValueAsListOfDefs("Conds");
+    std::vector<const Record *> Lists = List.getValueAsListOfDefs("Lists");
+    if (Conds.size() != Lists.size())
+      PrintFatalError(List.getLoc(), "'" + List.getName() + "' has " +
+                                         std::to_string(Conds.size()) +
+                                         " guards but " +
+                                         std::to_string(Lists.size()) +
+                                         " lists");
+    std::string Value =
+        coreTypeListValue(Records, *List.getValueAsDef("Otherwise"));
+    if (Value.empty())
+      return "";
+    for (size_t I = Conds.size(); I-- > 0;) {
+      std::string Cond;
+      predicateJson(Records, *Conds[I], Cond);
+      std::string Branch = coreTypeListValue(Records, *Lists[I]);
+      if (Branch.empty())
+        return "";
+      Value = "{\"select\":{\"cond\":" + Cond + ",\"then\":" + Branch +
+              ",\"else\":" + Value + "}}";
+    }
+    return Value;
+  }
+  if (!List.isSubClassOf("LegalizeNamedTypeList") &&
+      !List.isSubClassOf("LegalizeInlineTypeList"))
+    return "";
+  std::string S = "[";
+  StringRef Sep;
+  for (const Record *E : List.getValueAsListOfDefs("Elems")) {
+    std::string V = coreTypeValue(Records, *E);
+    if (V.empty())
+      return "";
+    S += Sep.str();
+    S += V;
+    Sep = ",";
+  }
+  return S + "]";
+}
+/// True when a list argument cannot be spelled as one literal list: either it
+/// chooses between lists, or one of its elements is a select type.  Such a list
+/// keeps a single `typeIn` over the conditional value; a literal list instead
+/// expands to one `typeIs` per element so rule positions stay put.
+static bool isSelectBearingList(const Record &List) {
+  if (List.isSubClassOf("LegalizeSelectTypeList"))
+    return true;
+  if (!List.isSubClassOf("LegalizeNamedTypeList") &&
+      !List.isSubClassOf("LegalizeInlineTypeList"))
+    return false;
+  return llvm::any_of(List.getValueAsListOfDefs("Elems"),
+                      [](const Record *E) {
+                        return E->isSubClassOf("LegalizeSelectType");
+                      });
+}
+
+std::string jsonStringValue(StringRef S) { return "\"" + S.str() + "\""; }
+
+/// typeIs with an already-built JSON value: a quoted spelling for a literal
+/// type, or a select object when the type is chosen from feature guards.
+std::string typeIsValue(unsigned Idx, StringRef TyJson) {
   return "{\"kind\":\"leaf\",\"name\":\"typeIs\",\"args\":[" +
-         std::to_string(Idx) + ",\"" + Ty.str() + "\"]}";
+         std::to_string(Idx) + "," + TyJson.str() + "]}";
+}
+
+/// typeIn with a list value (or a select over lists).
+std::string typeInValue(unsigned Idx, StringRef ListJson) {
+  return "{\"kind\":\"leaf\",\"name\":\"typeIn\",\"args\":[" +
+         std::to_string(Idx) + "," + ListJson.str() + "]}";
 }
 
 /// memSize(mem_idx, size_bits, min_align_bits): the MMO at mem_idx has the
@@ -1076,22 +1347,22 @@ std::string sizeIs(unsigned Idx, StringRef Bits) {
          std::to_string(Idx) + ",\"" + Bits.str() + "\"]}";
 }
 
-std::string scalarNarrowerThan(unsigned Idx, StringRef Bits) {
+std::string scalarNarrowerThanValue(unsigned Idx, StringRef BitsJson) {
   return "{\"kind\":\"leaf\",\"name\":\"scalarNarrowerThan\",\"args\":[" +
-         std::to_string(Idx) + ",\"" + Bits.str() + "\"]}";
+         std::to_string(Idx) + "," + BitsJson.str() + "]}";
 }
 
-std::string scalarNarrowerThan(unsigned Idx, unsigned Bits) {
-  return scalarNarrowerThan(Idx, std::to_string(Bits));
+std::string scalarNarrowerThan(unsigned Idx, StringRef Bits) {
+  return scalarNarrowerThanValue(Idx, jsonStringValue(Bits));
+}
+
+std::string scalarWiderThanValue(unsigned Idx, StringRef BitsJson) {
+  return "{\"kind\":\"leaf\",\"name\":\"scalarWiderThan\",\"args\":[" +
+         std::to_string(Idx) + "," + BitsJson.str() + "]}";
 }
 
 std::string scalarWiderThan(unsigned Idx, StringRef Bits) {
-  return "{\"kind\":\"leaf\",\"name\":\"scalarWiderThan\",\"args\":[" +
-         std::to_string(Idx) + ",\"" + Bits.str() + "\"]}";
-}
-
-std::string scalarWiderThan(unsigned Idx, unsigned Bits) {
-  return scalarWiderThan(Idx, std::to_string(Bits));
+  return scalarWiderThanValue(Idx, jsonStringValue(Bits));
 }
 
 std::string oneArgLeaf(StringRef Name, unsigned A) {
@@ -1111,19 +1382,19 @@ std::string numElementsNotPow2(unsigned Idx) {
   return oneArgLeaf("numElementsNotPow2", Idx);
 }
 
-std::string fewerElementsThan(unsigned Idx, unsigned Lanes) {
+std::string fewerElementsThanValue(unsigned Idx, StringRef LanesJson) {
   return "{\"kind\":\"leaf\",\"name\":\"fewerElementsThan\",\"args\":[" +
-         std::to_string(Idx) + "," + std::to_string(Lanes) + "]}";
+         std::to_string(Idx) + "," + LanesJson.str() + "]}";
 }
 
-std::string moreElementsThan(unsigned Idx, unsigned Lanes) {
+std::string moreElementsThanValue(unsigned Idx, StringRef LanesJson) {
   return "{\"kind\":\"leaf\",\"name\":\"moreElementsThan\",\"args\":[" +
-         std::to_string(Idx) + "," + std::to_string(Lanes) + "]}";
+         std::to_string(Idx) + "," + LanesJson.str() + "]}";
 }
 
-std::string elementTypeIs(unsigned Idx, StringRef Ty) {
+std::string elementTypeIsValue(unsigned Idx, StringRef TyJson) {
   return "{\"kind\":\"leaf\",\"name\":\"elementTypeIs\",\"args\":[" +
-         std::to_string(Idx) + ",\"" + Ty.str() + "\"]}";
+         std::to_string(Idx) + "," + TyJson.str() + "]}";
 }
 
 /// Types[Other].getScalarSizeInBits() > Types[Idx].getScalarSizeInBits()
@@ -1189,13 +1460,23 @@ std::string typePredicateJson(const RecordKeeper &Records, const Record &R) {
       E = E.trim();
       if (E.empty())
         continue;
-      std::string Norm = normalizeLlt(E, &Records);
-      if (Norm.empty())
+      // An element may be a named type (including a select type, whose Core
+      // IR form is the conditional value) or a literal LLT spelling.
+      std::string Value;
+      if (const Record *T = Records.getDef(E))
+        if (T->isSubClassOf("LegalizeNamedType"))
+          Value = coreTypeValue(Records, *T);
+      if (Value.empty()) {
+        std::string Norm = normalizeLlt(E, &Records);
+        if (!Norm.empty())
+          Value = jsonStringValue(Norm);
+      }
+      if (Value.empty())
         PrintFatalError(R.getLoc(), "typeInSet names a type with no literal "
                                     "Core IR form: " +
                                         E);
       Out += Sep.str();
-      Out += "\"" + Norm + "\"";
+      Out += Value;
       Sep = ",";
     }
     return Out + "]]}";
@@ -1213,17 +1494,22 @@ std::string typePredicateJson(const RecordKeeper &Records, const Record &R) {
     return V;
   };
   // A type argument is either a normalized LLT or the name of a
-  // LegalizeNamedType record; the Core IR only knows the former, so a record
-  // name is resolved through the record it names.  Resolving rather than
-  // rejecting is what keeps the two spellings from being able to disagree: the
-  // C++ this emits uses the record, and the Core IR has to see the same type.
-  auto Ty = [&](size_t I) {
+  // LegalizeNamedType record; the Core IR has to see the same type either way.
+  // A named record is resolved through the record it names, and a select type
+  // becomes the conditional value rather than the type of one configuration.
+  auto Ty = [&](size_t I) -> std::string {
     if (I >= Args.size())
       PrintFatalError(R.getLoc(),
                       "type predicate '" + Call + "' is missing a type");
+    if (const Record *T = Records.getDef(Args[I]))
+      if (T->isSubClassOf("LegalizeNamedType")) {
+        std::string V = coreTypeValue(Records, *T);
+        if (!V.empty())
+          return V;
+      }
     std::string Norm = normalizeLlt(Args[I], &Records);
     if (!Norm.empty())
-      return Norm;
+      return jsonStringValue(Norm);
     PrintFatalError(R.getLoc(), "type predicate '" + Call +
                                     "' names a type that has no "
                                     "literal Core IR form: " +
@@ -1261,7 +1547,7 @@ std::string typePredicateJson(const RecordKeeper &Records, const Record &R) {
   };
 
   if (Name == "typeIs")
-    return typeIs(Idx(0), Ty(1));
+    return typeIsValue(Idx(0), Ty(1));
   if (Name == "isVector")
     return isVector(Idx(0));
   if (Name == "scalarNarrowerThan")
@@ -1337,28 +1623,6 @@ void predicateJson(const RecordKeeper &Records, const Record &P,
   PrintFatalError(&P, "unknown LegalizePredicate record");
 }
 
-/// Flatten a type argument into literal LLT spellings.  An inline expression
-/// has no literal form, so it is an error rather than a silent loss.
-void collectTypes(const Record &R, const RecordKeeper &Records,
-                  std::vector<std::string> &Out) {
-  if (R.isSubClassOf("LegalizeNamedType")) {
-    Out.push_back(normalizeLlt(R.getValueAsString("Expr"), &Records));
-    return;
-  }
-  if (R.isSubClassOf("LegalizeNamedTypeList") ||
-      R.isSubClassOf("LegalizeInlineTypeList")) {
-    for (const Record *E : R.getValueAsListOfDefs("Elems"))
-      Out.push_back(normalizeLlt(E->getValueAsString("Expr"), &Records));
-    return;
-  }
-  if (R.isSubClassOf("LegalizeInlineType")) {
-    PrintFatalError(R.getLoc(), "inline type expression '" +
-                                    R.getValueAsString("Text") +
-                                    "' has no literal Core IR form");
-  }
-  PrintFatalError(R.getLoc(), "unexpected type argument '" + R.getName() + "'");
-}
-
 SMLoc firstLoc(const Record &R) {
   ArrayRef<SMLoc> Locs = R.getLoc();
   return Locs.empty() ? SMLoc() : Locs.front();
@@ -1384,11 +1648,17 @@ struct CoreRule {
   std::string Mutation; // empty means null
 };
 
-std::string mutationJson(unsigned Target, StringRef Kind, StringRef Value) {
+std::string mutationJsonValue(unsigned Target, StringRef Kind,
+                              StringRef ValueJson) {
   return "{\"target\":" + std::to_string(Target) + ",\"kind\":\"" + Kind.str() +
          "\",\"value\":" +
-         (Value.empty() ? std::string("null") : "\"" + Value.str() + "\"") +
-         "}";
+         (ValueJson.empty() ? std::string("null") : ValueJson.str()) + "}";
+}
+
+std::string mutationJson(unsigned Target, StringRef Kind, StringRef Value) {
+  return mutationJsonValue(Target, Kind,
+                           Value.empty() ? std::string()
+                                         : jsonStringValue(Value));
 }
 
 std::string mutationJsonInt(unsigned Target, StringRef Kind, int Value) {
@@ -1418,24 +1688,18 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
   // Those rules are escapes, not guesses.
   for (const Record *A : Args) {
     if (A->isSubClassOf("LegalizeTypePair")) {
-      if (normalizeLlt(A->getValueAsDef("Type0")->getValueAsString("Expr"),
-                       &Records)
-              .empty() ||
-          normalizeLlt(A->getValueAsDef("Type1")->getValueAsString("Expr"),
-                       &Records)
-              .empty()) {
+      if (coreTypeValue(Records, *A->getValueAsDef("Type0")).empty() ||
+          coreTypeValue(Records, *A->getValueAsDef("Type1")).empty()) {
         Why = "nonliteral_type";
         return;
       }
       continue;
     }
     if (A->isSubClassOf("LegalizeMemDesc")) {
-      if (normalizeLlt(A->getValueAsDef("Type0")->getValueAsString("Expr"),
-                       &Records)
-              .empty() ||
-          normalizeLlt(A->getValueAsDef("Type1")->getValueAsString("Expr"),
-                       &Records)
-              .empty() ||
+      // The memory-type axis still needs a literal size, so a select memory
+      // type stays an escape; the two value types may be select types.
+      if (coreTypeValue(Records, *A->getValueAsDef("Type0")).empty() ||
+          coreTypeValue(Records, *A->getValueAsDef("Type1")).empty() ||
           normalizeLlt(A->getValueAsDef("MemTy")->getValueAsString("Expr"),
                        &Records)
               .empty()) {
@@ -1444,8 +1708,10 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
       }
       continue;
     }
+    if (A->isSubClassOf("LegalizeSelectTypeList"))
+      continue;
     if (A->isSubClassOf("LegalizeNamedType")) {
-      if (normalizeLlt(A->getValueAsString("Expr"), &Records).empty()) {
+      if (coreTypeValue(Records, *A).empty()) {
         Why = "nonliteral_type";
         return;
       }
@@ -1454,18 +1720,15 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
     if (A->isSubClassOf("LegalizeNamedTypeList") ||
         A->isSubClassOf("LegalizeInlineTypeList")) {
       for (const Record *E : A->getValueAsListOfDefs("Elems"))
-        if (normalizeLlt(E->getValueAsString("Expr"), &Records).empty()) {
+        if (coreTypeValue(Records, *E).empty()) {
           Why = "nonliteral_type";
           return;
         }
       continue;
     }
-    if (A->isSubClassOf("LegalizeArgInt"))
+    if (A->isSubClassOf("LegalizeArgInt") ||
+        A->isSubClassOf("LegalizeSelectLanes"))
       continue;
-    if (A->isSubClassOf("LegalizeTypeListChoice")) {
-      Why = "type_list_choice";
-      return;
-    }
     if (A->isSubClassOf("LegalizeInlineType")) {
       Why = "inline_type_expr";
       return;
@@ -1498,58 +1761,104 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
                                          std::to_string(I));
     return Args[I]->getValueAsInt("Value");
   };
-  auto Ty = [&](size_t I) {
-    std::vector<std::string> Ts;
+  auto TypeValue = [&](size_t I) {
+    if (I >= Args.size() || !Args[I]->isSubClassOf("LegalizeNamedType"))
+      PrintFatalError(Rule.getLoc(), "rule '" + Method +
+                                         "' expects one type at argument " +
+                                         std::to_string(I));
+    std::string V = coreTypeValue(Records, *Args[I]);
+    if (V.empty())
+      PrintFatalError(Rule.getLoc(), "rule '" + Method +
+                                         "' has a type with no Core IR value "
+                                         "at argument " +
+                                         std::to_string(I));
+    return V;
+  };
+  auto TypeBits = [&](size_t I) {
+    if (I >= Args.size() || !Args[I]->isSubClassOf("LegalizeNamedType"))
+      PrintFatalError(Rule.getLoc(), "rule '" + Method +
+                                         "' expects one type at argument " +
+                                         std::to_string(I));
+    std::string V = coreTypeBitsValue(Records, *Args[I]);
+    if (V.empty())
+      PrintFatalError(Rule.getLoc(), "rule '" + Method +
+                                         "' has a type with no static bit "
+                                         "count at argument " +
+                                         std::to_string(I));
+    return V;
+  };
+  auto TypeList = [&](size_t I) {
     if (I >= Args.size())
       PrintFatalError(Rule.getLoc(), "rule '" + Method +
                                          "' is missing argument " +
                                          std::to_string(I));
-    collectTypes(*Args[I], Records, Ts);
-    if (Ts.size() != 1)
+    std::string V = coreTypeListValue(Records, *Args[I]);
+    if (V.empty())
       PrintFatalError(Rule.getLoc(), "rule '" + Method +
-                                         "' expects one type at "
-                                         "argument " +
+                                         "' has a type list with no Core IR "
+                                         "value at argument " +
                                          std::to_string(I));
-    return Ts.front();
+    return V;
   };
 
   if (Builder == "BuilderLegalFor") {
-    for (const Record *A : Args) {
+    for (size_t AI = 0; AI != Args.size(); ++AI) {
+      const Record *A = Args[AI];
       if (A->isSubClassOf("LegalizeTypePair")) {
-        std::vector<std::string> T0, T1;
-        collectTypes(*A->getValueAsDef("Type0"), Records, T0);
-        collectTypes(*A->getValueAsDef("Type1"), Records, T1);
+        std::string T0 = coreTypeValue(Records, *A->getValueAsDef("Type0"));
+        std::string T1 = coreTypeValue(Records, *A->getValueAsDef("Type1"));
+        if (T0.empty() || T1.empty())
+          PrintFatalError(A->getLoc(), "legalFor pair has no Core IR value");
+        Out.push_back({"Legal", 0,
+                       WithPred(allOf({typeIsValue(0, T0), typeIsValue(1, T1)})),
+                       ""});
+      } else if (A->isSubClassOf("LegalizeNamedType")) {
         Out.push_back(
-            {"Legal", 0,
-             WithPred(allOf({typeIs(0, T0.front()), typeIs(1, T1.front())})),
+            {"Legal", 0, WithPred(typeIsValue(0, coreTypeValue(Records, *A))),
              ""});
+      } else if (isSelectBearingList(*A)) {
+        // A list that chooses between types is one membership test over a
+        // conditional list; expanding its branches would duplicate the rule.
+        Out.push_back(
+            {"Legal", 0, WithPred(typeInValue(0, TypeList(AI))), ""});
       } else {
-        std::vector<std::string> Ts;
-        collectTypes(*A, Records, Ts);
-        for (const std::string &T : Ts)
-          Out.push_back({"Legal", 0, WithPred(typeIs(0, T)), ""});
+        // A literal list expands to one rule per element, as it always did:
+        // their rule positions are what the witness and mutant artifacts key
+        // on, so collapsing them into one typeIn would move every later rule.
+        for (const Record *E : A->getValueAsListOfDefs("Elems"))
+          Out.push_back({"Legal", 0,
+                         WithPred(typeIsValue(0, coreTypeValue(Records, *E))),
+                         ""});
       }
     }
     return;
   }
   if (Builder == "BuilderLegalForCartesianProduct") {
-    std::vector<std::string> T0, T1;
-    collectTypes(*Args[0], Records, T0);
-    collectTypes(*Args[1], Records, T1);
-    for (const std::string &A : T0)
-      for (const std::string &B : T1)
+    if (isSelectBearingList(*Args[0]) || isSelectBearingList(*Args[1])) {
+      Out.push_back({"Legal", 0,
+                     WithPred(allOf({typeInValue(0, TypeList(0)),
+                                     typeInValue(1, TypeList(1))})),
+                     ""});
+      return;
+    }
+    for (const Record *A : Args[0]->getValueAsListOfDefs("Elems"))
+      for (const Record *B : Args[1]->getValueAsListOfDefs("Elems"))
         Out.push_back(
-            {"Legal", 0, WithPred(allOf({typeIs(0, A), typeIs(1, B)})), ""});
+            {"Legal", 0,
+             WithPred(allOf(
+                 {typeIsValue(0, coreTypeValue(Records, *A)),
+                  typeIsValue(1, coreTypeValue(Records, *B))})),
+             ""});
     return;
   }
   if (Builder == "BuilderLegalForTypesWithMemDesc") {
     for (const Record *A : Args) {
-      std::string T0 = normalizeLlt(
-          A->getValueAsDef("Type0")->getValueAsString("Expr"), &Records);
-      std::string T1 = normalizeLlt(
-          A->getValueAsDef("Type1")->getValueAsString("Expr"), &Records);
+      std::string T0 = coreTypeValue(Records, *A->getValueAsDef("Type0"));
+      std::string T1 = coreTypeValue(Records, *A->getValueAsDef("Type1"));
       std::string Mem = normalizeLlt(
           A->getValueAsDef("MemTy")->getValueAsString("Expr"), &Records);
+      if (T0.empty() || T1.empty())
+        PrintFatalError(A->getLoc(), "memdesc value type has no Core IR value");
       // The memory descriptor is its own query axis; the C++ builder passes
       // MMOIdx 0, not type index 2.
       unsigned Align = A->getValueAsInt("Align");
@@ -1565,7 +1874,8 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
         MemPred = memSize(0, MemBits, Align);
       }
       Out.push_back({"Legal", 0,
-                     WithPred(allOf({typeIs(0, T0), typeIs(1, T1), MemPred})),
+                     WithPred(
+                         allOf({typeIsValue(0, T0), typeIsValue(1, T1), MemPred})),
                      ""});
     }
     return;
@@ -1583,11 +1893,14 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
     return;
   }
   if (Builder == "BuilderUnsupportedFor") {
-    for (const Record *A : Args) {
-      std::vector<std::string> Ts;
-      collectTypes(*A, Records, Ts);
-      for (const std::string &T : Ts)
-        Out.push_back({"Unsupported", 0, WithPred(typeIs(0, T)), ""});
+    for (size_t AI = 0; AI != Args.size(); ++AI) {
+      const Record *A = Args[AI];
+      if (A->isSubClassOf("LegalizeNamedType"))
+        Out.push_back({"Unsupported", 0,
+                       WithPred(typeIsValue(0, coreTypeValue(Records, *A))), ""});
+      else
+        Out.push_back({"Unsupported", 0,
+                       WithPred(typeInValue(0, TypeList(AI))), ""});
     }
     return;
   }
@@ -1618,12 +1931,11 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
   }
   if (Builder == "BuilderLowerFor") {
     for (const Record *A : Args) {
-      std::string T0 = normalizeLlt(
-          A->getValueAsDef("Type0")->getValueAsString("Expr"), &Records);
-      std::string T1 = normalizeLlt(
-          A->getValueAsDef("Type1")->getValueAsString("Expr"), &Records);
-      Out.push_back(
-          {"Lower", 0, WithPred(allOf({typeIs(0, T0), typeIs(1, T1)})), ""});
+      std::string T0 = coreTypeValue(Records, *A->getValueAsDef("Type0"));
+      std::string T1 = coreTypeValue(Records, *A->getValueAsDef("Type1"));
+      Out.push_back({"Lower", 0,
+                     WithPred(allOf({typeIsValue(0, T0), typeIsValue(1, T1)})),
+                     ""});
     }
     return;
   }
@@ -1633,50 +1945,50 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
   }
   if (Builder == "BuilderLibcallFor" || Builder == "BuilderCustomFor") {
     StringRef Action = Builder == "BuilderLibcallFor" ? "Libcall" : "Custom";
-    for (const Record *A : Args) {
-      std::vector<std::string> Ts;
-      collectTypes(*A, Records, Ts);
-      for (const std::string &T : Ts)
-        Out.push_back({Action.str(), 0, WithPred(typeIs(0, T)), ""});
+    for (size_t AI = 0; AI != Args.size(); ++AI) {
+      const Record *A = Args[AI];
+      if (A->isSubClassOf("LegalizeNamedType"))
+        Out.push_back({Action.str(), 0,
+                       WithPred(typeIsValue(0, coreTypeValue(Records, *A))), ""});
+      else
+        Out.push_back({Action.str(), 0, WithPred(typeInValue(0, TypeList(AI))),
+                       ""});
     }
     return;
   }
   if (Builder == "BuilderCustomForCartesianProduct") {
-    std::vector<std::string> T0, T1;
-    collectTypes(*Args[0], Records, T0);
-    collectTypes(*Args[1], Records, T1);
-    for (const std::string &A : T0)
-      for (const std::string &B : T1)
-        Out.push_back(
-            {"Custom", 0, WithPred(allOf({typeIs(0, A), typeIs(1, B)})), ""});
+    Out.push_back({"Custom", 0,
+                   WithPred(allOf({typeInValue(0, TypeList(0)),
+                                   typeInValue(1, TypeList(1))})),
+                   ""});
     return;
   }
   if (Builder == "BuilderClampScalar" || Builder == "BuilderClampScalarOrElt") {
     unsigned Idx = Int(0);
-    std::string MinTy = Ty(1);
-    std::string MaxTy = Ty(2);
+    std::string MinTy = TypeValue(1);
+    std::string MaxTy = TypeValue(2);
     Out.push_back({"WidenScalar", Idx,
-                   WithPred(scalarNarrowerThan(Idx, lltBits(MinTy))),
-                   mutationJson(Idx, "set_elem_type", MinTy)});
+                   WithPred(scalarNarrowerThanValue(Idx, TypeBits(1))),
+                   mutationJsonValue(Idx, "set_elem_type", MinTy)});
     Out.push_back({"NarrowScalar", Idx,
-                   WithPred(scalarWiderThan(Idx, lltBits(MaxTy))),
-                   mutationJson(Idx, "set_elem_type", MaxTy)});
+                   WithPred(scalarWiderThanValue(Idx, TypeBits(2))),
+                   mutationJsonValue(Idx, "set_elem_type", MaxTy)});
     return;
   }
   if (Builder == "BuilderMinScalar") {
     unsigned Idx = Int(0);
-    std::string Ty0 = Ty(1);
+    std::string Ty0 = TypeValue(1);
     Out.push_back({"WidenScalar", Idx,
-                   WithPred(scalarNarrowerThan(Idx, lltBits(Ty0))),
-                   mutationJson(Idx, "set_elem_type", Ty0)});
+                   WithPred(scalarNarrowerThanValue(Idx, TypeBits(1))),
+                   mutationJsonValue(Idx, "set_elem_type", Ty0)});
     return;
   }
   if (Builder == "BuilderMaxScalar") {
     unsigned Idx = Int(0);
-    std::string Ty0 = Ty(1);
+    std::string Ty0 = TypeValue(1);
     Out.push_back({"NarrowScalar", Idx,
-                   WithPred(scalarWiderThan(Idx, lltBits(Ty0))),
-                   mutationJson(Idx, "set_elem_type", Ty0)});
+                   WithPred(scalarWiderThanValue(Idx, TypeBits(1))),
+                   mutationJsonValue(Idx, "set_elem_type", Ty0)});
     return;
   }
   // The guarded forms are minScalar/maxScalar with the query predicate
@@ -1685,11 +1997,11 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
   if (Builder == "BuilderMinScalarIf" || Builder == "BuilderMaxScalarIf") {
     const bool Min = Builder == "BuilderMinScalarIf";
     unsigned Idx = Int(0);
-    std::string Ty0 = Ty(1);
+    std::string Ty0 = TypeValue(1);
     Out.push_back({Min ? "WidenScalar" : "NarrowScalar", Idx,
-                   WithPred(Min ? scalarNarrowerThan(Idx, lltBits(Ty0))
-                                : scalarWiderThan(Idx, lltBits(Ty0))),
-                   mutationJson(Idx, "set_elem_type", Ty0)});
+                   WithPred(Min ? scalarNarrowerThanValue(Idx, TypeBits(1))
+                                : scalarWiderThanValue(Idx, TypeBits(1))),
+                   mutationJsonValue(Idx, "set_elem_type", Ty0)});
     return;
   }
   if (Builder == "BuilderWidenScalarToNextPow2" ||
@@ -1741,35 +2053,47 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
     // clampMinNumElements(Idx, MinTy, lanes(MinTy)).
     //   clampMaxNumElements(Idx, MaxTy, lanes(MaxTy)),
     // so each direction names its own lane count instead of "nextPow2".
-    std::string MinTy = Ty(1);
-    std::string MaxTy = Ty(2);
-    std::string Elt = lltElt(MinTy);
-    std::string Elem = elementTypeIs(Idx, Elt);
-    Out.push_back(
-        {"MoreElements", Idx,
-         WithPred(allOf({Elem, fewerElementsThan(Idx, lltLanes(MinTy))})),
-         mutationJsonInt(Idx, "set_lanes", lltLanes(MinTy))});
+    // MinTy names the element type and the lower lane count, so it has to be a
+    // literal vector; MaxTy may be a select vector, whose lane count becomes a
+    // select rather than one rule per branch.
+    std::string MinTy = normalizeLlt(Args[1]->getValueAsString("Expr"), &Records);
+    if (MinTy.empty()) {
+      Why = "nonliteral_type";
+      return;
+    }
+    std::string MaxLanes = coreTypeLanesValue(Records, *Args[2]);
+    if (MaxLanes.empty()) {
+      Why = "nonliteral_type";
+      return;
+    }
+    const unsigned MinLanes = lltLanes(MinTy);
+    std::string Elem = elementTypeIsValue(Idx, jsonStringValue(lltElt(MinTy)));
+    Out.push_back({"MoreElements", Idx,
+                   WithPred(allOf({Elem, fewerElementsThanValue(
+                                             Idx, std::to_string(MinLanes))})),
+                   mutationJsonInt(Idx, "set_lanes", MinLanes)});
     Out.push_back(
         {"FewerElements", Idx,
-         WithPred(allOf({Elem, moreElementsThan(Idx, lltLanes(MaxTy))})),
-         mutationJsonInt(Idx, "set_lanes", lltLanes(MaxTy))});
+         WithPred(allOf({Elem, moreElementsThanValue(Idx, MaxLanes)})),
+         mutationJsonValue(Idx, "set_lanes", MaxLanes)});
     return;
   }
   if (Builder == "BuilderClampMinNumElements" ||
       Builder == "BuilderClampMaxNumElements") {
-    // The literal form: index, element type, lane count.  The *Expr forms spell
-    // the count as C++ and are rejected by the RawArg check above, so this
-    // branch only ever sees a number.
-    const bool Min = Builder == "BuilderClampMinNumElements";
     unsigned Idx = Int(0);
-    std::string Elt = lltElt(Ty(1));
-    unsigned Lanes = Int(2);
+    std::string Elt = TypeValue(1);
+    std::string Lanes = coreLanesValue(Records, *Args[2]);
+    if (Lanes.empty()) {
+      Why = "raw_argument";
+      return;
+    }
+    const bool Min = Builder == "BuilderClampMinNumElements";
     Out.push_back(
         {Min ? "MoreElements" : "FewerElements", Idx,
-         WithPred(allOf({elementTypeIs(Idx, Elt),
-                         Min ? fewerElementsThan(Idx, Lanes)
-                             : moreElementsThan(Idx, Lanes)})),
-         mutationJsonInt(Idx, "set_lanes", Lanes)});
+         WithPred(allOf({elementTypeIsValue(Idx, Elt),
+                         Min ? fewerElementsThanValue(Idx, Lanes)
+                             : moreElementsThanValue(Idx, Lanes)})),
+         mutationJsonValue(Idx, "set_lanes", Lanes)});
     return;
   }
 
@@ -1864,7 +2188,7 @@ void LegalizerInfoEmitter::runCore(raw_ostream &OS) {
   };
   OS << "{\n";
   OS << "  \"schema\": \"legalizer-spec-core\",\n";
-  OS << "  \"version\": \"0.1\",\n";
+  OS << "  \"version\": \"0.2\",\n";
   OS << "  \"config\": {\"triple\": ";
   jsonString(OS, CoreTriple);
   OS << ", \"cpu\": ";
@@ -2139,6 +2463,11 @@ class LegalizerTableEmitterImpl {
 
     std::set<std::tuple<int, unsigned, unsigned>> Seen;
     for (const Record *T : Types) {
+      // A select type names a condition, not a class: the classes it can
+      // produce are its branches, which are named types of their own and are
+      // collected when they are reached.
+      if (T->isSubClassOf("LegalizeSelectType"))
+        continue;
       SmallVector<TableType, 4> Resolved;
       SmallVector<TableType, 4> Out;
       StringRef Expr = T->getValueAsString("Expr");
@@ -2198,6 +2527,8 @@ class LegalizerTableEmitterImpl {
 
     std::set<std::tuple<int, unsigned, unsigned>> Seen;
     for (const Record *T : Types) {
+      if (T->isSubClassOf("LegalizeSelectType"))
+        continue;
       SmallVector<TableType, 4> Resolved;
       if (!resolve(T->getValueAsString("Expr"), T->getName(), Resolved, 0))
         PrintFatalError(T->getLoc(),
@@ -2375,7 +2706,16 @@ class LegalizerTableEmitterImpl {
       if (Arg->isSubClassOf("LegalizeArgIndex"))
         HasIndex = true;
 
-    auto ResolveOne = [&](const Record &R, std::vector<TableType> &Tys) {
+    std::function<void(const Record &, std::vector<TableType> &)> ResolveOne =
+        [&](const Record &R, std::vector<TableType> &Tys) {
+      // A select type can yield any of its branches depending on the
+      // configuration, so the domain has to contain all of them.
+      if (R.isSubClassOf("LegalizeSelectType")) {
+        for (const Record *B : R.getValueAsListOfDefs("Types"))
+          ResolveOne(*B, Tys);
+        ResolveOne(*R.getValueAsDef("Otherwise"), Tys);
+        return;
+      }
       StringRef Expr = R.isSubClassOf("LegalizeInlineType")
                            ? R.getValueAsString("Text")
                            : R.getValueAsString("Expr");
@@ -2390,23 +2730,10 @@ class LegalizerTableEmitterImpl {
     // two named lists.
     std::function<void(const Record &, std::vector<TableType> &)> ExpandList =
         [&](const Record &List, std::vector<TableType> &L) {
-          if (List.isSubClassOf("LegalizeTypeListChoice")) {
-            StringRef Text = List.getValueAsString("Text");
-            StringRef Then, Else;
-            SmallVector<StringRef, 2> Branches;
-            if (splitConditional(Text, Then, Else)) {
-              Branches.push_back(Then.trim());
-              Branches.push_back(Else.trim());
-            } else {
-              Branches.push_back(Text.trim());
-            }
-            for (StringRef B : Branches) {
-              const Record *R = Records.getDef(B);
-              if (!R || !R->isSubClassOf("LegalizeNamedTypeList"))
-                PrintFatalError(List.getLoc(),
-                                "cannot resolve type list '" + B + "'");
-              ExpandList(*R, L);
-            }
+          if (List.isSubClassOf("LegalizeSelectTypeList")) {
+            for (const Record *B : List.getValueAsListOfDefs("Lists"))
+              ExpandList(*B, L);
+            ExpandList(*List.getValueAsDef("Otherwise"), L);
             return;
           }
           for (const Record *E : List.getValueAsListOfDefs("Elems")) {
@@ -2423,7 +2750,7 @@ class LegalizerTableEmitterImpl {
       for (const Record *Arg : Args) {
         if (!Arg->isSubClassOf("LegalizeNamedTypeList") &&
             !Arg->isSubClassOf("LegalizeInlineTypeList") &&
-            !Arg->isSubClassOf("LegalizeTypeListChoice"))
+            !Arg->isSubClassOf("LegalizeSelectTypeList"))
           continue;
         std::vector<TableType> L;
         ExpandList(*Arg, L);
@@ -2449,7 +2776,7 @@ class LegalizerTableEmitterImpl {
     for (const Record *Arg : Args) {
       if (Arg->isSubClassOf("LegalizeNamedTypeList") ||
           Arg->isSubClassOf("LegalizeInlineTypeList") ||
-          Arg->isSubClassOf("LegalizeTypeListChoice")) {
+          Arg->isSubClassOf("LegalizeSelectTypeList")) {
         std::vector<TableType> L;
         ExpandList(*Arg, L);
         for (const TableType &T : L)
@@ -2519,8 +2846,8 @@ class LegalizerTableEmitterImpl {
   static std::string typeListText(const Record &Arg) {
     if (Arg.isSubClassOf("LegalizeNamedTypeList"))
       return Arg.getName().str();
-    if (Arg.isSubClassOf("LegalizeTypeListChoice"))
-      return "(" + squashSpace(Arg.getValueAsString("Text")) + ")";
+    if (Arg.isSubClassOf("LegalizeSelectTypeList"))
+      return selectText(Arg, "Lists", "Otherwise");
     if (Arg.isSubClassOf("LegalizeInlineTypeList")) {
       std::string S = "{";
       StringRef Sep;
@@ -2536,10 +2863,30 @@ class LegalizerTableEmitterImpl {
                         Arg.getName() + "'");
   }
 
-  /// A lane count argument: a literal, or the C++ text the .td carried.
+  /// A lane count argument: a literal, a structured select, or the C++ text the
+  /// .td carried.
   static std::string laneText(const Record &Arg) {
     if (Arg.isSubClassOf("LegalizeArgLanes"))
       return std::to_string(Arg.getValueAsInt("Value"));
+    if (Arg.isSubClassOf("LegalizeSelectLanes")) {
+      std::vector<const Record *> Conds = Arg.getValueAsListOfDefs("Conds");
+      std::vector<int64_t> Values = Arg.getValueAsListOfInts("Values");
+      if (Conds.size() != Values.size())
+        PrintFatalError(Arg.getLoc(),
+                        "'" + Arg.getName() + "' has " +
+                            std::to_string(Conds.size()) + " guards but " +
+                            std::to_string(Values.size()) + " values");
+      std::string Expr = std::to_string(Arg.getValueAsInt("Otherwise"));
+      for (size_t I = Conds.size(); I-- > 0;) {
+        std::string Cond;
+        raw_string_ostream C(Cond);
+        renderPredicate(*Conds[I], C);
+        C.flush();
+        Expr = "(" + Cond + " ? " + std::to_string(Values[I]) + " : " + Expr +
+               ")";
+      }
+      return Expr;
+    }
     if (Arg.isSubClassOf("LegalizeRawArg"))
       return "(" + squashSpace(Arg.getValueAsString("Text")) + ")";
     PrintFatalError(Arg.getLoc(),
@@ -3479,9 +3826,14 @@ public:
     std::vector<const Record *> Types =
         Records.getAllDerivedDefinitions("LegalizeNamedType");
     llvm::sort(Types, LessRecordByID());
-    for (const Record *T : Types)
-      OS << "  [[maybe_unused]] const LLT " << T->getName() << " = "
-         << squashSpace(T->getValueAsString("Expr")) << ";\n";
+    for (const Record *T : Types) {
+      OS << "  [[maybe_unused]] const LLT " << T->getName() << " = ";
+      if (T->isSubClassOf("LegalizeSelectType"))
+        OS << squashSpace(selectText(*T, "Types", "Otherwise"));
+      else
+        OS << squashSpace(T->getValueAsString("Expr"));
+      OS << ";\n";
+    }
 
     std::vector<const Record *> Lists =
         Records.getAllDerivedDefinitions("LegalizeNamedTypeList");
@@ -3633,7 +3985,7 @@ public:
         for (const Record *Arg : Args)
           if (Arg->isSubClassOf("LegalizeNamedTypeList") ||
               Arg->isSubClassOf("LegalizeInlineTypeList") ||
-              Arg->isSubClassOf("LegalizeTypeListChoice"))
+              Arg->isSubClassOf("LegalizeSelectTypeList"))
             ++Lists;
         Arity = std::max(Arity, Lists);
       }

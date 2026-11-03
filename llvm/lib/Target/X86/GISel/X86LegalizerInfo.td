@@ -78,6 +78,8 @@ def VPOPCNTAndVLX : LegalizePredicateDag<(all_of HasVPOPCNTDQ, HasVLX)>;
 def LZCNTAnd64Bit : LegalizePredicateDag<(all_of HasLZCNT, Is64Bit)>;
 def BMIAnd64Bit : LegalizePredicateDag<(all_of HasBMI, Is64Bit)>;
 def SSE1And64Bit : LegalizePredicateDag<(all_of HasSSE1, Is64Bit)>;
+def Is64BitAndAVX : LegalizePredicateDag<(all_of Is64Bit, HasAVX)>;
+def Is64BitAndAVX512 : LegalizePredicateDag<(all_of Is64Bit, HasAVX512)>;
 def SSE2And64Bit : LegalizePredicateDag<(all_of HasSSE2, Is64Bit)>;
 def NotCMOV : LegalizePredicateDag<(not HasCMOV)>;
 
@@ -183,7 +185,7 @@ def X86_s32 : LegalizeNamedType<"LLT::scalar(32)">;
 def X86_s64 : LegalizeNamedType<"LLT::scalar(64)">;
 def X86_s80 : LegalizeNamedType<"LLT::scalar(80)">;
 def X86_s128 : LegalizeNamedType<"LLT::scalar(128)">;
-def X86_sMaxScalar : LegalizeNamedType<"Subtarget.is64Bit() ? X86_s64 : X86_s32">;
+def X86_sMaxScalar : LegalizeSelectType<[Is64Bit], [X86_s64], X86_s32>;
 
 def X86_v2s32 : LegalizeNamedType<"LLT::fixed_vector(2, 32)">;
 def X86_v4s8 : LegalizeNamedType<"LLT::fixed_vector(4, 8)">;
@@ -205,12 +207,24 @@ def X86_v32s16 : LegalizeNamedType<"LLT::fixed_vector(32, 16)">;
 def X86_v16s32 : LegalizeNamedType<"LLT::fixed_vector(16, 32)">;
 def X86_v8s64 : LegalizeNamedType<"LLT::fixed_vector(8, 64)">;
 
-def X86_s8MaxVector : LegalizeNamedType<"HasAVX512 ? X86_v64s8 : HasAVX ? X86_v32s8 : X86_v16s8">;
-def X86_s16MaxVector : LegalizeNamedType<
-    "HasAVX512 ? X86_v32s16 : HasAVX ? X86_v16s16 : X86_v8s16">;
-def X86_s32MaxVector : LegalizeNamedType<
-    "HasAVX512 ? X86_v16s32 : HasAVX ? X86_v8s32 : X86_v4s32">;
-def X86_s64MaxVector : LegalizeNamedType<"HasAVX512 ? X86_v8s64 : HasAVX ? X86_v4s64 : X86_v2s64">;
+def X86_s8MaxVector
+    : LegalizeSelectType<[HasAVX512, HasAVX], [X86_v64s8, X86_v32s8],
+                         X86_v16s8>;
+def X86_s16MaxVector
+    : LegalizeSelectType<[HasAVX512, HasAVX], [X86_v32s16, X86_v16s16],
+                         X86_v8s16>;
+def X86_s32MaxVector
+    : LegalizeSelectType<[HasAVX512, HasAVX], [X86_v16s32, X86_v8s32],
+                         X86_v4s32>;
+def X86_s64MaxVector
+    : LegalizeSelectType<[HasAVX512, HasAVX], [X86_v8s64, X86_v4s64],
+                         X86_v2s64>;
+
+// Types chosen by one cached boolean.  They were inline expressions before;
+// naming them keeps the Core IR able to record the condition.
+def X86_s64OrS32 : LegalizeSelectType<[HasSSE2], [X86_s64], X86_s32>;
+def X86_X87OrS32 : LegalizeSelectType<[UseX87NotSSE1], [X86_s16], X86_s32>;
+def X86_CMOVOrS8 : LegalizeSelectType<[HasCMOV], [X86_s16], X86_s8>;
 
 // Types used by individual rule sets.
 def X86_IntTypes32 : LegalizeNamedTypeList<[X86_s8, X86_s16, X86_s32, X86_p0]>;
@@ -241,8 +255,10 @@ def X86_IMPLICIT_DEF : LegalizeRuleSet<[
     ClampNumElements<0, X86_v8s16, X86_s16MaxVector>,
     ClampNumElements<0, X86_v4s32, X86_s32MaxVector>,
     ClampNumElements<0, X86_v2s64, X86_s64MaxVector>,
-    ClampMaxNumElementsExpr<0, X86_p0,
-                                "Is64Bit ? X86_s64MaxVector.getNumElements() : X86_s32MaxVector.getNumElements()">,
+    ClampMaxNumElementsSel<0, X86_p0,
+        LegalizeSelectLanes<[Is64BitAndAVX512, Is64BitAndAVX, Is64Bit,
+                             HasAVX512, HasAVX],
+                            [8, 4, 2, 16, 8], 4>>,
     ScalarizeIf<LegalizeQueryPredicate<"scalarOrEltWiderThan(0, 64)">, 0>,
   ];
 }
@@ -339,12 +355,14 @@ def X86_ADD : LegalizeRuleSet<["G_ADD", "G_SUB"]> {
     ClampMinNumElements<0, X86_s16, 8>,
     ClampMinNumElements<0, X86_s32, 4>,
     ClampMinNumElements<0, X86_s64, 2>,
-    ClampMaxNumElementsExpr<0, X86_s8, "HasBWI ? 64 : (HasAVX2 ? 32 : 16)">,
-    ClampMaxNumElementsExpr<0, X86_s16, "HasBWI ? 32 : (HasAVX2 ? 16 : 8)">,
-    ClampMaxNumElementsExpr<0, X86_s32,
-                                "HasAVX512 ? 16 : (HasAVX2 ? 8 : 4)">,
-    ClampMaxNumElementsExpr<0, X86_s64,
-                                "HasAVX512 ? 8 : (HasAVX2 ? 4 : 2)">,
+    ClampMaxNumElementsSel<0, X86_s8,
+        LegalizeSelectLanes<[HasBWI, HasAVX2], [64, 32], 16>>,
+    ClampMaxNumElementsSel<0, X86_s16,
+        LegalizeSelectLanes<[HasBWI, HasAVX2], [32, 16], 8>>,
+    ClampMaxNumElementsSel<0, X86_s32,
+        LegalizeSelectLanes<[HasAVX512, HasAVX2], [16, 8], 4>>,
+    ClampMaxNumElementsSel<0, X86_s64,
+        LegalizeSelectLanes<[HasAVX512, HasAVX2], [8, 4], 2>>,
     WidenScalarToNextPow2<0, 32>,
     ClampScalar<0, X86_s8, X86_sMaxScalar>,
     Scalarize<0>,
@@ -376,10 +394,12 @@ def X86_MUL : LegalizeRuleSet<["G_MUL"]> {
     LegalForIf<HasBWI, [X86_v32s16]>,
     ClampMinNumElements<0, X86_s16, 8>,
     ClampMinNumElements<0, X86_s32, 4>,
-    ClampMinNumElementsExpr<0, X86_s64, "HasVLX ? 2 : 8">,
-    ClampMaxNumElementsExpr<0, X86_s16, "HasBWI ? 32 : (HasAVX2 ? 16 : 8)">,
-    ClampMaxNumElementsExpr<0, X86_s32,
-                                "HasAVX512 ? 16 : (HasAVX2 ? 8 : 4)">,
+    ClampMinNumElementsSel<0, X86_s64,
+        LegalizeSelectLanes<[HasVLX], [2], 8>>,
+    ClampMaxNumElementsSel<0, X86_s16,
+        LegalizeSelectLanes<[HasBWI, HasAVX2], [32, 16], 8>>,
+    ClampMaxNumElementsSel<0, X86_s32,
+        LegalizeSelectLanes<[HasAVX512, HasAVX2], [16, 8], 4>>,
     ClampMaxNumElements<0, X86_s64, 8>,
     WidenScalarToNextPow2<0, 32>,
     ClampScalar<0, X86_s8, X86_sMaxScalar>,
@@ -439,7 +459,7 @@ def X86_ICMP : LegalizeRuleSet<["G_ICMP"]> {
   let Rules = [
     LegalForCartesianProduct<
         LegalizeInlineTypeList<[X86_s8]>,
-        LegalizeTypeListChoice<"Is64Bit ? X86_IntTypes64 : X86_IntTypes32">>,
+        LegalizeSelectTypeList<[Is64Bit], [X86_IntTypes64], X86_IntTypes32>>,
     ClampScalar<0, X86_s8, X86_s8>,
     WidenScalarToNextPow2<1, 8>,
     ClampScalar<1, X86_s8, X86_sMaxScalar>,
@@ -522,7 +542,7 @@ def X86_BRCOND : LegalizeRuleSet<["G_BRCOND"]> {
 def X86_PTRTOINT : LegalizeRuleSet<["G_PTRTOINT"]> {
   let Rules = [
     LegalForCartesianProduct<
-        LegalizeTypeListChoice<"Is64Bit ? X86_PtrTypes64 : X86_PtrTypes32">,
+        LegalizeSelectTypeList<[Is64Bit], [X86_PtrTypes64], X86_PtrTypes32>,
         LegalizeInlineTypeList<[X86_p0]>>,
     MaxScalar<0, X86_sMaxScalar>,
     WidenScalarToNextPow2<0, 8>,
@@ -734,7 +754,7 @@ def X86_FCMP : LegalizeRuleSet<["G_FCMP"]> {
     LegalForIf<SSE2OrX87, [X86_s8, X86_s64]>,
     LegalForIf<UseX87, [X86_s8, X86_s80]>,
     ClampScalar<0, X86_s8, X86_s8>,
-    ClampScalar<1, X86_s32, LegalizeInlineType<"HasSSE2 ? X86_s64 : X86_s32">>,
+    ClampScalar<1, X86_s32, X86_s64OrS32>,
     WidenScalarToNextPow2<1>,
   ];
 }
@@ -765,12 +785,12 @@ def X86_SITOFP : LegalizeRuleSet<["G_SITOFP"]> {
     LegalForPairsIf<SSE1And64Bit, [LegalizeTypePair<X86_s32, X86_s64>]>,
     LegalForPairsIf<HasSSE2, [LegalizeTypePair<X86_s64, X86_s32>]>,
     LegalForPairsIf<SSE2And64Bit, [LegalizeTypePair<X86_s64, X86_s64>]>,
-    ClampScalar<1, LegalizeInlineType<"(UseX87 && !HasSSE1) ? X86_s16 : X86_s32">, X86_sMaxScalar>,
+    ClampScalar<1, X86_X87OrS32, X86_sMaxScalar>,
     WidenScalarToNextPow2<1>,
     CustomForCartesianProductIf<UseX87,
                                 LegalizeInlineTypeList<[X86_s32, X86_s64, X86_s80]>,
                                 LegalizeInlineTypeList<[X86_s16, X86_s32, X86_s64]>>,
-    ClampScalar<0, X86_s32, LegalizeInlineType<"HasSSE2 ? X86_s64 : X86_s32">>,
+    ClampScalar<0, X86_s32, X86_s64OrS32>,
     WidenScalarToNextPow2<0>,
   ];
 }
@@ -781,12 +801,12 @@ def X86_FPTOSI : LegalizeRuleSet<["G_FPTOSI"]> {
     LegalForPairsIf<SSE1And64Bit, [LegalizeTypePair<X86_s64, X86_s32>]>,
     LegalForPairsIf<HasSSE2, [LegalizeTypePair<X86_s32, X86_s64>]>,
     LegalForPairsIf<SSE2And64Bit, [LegalizeTypePair<X86_s64, X86_s64>]>,
-    ClampScalar<0, LegalizeInlineType<"(UseX87 && !HasSSE1) ? X86_s16 : X86_s32">, X86_sMaxScalar>,
+    ClampScalar<0, X86_X87OrS32, X86_sMaxScalar>,
     WidenScalarToNextPow2<0>,
     CustomForCartesianProductIf<UseX87,
                                 LegalizeInlineTypeList<[X86_s16, X86_s32, X86_s64]>,
                                 LegalizeInlineTypeList<[X86_s32, X86_s64, X86_s80]>>,
-    ClampScalar<1, X86_s32, LegalizeInlineType<"HasSSE2 ? X86_s64 : X86_s32">>,
+    ClampScalar<1, X86_s32, X86_s64OrS32>,
     WidenScalarToNextPow2<1>,
   ];
 }
@@ -807,7 +827,7 @@ def X86_UITOFP : LegalizeRuleSet<["G_UITOFP"]> {
                      [LegalizeTypePair<X86_s32, X86_s32>, LegalizeTypePair<X86_s32, X86_s64>, LegalizeTypePair<X86_s64, X86_s32>, LegalizeTypePair<X86_s64, X86_s64>]>,
     LegalizeQueryGuardedCall<BuilderCustomIf, GPRNarrowNoAVX512, []>,
     LegalizeQueryGuardedCall<BuilderLowerIf, GPRLower64, []>,
-    ClampScalar<0, X86_s32, LegalizeInlineType<"HasSSE2 ? X86_s64 : X86_s32">>,
+    ClampScalar<0, X86_s32, X86_s64OrS32>,
     WidenScalarToNextPow2<0>,
     ClampScalar<1, X86_s32, X86_sMaxScalar>,
     WidenScalarToNextPow2<1>,
@@ -828,7 +848,7 @@ def X86_FPTOUI : LegalizeRuleSet<["G_FPTOUI"]> {
     LegalizeQueryGuardedCall<BuilderLowerIf, FPResultGPRLower64, []>,
     ClampScalar<0, X86_s32, X86_sMaxScalar>,
     WidenScalarToNextPow2<0>,
-    ClampScalar<1, X86_s32, LegalizeInlineType<"HasSSE2 ? X86_s64 : X86_s32">>,
+    ClampScalar<1, X86_s32, X86_s64OrS32>,
     WidenScalarToNextPow2<1>,
   ];
 }
@@ -918,7 +938,7 @@ def X86_SELECT : LegalizeRuleSet<["G_SELECT"]> {
     LegalForPairsIf<UseX87, [LegalizeTypePair<X86_s80, X86_s32>]>,
     ClampScalar<1, X86_s32, X86_s32>,
     WidenScalarToNextPow2<0, 8>,
-    ClampScalar<0, LegalizeInlineType<"HasCMOV ? X86_s16 : X86_s8">, X86_sMaxScalar>,
+    ClampScalar<0, X86_CMOVOrS8, X86_sMaxScalar>,
   ];
 }
 
@@ -952,7 +972,7 @@ def X86_INTRINSIC_ROUNDEVEN : LegalizeRuleSet<[
 ]> {
   let Rules = [
     Scalarize<0>,
-    MinScalar<0, LegalizeInlineType<"LLT::scalar(32)">>,
+    MinScalar<0, X86_s32>,
     Libcall,
   ];
 }

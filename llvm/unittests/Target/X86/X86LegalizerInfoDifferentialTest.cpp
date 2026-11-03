@@ -1487,15 +1487,131 @@ TEST(RuleCountsManifest, MatchesCoreIR) {
   EXPECT_EQ(EscapedRuleCount, EscapedInLiteralSets + EscapedInAllEscapedSets);
   EXPECT_EQ(TableCount, LiteralSetCount + OnlyEscapedSetCount);
 
-  // The rule sets that only occur in the escape list, sorted.  Memdesc and
-  // pointer rules are literal now, so only G_INTTOPTR's clampScalar alias
-  // remains unexpanded.
-  const std::vector<std::string> ExpectedOnlyEscaped = {"X86_INTTOPTR"};
+  // The rule sets that only occur in the escape list, sorted.  Every rule set
+  // now has at least one literal rule, so there are none.
+  const std::vector<std::string> ExpectedOnlyEscaped = {};
   std::vector<std::string> ActualOnlyEscaped(OnlyEscapedSetNames.begin(),
                                              OnlyEscapedSetNames.end());
   ASSERT_EQ(ActualOnlyEscaped.size(), ExpectedOnlyEscaped.size());
   for (size_t I = 0; I < ExpectedOnlyEscaped.size(); ++I)
     EXPECT_EQ(ActualOnlyEscaped[I], ExpectedOnlyEscaped[I]) << "index " << I;
+}
+
+// A select type or lane count must stay a conditional node in the generated
+// file.  Folding it would bake in one subtarget's answer and silently lose the
+// others: the reader cannot tell a folded constant from a literal rule, so a
+// regression here is invisible to the differential tests over one config.
+static const json::Object *coreRulesetByName(const json::Object &Core,
+                                             StringRef Def) {
+  const json::Array *Rulesets = Core.getArray("rulesets");
+  if (!Rulesets)
+    return nullptr;
+  for (const json::Value &V : *Rulesets) {
+    const json::Object *O = V.getAsObject();
+    if (!O)
+      continue;
+    std::optional<StringRef> D = O->getString("def");
+    if (D && *D == Def)
+      return O;
+  }
+  return nullptr;
+}
+
+static const json::Object *findCoreRule(const json::Object &Ruleset,
+                                        int64_t Index, StringRef Action) {
+  const json::Array *Rules = Ruleset.getArray("rules");
+  if (!Rules)
+    return nullptr;
+  for (const json::Value &V : *Rules) {
+    const json::Object *R = V.getAsObject();
+    if (!R)
+      continue;
+    std::optional<int64_t> I = R->getInteger("rule_index");
+    std::optional<StringRef> A = R->getString("action");
+    if (I && *I == Index && A && *A == Action)
+      return R;
+  }
+  return nullptr;
+}
+
+TEST_F(X86LegalizerDifferentialTest, SelectGuardsAreNotFolded) {
+  auto Buffer = MemoryBuffer::getFile(X86_LEGALIZER_CORE_JSON);
+  ASSERT_TRUE(!!Buffer) << X86_LEGALIZER_CORE_JSON;
+  auto Value = json::parse((*Buffer)->getBuffer());
+  ASSERT_TRUE(!!Value) << toString(Value.takeError());
+  const json::Object *Core = Value->getAsObject();
+  ASSERT_NE(Core, nullptr);
+
+  // A type position: X86_INTTOPTR legalizes (p0, sMaxScalar), so slot 1 is the
+  // Is64Bit select rather than one of its branches.
+  const json::Object *IntToPtr = coreRulesetByName(*Core, "X86_INTTOPTR");
+  ASSERT_NE(IntToPtr, nullptr);
+  const json::Object *Pair = findCoreRule(*IntToPtr, 0, "Legal");
+  ASSERT_NE(Pair, nullptr);
+  const json::Object *PairPred = Pair->getObject("predicate");
+  ASSERT_NE(PairPred, nullptr);
+  const json::Array *PairArgs = PairPred->getArray("args");
+  ASSERT_NE(PairArgs, nullptr);
+  ASSERT_EQ(PairArgs->size(), 2u);
+  const json::Object *Slot1 = (*PairArgs)[1].getAsObject();
+  ASSERT_NE(Slot1, nullptr);
+  EXPECT_EQ(Slot1->getString("name").value_or(""), "typeIs");
+  const json::Array *Slot1Args = Slot1->getArray("args");
+  ASSERT_NE(Slot1Args, nullptr);
+  ASSERT_EQ(Slot1Args->size(), 2u);
+  const json::Object *Slot1Value = (*Slot1Args)[1].getAsObject();
+  ASSERT_NE(Slot1Value, nullptr);
+  const json::Object *TypeSelect = Slot1Value->getObject("select");
+  ASSERT_NE(TypeSelect, nullptr) << "slot 1 must keep the select node";
+  EXPECT_EQ(TypeSelect->getString("then").value_or(""), "s64");
+  EXPECT_EQ(TypeSelect->getString("else").value_or(""), "s32");
+
+  // A bit-count position: ClampScalar's upper bound is the same select, and
+  // the scalarWiderThan leaf reads the bit count, not a chosen number.
+  const json::Object *Constant = coreRulesetByName(*Core, "X86_CONSTANT");
+  ASSERT_NE(Constant, nullptr);
+  const json::Object *Narrow = findCoreRule(*Constant, 3, "NarrowScalar");
+  ASSERT_NE(Narrow, nullptr);
+  const json::Object *NarrowPred = Narrow->getObject("predicate");
+  ASSERT_NE(NarrowPred, nullptr);
+  const json::Array *NarrowArgs = NarrowPred->getArray("args");
+  ASSERT_NE(NarrowArgs, nullptr);
+  ASSERT_EQ(NarrowArgs->size(), 2u);
+  const json::Object *BitsValue = (*NarrowArgs)[1].getAsObject();
+  ASSERT_NE(BitsValue, nullptr);
+  const json::Object *BitsSelect = BitsValue->getObject("select");
+  ASSERT_NE(BitsSelect, nullptr) << "the clamp bound must keep the select node";
+  EXPECT_EQ(BitsSelect->getString("then").value_or(""), "64");
+  EXPECT_EQ(BitsSelect->getString("else").value_or(""), "32");
+
+  // A lane-count position: the max-vector clamp is a priority list, so its
+  // false branch is another select rather than the fallback count.
+  const json::Object *Add = coreRulesetByName(*Core, "X86_ADD");
+  ASSERT_NE(Add, nullptr);
+  const json::Object *ClampMax = findCoreRule(*Add, 10, "FewerElements");
+  ASSERT_NE(ClampMax, nullptr);
+  const json::Object *ClampPred = ClampMax->getObject("predicate");
+  ASSERT_NE(ClampPred, nullptr);
+  const json::Array *ClampArgs = ClampPred->getArray("args");
+  ASSERT_NE(ClampArgs, nullptr);
+  ASSERT_EQ(ClampArgs->size(), 2u);
+  const json::Object *LanesLeaf = (*ClampArgs)[1].getAsObject();
+  ASSERT_NE(LanesLeaf, nullptr);
+  EXPECT_EQ(LanesLeaf->getString("name").value_or(""), "moreElementsThan");
+  const json::Array *LanesArgs = LanesLeaf->getArray("args");
+  ASSERT_NE(LanesArgs, nullptr);
+  ASSERT_EQ(LanesArgs->size(), 2u);
+  const json::Object *LanesValue = (*LanesArgs)[1].getAsObject();
+  ASSERT_NE(LanesValue, nullptr);
+  const json::Object *LanesSelect = LanesValue->getObject("select");
+  ASSERT_NE(LanesSelect, nullptr);
+  EXPECT_EQ(LanesSelect->getInteger("then").value_or(-1), 64);
+  const json::Object *ElseValue = LanesSelect->getObject("else");
+  ASSERT_NE(ElseValue, nullptr);
+  const json::Object *ElseSelect = ElseValue->getObject("select");
+  ASSERT_NE(ElseSelect, nullptr) << "the fallback must stay a nested select";
+  EXPECT_EQ(ElseSelect->getInteger("then").value_or(-1), 32);
+  EXPECT_EQ(ElseSelect->getInteger("else").value_or(-1), 16);
 }
 
 TEST_F(X86LegalizerDifferentialTest, ReferenceBehaviorFingerprint) {
@@ -2572,10 +2688,6 @@ struct RuleIndexMutationsOff {
 // (changeElementSize).  The full domain deliberately includes such shapes; a
 // first-match witness must not, because the witness records the reference's
 // decision and the reference applies the mutation.
-static bool stepAppliesMutation(const LegalizeActionStep &Step) {
-  return actionCarriesType(Step.Action);
-}
-
 // The element-size mutations rebuild an LLT whose element type may not be a
 // pointer, so they assert on pointer and pointer-vector types.  The
 // element-count mutations build a fresh vector instead and accept a pointer
@@ -2633,7 +2745,10 @@ collectRuleWitnesses(ArrayRef<Sigma> Sigmas, const std::set<RuleKey> &Targets) {
         const RuleKey Key{TI, Hit->RuleIndex};
         if (!Targets.count(Key))
           return;
-        if (stepAppliesMutation(Hit->Step) &&
+        // Only the element-size mutations rebuild an LLT whose element may
+        // not be a pointer; element-count mutations build a fresh vector and
+        // are safe on pointer vectors (see actionChangesElementSize).
+        if (actionChangesElementSize(Hit->Step.Action) &&
             queryHasPointer(Types, HasMem, MemTy))
           return;
         Ledger.ConfigHits[CI].insert(Key);
@@ -4461,17 +4576,19 @@ TEST_F(X86LegalizerDifferentialTest, PinnedTuple) {
 
 // TC-31: the escapes are the part of the table that is C++ in disguise.  Pin
 // the count so that turning a rule into generated structure, or losing an
-// escape to a parse error, is visible; and pin the one entry this feature
-// depends on -- X86_CTPOP's ClampScalar takes X86_sMaxScalar, a derived type,
-// so that rule is copied into the .td verbatim rather than generated.
+// escape to a parse error, is visible.  X86_CTPOP's ClampScalar used to be the
+// model case -- it took X86_sMaxScalar, a derived type, so the rule was copied
+// into the .td verbatim; that type is now a structured select, so the rule is
+// generated like any other.
 TEST_F(X86LegalizerDifferentialTest, EscapeAccounting) {
   EXPECT_EQ(X86_PIN_ESCAPES_ACTUAL, X86_PIN_ESCAPES_RECORDED)
       << "escape count changed";
-  EXPECT_GT(X86_PIN_ESCAPES_ACTUAL, 0) << "escapes[] is empty";
+  EXPECT_EQ((int64_t)X86_PIN_ESCAPES_ACTUAL,
+            manifestCount("escaped_td_rule_count"))
+      << "the pinned escape count must be the manifest's denominator";
   EXPECT_EQ(X86_PIN_CTPOP_ESCAPES_ACTUAL, X86_PIN_CTPOP_ESCAPES_RECORDED)
-      << "X86_CTPOP no longer has exactly one nonliteral_type escape whose "
-         "reason names clampScalar";
-  EXPECT_EQ(X86_PIN_CTPOP_ESCAPES_ACTUAL, 1);
+      << "X86_CTPOP's clampScalar escape count changed";
+  EXPECT_EQ(X86_PIN_CTPOP_ESCAPES_ACTUAL, 0);
 }
 
 //===----------------------------------------------------------------------===//

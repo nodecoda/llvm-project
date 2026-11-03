@@ -29,13 +29,16 @@ def NeitherVpopcntdqNorVLX
 def s16 : LegalizeNamedType<"LLT::scalar(16)">;
 def s32 : LegalizeNamedType<"LLT::scalar(32)">;
 def s64 : LegalizeNamedType<"LLT::scalar(64)">;
-def sMaxScalar : LegalizeNamedType<"Subtarget.is64Bit() ? s64 : s32">;
+def sMaxScalar : LegalizeSelectType<[Is64Bit], [s64], s32>;
 def v4s32 : LegalizeNamedType<"LLT::fixed_vector(4, 32)">;
 def Tys : LegalizeNamedTypeList<[s32]>;
+def Tys64 : LegalizeNamedTypeList<[s64]>;
 
 // CHECK:      bool SlowMem = Subtarget.hasSlowUAMem();
 // CHECK:      bool SlowMemOr64 = SlowMem || Is64Bit;
 // CHECK:      const LLT s32 = LLT::scalar(32);
+// A select type is still one LLT constant: the guards stay in its initializer.
+// CHECK:      const LLT sMaxScalar = (Is64Bit ? s64 : s32);
 // CHECK:      const std::initializer_list<LLT> Tys = {s32};
 
 def Test_CTPOP : LegalizeRuleSet<["G_CTPOP"]> {
@@ -84,13 +87,14 @@ def Test_ADD : LegalizeRuleSet<["G_ADD"]> {
 def Test_CARTESIAN : LegalizeRuleSet<["G_PTRTOINT"]> {
   let Rules = [
     LegalForCartesianProduct<LegalizeInlineTypeList<[s16, s32]>, Tys>,
-    LegalForCartesianProduct<LegalizeTypeListChoice<"Is64Bit ? Tys : Tys">, Tys>,
+    LegalForCartesianProduct<LegalizeSelectTypeList<[Is64Bit], [Tys64], Tys>,
+                             Tys>,
   ];
 }
 
 // CHECK:      getActionDefinitionsBuilder(G_PTRTOINT)
 // CHECK-NEXT: .legalForCartesianProduct({s16, s32}, Tys)
-// CHECK-NEXT: .legalForCartesianProduct(Is64Bit ? Tys : Tys, Tys);
+// CHECK-NEXT: .legalForCartesianProduct((Is64Bit ? Tys64 : Tys), Tys);
 
 // The only reference to SlowMem is the condition of SlowMemOr64, so this rule
 // set is what keeps both of them in the generated constructor.

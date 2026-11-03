@@ -142,9 +142,29 @@ class LegalizeNamedType<string expr> : LegalizeArgType {
   string Expr = expr;
 }
 
-/// A type position that holds a C++ expression, e.g. `HasSSE2 ? s64 : s32`.
+/// A type chosen by a priority list of cached-boolean guards:
+///
+///   def sMaxScalar
+///       : LegalizeSelectType<[Is64Bit], [s64], s32>;
+///
+/// It is still a named type: -gen-legalizer declares one LLT constant whose
+/// initializer is the conditional, so every position that accepts a named type
+/// accepts it without a signature change.  Core IR keeps the guards as a select
+/// node; folding them at build time would pick the type of whichever
+/// configuration generated the file and silently lose the others.
+class LegalizeSelectType<list<LegalizeBoolPredicate> conds,
+                         list<LegalizeNamedType> types,
+                         LegalizeNamedType otherwise>
+    : LegalizeNamedType<""> {
+  list<LegalizeBoolPredicate> Conds = conds;
+  list<LegalizeNamedType> Types = types;
+  LegalizeNamedType Otherwise = otherwise;
+}
+
+/// A type position that holds a C++ expression that is not a type choice.
 /// Unlike a named type it declares nothing: the text is written straight into
-/// the builder call, so it has to be a single expression.
+/// the builder call, so it has to be a single expression.  A choice between
+/// types belongs in `LegalizeSelectType`, which keeps its guards in Core IR.
 class LegalizeInlineType<string text> : LegalizeArgType {
   string Text = text;
 }
@@ -169,10 +189,15 @@ class LegalizeNamedTypeList<list<LegalizeNamedType> elems>
   list<LegalizeNamedType> Elems = elems;
 }
 
-/// `Is64Bit ? PtrTypes64 : PtrTypes32`: one of two named lists, chosen at run
-/// time.  Only needed when the choice is a run-time condition.
-class LegalizeTypeListChoice<string text> : LegalizeArgTypeList {
-  string Text = text;
+/// `Is64Bit ? PtrTypes64 : PtrTypes32`: one of several named lists, chosen by a
+/// priority list of cached-boolean guards.
+class LegalizeSelectTypeList<list<LegalizeBoolPredicate> conds,
+                             list<LegalizeNamedTypeList> lists,
+                             LegalizeNamedTypeList otherwise>
+    : LegalizeArgTypeList {
+  list<LegalizeBoolPredicate> Conds = conds;
+  list<LegalizeNamedTypeList> Lists = lists;
+  LegalizeNamedTypeList Otherwise = otherwise;
 }
 
 /// Two types that must be legal together: rendered `s32, s32` as one entry of
@@ -221,9 +246,23 @@ class LegalizeArgBits<int value> : LegalizeArgInt<value, "Min">;
 /// A lane count.
 class LegalizeArgLanes<int value, string comment = ""> : LegalizeArgInt<value, comment>;
 
-/// C++ text that cannot be typed, e.g. an element count computed from features.
-/// An escape hatch that is meant to shrink, not to grow: X86 is down to the
-/// element counts and the cartesian-product type lists.
+/// A lane count chosen by a priority list of cached-boolean guards:
+///
+///   LegalizeSelectLanes<[HasBWI, HasAVX2], [64, 32], 16>
+///
+/// is the structured form of `HasBWI ? 64 : HasAVX2 ? 32 : 16`.  Like the
+/// select type, the guard list stays in Core IR instead of being folded.
+class LegalizeSelectLanes<list<LegalizeBoolPredicate> conds,
+                          list<int> values, int otherwise> : LegalizeArg {
+  list<LegalizeBoolPredicate> Conds = conds;
+  list<int> Values = values;
+  int Otherwise = otherwise;
+}
+
+/// C++ text that cannot be typed.  An escape hatch that is meant to shrink,
+/// not to grow: no rule uses it now that element counts are selects and type
+/// lists are named.  It stays for the next argument the vocabulary cannot
+/// type, like `LegalizeOpaqueRule` for guards.
 class LegalizeRawArg<string text> : LegalizeArg {
   string Text = text;
 }
@@ -716,17 +755,17 @@ class ClampMaxNumElements<int Idx, LegalizeArgType EltTy, int Num>
     : LegalizeCall<BuilderClampMaxNumElements,
                    [LegalizeArgIndex<Idx>, EltTy, LegalizeArgLanes<Num>]>;
 
-/// An element count computed from features (`HasAVX2 ? 8 : 4`).  Targets
-/// routinely derive it from the subtarget, so it stays text until the
-/// length-expression node lands; these are the remaining reason the two clamp
-/// builders escape Core IR.
-class ClampMinNumElementsExpr<int Idx, LegalizeArgType EltTy, string Num>
+/// An element count computed from features, as a structured select.  The lane
+/// counts stay in Core IR so the table can bind them to the query's subtarget.
+class ClampMinNumElementsSel<int Idx, LegalizeArgType EltTy,
+                             LegalizeSelectLanes Lanes>
     : LegalizeCall<BuilderClampMinNumElements,
-                   [LegalizeArgIndex<Idx>, EltTy, LegalizeRawArg<Num>]>;
+                   [LegalizeArgIndex<Idx>, EltTy, Lanes]>;
 
-class ClampMaxNumElementsExpr<int Idx, LegalizeArgType EltTy, string Num>
+class ClampMaxNumElementsSel<int Idx, LegalizeArgType EltTy,
+                             LegalizeSelectLanes Lanes>
     : LegalizeCall<BuilderClampMaxNumElements,
-                   [LegalizeArgIndex<Idx>, EltTy, LegalizeRawArg<Num>]>;
+                   [LegalizeArgIndex<Idx>, EltTy, Lanes]>;
 
 //===----------------------------------------------------------------------===//
 
