@@ -90,6 +90,68 @@ Step 3 exits 3 on `upstream/main`: TableGen has two `G_CTPOP` rules that the
 main-branch C++ chain does not have (`HasVPOPCNTDQ`, `HasVPOPCNTDQVL`).  That
 is the tool reporting a real source delta, not a corpus bug.
 
+## Key -> result traces
+
+`corpus` records one legalization decision per query: key -> action.  A
+legalizer also cares about what happens next: apply the mutation, ask again,
+repeat.  Two disabled gtest drivers replay a corpus that way, with the same
+loop and a different oracle:
+
+| Driver | Oracle |
+|---|---|
+| `*TraceCorpusWithReference*` | frozen C++ `X86LegalizerInfoReference` |
+| `*TraceCorpusWithTable*` | `X86LegalizerTable` |
+
+Both read `X86_LEGALIZER_TRACE_CORPUS_IN` and write
+`X86_LEGALIZER_TRACE_CORPUS_OUT`; `X86_LEGALIZER_TRACE_MAX_ROUNDS` (default
+64) is the cap after which a still-unresolved atom is reported as `cap`.
+
+Each trace document records, per atom, the start state, the terminal `status`
+(`legal`, `unsupported`, `custom`, `lower`, `libcall`, `cycle`, `cap`,
+`invalid`), the final types and memory descriptor, and every step
+(`action`, `idx`, `to`).  Table traces also record each step's `answer_kind`
+(`hit`, `residual`, `escape`, `outside`, `untabulated`).
+
+The simulation applies only the type mutation named by the step.  Actions that
+carry no type (Legal, Unsupported, Custom, Lower, Libcall) end the trace,
+memory descriptors stay fixed, and a repeated `(types, memdesc)` state is
+reported as `cycle`.  The simulator never invents an answer: every `status`
+comes from the oracle under test.
+
+One corpus, both oracles, one comparison:
+
+```bash
+llvm/utils/x86-legalizer-corpus/run-traces.sh \
+    /tmp/x86-corpus.json /tmp/traces /path/to/build
+```
+
+It runs both drivers and then `trace-diff --strict`, which exits 1 on any
+difference.  The same steps by hand:
+
+```bash
+# reference trace
+X86_LEGALIZER_TRACE_CORPUS_IN=/tmp/x86-corpus.json \
+X86_LEGALIZER_TRACE_CORPUS_OUT=/tmp/trace-reference.json \
+  build/unittests/Target/X86/X86Tests --gtest_also_run_disabled_tests \
+    --gtest_filter='*TraceCorpusWithReference*'
+
+# table trace over the same corpus
+X86_LEGALIZER_TRACE_CORPUS_IN=/tmp/x86-corpus.json \
+X86_LEGALIZER_TRACE_CORPUS_OUT=/tmp/trace-table.json \
+  build/unittests/Target/X86/X86Tests --gtest_also_run_disabled_tests \
+    --gtest_filter='*TraceCorpusWithTable*'
+
+# compare key -> result
+python3 llvm/utils/x86-legalizer-corpus trace-diff \
+    --left /tmp/trace-reference.json --right /tmp/trace-table.json \
+    --out /tmp/trace-diff.json --strict
+```
+
+`trace-diff` joins by atom id, compares `rounds`, `status`, `final_types`,
+`final_mem`, and the step list, and reports status/rounds histograms plus the
+first divergent step for each difference.  `answer_kind` is provenance: it is
+summarised, never counted as a difference.
+
 ## Tiers
 
 | Tier | What it adds | Points on the frozen revision (C2) |

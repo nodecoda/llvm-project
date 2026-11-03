@@ -14,6 +14,7 @@ import expr as E
 import oracle
 import parse
 import target
+import tracediff
 import verify
 
 CORPUS_SCHEMA = "llvm-x86-legalizer-cpp-corpus"
@@ -353,6 +354,27 @@ def cmd_diff(args):
         raise SystemExit(1)
 
 
+def cmd_trace_diff(args):
+    left = tracediff.load(args.left)
+    right = tracediff.load(args.right)
+    report = tracediff.compare(left, right, "left", "right", args.max_diffs)
+    report["left"]["path"] = os.path.abspath(args.left)
+    report["right"]["path"] = os.path.abspath(args.right)
+    emit.write_json(args.out, report)
+    summary = {
+        "out": os.path.abspath(args.out),
+        "corpus_match": report["corpus_match"],
+        "config_match": report["config_match"],
+        "ids": report["ids"],
+        "status": report["status_histogram"],
+        "longest_rounds": report["longest_rounds"],
+        "diff_count": report["diff_count"],
+    }
+    print(json.dumps(summary, sort_keys=True))
+    if args.strict and tracediff.has_differences(report):
+        raise SystemExit(1)
+
+
 def cmd_migrate(args):
     doc = corpusdiff.load(args.input)
     candidates = ([args.source_rev] if args.source_rev
@@ -475,6 +497,18 @@ def build_parser():
     sp.add_argument("--config", default=target.DEFAULT_CONFIG,
                     choices=sorted(target.CONFIGS))
     sp.set_defaults(func=cmd_migrate)
+
+    sp = sub.add_parser("trace-diff")
+    sp.add_argument("--left", required=True,
+                    help="trace to compare from (the reference)")
+    sp.add_argument("--right", required=True,
+                    help="trace to compare against (the table)")
+    sp.add_argument("--out", required=True)
+    sp.add_argument("--max-diffs", type=int, default=50,
+                    help="cap the per-diff detail and id samples (default: 50)")
+    sp.add_argument("--strict", action="store_true",
+                    help="exit 1 when ids, statuses, rounds, or traces differ")
+    sp.set_defaults(func=cmd_trace_diff)
 
     sp = sub.add_parser("diff")
     sp.add_argument("--left", required=True)
