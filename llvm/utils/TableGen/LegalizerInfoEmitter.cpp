@@ -3449,6 +3449,26 @@ public:
         OS << "  case TargetOpcode::" << Opcode << ": return " << I << ";\n";
     OS << "  default: return -1;\n  }\n}\n";
 
+    // A rule set the table does not cover has no cell, no evaluator and no
+    // opcode in the switch above, so the reader cannot answer for it and --
+    // with the chain not built -- the legalizer would take its default, Legal.
+    // That is a wrong answer, not a slow one, so the count is emitted and
+    // selfCheck refuses to pass while it is non-zero.
+    std::vector<const Record *> WithoutTable;
+    for (const Record *RS : RuleSets)
+      if (!tabulated(*RS))
+        WithoutTable.push_back(RS);
+    OS << "// Rule sets the table does not cover";
+    if (WithoutTable.empty()) {
+      OS << ": none.  Every opcode with rules has a table entry.\n";
+    } else {
+      OS << " (selfCheck fails while this is non-empty):\n";
+      for (const Record *RS : WithoutTable)
+        OS << "//   " << RS->getName() << "\n";
+    }
+    OS << "static constexpr unsigned " << P
+       << "NumRuleSetsWithoutTable = " << WithoutTable.size() << ";\n\n";
+
     // The evaluators are the rule chain with its guards and mutations written
     // out.  They are keyed like the descriptors above, so a table answer is a
     // property of the .td rules, not of a second description of them.

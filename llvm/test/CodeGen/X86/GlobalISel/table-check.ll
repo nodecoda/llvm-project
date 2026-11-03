@@ -23,7 +23,12 @@
 ; point would mean a rule set the generator cannot translate, which is a gap to
 ; close rather than to allow.
 ;
-; CHECK: x86-gisel-table-check: points 1397 compared 1397 mismatches 0 skipped 0 residual 811 outside 0 ptrvec 0 addrspace {{[0-9]+}} untabulated 0
+; rule-sets-without-table counts rule sets the generator could not turn into a
+; table.  Such a rule set has no cell and no evaluator, and the reader installs
+; no chain behind it, so the legalizer would answer Legal for its opcodes.  It
+; must stay 0; the check fails outright if it does not.
+;
+; CHECK: x86-gisel-table-check: points 1397 compared 1397 mismatches 0 skipped 0 residual 811 outside 0 ptrvec 0 addrspace {{[0-9]+}} untabulated 0 rule-sets-without-table 0
 
 define void @f() {
   ret void

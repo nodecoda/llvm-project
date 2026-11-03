@@ -591,8 +591,15 @@ void X86LegalizerTable::selfCheck(raw_ostream &OS) {
      << Compared << " mismatches " << Mismatches << " skipped " << Skipped
      << " residual " << Residual << " outside " << Outsides << " ptrvec "
      << PointerVectors << " addrspace " << AddressSpaceResiduals
-     << " untabulated " << Untabulated << " fills " << Fills << "\n";
+     << " untabulated " << Untabulated << " rule-sets-without-table "
+     << X86NumRuleSetsWithoutTable << " fills " << Fills << "\n";
   if (Mismatches)
     report_fatal_error(
         "x86-gisel-table-check: the table and the chain disagree");
+  // A rule set with no table entry has no cell and no evaluator, so with the
+  // chain not built the legalizer would answer Legal for it.  Losing a rule set
+  // from the table is a wrong answer, so the check fails rather than counts.
+  if (X86NumRuleSetsWithoutTable)
+    report_fatal_error("x86-gisel-table-check: a rule set has no table entry; "
+                       "the table would answer Legal for it");
 }
