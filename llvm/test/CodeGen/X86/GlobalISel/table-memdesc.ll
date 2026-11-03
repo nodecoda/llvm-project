@@ -12,7 +12,7 @@
 ; query the rules can answer.  The hit count is not checked: it depends on how
 ; often the legalizer revisits a value.
 
-; CHECK: x86-gisel-table: hit {{[0-9]+}} residual 0 escape 0 outside 0 ptrvec 0 addrspace {{[0-9]+}} untabulated 0
+; CHECK: x86-gisel-table: signature {{0x[0-9a-f]+}} hit {{[0-9]+}} residual 0 escape 0 outside 0 ptrvec 0 addrspace {{[0-9]+}} untabulated 0
 
 define void @copy8(ptr %d, ptr %s) {
   %v = load i8, ptr %s

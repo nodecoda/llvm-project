@@ -556,6 +556,99 @@ static bool stepsAgree(const LegalizeActionStep &A,
   return A.TypeIdx == B.TypeIdx && A.NewType == B.NewType;
 }
 
+class X86LegalizerTableSignatureTest : public testing::Test {
+protected:
+  static void SetUpTestCase() {
+    LLVMInitializeX86TargetInfo();
+    LLVMInitializeX86Target();
+    LLVMInitializeX86TargetMC();
+  }
+};
+
+// The signature is the environment the table was built for: one bit per
+// LegalizeFeature record, emitted from the same .td records the evaluators
+// read.  Two properties matter here: it separates configs that differ in a
+// rule-visible feature, and configs whose signatures agree answer identically.
+static std::optional<uint32_t> signatureFor(const Config &C) {
+  Sigma S = makeSigma(C);
+  if (!S.STI)
+    return std::nullopt;
+  LegalizerInfo LI;
+  X86LegalizerTable T(LI, *S.STI, S.STI->isTarget64BitLP64() ? 64 : 32);
+  return T.signature();
+}
+
+TEST_F(X86LegalizerTableSignatureTest, SeparatesRuleVisibleFeatures) {
+  const Config *C0 = &Configs[0]; // x86_64 +popcnt
+  const Config *C1 = &Configs[1]; // +avx512f +avx512vpopcntdq
+  const Config *C2 = &Configs[2]; // +avx512f +avx512vl +avx512vpopcntdq
+  const Config *C3 = &Configs[3]; // x86_64 baseline
+  const Config *C4 = &Configs[4]; // i386 +popcnt (Is64Bit clear)
+  const Config *C5 = &Configs[5]; // +avx512f (no vpopcntdq)
+
+  auto S0 = signatureFor(*C0), S1 = signatureFor(*C1), S2 = signatureFor(*C2),
+       S3 = signatureFor(*C3), S4 = signatureFor(*C4), S5 = signatureFor(*C5);
+  ASSERT_TRUE(S0 && S1 && S2 && S3 && S4 && S5);
+
+  EXPECT_NE(*S0, *S3) << "POPCNT is rule-visible";
+  EXPECT_NE(*S0, *S5) << "HasAVX512 is rule-visible";
+  EXPECT_NE(*S1, *S2) << "HasVLX is rule-visible";
+  EXPECT_NE(*S1, *S5) << "HasVPOPCNTDQ is rule-visible";
+  EXPECT_NE(*S2, *S5) << "AVX512-with-VLX differs from AVX512-without-VLX";
+  EXPECT_NE(*S3, *S4) << "Is64Bit is rule-visible";
+}
+
+TEST_F(X86LegalizerTableSignatureTest, EqualSignatureImpliesEqualAnswers) {
+  // +cx16 is not read by any rule, so both configs must land in the same
+  // equivalence class of the environment quotient.
+  const Config A = Configs[0];
+  const Config B = {"C0b", "x86_64", "+popcnt,+cx16", true, false, false,
+                    false, true};
+
+  auto SA = signatureFor(A);
+  auto SB = signatureFor(B);
+  ASSERT_TRUE(SA && SB);
+  ASSERT_EQ(*SA, *SB) << "an unrelated feature changed the signature";
+
+  Sigma SigmaA = makeSigma(A);
+  Sigma SigmaB = makeSigma(B);
+  ASSERT_NE(SigmaA.STI, nullptr);
+  ASSERT_NE(SigmaB.STI, nullptr);
+
+  LegalizerInfo LIA;
+  LegalizerInfo LIB;
+  X86LegalizerTable TA(LIA, *SigmaA.STI,
+                       SigmaA.STI->isTarget64BitLP64() ? 64 : 32);
+  X86LegalizerTable TB(LIB, *SigmaB.STI,
+                       SigmaB.STI->isTarget64BitLP64() ? 64 : 32);
+
+  SmallVector<X86TablePoint, 0> Points;
+  x86CollectTablePoints(Points, 64);
+  ASSERT_FALSE(Points.empty());
+
+  unsigned Compared = 0;
+  for (const X86TablePoint &P : Points) {
+    ArrayRef<LLT> Types(P.Types, P.NumTypes);
+    SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+    if (P.HasMem)
+      MemDescs.emplace_back(P.MemTy, P.Align, AtomicOrdering::NotAtomic,
+                            AtomicOrdering::NotAtomic);
+    const LegalityQuery Q(P.Opcode, Types, MemDescs);
+    const X86LegalizerTable::Result RA = TA.query(Q);
+    const X86LegalizerTable::Result RB = TB.query(Q);
+    ASSERT_EQ(RA.Kind, RB.Kind) << P.Name;
+    if (RA.Kind == X86LegalizerTable::Answer::Hit ||
+        RA.Kind == X86LegalizerTable::Answer::Residual) {
+      ASSERT_EQ(RA.Action, RB.Action) << P.Name;
+      ASSERT_EQ(RA.TypeIdx, RB.TypeIdx) << P.Name;
+      if (actionCarriesType(RA.Action))
+        ASSERT_EQ(RA.NewType, RB.NewType) << P.Name;
+    }
+    ++Compared;
+  }
+  EXPECT_EQ(Compared, Points.size());
+}
+
 // The spelling the corpus JSON uses ("v4s32", "s200"), which is also what a
 // reader of the committed report expects.  LLT's own operator<< prints
 // "<4 x s32>", so the two must not be mixed.

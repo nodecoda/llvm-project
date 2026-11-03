@@ -10,6 +10,7 @@
 #include "X86Subtarget.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <optional>
@@ -350,6 +351,10 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
   return R;
 }
 
+uint32_t X86LegalizerTable::signature() const {
+  return X86FeatureSignature(Subtarget);
+}
+
 bool X86LegalizerTable::lookup(const LegalityQuery &Q,
                                LegalizeActionStep &Step) const {
   const Result R = query(Q);
@@ -362,7 +367,8 @@ bool X86LegalizerTable::lookup(const LegalityQuery &Q,
 X86LegalizerTable::~X86LegalizerTable() {
   if (!X86GISelTableStats)
     return;
-  errs() << "x86-gisel-table: hit " << Hits << " residual " << Residuals
+  errs() << "x86-gisel-table: signature " << format_hex(signature(), 0)
+         << " hit " << Hits << " residual " << Residuals
          << " escape " << Escapes << " outside " << Outsides << " ptrvec "
          << PointerVectors << " addrspace " << AddressSpaceResiduals
          << " untabulated " << Untabulated << " fills " << Fills << "\n";

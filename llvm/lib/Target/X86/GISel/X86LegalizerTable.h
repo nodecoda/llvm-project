@@ -78,6 +78,12 @@ public:
 
   Result query(const LegalityQuery &Q) const;
 
+  /// The subtarget features the table is specialized on, one bit per
+  /// LegalizeFeature record as emitted by -gen-legalizer-table.  Two tables
+  /// with the same signature and the same PointerBits answer every query
+  /// identically; this is the key a shared table cache would use.
+  uint32_t signature() const;
+
   /// Run the enumerated domain through both paths and report.
   /// Fatal on a mismatch: a table that disagrees with the chain is a bug in
   /// the key, not a number to look at.

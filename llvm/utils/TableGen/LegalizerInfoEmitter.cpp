@@ -2961,6 +2961,8 @@ public:
           "===-----------------------------------------------------------------"
           "-----===//\n\n";
 
+    emitFeatureSignature(OS);
+
     OS << "static constexpr LegalizerTypeClass " << P << "TypeClasses[] = {\n";
     for (size_t I = 0; I != Classes.size(); ++I) {
       const TableType &C = Classes[I];
@@ -3354,6 +3356,40 @@ public:
          << "    return " << P << "EvalRuleIndex" << I
          << "(Subtarget, Q, RuleIndex, Out);\n";
     OS << "  default:\n    return false;\n  }\n}\n";
+  }
+
+  /// Emit the environment the table is specialized on: one bit per
+  /// LegalizeFeature record, in .td order, plus the function that reads them
+  /// off a subtarget.  The table is a function of exactly these features (and
+  /// the pointer width), so two subtargets with equal signatures must answer
+  /// every query identically.  Emitting the bits from the same records the
+  /// evaluators use keeps the signature from drifting when a feature is added.
+  void emitFeatureSignature(raw_ostream &OS) {
+    std::vector<const Record *> Features =
+        Records.getAllDerivedDefinitions("LegalizeFeature");
+    llvm::sort(Features, LessRecordByID());
+    if (Features.size() > 32)
+      PrintFatalError("feature signature needs more than 32 bits");
+
+    OS << "// Environment signature: one bit per LegalizeFeature, in .td "
+          "order.\n"
+          "// A shared table cache keys on this, so equal signatures must "
+          "mean equal\n"
+          "// answers.\n";
+    OS << "enum : uint32_t {\n";
+    for (size_t I = 0; I != Features.size(); ++I)
+      OS << "  " << TablePrefix << "FeatureBit_" << Features[I]->getName()
+         << " = 1u << " << I << ",\n";
+    OS << "};\n\n";
+
+    OS << "static uint32_t " << TablePrefix
+       << "FeatureSignature(const " << TablePrefix
+       << "Subtarget &Subtarget) {\n"
+          "  uint32_t S = 0;\n";
+    for (const Record *F : Features)
+      OS << "  S |= (" << squashSpace(F->getValueAsString("Cond")) << ") ? "
+         << TablePrefix << "FeatureBit_" << F->getName() << " : 0u;\n";
+    OS << "  return S;\n}\n\n";
   }
 
   /// Emit the identifiers a rule, an evaluator and -gen-legalizer all refer to:
