@@ -756,6 +756,22 @@ static std::optional<LLT> parseJSONLLT(StringRef S, unsigned PointerBits) {
   return std::nullopt;
 }
 
+/// Corpus type names carry the pointer width ("p0:64", "v2p0:64"), while the
+/// points documents spell pointers without it.  Strip the suffix and reuse the
+/// points parser so the two readers cannot drift.
+static std::optional<LLT> parseCorpusLLT(StringRef S) {
+  unsigned PointerBits = 64;
+  const size_t Colon = S.rfind(':');
+  if (Colon != StringRef::npos) {
+    unsigned Bits = 0;
+    if (S.drop_front(Colon + 1).getAsInteger(10, Bits))
+      return std::nullopt;
+    PointerBits = Bits;
+    S = S.take_front(Colon);
+  }
+  return parseJSONLLT(S, PointerBits);
+}
+
 static std::string jsonLLTName(LLT T) {
   std::string S;
   raw_string_ostream OS(S);
@@ -1867,12 +1883,34 @@ TEST_F(X86LegalizerDifferentialTest, FrozenCorpusMatchesJson) {
 // non-pointer spellings are identical to shortLLT's.
 static std::string witnessLLTName(LLT T);
 
-static void renderStepJson(raw_ostream &OS, const LegalizeActionStep &S) {
+// AnswerKind, when non-empty, records how the oracle produced the step.
+// Only the table has provenance to report; the reference leaves it empty and
+// the field is omitted.
+static void renderStepJson(raw_ostream &OS, const LegalizeActionStep &S,
+                           StringRef AnswerKind = {}) {
   OS << "{\"action\":\"" << S.Action << "\"";
   if (actionCarriesType(S.Action))
     OS << ",\"idx\":" << S.TypeIdx << ",\"to\":\"" << witnessLLTName(S.NewType)
        << "\"";
+  if (!AnswerKind.empty())
+    OS << ",\"answer_kind\":\"" << AnswerKind << "\"";
   OS << "}";
+}
+
+static StringRef tableAnswerKindName(X86LegalizerTable::Answer Kind) {
+  switch (Kind) {
+  case X86LegalizerTable::Answer::Hit:
+    return "hit";
+  case X86LegalizerTable::Answer::Residual:
+    return "residual";
+  case X86LegalizerTable::Answer::Escape:
+    return "escape";
+  case X86LegalizerTable::Answer::Outside:
+    return "outside";
+  case X86LegalizerTable::Answer::Untabulated:
+    return "untabulated";
+  }
+  llvm_unreachable("unknown X86LegalizerTable::Answer");
 }
 
 struct Report {
@@ -3914,6 +3952,513 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateCorpusFromCppPoints) {
   File << Out;
   File.close();
   llvm::outs() << "wrote " << Emitted << " atoms to " << OutPath << "\n";
+}
+
+// Not a test.  Answer a C++-derived corpus with the generated table.
+//
+//   X86_LEGALIZER_TABLE_CORPUS_IN=<corpus.json> \
+//   X86_LEGALIZER_TABLE_CORPUS_OUT=<table-answers.json> \
+//   X86Tests --gtest_also_run_disabled_tests \
+//     --gtest_filter='*AnswerCorpusWithTable*'
+//
+// The mirror of GenerateCorpusFromCppPoints.  The input corpus already carries
+// the frozen reference's expected answers; this driver replaces them with the
+// table's first-step answer, so a corpus `diff` measures the direction the
+// TD-generated corpora cannot: a query shape the C++ chain has and the table
+// does not.
+TEST_F(X86LegalizerDifferentialTest, DISABLED_AnswerCorpusWithTable) {
+  const char *InPath = std::getenv("X86_LEGALIZER_TABLE_CORPUS_IN");
+  const char *OutPath = std::getenv("X86_LEGALIZER_TABLE_CORPUS_OUT");
+  if (!InPath || !OutPath)
+    GTEST_SKIP() << "set X86_LEGALIZER_TABLE_CORPUS_IN and "
+                    "X86_LEGALIZER_TABLE_CORPUS_OUT";
+
+  std::optional<std::string> Text = readFile(InPath);
+  ASSERT_TRUE(Text.has_value()) << "cannot read " << InPath;
+  Expected<json::Value> Parsed = json::parse(*Text);
+  ASSERT_TRUE(static_cast<bool>(Parsed)) << toString(Parsed.takeError());
+  const json::Object *Root = Parsed->getAsObject();
+  ASSERT_NE(Root, nullptr);
+  EXPECT_EQ(Root->getString("schema").value_or(""),
+            "llvm-x86-legalizer-cpp-corpus");
+
+  std::optional<StringRef> ConfigOpt = Root->getString("config");
+  ASSERT_TRUE(ConfigOpt.has_value());
+  const Config *C = findFullConfig(*ConfigOpt);
+  ASSERT_NE(C, nullptr) << "unknown full config " << *ConfigOpt;
+  Sigma S = makeSigma(*C);
+  ASSERT_TRUE(S.STI);
+
+  const json::Object *Desc = Root->getObject("config_descriptor");
+  ASSERT_NE(Desc, nullptr) << "corpus has no config_descriptor";
+  if (std::optional<std::string> Error =
+          validateConfigDescriptor(*Desc, *C, *S.STI))
+    FAIL() << *Error;
+
+  TableLegalizerInfoForTest Table(*S.STI);
+  const json::Array *Atoms = Root->getArray("atoms");
+  ASSERT_NE(Atoms, nullptr);
+
+  std::string Out;
+  raw_string_ostream OS(Out);
+  auto EmitField = [&](StringRef Name, const json::Value *Value) {
+    OS << "  \"" << Name << "\": ";
+    if (Value)
+      OS << *Value;
+    else
+      OS << "null";
+    OS << ",\n";
+  };
+  OS << "{\n  \"schema\": \"llvm-x86-legalizer-cpp-corpus\",\n";
+  OS << "  \"version\": 2,\n";
+  EmitField("source", Root->get("source"));
+  OS << "  \"oracle\": {\"kind\":\"table\",\"table\":\"X86LegalizerTable\"},\n";
+  EmitField("config_descriptor", Root->get("config_descriptor"));
+  EmitField("coverage", Root->get("coverage"));
+  EmitField("counts", Root->get("counts"));
+  OS << "  \"config\": \"" << C->ID << "\",\n";
+  OS << "  \"corpus_sha256\": \"" << sha256Hex(*Text) << "\",\n";
+  OS << "  \"atom_count\": " << Atoms->size() << ",\n";
+  OS << "  \"atoms\": [\n";
+
+  uint64_t Hits = 0, Residuals = 0, Escapes = 0, Outsides = 0, Untabulated = 0;
+  unsigned Emitted = 0;
+  for (const json::Value &V : *Atoms) {
+    const json::Object *A = V.getAsObject();
+    ASSERT_NE(A, nullptr);
+    std::optional<StringRef> Id = A->getString("id");
+    std::optional<StringRef> Origin = A->getString("origin");
+    std::optional<StringRef> RuleSet = A->getString("rule_set");
+    std::optional<StringRef> Opcode = A->getString("opcode");
+    ASSERT_TRUE(Id && Origin && RuleSet && Opcode);
+
+    const json::Object *Query = A->getObject("query");
+    ASSERT_NE(Query, nullptr);
+    const json::Array *TypesJson = Query->getArray("types");
+    ASSERT_NE(TypesJson, nullptr);
+    SmallVector<LLT, 3> Types;
+    for (const json::Value &TV : *TypesJson) {
+      std::optional<StringRef> Name = TV.getAsString();
+      ASSERT_TRUE(Name.has_value());
+      std::optional<LLT> Ty = parseCorpusLLT(*Name);
+      ASSERT_TRUE(Ty.has_value()) << *Name;
+      Types.push_back(*Ty);
+    }
+
+    SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+    if (const json::Object *Mem = Query->getObject("mem")) {
+      std::optional<StringRef> MemName = Mem->getString("type");
+      std::optional<int64_t> Align = Mem->getInteger("align");
+      ASSERT_TRUE(MemName && Align);
+      std::optional<LLT> MemTy = parseCorpusLLT(*MemName);
+      ASSERT_TRUE(MemTy.has_value()) << *MemName;
+      MemDescs.emplace_back(*MemTy, static_cast<uint64_t>(*Align),
+                            AtomicOrdering::NotAtomic,
+                            AtomicOrdering::NotAtomic);
+    }
+
+    std::optional<unsigned> Op = opcodeForAnyName(*Opcode);
+    ASSERT_TRUE(Op.has_value()) << "unknown opcode " << *Opcode;
+    LegalityQuery Q(*Op, Types, MemDescs);
+    const X86LegalizerTable::Result R = Table.table().query(Q);
+    const LegalizeActionStep Step(R.Action, R.TypeIdx, R.NewType);
+
+    const StringRef Kind = tableAnswerKindName(R.Kind);
+    switch (R.Kind) {
+    case X86LegalizerTable::Answer::Hit:
+      ++Hits;
+      break;
+    case X86LegalizerTable::Answer::Residual:
+      ++Residuals;
+      break;
+    case X86LegalizerTable::Answer::Escape:
+      ++Escapes;
+      break;
+    case X86LegalizerTable::Answer::Outside:
+      ++Outsides;
+      break;
+    case X86LegalizerTable::Answer::Untabulated:
+      ++Untabulated;
+      break;
+    }
+
+    std::optional<int64_t> RuleIndex = A->getInteger("rule_index");
+    OS << "    {\"id\":\"" << *Id << "\",\"origin\":\"" << *Origin
+       << "\",\"rule_set\":\"" << *RuleSet << "\",\"opcode\":\"" << *Opcode
+       << "\",\"rule_index\":";
+    if (RuleIndex)
+      OS << *RuleIndex;
+    else
+      OS << "null";
+    OS << ",\"config\":\"" << *ConfigOpt << "\",\"query\":{\"types\":[";
+    for (unsigned I = 0; I != Types.size(); ++I)
+      OS << (I ? "," : "") << "\"" << witnessLLTName(Types[I]) << "\"";
+    OS << "]";
+    if (!MemDescs.empty())
+      OS << ",\"mem\":{\"type\":\"" << witnessLLTName(MemDescs[0].MemoryTy)
+         << "\",\"align\":" << MemDescs[0].AlignInBits << "}";
+    OS << "},\"answer_kind\":\"" << Kind << "\",\"expected\":";
+    renderStepJson(OS, Step);
+    OS << "}" << (++Emitted == Atoms->size() ? "\n" : ",\n");
+  }
+  OS << "  ]\n}\n";
+  OS.flush();
+
+  std::error_code EC;
+  raw_fd_ostream File(OutPath, EC);
+  ASSERT_FALSE(EC) << OutPath << ": " << EC.message();
+  File << Out;
+  File.close();
+  llvm::outs() << "table answers: atoms=" << Emitted << " hit=" << Hits
+               << " residual=" << Residuals << " escape=" << Escapes
+               << " outside=" << Outsides << " untabulated=" << Untabulated
+               << " out=" << OutPath << "\n";
+}
+
+//===----------------------------------------------------------------------===//
+// Multi-round key -> result traces
+//===----------------------------------------------------------------------===//
+//
+// The corpus above records one legalization decision per query: key -> action.
+// The tests below replay an atom as a *state*: apply the mutation of the
+// answer, ask again, and repeat until the answer is terminal.  That is
+// key -> result, the shape the real legalizer sees, and it is what makes
+// termination and convergence observable instead of assumed.
+//
+// Both oracles share one loop:
+//
+//   reference  X86LegalizerInfoReference  (frozen copy of the C++ rules)
+//   table      X86LegalizerTable          (the TD rule set, compiled to a table)
+//
+// The simulation applies only the type mutation named by the step.  Actions
+// that do not carry a type (Legal, Unsupported, Custom, Lower, Libcall) end the
+// trace: what the helper does after that is not a legality query.  A repeated
+// (types, memdesc) state is a cycle, and MAX_ROUNDS without a terminal action
+// is a cap; both are reported rather than guessed at.  Memory descriptors stay
+// fixed: restructuring a load/store is helper work, not a type query.
+//
+// Table answers also record their provenance ("hit", "residual", ...), so a
+// table-driven trace shows which steps came from a cell and which came from
+// the evaluator asked directly.  One table instance serves the whole corpus on
+// purpose: that is the production shape, and it is what exercises the
+// cumulative fill path.
+
+static void runTraceCorpus(StringRef InPath, StringRef OutPath, bool UseTable,
+                           unsigned MaxRounds) {
+  std::optional<std::string> Text = readFile(InPath);
+  ASSERT_TRUE(Text.has_value()) << "cannot read " << InPath;
+  Expected<json::Value> Parsed = json::parse(*Text);
+  ASSERT_TRUE(static_cast<bool>(Parsed)) << toString(Parsed.takeError());
+  const json::Object *Root = Parsed->getAsObject();
+  ASSERT_NE(Root, nullptr);
+  EXPECT_EQ(Root->getString("schema").value_or(""),
+            "llvm-x86-legalizer-cpp-corpus");
+
+  std::optional<StringRef> ConfigOpt = Root->getString("config");
+  ASSERT_TRUE(ConfigOpt.has_value());
+  const Config *C = findFullConfig(*ConfigOpt);
+  ASSERT_NE(C, nullptr) << "unknown full config " << *ConfigOpt;
+  Sigma S = makeSigma(*C);
+  ASSERT_TRUE(S.STI);
+
+  const json::Object *Desc = Root->getObject("config_descriptor");
+  ASSERT_NE(Desc, nullptr) << "corpus has no config_descriptor";
+  if (std::optional<std::string> Error =
+          validateConfigDescriptor(*Desc, *C, *S.STI))
+    FAIL() << *Error;
+
+  std::unique_ptr<X86LegalizerInfoReference> Reference;
+  std::unique_ptr<TableLegalizerInfoForTest> Table;
+  if (UseTable)
+    Table = std::make_unique<TableLegalizerInfoForTest>(*S.STI);
+  else
+    Reference = std::make_unique<X86LegalizerInfoReference>(
+        *S.STI, *static_cast<const X86TargetMachine *>(S.TM.get()));
+
+  // One query in, one step plus the provenance of that step.  The reference
+  // has no table provenance to report, so its kind stays empty.
+  auto Ask = [&](const LegalityQuery &Q)
+      -> std::pair<LegalizeActionStep, StringRef> {
+    if (Table) {
+      const X86LegalizerTable::Result R = Table->table().query(Q);
+      return {LegalizeActionStep(R.Action, R.TypeIdx, R.NewType),
+              tableAnswerKindName(R.Kind)};
+    }
+    return {Reference->getAction(Q), StringRef()};
+  };
+
+  const json::Array *Atoms = Root->getArray("atoms");
+  ASSERT_NE(Atoms, nullptr);
+
+  auto StateKey = [](ArrayRef<LLT> Types, ArrayRef<LegalityQuery::MemDesc> Mem) {
+    std::string Key;
+    raw_string_ostream OS(Key);
+    for (LLT T : Types)
+      OS << witnessLLTName(T) << ';';
+    OS << '|';
+    for (const LegalityQuery::MemDesc &MD : Mem)
+      OS << witnessLLTName(MD.MemoryTy) << ':' << MD.AlignInBits << ';';
+    return Key;
+  };
+
+  std::string Out;
+  raw_string_ostream OS(Out);
+  auto EmitField = [&](StringRef Name, const json::Value *Value) {
+    OS << "  \"" << Name << "\": ";
+    if (Value)
+      OS << *Value;
+    else
+      OS << "null";
+    OS << ",\n";
+  };
+  OS << "{\n  \"schema\": \"llvm-x86-legalizer-cpp-trace\",\n";
+  OS << "  \"version\": 2,\n";
+  EmitField("source", Root->get("source"));
+  if (UseTable)
+    OS << "  \"oracle\": {\"kind\":\"table\","
+          "\"implementation\":\"X86LegalizerTable\"},\n";
+  else
+    OS << "  \"oracle\": {\"kind\":\"reference\","
+          "\"implementation\":\"X86LegalizerInfoReference\"},\n";
+  EmitField("config_descriptor", Root->get("config_descriptor"));
+  OS << "  \"config\": \"" << C->ID << "\",\n";
+  OS << "  \"corpus_sha256\": \"" << sha256Hex(*Text) << "\",\n";
+  OS << "  \"model\": \"first-step type trace; the memory descriptor is "
+        "held fixed; helper restructuring (scalarize, custom, libcall, lower) "
+        "is not simulated\",\n";
+  OS << "  \"max_rounds\": " << MaxRounds << ",\n";
+  OS << "  \"atom_count\": " << Atoms->size() << ",\n";
+  OS << "  \"atoms\": [\n";
+
+  uint64_t NLegal = 0, NUnsupported = 0, NCustom = 0, NLower = 0,
+           NLibcall = 0;
+  uint64_t Cycles = 0, Caps = 0, Invalid = 0;
+  uint64_t KHits = 0, KResiduals = 0, KEscapes = 0, KOutsides = 0,
+           KUntabulated = 0;
+  unsigned Longest = 0;
+  unsigned Emitted = 0;
+  for (const json::Value &V : *Atoms) {
+    const json::Object *A = V.getAsObject();
+    ASSERT_NE(A, nullptr);
+    std::optional<StringRef> Id = A->getString("id");
+    std::optional<StringRef> Origin = A->getString("origin");
+    std::optional<StringRef> RuleSet = A->getString("rule_set");
+    std::optional<StringRef> Opcode = A->getString("opcode");
+    ASSERT_TRUE(Id && Origin && RuleSet && Opcode);
+
+    const json::Object *Query = A->getObject("query");
+    ASSERT_NE(Query, nullptr);
+    const json::Array *TypesJson = Query->getArray("types");
+    ASSERT_NE(TypesJson, nullptr);
+    SmallVector<LLT, 4> Types;
+    for (const json::Value &TV : *TypesJson) {
+      std::optional<StringRef> Name = TV.getAsString();
+      ASSERT_TRUE(Name.has_value());
+      std::optional<LLT> Ty = parseCorpusLLT(*Name);
+      ASSERT_TRUE(Ty.has_value()) << *Name;
+      Types.push_back(*Ty);
+    }
+
+    SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+    if (const json::Object *Mem = Query->getObject("mem")) {
+      std::optional<StringRef> MemName = Mem->getString("type");
+      std::optional<int64_t> Align = Mem->getInteger("align");
+      ASSERT_TRUE(MemName && Align);
+      std::optional<LLT> MemTy = parseCorpusLLT(*MemName);
+      ASSERT_TRUE(MemTy.has_value()) << *MemName;
+      MemDescs.emplace_back(*MemTy, static_cast<uint64_t>(*Align),
+                            AtomicOrdering::NotAtomic,
+                            AtomicOrdering::NotAtomic);
+    }
+
+    std::optional<unsigned> Op = opcodeForAnyName(*Opcode);
+    ASSERT_TRUE(Op.has_value()) << "unknown opcode " << *Opcode;
+
+    const SmallVector<LLT, 4> StartTypes(Types);
+    const SmallVector<LegalityQuery::MemDesc, 1> StartMem(MemDescs);
+
+    std::set<std::string> Seen;
+    Seen.insert(StateKey(Types, MemDescs));
+    SmallVector<LegalizeActionStep, 8> Trace;
+    SmallVector<std::string, 8> Kinds;
+    StringRef Status;
+    unsigned Rounds = 0;
+    for (; Rounds != MaxRounds; ++Rounds) {
+      LegalityQuery Q(*Op, Types, MemDescs);
+      auto [Step, Kind] = Ask(Q);
+      Trace.push_back(Step);
+      Kinds.push_back(Kind.str());
+      if (UseTable) {
+        if (Kind == "hit")
+          ++KHits;
+        else if (Kind == "residual")
+          ++KResiduals;
+        else if (Kind == "escape")
+          ++KEscapes;
+        else if (Kind == "outside")
+          ++KOutsides;
+        else
+          ++KUntabulated;
+      }
+      if (!actionCarriesType(Step.Action)) {
+        switch (Step.Action) {
+        case Legal:
+          Status = "legal";
+          ++NLegal;
+          break;
+        case Unsupported:
+          Status = "unsupported";
+          ++NUnsupported;
+          break;
+        case Custom:
+          Status = "custom";
+          ++NCustom;
+          break;
+        case Lower:
+          Status = "lower";
+          ++NLower;
+          break;
+        case Libcall:
+          Status = "libcall";
+          ++NLibcall;
+          break;
+        default:
+          Status = "terminal";
+          break;
+        }
+        break;
+      }
+      if (Step.TypeIdx >= Types.size()) {
+        Status = "invalid";
+        ++Invalid;
+        break;
+      }
+      Types[Step.TypeIdx] = Step.NewType;
+      if (!Seen.insert(StateKey(Types, MemDescs)).second) {
+        Status = "cycle";
+        ++Cycles;
+        break;
+      }
+    }
+    if (Status.empty()) {
+      Status = "cap";
+      ++Caps;
+    }
+    Longest = std::max<unsigned>(Longest, Rounds + 1);
+
+    OS << "    {\"id\":\"" << *Id << "\",\"origin\":\"" << *Origin
+       << "\",\"rule_set\":\"" << *RuleSet << "\",\"opcode\":\"" << *Opcode
+       << "\",\"config\":\"" << *ConfigOpt << "\",\"rounds\":" << Rounds + 1
+       << ",\"status\":\"" << Status << "\",\"start_types\":[";
+    for (unsigned I = 0; I != StartTypes.size(); ++I)
+      OS << (I ? "," : "") << "\"" << witnessLLTName(StartTypes[I]) << "\"";
+    OS << "]";
+    if (!StartMem.empty())
+      OS << ",\"start_mem\":{\"type\":\"" << witnessLLTName(StartMem[0].MemoryTy)
+         << "\",\"align\":" << StartMem[0].AlignInBits << "}";
+    OS << ",\"final_types\":[";
+    for (unsigned I = 0; I != Types.size(); ++I)
+      OS << (I ? "," : "") << "\"" << witnessLLTName(Types[I]) << "\"";
+    OS << "]";
+    if (!MemDescs.empty())
+      OS << ",\"final_mem\":{\"type\":\"" << witnessLLTName(MemDescs[0].MemoryTy)
+         << "\",\"align\":" << MemDescs[0].AlignInBits << "}";
+    OS << ",\"trace\":[";
+    for (unsigned I = 0; I != Trace.size(); ++I) {
+      OS << (I ? "," : "");
+      renderStepJson(OS, Trace[I], Kinds[I]);
+    }
+    OS << "]}" << (++Emitted == Atoms->size() ? "\n" : ",\n");
+  }
+  OS << "  ],\n";
+  OS << "  \"counts\": {\"atoms\":" << Emitted << ",\"legal\":" << NLegal
+     << ",\"unsupported\":" << NUnsupported << ",\"custom\":" << NCustom
+     << ",\"lower\":" << NLower << ",\"libcall\":" << NLibcall
+     << ",\"cycle\":" << Cycles << ",\"cap\":" << Caps
+     << ",\"invalid\":" << Invalid << ",\"longest\":" << Longest;
+  if (UseTable)
+    OS << ",\"answer_kinds\":{\"hit\":" << KHits
+       << ",\"residual\":" << KResiduals << ",\"escape\":" << KEscapes
+       << ",\"outside\":" << KOutsides << ",\"untabulated\":" << KUntabulated
+       << "}";
+  OS << "}\n";
+  OS << "}\n";
+  OS.flush();
+
+  std::error_code EC;
+  raw_fd_ostream File(OutPath, EC);
+  ASSERT_FALSE(EC) << OutPath << ": " << EC.message();
+  File << Out;
+  File.close();
+  llvm::outs() << (UseTable ? "table trace" : "reference trace")
+               << ": atoms=" << Emitted << " legal=" << NLegal
+               << " unsupported=" << NUnsupported << " custom=" << NCustom
+               << " lower=" << NLower << " libcall=" << NLibcall
+               << " cycle=" << Cycles << " cap=" << Caps
+               << " invalid=" << Invalid << " longest=" << Longest
+               << " max=" << MaxRounds;
+  if (UseTable)
+    llvm::outs() << " hit=" << KHits << " residual=" << KResiduals
+                 << " escape=" << KEscapes << " outside=" << KOutsides
+                 << " untabulated=" << KUntabulated;
+  llvm::outs() << " out=" << OutPath << "\n";
+}
+
+// Not a test.  Walk a C++-derived corpus through the frozen reference until
+// the first non-type action, and report the terminal state and the number of
+// rounds.  This is the key -> result view: one atom is one starting query, the
+// trace is the list of first steps the legalizer would take, and `status`
+// says whether the chain reached a terminal action or failed to converge.
+//
+//   X86_LEGALIZER_TRACE_CORPUS_IN=<corpus.json> \
+//   X86_LEGALIZER_TRACE_CORPUS_OUT=<trace.json> \
+//   [X86_LEGALIZER_TRACE_MAX_ROUNDS=64] \
+//   X86Tests --gtest_also_run_disabled_tests \
+//     --gtest_filter='*TraceCorpusWithReference*'
+TEST_F(X86LegalizerDifferentialTest, DISABLED_TraceCorpusWithReference) {
+  const char *InPath = std::getenv("X86_LEGALIZER_TRACE_CORPUS_IN");
+  const char *OutPath = std::getenv("X86_LEGALIZER_TRACE_CORPUS_OUT");
+  if (!InPath || !OutPath)
+    GTEST_SKIP() << "set X86_LEGALIZER_TRACE_CORPUS_IN and "
+                    "X86_LEGALIZER_TRACE_CORPUS_OUT";
+
+  unsigned MaxRounds = 64;
+  if (const char *RoundsText = std::getenv("X86_LEGALIZER_TRACE_MAX_ROUNDS")) {
+    if (StringRef(RoundsText).getAsInteger(10, MaxRounds) || MaxRounds == 0)
+      FAIL() << "bad X86_LEGALIZER_TRACE_MAX_ROUNDS=" << RoundsText;
+  }
+
+  runTraceCorpus(InPath, OutPath, /*UseTable=*/false, MaxRounds);
+}
+
+// Not a test.  The same corpus and the same loop, but the oracle is the
+// generated table.  Comparing this trace with the reference trace answers the
+// question the first-step differential cannot: does following the table's
+// answers for several rounds still land in the same terminal state?
+//
+//   X86_LEGALIZER_TRACE_CORPUS_IN=<corpus.json> \
+//   X86_LEGALIZER_TRACE_CORPUS_OUT=<table-trace.json> \
+//   [X86_LEGALIZER_TRACE_MAX_ROUNDS=64] \
+//   X86Tests --gtest_also_run_disabled_tests \
+//     --gtest_filter='*TraceCorpusWithTable*'
+//
+// Each step records its provenance in `answer_kind`.  A non-zero `escape`
+// means the rule set has no table translation and production would consult
+// the chain there, so a trace containing escapes is not a pure-table trace.
+TEST_F(X86LegalizerDifferentialTest, DISABLED_TraceCorpusWithTable) {
+  const char *InPath = std::getenv("X86_LEGALIZER_TRACE_CORPUS_IN");
+  const char *OutPath = std::getenv("X86_LEGALIZER_TRACE_CORPUS_OUT");
+  if (!InPath || !OutPath)
+    GTEST_SKIP() << "set X86_LEGALIZER_TRACE_CORPUS_IN and "
+                    "X86_LEGALIZER_TRACE_CORPUS_OUT";
+
+  unsigned MaxRounds = 64;
+  if (const char *RoundsText = std::getenv("X86_LEGALIZER_TRACE_MAX_ROUNDS")) {
+    if (StringRef(RoundsText).getAsInteger(10, MaxRounds) || MaxRounds == 0)
+      FAIL() << "bad X86_LEGALIZER_TRACE_MAX_ROUNDS=" << RoundsText;
+  }
+
+  runTraceCorpus(InPath, OutPath, /*UseTable=*/true, MaxRounds);
 }
 
 // T1: every committed atom must get the reference's decision from the table.
