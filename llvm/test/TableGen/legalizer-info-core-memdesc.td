@@ -11,9 +11,15 @@ def s32 : LegalizeNamedType<"LLT::scalar(32)">;
 def s64 : LegalizeNamedType<"LLT::scalar(64)">;
 def v4s32 : LegalizeNamedType<"LLT::fixed_vector(4, 32)">;
 def p0 : LegalizeNamedType<"LLT::pointer(0, 32)">;
-// A pointer whose width depends on the subtarget has no literal form.
-def p0_dyn
-    : LegalizeNamedType<"Is64Bit ? LLT::pointer(0, 64) : LLT::pointer(0, 32)">;
+// A pointer whose width depends on the configuration is symbolic: `*` is bound
+// by config.pointer_width, so the rule does not have to pick 32 or 64.
+def p0_bound
+    : LegalizeNamedType<"LLT::pointer(0, Is64Bit ? 64 : 32)">;
+def v2p0
+    : LegalizeNamedType<"LLT::fixed_vector(2, LLT::pointer(0, Is64Bit ? 64 : 32))">;
+// A select that produces a whole LLT is not a type spelling and escapes.
+def s_select
+    : LegalizeNamedType<"Is64Bit ? LLT::scalar(64) : LLT::scalar(32)">;
 def Is64Bit : LegalizeFeature<"Subtarget.is64Bit()">;
 
 def Test_STORE : LegalizeRuleSet<["G_STORE"]> {
@@ -26,9 +32,16 @@ def Test_LOAD : LegalizeRuleSet<["G_LOAD"]> {
   let Rules = [LegalForMemDesc<[LegalizeMemDesc<s64, p0, v4s32, 32>]>];
 }
 
+// A pointer-valued memory type stays symbolic as well: the tuple compares the
+// memory type's size, which is one (or two) configuration pointers wide.
+def Test_PTRMEM : LegalizeRuleSet<["G_SEXTLOAD"]> {
+  let Rules = [LegalForMemDesc<[LegalizeMemDesc<p0_bound, p0_bound, p0_bound, 32>,
+                                LegalizeMemDesc<s64, p0_bound, v2p0, 64>]>];
+}
+
 // An unrepresentable tuple escapes as a whole instead of being approximated.
 def Test_ESCAPE : LegalizeRuleSet<["G_ZEXTLOAD"]> {
-  let Rules = [LegalForMemDesc<[LegalizeMemDesc<s32, p0_dyn, s32, 32>]>];
+  let Rules = [LegalForMemDesc<[LegalizeMemDesc<s32, s_select, s32, 32>]>];
 }
 
 // CHECK:      {"kind":"leaf","name":"typeIs","args":[0,"s32"]}
@@ -40,6 +53,15 @@ def Test_ESCAPE : LegalizeRuleSet<["G_ZEXTLOAD"]> {
 // CHECK-SAME: {"kind":"leaf","name":"typeIs","args":[1,"p0:32"]}
 // CHECK-SAME: {"kind":"leaf","name":"memSize","args":[0,128,32]}
 // CHECK-SAME: "ruleset": "Test_LOAD"
+
+// CHECK:      {"kind":"leaf","name":"typeIs","args":[0,"p0:*"]}
+// CHECK-SAME: {"kind":"leaf","name":"typeIs","args":[1,"p0:*"]}
+// CHECK-SAME: {"kind":"leaf","name":"memSizePtr","args":[0,1,32]}
+// CHECK-SAME: "ruleset": "Test_PTRMEM"
+
+// CHECK:      {"kind":"leaf","name":"typeIs","args":[0,"s64"]}
+// CHECK-SAME: {"kind":"leaf","name":"memSizePtr","args":[0,2,64]}
+// CHECK-SAME: "ruleset": "Test_PTRMEM"
 
 // CHECK: "kind": "nonliteral_type"
 // CHECK-SAME: "ruleset": "Test_ESCAPE"

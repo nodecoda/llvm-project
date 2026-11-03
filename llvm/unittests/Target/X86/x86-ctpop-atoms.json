@@ -12,8 +12,8 @@
     "oracle_sha256": "e9776b42efebd104e69f0af6a89f69f9ed95cd7f8700c11c6289876cec66ea85",
     "tblgen_binary_sha256": "d0ee89095edb5cef2405b9711edff286af365938d3324cf66d294d895f8b35a1",
     "generated_inc_sha256": "0137fd6f5b1a54718cee23c3421d693f3d4cf795d34387629a7cd2b531e6119d",
-    "core_ir_sha256": "0232560053a910897e6cd81538038cb7ad94ed10633cee6a6f66b1f496795586",
-    "core_ir_escape_count": 86,
+    "core_ir_sha256": "48bb9721b8cb6306d59f5c34881daa3525bdc53ef0c66eef5508d3f78e983f5a",
+    "core_ir_escape_count": 58,
     "core_ir_ctpop_clamp_escapes": 1
   },
   "sigmas": [

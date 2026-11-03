@@ -1487,11 +1487,10 @@ TEST(RuleCountsManifest, MatchesCoreIR) {
   EXPECT_EQ(EscapedRuleCount, EscapedInLiteralSets + EscapedInAllEscapedSets);
   EXPECT_EQ(TableCount, LiteralSetCount + OnlyEscapedSetCount);
 
-  // The eight rule sets that only occur in the escape list, sorted.
-  const std::vector<std::string> ExpectedOnlyEscaped = {
-      "X86_CONSTANT_POOL", "X86_FPEXTLOAD",    "X86_FPTRUNCSTORE",
-      "X86_FRAME_INDEX",   "X86_GLOBAL_VALUE", "X86_INTTOPTR",
-      "X86_SEXTLOAD",      "X86_ZEXTLOAD"};
+  // The rule sets that only occur in the escape list, sorted.  Memdesc and
+  // pointer rules are literal now, so only G_INTTOPTR's clampScalar alias
+  // remains unexpanded.
+  const std::vector<std::string> ExpectedOnlyEscaped = {"X86_INTTOPTR"};
   std::vector<std::string> ActualOnlyEscaped(OnlyEscapedSetNames.begin(),
                                              OnlyEscapedSetNames.end());
   ASSERT_EQ(ActualOnlyEscaped.size(), ExpectedOnlyEscaped.size());
@@ -5343,7 +5342,8 @@ TEST(X86LegalizerMirMap, MirRuleSetMapIsCompleteAndLinked) {
   std::set<std::string> LiteralSets;
   for (const auto &Entry : *LiteralTargets)
     LiteralSets.insert(Entry.second.Set);
-  EXPECT_EQ(LiteralSets.size(), 55u);
+  EXPECT_EQ(static_cast<int64_t>(LiteralSets.size()),
+            manifestCount("literal_bearing_rule_set_count"));
   std::optional<std::vector<EscapeTarget>> EscapeTargets =
       readEscapeTargets(Error);
   ASSERT_TRUE(EscapeTargets.has_value()) << Error;
@@ -5354,7 +5354,8 @@ TEST(X86LegalizerMirMap, MirRuleSetMapIsCompleteAndLinked) {
   for (const std::string &T : Tables)
     if (!LiteralSets.count(T))
       AllEscaped.insert(T);
-  EXPECT_EQ(AllEscaped.size(), 8u);
+  EXPECT_EQ(static_cast<int64_t>(AllEscaped.size()),
+            manifestCount("all_escaped_rule_set_count"));
   std::set<std::string> EscapeOnly;
   for (const std::string &S : EscapeSets)
     if (!LiteralSets.count(S))

@@ -910,7 +910,11 @@ unsigned lltBits(StringRef S) {
     size_t Colon = T.find(':');
     if (Colon == StringRef::npos)
       return 0;
-    return std::stoul(T.substr(Colon + 1).str());
+    unsigned Bits = 0;
+    // `p0:*` has no static width; it is bound by the Core IR configuration.
+    if (T.substr(Colon + 1).getAsInteger(10, Bits))
+      return 0;
+    return Lanes * Bits;
   }
   size_t I = 0;
   while (I < T.size() && !isDigit(T[I]))
@@ -951,8 +955,25 @@ std::string jsonEscaped(StringRef S) {
   return Buf;
 }
 
-std::string normalizeLlt(StringRef S) {
+/// Canonical Core IR spelling for a literal LLT expression, or "" when the
+/// expression has no literal form.  A pointer whose width is computed from the
+/// subtarget is still representable: `LLT::pointer(0, <expr>)` becomes `p0:*`
+/// and the reader binds `*` to `config.pointer_width`.  That is the one symbol
+/// the vocabulary allows, because the width is a property of the configuration,
+/// not of the rule.
+///
+/// \p Records, when given, resolves a bare `LegalizeNamedType` name to the
+/// expression it carries, so `X86_v2p0` and `LLT::fixed_vector(2, X86_p0)`
+/// reach the same spelling.
+std::string normalizeLlt(StringRef S, const RecordKeeper *Records = nullptr) {
   StringRef T = S.trim();
+  if (T.empty())
+    return "";
+  if (Records && T.find_first_of("(){} \t\n") == StringRef::npos) {
+    if (const Record *R = Records->getDef(T))
+      if (R->isSubClassOf("LegalizeNamedType"))
+        return normalizeLlt(R->getValueAsString("Expr"), Records);
+  }
   {
     StringRef R = T;
     if (R.consume_front("LLT::scalar(") && R.consume_back(")") && !R.empty() &&
@@ -966,9 +987,13 @@ std::string normalizeLlt(StringRef S) {
       if (Comma != StringRef::npos) {
         StringRef L = R.substr(0, Comma).trim();
         StringRef E = R.substr(Comma + 1).trim();
-        if (!L.empty() && !E.empty() && llvm::all_of(L, isDigit) &&
-            llvm::all_of(E, isDigit))
-          return "v" + L.str() + "s" + E.str();
+        // The element is either a bare bit width or a nested LLT expression
+        // such as `X86_p0`.
+        std::string Elem = llvm::all_of(E, isDigit)
+                               ? "s" + E.str()
+                               : normalizeLlt(E, Records);
+        if (!L.empty() && !Elem.empty() && llvm::all_of(L, isDigit))
+          return "v" + L.str() + Elem;
       }
     }
   }
@@ -979,13 +1004,34 @@ std::string normalizeLlt(StringRef S) {
       if (Comma != StringRef::npos) {
         StringRef AS = R.substr(0, Comma).trim();
         StringRef Bits = R.substr(Comma + 1).trim();
-        if (!AS.empty() && !Bits.empty() && llvm::all_of(AS, isDigit) &&
-            llvm::all_of(Bits, isDigit))
-          return "p" + AS.str() + ":" + Bits.str();
+        if (!AS.empty() && !Bits.empty() && llvm::all_of(AS, isDigit)) {
+          if (llvm::all_of(Bits, isDigit))
+            return "p" + AS.str() + ":" + Bits.str();
+          return "p" + AS.str() + ":*";
+        }
       }
     }
   }
   return "";
+}
+
+/// Number of pointer lanes in a canonical LLT spelling, or 0 when it is not a
+/// pointer type: "p0:64" and "p0:*" are one lane, "v2p0:*" is two.
+unsigned lltPtrLanes(StringRef S) {
+  StringRef T = S;
+  unsigned Lanes = 1;
+  if (T.consume_front("v")) {
+    size_t L = 0;
+    while (L < T.size() && isDigit(T[L]))
+      ++L;
+    if (L == 0)
+      return 0;
+    Lanes = std::stoul(T.substr(0, L).str());
+    T = T.substr(L);
+  }
+  if (!T.consume_front("p") || T.find(':') == StringRef::npos)
+    return 0;
+  return Lanes;
 }
 std::string typeIs(unsigned Idx, StringRef Ty) {
   return "{\"kind\":\"leaf\",\"name\":\"typeIs\",\"args\":[" +
@@ -1000,6 +1046,15 @@ std::string typeIs(unsigned Idx, StringRef Ty) {
 std::string memSize(unsigned Idx, unsigned SizeBits, unsigned MinAlignBits) {
   return "{\"kind\":\"leaf\",\"name\":\"memSize\",\"args\":[" +
          std::to_string(Idx) + "," + std::to_string(SizeBits) + "," +
+         std::to_string(MinAlignBits) + "]}";
+}
+
+/// memSizePtr(mem_idx, lanes, min_align_bits): the MMO at mem_idx is exactly
+/// `lanes` pointers wide.  The width is `config.pointer_width`, so a memdesc
+/// whose memory type is a pointer stays literal without baking in 32 or 64.
+std::string memSizePtr(unsigned Idx, unsigned Lanes, unsigned MinAlignBits) {
+  return "{\"kind\":\"leaf\",\"name\":\"memSizePtr\",\"args\":[" +
+         std::to_string(Idx) + "," + std::to_string(Lanes) + "," +
          std::to_string(MinAlignBits) + "]}";
 }
 
@@ -1134,12 +1189,7 @@ std::string typePredicateJson(const RecordKeeper &Records, const Record &R) {
       E = E.trim();
       if (E.empty())
         continue;
-      std::string Norm = normalizeLlt(E);
-      if (Norm.empty()) {
-        const Record *T = Records.getDef(E);
-        if (T && T->isSubClassOf("LegalizeNamedType"))
-          Norm = normalizeLlt(T->getValueAsString("Expr"));
-      }
+      std::string Norm = normalizeLlt(E, &Records);
       if (Norm.empty())
         PrintFatalError(R.getLoc(), "typeInSet names a type with no literal "
                                     "Core IR form: " +
@@ -1171,16 +1221,9 @@ std::string typePredicateJson(const RecordKeeper &Records, const Record &R) {
     if (I >= Args.size())
       PrintFatalError(R.getLoc(),
                       "type predicate '" + Call + "' is missing a type");
-    std::string Norm = normalizeLlt(Args[I]);
+    std::string Norm = normalizeLlt(Args[I], &Records);
     if (!Norm.empty())
       return Norm;
-    if (const Record *T = Records.getDef(Args[I])) {
-      if (T->isSubClassOf("LegalizeNamedType")) {
-        std::string FromRecord = normalizeLlt(T->getValueAsString("Expr"));
-        if (!FromRecord.empty())
-          return FromRecord;
-      }
-    }
     PrintFatalError(R.getLoc(), "type predicate '" + Call +
                                     "' names a type that has no "
                                     "literal Core IR form: " +
@@ -1296,15 +1339,16 @@ void predicateJson(const RecordKeeper &Records, const Record &P,
 
 /// Flatten a type argument into literal LLT spellings.  An inline expression
 /// has no literal form, so it is an error rather than a silent loss.
-void collectTypes(const Record &R, std::vector<std::string> &Out) {
+void collectTypes(const Record &R, const RecordKeeper &Records,
+                  std::vector<std::string> &Out) {
   if (R.isSubClassOf("LegalizeNamedType")) {
-    Out.push_back(normalizeLlt(R.getValueAsString("Expr")));
+    Out.push_back(normalizeLlt(R.getValueAsString("Expr"), &Records));
     return;
   }
   if (R.isSubClassOf("LegalizeNamedTypeList") ||
       R.isSubClassOf("LegalizeInlineTypeList")) {
     for (const Record *E : R.getValueAsListOfDefs("Elems"))
-      Out.push_back(normalizeLlt(E->getValueAsString("Expr")));
+      Out.push_back(normalizeLlt(E->getValueAsString("Expr"), &Records));
     return;
   }
   if (R.isSubClassOf("LegalizeInlineType")) {
@@ -1374,9 +1418,11 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
   // Those rules are escapes, not guesses.
   for (const Record *A : Args) {
     if (A->isSubClassOf("LegalizeTypePair")) {
-      if (normalizeLlt(A->getValueAsDef("Type0")->getValueAsString("Expr"))
+      if (normalizeLlt(A->getValueAsDef("Type0")->getValueAsString("Expr"),
+                       &Records)
               .empty() ||
-          normalizeLlt(A->getValueAsDef("Type1")->getValueAsString("Expr"))
+          normalizeLlt(A->getValueAsDef("Type1")->getValueAsString("Expr"),
+                       &Records)
               .empty()) {
         Why = "nonliteral_type";
         return;
@@ -1384,11 +1430,14 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
       continue;
     }
     if (A->isSubClassOf("LegalizeMemDesc")) {
-      if (normalizeLlt(A->getValueAsDef("Type0")->getValueAsString("Expr"))
+      if (normalizeLlt(A->getValueAsDef("Type0")->getValueAsString("Expr"),
+                       &Records)
               .empty() ||
-          normalizeLlt(A->getValueAsDef("Type1")->getValueAsString("Expr"))
+          normalizeLlt(A->getValueAsDef("Type1")->getValueAsString("Expr"),
+                       &Records)
               .empty() ||
-          normalizeLlt(A->getValueAsDef("MemTy")->getValueAsString("Expr"))
+          normalizeLlt(A->getValueAsDef("MemTy")->getValueAsString("Expr"),
+                       &Records)
               .empty()) {
         Why = "nonliteral_type";
         return;
@@ -1396,7 +1445,7 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
       continue;
     }
     if (A->isSubClassOf("LegalizeNamedType")) {
-      if (normalizeLlt(A->getValueAsString("Expr")).empty()) {
+      if (normalizeLlt(A->getValueAsString("Expr"), &Records).empty()) {
         Why = "nonliteral_type";
         return;
       }
@@ -1405,7 +1454,7 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
     if (A->isSubClassOf("LegalizeNamedTypeList") ||
         A->isSubClassOf("LegalizeInlineTypeList")) {
       for (const Record *E : A->getValueAsListOfDefs("Elems"))
-        if (normalizeLlt(E->getValueAsString("Expr")).empty()) {
+        if (normalizeLlt(E->getValueAsString("Expr"), &Records).empty()) {
           Why = "nonliteral_type";
           return;
         }
@@ -1455,7 +1504,7 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
       PrintFatalError(Rule.getLoc(), "rule '" + Method +
                                          "' is missing argument " +
                                          std::to_string(I));
-    collectTypes(*Args[I], Ts);
+    collectTypes(*Args[I], Records, Ts);
     if (Ts.size() != 1)
       PrintFatalError(Rule.getLoc(), "rule '" + Method +
                                          "' expects one type at "
@@ -1468,15 +1517,15 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
     for (const Record *A : Args) {
       if (A->isSubClassOf("LegalizeTypePair")) {
         std::vector<std::string> T0, T1;
-        collectTypes(*A->getValueAsDef("Type0"), T0);
-        collectTypes(*A->getValueAsDef("Type1"), T1);
+        collectTypes(*A->getValueAsDef("Type0"), Records, T0);
+        collectTypes(*A->getValueAsDef("Type1"), Records, T1);
         Out.push_back(
             {"Legal", 0,
              WithPred(allOf({typeIs(0, T0.front()), typeIs(1, T1.front())})),
              ""});
       } else {
         std::vector<std::string> Ts;
-        collectTypes(*A, Ts);
+        collectTypes(*A, Records, Ts);
         for (const std::string &T : Ts)
           Out.push_back({"Legal", 0, WithPred(typeIs(0, T)), ""});
       }
@@ -1485,8 +1534,8 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
   }
   if (Builder == "BuilderLegalForCartesianProduct") {
     std::vector<std::string> T0, T1;
-    collectTypes(*Args[0], T0);
-    collectTypes(*Args[1], T1);
+    collectTypes(*Args[0], Records, T0);
+    collectTypes(*Args[1], Records, T1);
     for (const std::string &A : T0)
       for (const std::string &B : T1)
         Out.push_back(
@@ -1495,23 +1544,28 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
   }
   if (Builder == "BuilderLegalForTypesWithMemDesc") {
     for (const Record *A : Args) {
-      std::string T0 =
-          normalizeLlt(A->getValueAsDef("Type0")->getValueAsString("Expr"));
-      std::string T1 =
-          normalizeLlt(A->getValueAsDef("Type1")->getValueAsString("Expr"));
-      std::string Mem =
-          normalizeLlt(A->getValueAsDef("MemTy")->getValueAsString("Expr"));
-      unsigned MemBits = lltBits(Mem);
-      if (MemBits == 0)
-        PrintFatalError(A->getLoc(), "memdesc memory type '" + Mem +
-                                         "' has no "
-                                         "static bit size");
+      std::string T0 = normalizeLlt(
+          A->getValueAsDef("Type0")->getValueAsString("Expr"), &Records);
+      std::string T1 = normalizeLlt(
+          A->getValueAsDef("Type1")->getValueAsString("Expr"), &Records);
+      std::string Mem = normalizeLlt(
+          A->getValueAsDef("MemTy")->getValueAsString("Expr"), &Records);
       // The memory descriptor is its own query axis; the C++ builder passes
       // MMOIdx 0, not type index 2.
       unsigned Align = A->getValueAsInt("Align");
+      unsigned PtrLanes = lltPtrLanes(Mem);
+      std::string MemPred;
+      if (PtrLanes != 0 && Mem.find(":*") != std::string::npos) {
+        MemPred = memSizePtr(0, PtrLanes, Align);
+      } else {
+        unsigned MemBits = lltBits(Mem);
+        if (MemBits == 0)
+          PrintFatalError(A->getLoc(), "memdesc memory type '" + Mem +
+                                           "' has no static bit size");
+        MemPred = memSize(0, MemBits, Align);
+      }
       Out.push_back({"Legal", 0,
-                     WithPred(allOf({typeIs(0, T0), typeIs(1, T1),
-                                     memSize(0, MemBits, Align)})),
+                     WithPred(allOf({typeIs(0, T0), typeIs(1, T1), MemPred})),
                      ""});
     }
     return;
@@ -1531,7 +1585,7 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
   if (Builder == "BuilderUnsupportedFor") {
     for (const Record *A : Args) {
       std::vector<std::string> Ts;
-      collectTypes(*A, Ts);
+      collectTypes(*A, Records, Ts);
       for (const std::string &T : Ts)
         Out.push_back({"Unsupported", 0, WithPred(typeIs(0, T)), ""});
     }
@@ -1564,10 +1618,10 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
   }
   if (Builder == "BuilderLowerFor") {
     for (const Record *A : Args) {
-      std::string T0 =
-          normalizeLlt(A->getValueAsDef("Type0")->getValueAsString("Expr"));
-      std::string T1 =
-          normalizeLlt(A->getValueAsDef("Type1")->getValueAsString("Expr"));
+      std::string T0 = normalizeLlt(
+          A->getValueAsDef("Type0")->getValueAsString("Expr"), &Records);
+      std::string T1 = normalizeLlt(
+          A->getValueAsDef("Type1")->getValueAsString("Expr"), &Records);
       Out.push_back(
           {"Lower", 0, WithPred(allOf({typeIs(0, T0), typeIs(1, T1)})), ""});
     }
@@ -1581,7 +1635,7 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
     StringRef Action = Builder == "BuilderLibcallFor" ? "Libcall" : "Custom";
     for (const Record *A : Args) {
       std::vector<std::string> Ts;
-      collectTypes(*A, Ts);
+      collectTypes(*A, Records, Ts);
       for (const std::string &T : Ts)
         Out.push_back({Action.str(), 0, WithPred(typeIs(0, T)), ""});
     }
@@ -1589,8 +1643,8 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
   }
   if (Builder == "BuilderCustomForCartesianProduct") {
     std::vector<std::string> T0, T1;
-    collectTypes(*Args[0], T0);
-    collectTypes(*Args[1], T1);
+    collectTypes(*Args[0], Records, T0);
+    collectTypes(*Args[1], Records, T1);
     for (const std::string &A : T0)
       for (const std::string &B : T1)
         Out.push_back(
@@ -1770,8 +1824,8 @@ void LegalizerInfoEmitter::runCore(raw_ostream &OS) {
       Records.getAllDerivedDefinitions("LegalizeNamedType");
   std::vector<std::string> DomainTypes;
   for (const Record *T : Types) {
-    std::string Norm = normalizeLlt(T->getValueAsString("Expr"));
-    if (!Norm.empty())
+    std::string Norm = normalizeLlt(T->getValueAsString("Expr"), &Records);
+    if (!Norm.empty() && Norm.find(":*") == std::string::npos)
       DomainTypes.push_back(Norm);
   }
   // The pointer type is decided by the configuration, not by a type record, so
