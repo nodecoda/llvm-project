@@ -60,8 +60,8 @@ class CorpusDiffTest(unittest.TestCase):
         report = corpusdiff.compare(left, right)
         self.assertEqual(len(report["expected_diff"]), 1)
         self.assertEqual(report["expected_diff"][0]["query"],
-                         {"config": report["left"]["config_fingerprint"],
-                          "opcode": "G_ADD", "types": ["s32"]})
+                         {"config": "C2", "opcode": "G_ADD",
+                          "types": ["s32"]})
         self.assertTrue(corpusdiff.has_differences(report))
 
     def test_shape_only_corpus_never_invents_expected_parity(self):
@@ -99,6 +99,49 @@ class CorpusDiffTest(unittest.TestCase):
         self.assertEqual(report["keys"]["left_only"], 0)
         self.assertEqual(report["keys"]["right_only"], 0)
         self.assertEqual(report["expected_compared"], 1)
+
+    def test_v1_atoms_without_opcode_or_descriptor_are_readable(self):
+        v1 = {"schema": "llvm.gisel.x86-legalizer-witness", "version": 1,
+              "atoms": [{
+                  "id": "x86/rule/X86_ADD#0", "origin": "rule",
+                  "rule_set": "X86_ADD", "rule_index": 0, "config": "C2",
+                  "query": {"types": ["s32"]},
+                  "expected": {"action": "Legal"},
+              }]}
+        v2 = corpus([atom("G_ADD", ["s32"], {"action": "Legal"})])
+        self.assertEqual(corpusdiff.config_id(v1), "C2")
+        report = corpusdiff.compare(v1, v2)
+        self.assertTrue(report["config_match"])
+        self.assertEqual(report["keys"]["common"], 1)
+        self.assertEqual(report["expected_diff"], [])
+        self.assertEqual(report["unmapped_rule_sets"], [])
+
+    def test_mixed_config_v1_document_matches_itself(self):
+        v1 = {"schema": "llvm.gisel.x86-legalizer-witness", "version": 1,
+              "atoms": [atom("G_ADD", ["s32"], {"action": "Legal"}),
+                        atom("G_SUB", ["s64"], {"action": "Legal"},
+                             rule_set="X86_SUB")]}
+        v1["atoms"][0]["config"] = "C2"
+        v1["atoms"][1]["config"] = "C1"
+        report = corpusdiff.compare(v1, v1)
+        self.assertTrue(report["config_match"])
+        self.assertFalse(corpusdiff.has_differences(report))
+
+    def test_committed_witness_is_a_v1_document(self):
+        root = testlib.repo_root()
+        if root is None:
+            self.skipTest("not in a git checkout")
+        path = os.path.join(root, "llvm", "unittests", "Target", "X86",
+                            "x86-legalizer-witness.json")
+        if not os.path.exists(path):
+            self.skipTest("committed witness is not available")
+        doc = corpusdiff.load(path)
+        self.assertEqual(doc["version"], 1)
+        self.assertEqual(corpusdiff.config_id(doc), None)
+        report = corpusdiff.compare(doc, doc)
+        self.assertTrue(report["config_match"])
+        self.assertTrue(report["expected_available"])
+        self.assertFalse(corpusdiff.has_differences(report))
 
     def test_config_descriptor_mismatch_is_a_difference(self):
         left = corpus([atom("G_ADD", ["s32"], {"action": "Legal"})])

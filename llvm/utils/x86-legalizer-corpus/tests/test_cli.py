@@ -29,11 +29,20 @@ X86Tables[] = {
 };
 """
 
+UNPROBED = """\
+X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI) : Subtarget(STI) {
+  const LLT s32 = LLT::scalar(32);
+  getActionDefinitionsBuilder(G_ADD)
+      .customIf([](const LegalityQuery &Q) { return Q.Types[0] != Q.Types[1]; });
+}
+"""
+
 
 def run_cli(*args):
     proc = subprocess.run(
         [sys.executable, os.path.join(testlib.TOOL_DIR, "__main__.py"), *args],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        cwd=testlib.repo_root())
     return proc
 
 
@@ -170,6 +179,9 @@ class CrossRevisionTest(unittest.TestCase):
         with open(self.src, "w", encoding="utf-8") as handle:
             handle.write(MINI.replace("      .frobnicate({s8});\n", ""))
 
+    def out(self, name):
+        return os.path.join(self.tmp.name, name)
+
     def corpus_args(self, out, *extra):
         return ["corpus", "--input", self.src, "--oracle=reference",
                 "--allow-coverage-gaps", "--build",
@@ -210,6 +222,67 @@ class CrossRevisionTest(unittest.TestCase):
         self.assertTrue(all("expected" in atom for atom in doc["atoms"]))
         self.assertTrue(os.path.exists(out + ".report.json"))
 
+
+    def test_unprobed_rule_fails_without_allow_coverage_gaps(self):
+        path = os.path.join(self.tmp.name, "unprobed.cpp")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(UNPROBED)
+        proc = run_cli("points", "--input", path, "--out", self.out("p.json"))
+        self.assertEqual(proc.returncode, 3, proc.stderr)
+        self.assertIn("coverage gap: X86_ADD rule 0 customIf", proc.stderr)
+        self.assertFalse(os.path.exists(self.out("p.json")))
+
+        proc = run_cli("points", "--input", path, "--allow-coverage-gaps",
+                       "--out", self.out("p2.json"))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(self.out("p2.json"), "r", encoding="utf-8") as handle:
+            doc = json.load(handle)
+        self.assertEqual(len(doc["coverage"]["rules"]["unprobed"]), 1)
+        self.assertEqual(doc["coverage"]["rules"]["unprobed"][0]["rule_set"],
+                         "X86_ADD")
+
+    def test_symbolic_revision_is_resolved_in_the_manifest(self):
+        root = testlib.repo_root()
+        if root is None:
+            self.skipTest("not in a git checkout")
+        proc = subprocess.run(
+            ["git", "-C", root, "rev-parse", "--verify",
+             "upstream/main^{commit}"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if proc.returncode != 0:
+            self.skipTest("upstream/main is not available")
+        expected = proc.stdout.strip()
+        out = self.out("upstream.json")
+        proc = run_cli("parse", "--source-rev", "upstream/main", "--out", out)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(out, "r", encoding="utf-8") as handle:
+            doc = json.load(handle)
+        self.assertEqual(doc["source"]["rev"], "upstream/main")
+        self.assertEqual(doc["source"]["revision"], expected)
+
+
+
+class MigrateTest(unittest.TestCase):
+    def test_committed_v1_witness_migrates_to_v2(self):
+        root = testlib.repo_root()
+        if root is None:
+            self.skipTest("not in a git checkout")
+        source = os.path.join(root, "llvm", "unittests", "Target", "X86",
+                              "x86-legalizer-witness.json")
+        if not os.path.exists(source):
+            self.skipTest("committed witness is not available")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "witness-v2.json")
+            proc = run_cli("migrate", "--input", source, "--out", out)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            with open(out, "r", encoding="utf-8") as handle:
+                doc = json.load(handle)
+        self.assertEqual(doc["version"], 2)
+        self.assertEqual(doc["migrated_from_version"], 1)
+        self.assertEqual(doc["atom_count"], len(doc["atoms"]))
+        self.assertTrue(doc["atoms"])
+        self.assertTrue(all(atom.get("opcode") for atom in doc["atoms"]))
+        self.assertEqual(doc["atoms"][0]["opcode"], "G_ADD")
 
 
 if __name__ == "__main__":

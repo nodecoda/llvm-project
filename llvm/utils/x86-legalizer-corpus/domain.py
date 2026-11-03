@@ -1130,12 +1130,16 @@ def coverage_report(result, points, issues, inactive, exceptions):
     for builder in result.builders:
         opcodes.update(builder.opcodes)
     per_opcode = {}
+    per_opcode_shapes = {}
     for p in points:
-        per_opcode.setdefault(p["rule_set"], {})
-        per_opcode[p["rule_set"]][p["opcode"]] = (
-            per_opcode[p["rule_set"]].get(p["opcode"], 0) + 1)
+        counts = per_opcode.setdefault(p["rule_set"], {})
+        counts[p["opcode"]] = counts.get(p["opcode"], 0) + 1
+        if p["origin"] in ("rule", "boundary", "as"):
+            shapes = per_opcode_shapes.setdefault(p["rule_set"], {})
+            shapes[p["opcode"]] = shapes.get(p["opcode"], 0) + 1
     uncovered = []
     multi = {}
+    shape_multi = {}
     for builder in result.builders:
         if len(builder.opcodes) < 2:
             continue
@@ -1143,8 +1147,12 @@ def coverage_report(result, points, issues, inactive, exceptions):
             opcode: per_opcode.get(builder.name, {}).get(opcode, 0)
             for opcode in builder.opcodes
         }
+        shape_multi[builder.name] = {
+            opcode: per_opcode_shapes.get(builder.name, {}).get(opcode, 0)
+            for opcode in builder.opcodes
+        }
         for opcode in builder.opcodes:
-            if multi[builder.name][opcode] == 0:
+            if shape_multi[builder.name][opcode] == 0:
                 uncovered.append({"rule_set": builder.name, "opcode": opcode})
 
     return {
@@ -1170,6 +1178,7 @@ def coverage_report(result, points, issues, inactive, exceptions):
                                      for b in result.builders
                                      if len(b.opcodes) > 1),
             "per_opcode_atoms": multi,
+            "per_opcode_shape_atoms": shape_multi,
             "uncovered": uncovered,
         },
     }

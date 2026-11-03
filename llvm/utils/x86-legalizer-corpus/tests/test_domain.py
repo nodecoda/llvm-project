@@ -1,4 +1,5 @@
 import os
+import re
 import tempfile
 import unittest
 
@@ -192,6 +193,10 @@ class CoverageTest(unittest.TestCase):
         points, _, _, _, _, coverage = domain.build_points(
             result, "witness", domain.load_coverage_exceptions())
         self.assertEqual(coverage["opcodes"]["uncovered"], [])
+        shape_atoms = coverage["opcodes"]["per_opcode_shape_atoms"]
+        for name, counts in shape_atoms.items():
+            for opcode, count in counts.items():
+                self.assertGreater(count, 0, f"{name}:{opcode}")
         for opcode in ("G_EXTRACT", "G_INSERT"):
             atoms = [p for p in points
                      if p["rule_set"] == "X86_EXTRACT" and p["opcode"] == opcode]
@@ -199,6 +204,25 @@ class CoverageTest(unittest.TestCase):
             self.assertTrue(any(p["origin"] == "rule" for p in atoms), opcode)
             self.assertTrue(any(p["origin"] == "boundary" for p in atoms), opcode)
             self.assertTrue(any(p["origin"] == "as" for p in atoms), opcode)
+
+
+LLT_GRAMMAR = re.compile(r"^(?:p\d+|s\d+|v\d+s\d+|v\d+p\d+)$")
+
+
+class UpstreamShapeTest(unittest.TestCase):
+    def test_upstream_types_follow_the_llt_grammar(self):
+        source = testlib.source_at("upstream/main")
+        if source is None:
+            self.skipTest("upstream/main is not available")
+        result = testlib.parse_text(source[0], "C2")
+        points, _, _, _, _, _ = domain.build_points(
+            result, "witness", domain.load_coverage_exceptions())
+        self.assertTrue(points)
+        for p in points:
+            for ty in p["types"]:
+                self.assertRegex(ty, LLT_GRAMMAR)
+            if p["mem"] is not None:
+                self.assertRegex(p["mem"], LLT_GRAMMAR)
 
 
 if __name__ == "__main__":

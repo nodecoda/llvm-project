@@ -10,6 +10,7 @@ import sys
 import corpusdiff
 import domain
 import emit
+import expr as E
 import oracle
 import parse
 import target
@@ -19,9 +20,9 @@ CORPUS_SCHEMA = "llvm-x86-legalizer-cpp-corpus"
 CORPUS_VERSION = 2
 
 
-def _source_info(text, revision, path):
+def _source_info(text, spec, revision, path):
     return {
-        "rev": revision,
+        "rev": spec,
         "revision": revision,
         "path": path,
         "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
@@ -29,11 +30,24 @@ def _source_info(text, revision, path):
     }
 
 
+def resolve_revision(repo, revision):
+    """The full commit SHA for a symbolic revision, or *revision* if absent."""
+    if not revision:
+        return None
+    proc = subprocess.run(
+        ["git", "-C", repo, "rev-parse", "--verify", f"{revision}^{{commit}}"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if proc.returncode != 0:
+        return revision
+    return proc.stdout.strip()
+
+
 def load_source(args):
     if args.input:
         with open(args.input, "r", encoding="utf-8") as handle:
             text = handle.read()
-        return text, _source_info(text, None, os.path.abspath(args.input))
+        return text, _source_info(text, None, None,
+                                  os.path.abspath(args.input))
     revision = args.source_rev or target.DEFAULT_SOURCE_REV
     spec = f"{revision}:{args.source_path}"
     proc = subprocess.run(
@@ -42,7 +56,9 @@ def load_source(args):
     if proc.returncode != 0:
         raise SystemExit(proc.stderr.strip() or f"git show {spec} failed")
     text = proc.stdout
-    return text, _source_info(text, revision, args.source_path)
+    return text, _source_info(text, revision,
+                              resolve_revision(args.repo, revision),
+                              args.source_path)
 
 
 def read_revision(repo, revision, path):
@@ -159,7 +175,9 @@ def _cross_revision_delta(args, result, oracle_revision, source):
     if text is None:
         raise SystemExit(
             f"cannot read the oracle source {oracle_revision} from {args.repo}")
-    info = _source_info(text, oracle_revision, args.source_path)
+    info = _source_info(text, oracle_revision,
+                        resolve_revision(args.repo, oracle_revision),
+                        args.source_path)
     oracle_result = parse.parse_source(
         text, info, args.config, target.CONFIGS[args.config])
     delta = oracle.rule_delta(result, oracle_result)
@@ -235,7 +253,8 @@ def cmd_corpus(args):
     elif kind == "none":
         oracle_doc = oracle.oracle_doc("none")
     elif kind == "reference":
-        reference = oracle.reference_revision(args.repo)
+        reference_spec = oracle.reference_revision(args.repo)
+        reference = resolve_revision(args.repo, reference_spec)
         if reference is None:
             raise SystemExit(
                 "cannot find the frozen reference provenance under "
@@ -252,7 +271,8 @@ def cmd_corpus(args):
                     f"!= oracle reference {reference}"
                     + (f"; oracle-only rules: {missing}" if missing else "")
                     + "; pass --allow-cross-revision to mark the corpus")
-        oracle_doc = oracle.oracle_doc("reference", reference, cross)
+        oracle_doc = oracle.oracle_doc("reference", reference, cross,
+                                       spec=reference_spec)
     else:
         raise SystemExit(f"unknown oracle {kind}")
 
@@ -333,6 +353,57 @@ def cmd_diff(args):
         raise SystemExit(1)
 
 
+def cmd_migrate(args):
+    doc = corpusdiff.load(args.input)
+    candidates = ([args.source_rev] if args.source_rev
+                  else [doc.get("source_commit"),
+                        oracle.reference_revision(args.repo),
+                        target.DEFAULT_SOURCE_REV])
+    source_rev = None
+    source = None
+    result = None
+    last_error = None
+    for revision in candidates:
+        if not revision:
+            continue
+        text = read_revision(args.repo, revision, args.source_path)
+        if text is None:
+            last_error = f"cannot read {revision}:{args.source_path}"
+            continue
+        info = _source_info(text, revision,
+                            resolve_revision(args.repo, revision),
+                            args.source_path)
+        try:
+            result = parse.parse_source(text, info, args.config,
+                                        target.CONFIGS[args.config])
+        except E.ExprError as err:
+            last_error = f"{revision}: {err}"
+            continue
+        source_rev = revision
+        source = info
+        break
+    if result is None:
+        raise SystemExit(last_error or "cannot find a source for the opcode map")
+    rule_opcodes = {}
+    for builder in result.builders:
+        for opcode in builder.opcodes:
+            rule_opcodes.setdefault("X86_" + opcode[2:], opcode)
+        rule_opcodes.setdefault(builder.name, builder.opcodes[0])
+    try:
+        migrated = corpusdiff.migrate_v1(doc, rule_opcodes, source)
+    except ValueError as err:
+        raise SystemExit(str(err))
+    if migrated is None:
+        raise SystemExit(f"{args.input} is not a version-1 document")
+    emit.write_json(args.out, migrated)
+    print(json.dumps({
+        "out": os.path.abspath(args.out),
+        "source_rev": source_rev,
+        "atoms": migrated["atom_count"],
+        "config": migrated.get("config"),
+    }, sort_keys=True))
+
+
 def build_parser():
     p = argparse.ArgumentParser(
         prog="x86-legalizer-corpus",
@@ -392,6 +463,18 @@ def build_parser():
     sp.add_argument("--points-out")
     sp.add_argument("--out", required=True)
     sp.set_defaults(func=cmd_corpus)
+
+    sp = sub.add_parser("migrate")
+    sp.add_argument("--input", required=True)
+    sp.add_argument("--out", required=True)
+    sp.add_argument("--source-rev",
+                    help="source for the rule-set -> primary-opcode map "
+                         "(default: source_commit, then the frozen reference)")
+    sp.add_argument("--source-path", default=target.DEFAULT_SOURCE_PATH)
+    sp.add_argument("--repo", default=".")
+    sp.add_argument("--config", default=target.DEFAULT_CONFIG,
+                    choices=sorted(target.CONFIGS))
+    sp.set_defaults(func=cmd_migrate)
 
     sp = sub.add_parser("diff")
     sp.add_argument("--left", required=True)

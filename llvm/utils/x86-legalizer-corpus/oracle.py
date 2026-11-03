@@ -25,12 +25,15 @@ def reference_revision(repo="."):
     return data.get("source_commit")
 
 
-def oracle_doc(kind, revision=None, cross_revision=False):
-    return {
+def oracle_doc(kind, revision=None, cross_revision=False, spec=None):
+    doc = {
         "kind": kind,
         "revision": revision,
         "cross_revision": bool(cross_revision),
     }
+    if spec is not None and spec != revision:
+        doc["spec"] = spec
+    return doc
 
 
 def _rule_keys(result):

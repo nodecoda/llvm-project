@@ -40,7 +40,14 @@ from*:
 `--oracle=none` writes a shapes-only corpus: every atom is present, none has
 an `expected` field.  `--oracle=reference` runs the frozen C++
 `X86LegalizerInfoReference::getAction()` through `X86Tests` and is the only
-mode that fills `expected`.
+mode that fills `expected`.  A revision-specific `upstream-build` oracle is
+not implemented; that is why the default for `upstream/main` is
+`--oracle=none`.
+
+`source.rev` records the requested spelling (`upstream/main`), while
+`source.revision` records the resolved 40-character commit.  The oracle
+records the resolved reference commit and, when it differs from the requested
+spelling, its `spec`.
 
 If `source.revision != oracle.revision` the corpus is cross-revision: the
 envelope carries `"oracle": {"cross_revision": true, ...}` and
@@ -174,6 +181,8 @@ exit 3 when a rule has no verified probe and no reviewed exception:
   "opcodes": {
     "total": 115, "multi_opcode_builders": 19, "secondary_opcodes": 53,
     "per_opcode_atoms": {"X86_EXTRACT": {"G_EXTRACT": 17, "G_INSERT": 18}},
+    "per_opcode_shape_atoms": {"X86_EXTRACT": {"G_EXTRACT": 17,
+                                               "G_INSERT": 17}},
     "uncovered": []
   },
   "policy": "..."
@@ -187,6 +196,9 @@ exit 3 when a rule has no verified probe and no reviewed exception:
   rule, boundary, and address-space probes for **every** opcode.  Lambdas that
   branch on `Query.Opcode` are evaluated per opcode, including lambda-local
   variables such as `SubIdx = Query.Opcode == G_EXTRACT ? 0 : 1`.
+- `per_opcode_atoms` counts every origin; `uncovered` and
+  `per_opcode_shape_atoms` count only `rule`, `boundary`, and `as` atoms, so
+  an opcode that only has an `opcode` probe is still reported as a gap.
 - `--allow-coverage-gaps` downgrades the exit-3 gate for inspection only; do
   not use it for a committed corpus.
 
@@ -220,11 +232,16 @@ python3 llvm/utils/x86-legalizer-corpus diff \
     --out /tmp/diff.json
 ```
 
-The report contains `expected_diff`, `left_only`, `right_only`, and
-`per_rule_coverage`.  `expected` is compared only where both sides carry
-one: a shapes-only corpus against a filled corpus reports
-`expected_available: false`, never a false "0 differences".  `--strict`
-exits 1 on any difference.
+The report contains `expected_diff`, `left_only`, `right_only`,
+`per_rule_coverage`, and `unmapped_rule_sets`.  `expected` is compared only
+where both sides carry one: a shapes-only corpus against a filled corpus
+reports `expected_available: false`, never a false "0 differences".
+`--strict` exits 1 on any difference.
+
+Version-1 documents are read as well.  They carry no `opcode`; when the other
+side maps a rule set to exactly one opcode, that mapping is used.  A
+multi-opcode builder that cannot be resolved is listed in
+`unmapped_rule_sets` instead of being guessed.
 
 Cross-revision example: `upstream/main` corpus vs the frozen-reference corpus
 has `expected_diff: []` over the 2133 common query keys and two
@@ -237,6 +254,38 @@ Shapes-only and filled corpora share one atom shape:
 {"types": [...], "mem": {"type", "align"}}}`, where pointers carry their bit
 width (`p0:64`, `v2p0:64`).  The intermediate points file used by the C++
 filler keeps the short spellings and top-level `types`/`mem`/`align`.
+
+### Migrating a v1 artifact
+
+The committed witness is version 1 (`llvm.gisel.x86-legalizer-witness`).  Do
+not rewrite it.  Generate a v2 copy next to it when a tool needs the new atom
+shape:
+
+```bash
+python3 llvm/utils/x86-legalizer-corpus migrate \
+    --input llvm/unittests/Target/X86/x86-legalizer-witness.json \
+    --out /tmp/x86-witness-v2.json
+```
+
+`migrate` takes the rule-set -> primary-opcode map from the document's
+`source_commit`; if that revision does not contain the hand-written chain
+(the current v1 witness was generated from the TableGen path), it falls back
+to the frozen reference and records which source it used.  The migrated
+document keeps its per-atom `config` and does not synthesize a feature map;
+regenerate points with `corpus` if you need to fill expected answers.
+
+### Nightly drift check
+
+`upstream-nightly.sh` runs the pipeline against `upstream/main`:
+
+```bash
+llvm/utils/x86-legalizer-corpus/upstream-nightly.sh /tmp/x86-nightly
+```
+
+It fails when the reader cannot parse the source or when `points` reports an
+unregistered coverage gap.  The `diff` against the committed witness is
+informational: a cross-revision query-domain difference (today the CTPOP
+delta) is expected and does not fail the job.
 
 ## Deltas and verification
 
@@ -279,7 +328,7 @@ python3 -m unittest discover -s llvm/utils/x86-legalizer-corpus/tests -v
 
 The suite covers the lexer, the expression evaluator, branch/loop expansion,
 the frozen-reference census, point determinism, the oracle boundary, the
-coverage manifest, corpus comparison, and the delta registry.  Tests that need the frozen revision or a built
+coverage manifest, corpus comparison, v1 migration, and the delta registry.  Tests that need the frozen revision or a built
 `X86LegalizerRuleIndex.inc` skip when those artifacts are absent.
 
 Frozen-revision census (a change here means the reader or the source moved):

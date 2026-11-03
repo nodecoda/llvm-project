@@ -3676,6 +3676,93 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
                << " collisions=" << Collisions << ") to " << OutPath << "\n";
 }
 
+// The feature map a points file must carry for *STI*.  Kept in one place so
+// the filler and the synthetic mismatch test cannot drift.
+static SmallVector<std::pair<StringRef, bool>, 18>
+configFeatures(const X86Subtarget &STI) {
+  return {{"is64Bit", STI.is64Bit()},
+          {"canUseCMOV", STI.canUseCMOV()},
+          {"hasSSE1", STI.hasSSE1()},
+          {"hasSSE2", STI.hasSSE2()},
+          {"hasSSE41", STI.hasSSE41()},
+          {"hasAVX", STI.hasAVX()},
+          {"hasAVX2", STI.hasAVX2()},
+          {"hasAVX512", STI.hasAVX512()},
+          {"hasVLX", STI.hasVLX()},
+          {"hasDQI", STI.hasDQI()},
+          {"hasBWI", STI.hasBWI()},
+          {"useSoftFloat", STI.useSoftFloat()},
+          {"hasX87", STI.hasX87()},
+          {"hasPOPCNT", STI.hasPOPCNT()},
+          {"hasLZCNT", STI.hasLZCNT()},
+          {"hasBMI", STI.hasBMI()},
+          {"hasVPOPCNTDQ", STI.hasVPOPCNTDQ()},
+          {"isTarget64BitLP64", STI.isTarget64BitLP64()}};
+}
+
+static std::optional<std::string>
+validateConfigDescriptor(const json::Object &Desc, const Config &C,
+                         const X86Subtarget &STI) {
+  std::optional<StringRef> DescId = Desc.getString("id");
+  if (!DescId)
+    return "config_descriptor has no id";
+  if (*DescId != C.ID)
+    return std::string("config descriptor id does not match config ") + C.ID;
+  const json::Object *Features = Desc.getObject("features");
+  if (!Features)
+    return "config_descriptor has no features";
+  for (const auto &[Name, Actual] : configFeatures(STI)) {
+    std::optional<bool> Expected = Features->getBoolean(Name);
+    if (!Expected)
+      return std::string("config_descriptor is missing feature ") + Name.str();
+    if (*Expected != Actual)
+      return std::string("config ") + C.ID + " feature " + Name.str() +
+             " mismatch";
+  }
+  return std::nullopt;
+}
+
+// A descriptor that disagrees with the constructed subtarget must be rejected.
+// The generator is disabled in normal runs, so this test drives the validator
+// directly with a synthetic feature map.
+TEST_F(X86LegalizerDifferentialTest, ConfigDescriptorMismatchIsRejected) {
+  const Config *C = findFullConfig("C2");
+  ASSERT_NE(C, nullptr);
+  Sigma S = makeSigma(*C);
+  ASSERT_TRUE(S.STI);
+
+  std::string Features;
+  for (const auto &[Name, Value] : configFeatures(*S.STI)) {
+    if (!Features.empty())
+      Features += ",";
+    Features += "\"";
+    Features += Name;
+    Features += "\":";
+    Features += Value ? "true" : "false";
+  }
+  std::string Text = "{\"id\":\"C2\",\"features\":{" + Features + "}}";
+  Expected<json::Value> Parsed = json::parse(Text);
+  ASSERT_TRUE(static_cast<bool>(Parsed)) << toString(Parsed.takeError());
+  const json::Object *Desc = Parsed->getAsObject();
+  ASSERT_NE(Desc, nullptr);
+  EXPECT_FALSE(validateConfigDescriptor(*Desc, *C, *S.STI).has_value());
+
+  std::string Wrong = Text;
+  size_t Pos = Wrong.find("\"hasAVX512\":true");
+  ASSERT_NE(Pos, std::string::npos);
+  StringRef WrongFeature = "\"hasAVX512\":true";
+  Wrong.replace(Pos, WrongFeature.size(), "\"hasAVX512\":false");
+  Expected<json::Value> WrongParsed = json::parse(Wrong);
+  ASSERT_TRUE(static_cast<bool>(WrongParsed))
+      << toString(WrongParsed.takeError());
+  const json::Object *WrongDesc = WrongParsed->getAsObject();
+  ASSERT_NE(WrongDesc, nullptr);
+  std::optional<std::string> Error =
+      validateConfigDescriptor(*WrongDesc, *C, *S.STI);
+  ASSERT_TRUE(Error.has_value());
+  EXPECT_NE(Error->find("hasAVX512"), std::string::npos);
+}
+
 // Not a test.  Fill the query points produced by
 // llvm/utils/x86-legalizer-corpus with answers from the frozen reference.
 //
@@ -3713,39 +3800,12 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateCorpusFromCppPoints) {
 
   // The points file carries the subtarget feature map it was generated for.
   // A bare config ID is not enough: the ID once selected a sigma table while
-  // the filler used a full config, which hid eight wrong answers.  Validate
-  // every feature the legalizer reads against the constructed subtarget.
+  // the filler used a full config, which hid eight wrong answers.
   const json::Object *Desc = Root->getObject("config_descriptor");
   ASSERT_NE(Desc, nullptr) << "points file has no config_descriptor";
-  std::optional<StringRef> DescId = Desc->getString("id");
-  ASSERT_TRUE(DescId.has_value()) << "config_descriptor has no id";
-  EXPECT_EQ(*DescId, C->ID) << "config descriptor does not match config";
-  const json::Object *Features = Desc->getObject("features");
-  ASSERT_NE(Features, nullptr) << "config_descriptor has no features";
-  auto CheckFeature = [&](StringRef Name, bool Actual) {
-    std::optional<bool> Expected = Features->getBoolean(Name);
-    ASSERT_TRUE(Expected.has_value()) << "missing feature " << Name;
-    EXPECT_EQ(*Expected, Actual)
-        << "config " << C->ID << " feature " << Name;
-  };
-  CheckFeature("is64Bit", S.STI->is64Bit());
-  CheckFeature("canUseCMOV", S.STI->canUseCMOV());
-  CheckFeature("hasSSE1", S.STI->hasSSE1());
-  CheckFeature("hasSSE2", S.STI->hasSSE2());
-  CheckFeature("hasSSE41", S.STI->hasSSE41());
-  CheckFeature("hasAVX", S.STI->hasAVX());
-  CheckFeature("hasAVX2", S.STI->hasAVX2());
-  CheckFeature("hasAVX512", S.STI->hasAVX512());
-  CheckFeature("hasVLX", S.STI->hasVLX());
-  CheckFeature("hasDQI", S.STI->hasDQI());
-  CheckFeature("hasBWI", S.STI->hasBWI());
-  CheckFeature("useSoftFloat", S.STI->useSoftFloat());
-  CheckFeature("hasX87", S.STI->hasX87());
-  CheckFeature("hasPOPCNT", S.STI->hasPOPCNT());
-  CheckFeature("hasLZCNT", S.STI->hasLZCNT());
-  CheckFeature("hasBMI", S.STI->hasBMI());
-  CheckFeature("hasVPOPCNTDQ", S.STI->hasVPOPCNTDQ());
-  CheckFeature("isTarget64BitLP64", S.STI->isTarget64BitLP64());
+  if (std::optional<std::string> Error =
+          validateConfigDescriptor(*Desc, *C, *S.STI))
+    FAIL() << *Error;
 
   X86LegalizerInfoReference Oracle(
       *S.STI, *static_cast<const X86TargetMachine *>(S.TM.get()));
