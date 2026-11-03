@@ -4577,7 +4577,10 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_BenchmarkChainVersusTable) {
     Sink += static_cast<uint64_t>(Step.Action) + Step.TypeIdx;
     return Step;
   };
-  auto Sweep = [&](LegalizerInfo &LI) {
+  // One copy of the sweep loop, not one per caller: the table and the chain
+  // must be measured by the same code, and a test-only edit elsewhere in this
+  // function must not move the loop's layout.
+  auto Sweep = [&](LegalizerInfo &LI) __attribute__((noinline)) {
     for (unsigned I = 0; I != Queries.size(); ++I)
       Ask(LI, I);
   };
@@ -4767,8 +4770,7 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_BenchmarkChainVersusTable) {
   // One query, one cell, everything in L1.  This is per-query compute, but it
   // is not a single number: the reader's work depends on the rule set.  Report
   // a unary rule set and a memory rule set, which bracket the range.
-  auto OneBQ = [&](const BenchQuery &BQ) {
-    const unsigned Rounds = 200000;
+  auto OneBQ = [&](const BenchQuery &BQ, unsigned Rounds = 200000) {
     const double Total = BestOf([&] {
       for (unsigned R = 0; R != Rounds; ++R) {
         LegalityQuery Q(BQ.Opcode, BQ.Types, BQ.Mem);
@@ -4885,16 +4887,27 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_BenchmarkChainVersusTable) {
          return !Q.Mem.empty() && Q.Types.size() >= 2 && Q.Types[1].isPointer();
        }},
   };
+  // One atom per bucket is not a cost: it is one table, one cell, one set of
+  // neighbouring rules.  Average a spread of matches instead, with the same
+  // total number of asks per bucket so the buckets stay comparable.
   SmallVector<std::pair<const char *, double>, 12> ShapeCosts;
+  const unsigned PerShape = 20;
   for (const ShapeCase &Case : Shapes) {
-    unsigned Pick = Queries.size();
+    std::vector<unsigned> Picks;
     for (unsigned I : HitQueries)
-      if (Case.Match(Queries[I])) {
-        Pick = I;
-        break;
-      }
-    if (Pick != Queries.size())
-      ShapeCosts.push_back({Case.Name, OneCell(Pick)});
+      if (Case.Match(Queries[I]))
+        Picks.push_back(I);
+    if (Picks.empty())
+      continue;
+    const unsigned Stride = std::max<size_t>(1, Picks.size() / PerShape);
+    std::vector<unsigned> Sample;
+    for (size_t I = 0; I < Picks.size() && Sample.size() < PerShape; I += Stride)
+      Sample.push_back(Picks[I]);
+    const unsigned Rounds = std::max(1u, 200000u / unsigned(Sample.size()));
+    double Sum = 0.0;
+    for (unsigned I : Sample)
+      Sum += OneBQ(Queries[I], Rounds);
+    ShapeCosts.push_back({Case.Name, Sum / Sample.size()});
   }
   // A rule set with no type slots (G_BR): the table has no key to index, so
   // this is the one shape the reader cannot answer from a cell.
