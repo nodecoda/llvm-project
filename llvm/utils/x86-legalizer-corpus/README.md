@@ -399,3 +399,29 @@ Frozen-revision census (a change here means the reader or the source moved):
 call_sites=58  builders=62  opcodes=115  classes=24  mem_classes=23  aligns=1
 chain_rules=277  tablegen_rows=63
 ```
+
+## Recording a query trace from a real compile
+
+A generated corpus asks the rules in enumeration order: one rule set's atoms
+together, every class pair, every memory descriptor.  A compile does not.  To
+measure the decision path in the order a worklist produces, record one:
+
+```bash
+llc -global-isel -O0 -debug-only=legalizer in.ll -o /dev/null 2>&1 \
+  | python3 llvm/utils/x86-legalizer-corpus/trace-from-log.py \
+      --ast /tmp/ast-C2.json --out /tmp/trace.json
+```
+
+The trace is query shapes only, with no answers, so it is not a corpus and
+`diff` does not apply to it.  It is replayed by the reader benchmark:
+
+```bash
+X86_LEGALIZER_BENCH_CORPUS_IN=<corpus.json> \
+X86_LEGALIZER_BENCH_TRACE_IN=/tmp/trace.json \
+X86Tests --gtest_also_run_disabled_tests \
+  --gtest_filter='*BenchmarkChainVersusTable*'
+```
+
+Two approximations are recorded in the envelope rather than hidden: a function
+argument's type is never printed by the legalizer, and the log does not print
+`TypeIdx`, so types are deduplicated by value.

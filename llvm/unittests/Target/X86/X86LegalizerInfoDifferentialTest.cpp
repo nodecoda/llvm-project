@@ -4510,33 +4510,42 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_BenchmarkChainVersusTable) {
     SmallVector<LLT, 3> Types;
     SmallVector<LegalityQuery::MemDesc, 1> Mem;
   };
+  // Both the corpus ("query" nested) and a recorded trace (flat) carry the
+  // same three fields; one loader keeps them from drifting.
+  auto LoadQueries = [&](const json::Array &Arr, const char *What,
+                         std::vector<BenchQuery> &Out) {
+    Out.reserve(Arr.size());
+    for (const json::Value &V : Arr) {
+      const json::Object *A = V.getAsObject();
+      ASSERT_NE(A, nullptr);
+      const json::Object *Query = A->getObject("query");
+      if (!Query)
+        Query = A;
+      BenchQuery BQ;
+      if (const json::Array *Types = Query->getArray("types"))
+        for (const json::Value &TV : *Types) {
+          std::optional<LLT> Ty = parseCorpusLLT(*TV.getAsString());
+          ASSERT_TRUE(Ty.has_value());
+          BQ.Types.push_back(*Ty);
+        }
+      if (const json::Object *Mem = Query->getObject("mem")) {
+        std::optional<LLT> MemTy = parseCorpusLLT(*Mem->getString("type"));
+        ASSERT_TRUE(MemTy.has_value());
+        BQ.Mem.emplace_back(*MemTy,
+                            static_cast<uint64_t>(*Mem->getInteger("align")),
+                            AtomicOrdering::NotAtomic,
+                            AtomicOrdering::NotAtomic);
+      }
+      std::optional<unsigned> Op = opcodeForAnyName(*A->getString("opcode"));
+      ASSERT_TRUE(Op.has_value()) << What << ": unknown opcode";
+      BQ.Opcode = *Op;
+      Out.push_back(std::move(BQ));
+    }
+  };
   std::vector<BenchQuery> Queries;
   const json::Array *Atoms = Root->getArray("atoms");
   ASSERT_NE(Atoms, nullptr);
-  Queries.reserve(Atoms->size());
-  for (const json::Value &V : *Atoms) {
-    const json::Object *A = V.getAsObject();
-    ASSERT_NE(A, nullptr);
-    const json::Object *Query = A->getObject("query");
-    ASSERT_NE(Query, nullptr);
-    BenchQuery BQ;
-    for (const json::Value &TV : *Query->getArray("types")) {
-      std::optional<LLT> Ty = parseCorpusLLT(*TV.getAsString());
-      ASSERT_TRUE(Ty.has_value());
-      BQ.Types.push_back(*Ty);
-    }
-    if (const json::Object *Mem = Query->getObject("mem")) {
-      std::optional<LLT> MemTy = parseCorpusLLT(*Mem->getString("type"));
-      ASSERT_TRUE(MemTy.has_value());
-      BQ.Mem.emplace_back(*MemTy,
-                          static_cast<uint64_t>(*Mem->getInteger("align")),
-                          AtomicOrdering::NotAtomic, AtomicOrdering::NotAtomic);
-    }
-    std::optional<unsigned> Op = opcodeForAnyName(*A->getString("opcode"));
-    ASSERT_TRUE(Op.has_value());
-    BQ.Opcode = *Op;
-    Queries.push_back(std::move(BQ));
-  }
+  LoadQueries(*Atoms, "corpus", Queries);
 
   // Production shape: the table, no chain.
   class TableOnlyLegalizer : public LegalizerInfo {
@@ -4758,10 +4767,7 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_BenchmarkChainVersusTable) {
   // One query, one cell, everything in L1.  This is per-query compute, but it
   // is not a single number: the reader's work depends on the rule set.  Report
   // a unary rule set and a memory rule set, which bracket the range.
-  auto OneCell = [&](unsigned I) {
-    if (I >= Queries.size())
-      return 0.0;
-    const BenchQuery &BQ = Queries[I];
+  auto OneBQ = [&](const BenchQuery &BQ) {
     const unsigned Rounds = 200000;
     const double Total = BestOf([&] {
       for (unsigned R = 0; R != Rounds; ++R) {
@@ -4770,6 +4776,9 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_BenchmarkChainVersusTable) {
       }
     });
     return Total / Rounds;
+  };
+  auto OneCell = [&](unsigned I) {
+    return I < Queries.size() ? OneBQ(Queries[I]) : 0.0;
   };
   unsigned UnaryHit = Queries.size(), MemHit = Queries.size();
   for (unsigned I : HitQueries) {
@@ -4786,6 +4795,115 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_BenchmarkChainVersusTable) {
   auto PerQuery = [&](double Ns_, unsigned Count) {
     return Count ? Ns_ / Count : 0.0;
   };
+
+  // A recorded sequence from a real compile: same reader, production order.
+  // The corpus emits one rule set's atoms together, which no worklist does.
+  std::vector<BenchQuery> Trace;
+  if (const char *TracePath = std::getenv("X86_LEGALIZER_BENCH_TRACE_IN")) {
+    std::optional<std::string> TraceText = readFile(TracePath);
+    ASSERT_TRUE(TraceText.has_value()) << "cannot read " << TracePath;
+    Expected<json::Value> TraceParsed = json::parse(*TraceText);
+    ASSERT_TRUE(static_cast<bool>(TraceParsed))
+        << toString(TraceParsed.takeError());
+    const json::Object *TraceRoot = TraceParsed->getAsObject();
+    ASSERT_NE(TraceRoot, nullptr);
+    const json::Array *TraceArr = TraceRoot->getArray("queries");
+    ASSERT_NE(TraceArr, nullptr) << "expected {\"queries\": [...]}";
+    LoadQueries(*TraceArr, "trace", Trace);
+  }
+  auto AskOne = [&](LegalizerInfo &LI, const BenchQuery &BQ) {
+    LegalityQuery Q(BQ.Opcode, BQ.Types, BQ.Mem);
+    const LegalizeActionStep Step = LI.getAction(Q);
+    Sink += static_cast<uint64_t>(Step.Action) + Step.TypeIdx;
+  };
+  auto SweepOf = [&](LegalizerInfo &LI, const std::vector<BenchQuery> &List) {
+    for (const BenchQuery &BQ : List)
+      AskOne(LI, BQ);
+  };
+  double TraceWarmNs = 0.0, TraceChainNs = 0.0;
+  unsigned TraceHit = 0, TraceResidual = 0, TraceOther = 0;
+  if (!Trace.empty()) {
+    SweepOf(Warm, Trace); // pay the fill before timing
+    TraceWarmNs = BestOf([&] { SweepOf(Warm, Trace); }) / Trace.size();
+    TraceChainNs = BestOf([&] { SweepOf(Chain, Trace); }) / Trace.size();
+    for (const BenchQuery &BQ : Trace) {
+      LegalityQuery Q(BQ.Opcode, BQ.Types, BQ.Mem);
+      switch (Warm.table().query(Q).Kind) {
+      case X86LegalizerTable::Answer::Hit:
+        ++TraceHit;
+        break;
+      case X86LegalizerTable::Answer::Residual:
+        ++TraceResidual;
+        break;
+      default:
+        ++TraceOther;
+        break;
+      }
+    }
+  }
+
+  // Where the per-query cost goes.  One query, one cell, repeated: no fill,
+  // no cache miss, no query mix.  The differences between rows are the work
+  // a shape makes the reader do.
+  struct ShapeCase {
+    const char *Name;
+    bool (*Match)(const BenchQuery &);
+  };
+  static const ShapeCase Shapes[] = {
+      {"unary scalar", [](const BenchQuery &Q) {
+         return Q.Types.size() == 1 && Q.Types[0].isScalar();
+       }},
+      {"unary vector", [](const BenchQuery &Q) {
+         return Q.Types.size() == 1 && Q.Types[0].isVector() &&
+                !Q.Types[0].isPointerVector();
+       }},
+      {"unary pointer", [](const BenchQuery &Q) {
+         return Q.Types.size() == 1 && Q.Types[0].isPointer();
+       }},
+      {"binary scalar", [](const BenchQuery &Q) {
+         return Q.Types.size() == 2 && Q.Types[0].isScalar() &&
+                Q.Types[1].isScalar();
+       }},
+      {"binary ptr+scalar", [](const BenchQuery &Q) {
+         return Q.Types.size() == 2 && Q.Types[0].isPointer() &&
+                Q.Types[1].isScalar();
+       }},
+      {"mem, scalar mem", [](const BenchQuery &Q) {
+         return !Q.Mem.empty() && Q.Mem[0].MemoryTy.isScalar();
+       }},
+      {"mem, vector mem", [](const BenchQuery &Q) {
+         return !Q.Mem.empty() && Q.Mem[0].MemoryTy.isVector() &&
+                !Q.Mem[0].MemoryTy.isPointerVector();
+       }},
+      {"mem, ptrvector mem", [](const BenchQuery &Q) {
+         return !Q.Mem.empty() && Q.Mem[0].MemoryTy.isPointerVector();
+       }},
+      {"mem, align 0", [](const BenchQuery &Q) {
+         return !Q.Mem.empty() && Q.Mem[0].AlignInBits == 0;
+       }},
+      {"mem, pointer addr", [](const BenchQuery &Q) {
+         return !Q.Mem.empty() && Q.Types.size() >= 2 && Q.Types[1].isPointer();
+       }},
+  };
+  SmallVector<std::pair<const char *, double>, 12> ShapeCosts;
+  for (const ShapeCase &Case : Shapes) {
+    unsigned Pick = Queries.size();
+    for (unsigned I : HitQueries)
+      if (Case.Match(Queries[I])) {
+        Pick = I;
+        break;
+      }
+    if (Pick != Queries.size())
+      ShapeCosts.push_back({Case.Name, OneCell(Pick)});
+  }
+  // A rule set with no type slots (G_BR): the table has no key to index, so
+  // this is the one shape the reader cannot answer from a cell.
+  {
+    BenchQuery Branch;
+    Branch.Opcode = TargetOpcode::G_BR;
+    ShapeCosts.push_back({"no type slots (G_BR)", OneBQ(Branch)});
+  }
+
   llvm::outs() << "benchmark: config=" << C->ID << " queries=" << Queries.size()
                << " repeats=" << Repeats << " sink=" << Sink << "\n";
   llvm::outs() << "  rule set build   : " << format("%.1f", BuildNs / 1e3)
@@ -4846,6 +4964,15 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_BenchmarkChainVersusTable) {
   llvm::outs() << "  residual (" << ResidualQueries.size() << "): "
                << format("%.1f", PerQuery(ResidualNs, ResidualQueries.size()))
                << " ns/query\n";
+  if (!Trace.empty())
+    llvm::outs() << "  trace warm       : " << format("%.1f", TraceWarmNs)
+                 << " ns/query (chain " << format("%.1f", TraceChainNs)
+                 << ", " << format("%.2f", TraceChainNs / TraceWarmNs)
+                 << "x), hit " << TraceHit << " residual " << TraceResidual
+                 << " other " << TraceOther << "\n";
+  for (const auto &Shape : ShapeCosts)
+    llvm::outs() << "  shape " << format("%-22s", Shape.first) << ": "
+                 << format("%.1f", Shape.second) << " ns/query\n";
   llvm::outs() << "  other (" << OtherQueries.size() << "): "
                << format("%.1f", PerQuery(OtherNs, OtherQueries.size()))
                << " ns/query\n";
