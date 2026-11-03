@@ -2,6 +2,8 @@
 ; RUN:     -o /dev/null 2>&1 | FileCheck %s
 ; RUN: llc < %s -mtriple=i386-unknown-linux-gnu -global-isel -x86-gisel-table-stats \
 ; RUN:     -o /dev/null 2>&1 | FileCheck %s
+; RUN: llc < %s -mtriple=x86_64-unknown-linux-gnu -global-isel -x86-gisel-table-residuals \
+; RUN:     -o /dev/null 2>&1 | FileCheck %s --check-prefix=ATTR
 
 ; The table is keyed on the classes the rules name.  IR can carry widths and
 ; shapes that are not in that list, and the legalizer must not fall back to a
@@ -9,6 +11,15 @@
 ; These functions walk that residual path, so the codegen has to complete.
 ;
 ; CHECK: x86-gisel-table: signature {{0x[0-9a-f]+}} hit {{[0-9]+}} residual {{[1-9][0-9]*}} escape 0 outside 0 ptrvec 0 addrspace {{[0-9]+}} untabulated 0
+
+; -x86-gisel-table-residuals names the class tuple behind each residual, so a
+; residual can be attributed from a build log instead of a debugger.  These are
+; the shapes the functions below ask for.
+;
+; ATTR: x86-gisel-table residuals: no-type 0
+; ATTR-DAG: key {{[0-9]+}} x s12
+; ATTR-DAG: key {{[0-9]+}} x s27
+; ATTR-DAG: key {{[0-9]+}} x v3s32
 
 define i12 @add12(i12 %a, i12 %b) {
   %r = add i12 %a, %b

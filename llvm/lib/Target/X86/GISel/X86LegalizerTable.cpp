@@ -479,41 +479,50 @@ X86LegalizerTable::~X86LegalizerTable() {
   if (!X86GISelTableResiduals)
     return;
   errs() << "x86-gisel-table residuals: no-type " << ResidualNoType << "\n";
-  SmallVector<std::pair<unsigned, uint64_t>, 16> Ops(ResidualNoTypeOps.begin(),
-                                                     ResidualNoTypeOps.end());
-  llvm::sort(Ops, [](const auto &A, const auto &B) {
-    return A.second > B.second;
+
+  auto PrintTop = [](StringRef What, const auto &Counts, unsigned N,
+                     auto &&PrintKey) {
+    // map::value_type keys are const, so copy into an assignable pair before
+    // sorting.
+    using Map = std::decay_t<decltype(Counts)>;
+    using Entry = std::pair<typename Map::key_type, typename Map::mapped_type>;
+    SmallVector<Entry, 16> Sorted(Counts.begin(), Counts.end());
+    llvm::sort(Sorted,
+               [](const auto &A, const auto &B) { return A.second > B.second; });
+    for (const auto &Entry : ArrayRef(Sorted).take_front(N)) {
+      errs() << "  " << What << " " << Entry.second << " x ";
+      PrintKey(Entry.first);
+      errs() << "\n";
+    }
+  };
+
+  // A query that left the lattice: which class tuple it asked for, so a
+  // residual can be named instead of counted.
+  PrintTop("key", ResidualKeys, 10, [](uint64_t Key) {
+    const unsigned Kind = Key >> 32;
+    const unsigned Bits = (Key >> 8) & 0xFFFFFF;
+    const unsigned Lanes = Key & 0xFF;
+    switch (Kind) {
+    case Kind_Pointer:
+      errs() << "p";
+      break;
+    case Kind_Vector:
+      errs() << "v" << Lanes << "s" << Bits;
+      break;
+    case Kind_PtrVector:
+      errs() << "v" << Lanes << "p";
+      break;
+    default:
+      errs() << "s" << Bits;
+      break;
+    }
   });
-  for (const auto &Entry : ArrayRef(Ops).take_front(10))
-    errs() << "  no-type " << Entry.second << " x " << Entry.first << "\n";
-  SmallVector<std::pair<unsigned, uint64_t>, 8> Un(UntabulatedOps.begin(),
-                                                  UntabulatedOps.end());
-  llvm::sort(Un, [](const auto &A, const auto &B) {
-    return A.second > B.second;
+  PrintTop("untabulated", UntabulatedOps, 8, [](unsigned Opcode) {
+    errs() << "TargetOpcode " << Opcode;
   });
-  for (const auto &Entry : ArrayRef(Un).take_front(8))
-    errs() << "  untabulated " << Entry.second << " x opcode " << Entry.first
-           << "\n";
-  SmallVector<std::pair<uint64_t, uint64_t>, 16> Keys(ResidualKeys.begin(),
-                                                      ResidualKeys.end());
-  llvm::sort(Keys, [](const auto &A, const auto &B) {
-    return A.second > B.second;
+  PrintTop("no-type", ResidualNoTypeOps, 8, [](unsigned Opcode) {
+    errs() << "TargetOpcode " << Opcode;
   });
-  for (const auto &Entry : ArrayRef(Keys).take_front(10)) {
-    const unsigned Kind = Entry.first >> 32;
-    const unsigned Bits = (Entry.first >> 8) & 0xFFFFFF;
-    const unsigned Lanes = Entry.first & 0xFF;
-    const char *Name = Kind == Kind_Pointer   ? "p"
-                       : Kind == Kind_Vector  ? "v"
-                       : Kind == Kind_PtrVector ? "vp"
-                                               : "s";
-    errs() << "  " << Entry.second << " x " << Name;
-    if (Kind == Kind_Vector || Kind == Kind_PtrVector)
-      errs() << Lanes;
-    if (Kind != Kind_Pointer)
-      errs() << Bits;
-    errs() << "\n";
-  }
 }
 
 void X86LegalizerTable::selfCheck(raw_ostream &OS) {
