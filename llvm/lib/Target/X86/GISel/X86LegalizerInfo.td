@@ -82,6 +82,8 @@ def Is64BitAndAVX : LegalizePredicateDag<(all_of Is64Bit, HasAVX)>;
 def Is64BitAndAVX512 : LegalizePredicateDag<(all_of Is64Bit, HasAVX512)>;
 def SSE2And64Bit : LegalizePredicateDag<(all_of HasSSE2, Is64Bit)>;
 def NotCMOV : LegalizePredicateDag<(not HasCMOV)>;
+/// A store is legalized here only when its value type is the memory type.
+def StoreValueDiffers : LegalizeTypePredicate<"memTypeIsNot(0, 0)">;
 
 // Leaves that read the query rather than the subtarget.  They combine with the
 // cached bools above under the same operators, which is why a guard that used
@@ -632,12 +634,7 @@ defm X86_LOAD : X86_MemOp<"G_LOAD", ["load/store: add more corner cases"], [
 defm X86_STORE : X86_MemOp<"G_STORE", [], [
   // A store whose value type differs from the memory type is not legalized
   // here; the type has to match exactly.
-  LegalizeOpaqueRule<BuilderCustomIf, [{
-
-    [=](const LegalityQuery &Query) {
-      return Query.Types[0] != Query.MMODescrs[0].MemoryTy;
-    }
-  }]>,
+  LegalizeQueryGuardedCall<BuilderCustomIf, StoreValueDiffers, []>,
   WidenScalarToNextPow2<0, 8>,
   ClampScalar<0, X86_s8, X86_sMaxScalar>,
   Scalarize<0>,

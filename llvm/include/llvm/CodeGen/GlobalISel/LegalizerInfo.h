@@ -226,6 +226,15 @@ inline LegalityPredicate typeIsNot(unsigned TypeIdx, LLT Type) {
          };
 }
 
+/// True iff the type at TypeIdx differs from the memory type carried by the
+/// descriptor at MemIdx.  G_STORE uses this to leave a store whose value type
+/// is not the memory type to its custom handler.
+inline LegalityPredicate memTypeIsNot(unsigned TypeIdx, unsigned MemIdx) {
+  return [=](const LegalityQuery &Query) {
+           return Query.Types[TypeIdx] != Query.MMODescrs[MemIdx].MemoryTy;
+         };
+}
+
 /// True iff the given types for the given pair of type indexes is one of the
 /// specified type pairs.
 LLVM_ABI LegalityPredicate

@@ -1548,6 +1548,9 @@ std::string typePredicateJson(const RecordKeeper &Records, const Record &R) {
 
   if (Name == "typeIs")
     return typeIsValue(Idx(0), Ty(1));
+  if (Name == "memTypeIsNot")
+    return "{\"kind\":\"leaf\",\"name\":\"memTypeIsNot\",\"args\":[" +
+           std::to_string(Idx(0)) + "," + std::to_string(Idx(1)) + "]}";
   if (Name == "isVector")
     return isVector(Idx(0));
   if (Name == "scalarNarrowerThan")
@@ -2188,7 +2191,7 @@ void LegalizerInfoEmitter::runCore(raw_ostream &OS) {
   };
   OS << "{\n";
   OS << "  \"schema\": \"legalizer-spec-core\",\n";
-  OS << "  \"version\": \"0.2\",\n";
+  OS << "  \"version\": \"0.3\",\n";
   OS << "  \"config\": {\"triple\": ";
   jsonString(OS, CoreTriple);
   OS << ", \"cpu\": ";

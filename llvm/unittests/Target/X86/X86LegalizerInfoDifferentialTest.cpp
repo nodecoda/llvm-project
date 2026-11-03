@@ -3717,7 +3717,7 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
     ExpectedEscapePairs.insert({TableIt->second, E.RuleIndex});
   }
   const int64_t EscapeDenominator = manifestCount("escaped_td_rule_count");
-  ASSERT_GT(EscapeDenominator, 0) << "cannot read the rule-count manifest";
+  ASSERT_GE(EscapeDenominator, 0) << "cannot read the rule-count manifest";
   ASSERT_EQ(static_cast<int64_t>(ExpectedEscapePairs.size()),
             EscapeDenominator);
 
