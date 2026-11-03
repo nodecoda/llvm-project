@@ -84,6 +84,10 @@ public:
   /// identically; this is the key a shared table cache would use.
   uint32_t signature() const;
 
+  /// Cells filled so far.  Diagnostics only: this is the lazy work the table
+  /// does on first use, which a fully static table would not need.
+  uint64_t fills() const { return Fills; }
+
   /// Run the enumerated domain through both paths and report.
   /// Fatal on a mismatch: a table that disagrees with the chain is a bug in
   /// the key, not a number to look at.

@@ -40,6 +40,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Program.h"
@@ -4459,6 +4460,275 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_TraceCorpusWithTable) {
   }
 
   runTraceCorpus(InPath, OutPath, /*UseTable=*/true, MaxRounds);
+}
+
+// Not a test.  Measure where a legalizer query's time goes with the table
+// installed: the generated chain, a warm table, each answer kind, and the
+// lazy fill a fresh table pays.
+//
+//   X86_LEGALIZER_BENCH_CORPUS_IN=<corpus.json> \
+//   [X86_LEGALIZER_BENCH_REPEATS=5] \
+//   X86Tests --gtest_also_run_disabled_tests \
+//     --gtest_filter='*BenchmarkChainVersusTable*'
+//
+// The corpus is parsed once, so the numbers are the cost of the decision path
+// only.  "chain" is the generated rule chain, i.e. what production ran before
+// the table.  "table warm" reuses one instance, which is the steady state.
+// "first sweep" constructs a fresh table and includes the fill.  "query()" is
+// the reader without the LegalizeTable virtual call and fallback.
+//
+// The table object here is the production shape: a LegalizerInfo with no rule
+// chain, only the table.  TableLegalizerInfoForTest cannot be used, because
+// its constructor also compiles the generated chain for the differential.
+TEST_F(X86LegalizerDifferentialTest, DISABLED_BenchmarkChainVersusTable) {
+  const char *InPath = std::getenv("X86_LEGALIZER_BENCH_CORPUS_IN");
+  if (!InPath)
+    GTEST_SKIP() << "set X86_LEGALIZER_BENCH_CORPUS_IN";
+
+  unsigned Repeats = 5;
+  if (const char *Text = std::getenv("X86_LEGALIZER_BENCH_REPEATS")) {
+    if (StringRef(Text).getAsInteger(10, Repeats) || Repeats == 0)
+      FAIL() << "bad X86_LEGALIZER_BENCH_REPEATS=" << Text;
+  }
+
+  std::optional<std::string> Text = readFile(InPath);
+  ASSERT_TRUE(Text.has_value()) << "cannot read " << InPath;
+  Expected<json::Value> Parsed = json::parse(*Text);
+  ASSERT_TRUE(static_cast<bool>(Parsed)) << toString(Parsed.takeError());
+  const json::Object *Root = Parsed->getAsObject();
+  ASSERT_NE(Root, nullptr);
+
+  std::optional<StringRef> ConfigOpt = Root->getString("config");
+  ASSERT_TRUE(ConfigOpt.has_value());
+  const Config *C = findFullConfig(*ConfigOpt);
+  ASSERT_NE(C, nullptr);
+  Sigma S = makeSigma(*C);
+  ASSERT_TRUE(S.STI);
+
+  struct BenchQuery {
+    unsigned Opcode;
+    SmallVector<LLT, 3> Types;
+    SmallVector<LegalityQuery::MemDesc, 1> Mem;
+  };
+  std::vector<BenchQuery> Queries;
+  const json::Array *Atoms = Root->getArray("atoms");
+  ASSERT_NE(Atoms, nullptr);
+  Queries.reserve(Atoms->size());
+  for (const json::Value &V : *Atoms) {
+    const json::Object *A = V.getAsObject();
+    ASSERT_NE(A, nullptr);
+    const json::Object *Query = A->getObject("query");
+    ASSERT_NE(Query, nullptr);
+    BenchQuery BQ;
+    for (const json::Value &TV : *Query->getArray("types")) {
+      std::optional<LLT> Ty = parseCorpusLLT(*TV.getAsString());
+      ASSERT_TRUE(Ty.has_value());
+      BQ.Types.push_back(*Ty);
+    }
+    if (const json::Object *Mem = Query->getObject("mem")) {
+      std::optional<LLT> MemTy = parseCorpusLLT(*Mem->getString("type"));
+      ASSERT_TRUE(MemTy.has_value());
+      BQ.Mem.emplace_back(*MemTy,
+                          static_cast<uint64_t>(*Mem->getInteger("align")),
+                          AtomicOrdering::NotAtomic, AtomicOrdering::NotAtomic);
+    }
+    std::optional<unsigned> Op = opcodeForAnyName(*A->getString("opcode"));
+    ASSERT_TRUE(Op.has_value());
+    BQ.Opcode = *Op;
+    Queries.push_back(std::move(BQ));
+  }
+
+  // Production shape: the table, no chain.
+  class TableOnlyLegalizer : public LegalizerInfo {
+    X86LegalizerTable *TablePtr = nullptr;
+
+  public:
+    explicit TableOnlyLegalizer(const X86Subtarget &STI) {
+      auto T = std::make_unique<X86LegalizerTable>(
+          *this, STI, STI.isTarget64BitLP64() ? 64 : 32);
+      TablePtr = T.get();
+      setTable(std::move(T));
+    }
+    const X86LegalizerTable &table() const { return *TablePtr; }
+    bool legalizeCustom(LegalizerHelper &, MachineInstr &,
+                        LostDebugLocObserver &) const override {
+      return false;
+    }
+  };
+
+  using Clock = std::chrono::steady_clock;
+  auto Ns = [](Clock::time_point A, Clock::time_point B) {
+    return std::chrono::duration<double, std::nano>(B - A).count();
+  };
+  uint64_t Sink = 0;
+  auto Ask = [&](LegalizerInfo &LI, unsigned I) {
+    const BenchQuery &BQ = Queries[I];
+    LegalityQuery Q(BQ.Opcode, BQ.Types, BQ.Mem);
+    const LegalizeActionStep Step = LI.getAction(Q);
+    Sink += static_cast<uint64_t>(Step.Action) + Step.TypeIdx;
+    return Step;
+  };
+  auto Sweep = [&](LegalizerInfo &LI) {
+    for (unsigned I = 0; I != Queries.size(); ++I)
+      Ask(LI, I);
+  };
+  auto BestOf = [&](auto &&Run) {
+    double Best = 1e300;
+    for (unsigned R = 0; R != Repeats; ++R) {
+      auto Start = Clock::now();
+      Run();
+      Best = std::min(Best, Ns(Start, Clock::now()));
+    }
+    return Best;
+  };
+
+  GeneratedLegalizerInfoForTest Chain(*S.STI);
+  TableOnlyLegalizer Warm(*S.STI);
+
+  // What building the rule sets costs, per subtarget.  A LegalizerInfo is
+  // built once per distinct X86Subtarget (X86Subtarget.h caches it), so this
+  // is paid per feature combination, not per query.  A table-only legalizer
+  // that never materialised the chain would not pay it at all.
+  const unsigned BuildRounds = 20;
+  const double BuildNs = BestOf([&] {
+    for (unsigned R = 0; R != BuildRounds; ++R) {
+      GeneratedLegalizerInfoForTest Tmp(*S.STI);
+      // Keep the build alive: the constructor's allocations are what is
+      // being timed.
+      Sink += static_cast<uint64_t>(Tmp.getActionDefinitionsIdx(G_ADD) != 0);
+    }
+  }) / BuildRounds;
+
+  // The first sweep pays the lazy fill for every cell this corpus touches.
+  auto FirstStart = Clock::now();
+  Sweep(Warm);
+  const double FirstNs = Ns(FirstStart, Clock::now());
+
+  const double WarmNs = BestOf([&] { Sweep(Warm); });
+  const double ChainNs = BestOf([&] { Sweep(Chain); });
+  const double DirectNs = BestOf([&] {
+    for (const BenchQuery &BQ : Queries) {
+      LegalityQuery Q(BQ.Opcode, BQ.Types, BQ.Mem);
+      const X86LegalizerTable::Result R = Warm.table().query(Q);
+      Sink += static_cast<uint64_t>(R.Action) + R.TypeIdx;
+    }
+  });
+
+  // Cost by answer kind, so a cell hit is not averaged with the residual path.
+  std::vector<unsigned> HitQueries, ResidualQueries, OtherQueries;
+  for (unsigned I = 0; I != Queries.size(); ++I) {
+    const BenchQuery &BQ = Queries[I];
+    LegalityQuery Q(BQ.Opcode, BQ.Types, BQ.Mem);
+    switch (Warm.table().query(Q).Kind) {
+    case X86LegalizerTable::Answer::Hit:
+      HitQueries.push_back(I);
+      break;
+    case X86LegalizerTable::Answer::Residual:
+      ResidualQueries.push_back(I);
+      break;
+    default:
+      OtherQueries.push_back(I);
+      break;
+    }
+  }
+  auto SweepSubset = [&](const std::vector<unsigned> &Subset) {
+    return [&] {
+      for (unsigned I : Subset)
+        Ask(Warm, I);
+    };
+  };
+  const double HitNs = BestOf(SweepSubset(HitQueries));
+  const double ResidualNs = BestOf(SweepSubset(ResidualQueries));
+  const double OtherNs =
+      OtherQueries.empty() ? 0.0 : BestOf(SweepSubset(OtherQueries));
+
+  // The same hit path, with the working set squeezed into cache.  A cell is
+  // 4 bytes but the table allocates a whole row per touched rule set and the
+  // answer vector is one entry per filled cell, so a full sweep walks tens of
+  // megabytes in corpus order.  Asking a small subset repeatedly keeps every
+  // load in L1/L2; the gap to `hit` above is memory, not decision cost.
+  unsigned HotCount = 1024;
+  if (const char *Text = std::getenv("X86_LEGALIZER_BENCH_HOT")) {
+    if (StringRef(Text).getAsInteger(10, HotCount) || HotCount == 0)
+      FAIL() << "bad X86_LEGALIZER_BENCH_HOT=" << Text;
+  }
+  HotCount = std::min<unsigned>(HotCount, HitQueries.size());
+  std::vector<unsigned> HotSet(HitQueries.begin(),
+                               HitQueries.begin() + HotCount);
+  const unsigned HotRounds = std::max(1u, 200000u / HotCount);
+  double HotNs = 0.0;
+  if (!HotSet.empty()) {
+    const double Total = BestOf([&] {
+      for (unsigned R = 0; R != HotRounds; ++R)
+        for (unsigned I : HotSet)
+          Ask(Warm, I);
+    });
+    HotNs = Total / (static_cast<double>(HotSet.size()) * HotRounds);
+  }
+  // The reader alone on the same subset: no virtual call, no fallback.
+  double HotDirectNs = 0.0;
+  if (!HotSet.empty()) {
+    const double Total = BestOf([&] {
+      for (unsigned R = 0; R != HotRounds; ++R)
+        for (unsigned I : HotSet) {
+          const BenchQuery &BQ = Queries[I];
+          LegalityQuery Q(BQ.Opcode, BQ.Types, BQ.Mem);
+          Sink += static_cast<uint64_t>(Warm.table().query(Q).Action);
+        }
+    });
+    HotDirectNs = Total / (static_cast<double>(HotSet.size()) * HotRounds);
+  }
+  // One query, one cell, everything in L1: the floor for this reader.
+  double SameNs = 0.0;
+  if (!HotSet.empty()) {
+    const BenchQuery &BQ = Queries[HotSet.front()];
+    LegalityQuery Q(BQ.Opcode, BQ.Types, BQ.Mem);
+    const unsigned Rounds = 200000;
+    const double Total = BestOf([&] {
+      for (unsigned R = 0; R != Rounds; ++R)
+        Sink += static_cast<uint64_t>(Warm.table().query(Q).Action);
+    });
+    SameNs = Total / Rounds;
+  }
+
+  auto PerQuery = [&](double Ns_, unsigned Count) {
+    return Count ? Ns_ / Count : 0.0;
+  };
+  llvm::outs() << "benchmark: config=" << C->ID << " queries=" << Queries.size()
+               << " repeats=" << Repeats << " sink=" << Sink << "\n";
+  llvm::outs() << "  rule set build   : " << format("%.1f", BuildNs / 1e3)
+               << " us per subtarget\n";
+  llvm::outs() << "  chain            : " << format("%.1f", ChainNs / Queries.size())
+               << " ns/query\n";
+  llvm::outs() << "  table warm       : " << format("%.1f", WarmNs / Queries.size())
+               << " ns/query (" << format("%.2f", ChainNs / WarmNs) << "x)\n";
+  llvm::outs() << "  table query()    : " << format("%.1f", DirectNs / Queries.size())
+               << " ns/query (no virtual, no fallback)\n";
+  const uint64_t Fills = Warm.table().fills();
+  const double FillNs = FirstNs - WarmNs;
+  llvm::outs() << "  first sweep      : " << format("%.1f", FirstNs / Queries.size())
+               << " ns/query (includes fill, "
+               << format("%.1f", FillNs / 1e6) << " ms of fill, " << Fills
+               << " cells, " << format("%.0f", FillNs / std::max<uint64_t>(1, Fills))
+               << " ns/cell)\n";
+  llvm::outs() << "  hit   (" << HitQueries.size() << "): "
+               << format("%.1f", PerQuery(HitNs, HitQueries.size())) << " ns/query\n";
+  if (!HotSet.empty())
+    llvm::outs() << "  hit hot (" << HotSet.size() << " queries, "
+                 << HotRounds << " rounds): " << format("%.1f", HotNs)
+                 << " ns/query\n";
+  if (!HotSet.empty()) {
+    llvm::outs() << "  hit hot query()  : " << format("%.1f", HotDirectNs)
+                 << " ns/query (no virtual, no fallback)\n";
+    llvm::outs() << "  one cell         : " << format("%.1f", SameNs)
+                 << " ns/query (single query, L1-resident)\n";
+  }
+  llvm::outs() << "  residual (" << ResidualQueries.size() << "): "
+               << format("%.1f", PerQuery(ResidualNs, ResidualQueries.size()))
+               << " ns/query\n";
+  llvm::outs() << "  other (" << OtherQueries.size() << "): "
+               << format("%.1f", PerQuery(OtherNs, OtherQueries.size()))
+               << " ns/query\n";
 }
 
 // T1: every committed atom must get the reference's decision from the table.
