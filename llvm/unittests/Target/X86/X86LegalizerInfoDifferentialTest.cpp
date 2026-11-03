@@ -4638,6 +4638,23 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_BenchmarkChainVersusTable) {
   std::vector<unsigned> HitMemQueries, HitNoMemQueries;
   for (unsigned I : HitQueries)
     (Queries[I].Mem.empty() ? HitNoMemQueries : HitMemQueries).push_back(I);
+
+  // The enumerator also produces shapes a real MIR cannot hold: a load whose
+  // address operand is s128, or an alignment below one bit.  Time the subset
+  // that a MachineMemOperand can actually carry -- a pointer address and the
+  // non-zero alignment class -- so the number is not an artifact of the
+  // enumeration.  (The corpus spells alignment in bits, so 1 is the only
+  // non-zero value it has; any real MMO is far above it and lands in the same
+  // class.)
+  std::vector<unsigned> HitRealMemQueries;
+  for (unsigned I : HitMemQueries) {
+    const BenchQuery &BQ = Queries[I];
+    if (BQ.Types.size() < 2 || !BQ.Types[1].isPointer())
+      continue;
+    if (BQ.Mem[0].AlignInBits == 0)
+      continue;
+    HitRealMemQueries.push_back(I);
+  }
   auto SweepSubset = [&](const std::vector<unsigned> &Subset) {
     return [&] {
       for (unsigned I : Subset)
@@ -4649,6 +4666,8 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_BenchmarkChainVersusTable) {
       HitMemQueries.empty() ? 0.0 : BestOf(SweepSubset(HitMemQueries));
   const double HitNoMemNs =
       HitNoMemQueries.empty() ? 0.0 : BestOf(SweepSubset(HitNoMemQueries));
+  const double HitRealMemNs =
+      HitRealMemQueries.empty() ? 0.0 : BestOf(SweepSubset(HitRealMemQueries));
   const double ResidualNs = BestOf(SweepSubset(ResidualQueries));
   const double OtherNs =
       OtherQueries.empty() ? 0.0 : BestOf(SweepSubset(OtherQueries));
@@ -4664,17 +4683,64 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_BenchmarkChainVersusTable) {
       FAIL() << "bad X86_LEGALIZER_BENCH_HOT=" << Text;
   }
   HotCount = std::min<unsigned>(HotCount, HitQueries.size());
-  std::vector<unsigned> HotSet(HitQueries.begin(),
-                               HitQueries.begin() + HotCount);
+  // Sample, don't take the prefix: the prefix is the first rule sets the
+  // enumerator reaches, which is a different query mix from the corpus.
+  std::vector<unsigned> Shuffled = HitQueries;
+  {
+    uint64_t State = 0x9e3779b97f4a7c15ull;
+    for (unsigned I = Shuffled.size(); I > 1; --I) {
+      State = State * 6364136223846793005ull + 1442695040888963407ull;
+      std::swap(Shuffled[I - 1], Shuffled[(State >> 33) % I]);
+    }
+  }
+  std::vector<unsigned> HotSet(Shuffled.begin(), Shuffled.begin() + HotCount);
+  // Same queries, same cells, but visited in opcode order.  The corpus emits
+  // one rule set's atoms together, so a full sweep runs long stretches of one
+  // opcode; a random sample destroys that.  Comparing this with the shuffled
+  // number separates "the cell is cold" from "the opcode switch has no run to
+  // predict".
+  // Copy the subset's metadata into one contiguous block.  The first version
+  // of this measurement indexed Queries[] in sample order, which turned the
+  // hot loop into 200k random reads of a 10MB vector -- the cost being
+  // measured was the benchmark's own table, not the reader's.
+  std::vector<BenchQuery> HotData;
+  HotData.reserve(HotSet.size());
+  for (unsigned I : HotSet)
+    HotData.push_back(Queries[I]);
+
+  std::vector<unsigned> HotGrouped = HotSet;
+  llvm::sort(HotGrouped, [&](unsigned A, unsigned B) {
+    if (Queries[A].Opcode != Queries[B].Opcode)
+      return Queries[A].Opcode < Queries[B].Opcode;
+    return A < B;
+  });
   const unsigned HotRounds = std::max(1u, 200000u / HotCount);
+  auto AskQuery = [&](const BenchQuery &BQ) {
+    LegalityQuery Q(BQ.Opcode, BQ.Types, BQ.Mem);
+    const LegalizeActionStep Step = Warm.getAction(Q);
+    Sink += static_cast<uint64_t>(Step.Action) + Step.TypeIdx;
+  };
   double HotNs = 0.0;
-  if (!HotSet.empty()) {
+  if (!HotData.empty()) {
     const double Total = BestOf([&] {
       for (unsigned R = 0; R != HotRounds; ++R)
-        for (unsigned I : HotSet)
-          Ask(Warm, I);
+        for (const BenchQuery &BQ : HotData)
+          AskQuery(BQ);
     });
-    HotNs = Total / (static_cast<double>(HotSet.size()) * HotRounds);
+    HotNs = Total / (static_cast<double>(HotData.size()) * HotRounds);
+  }
+  double HotGroupedNs = 0.0;
+  if (!HotGrouped.empty()) {
+    const double Total = BestOf([&] {
+      for (unsigned R = 0; R != HotRounds; ++R)
+        for (unsigned I : HotGrouped) {
+          const BenchQuery &BQ = Queries[I];
+          LegalityQuery Q(BQ.Opcode, BQ.Types, BQ.Mem);
+          Sink += static_cast<uint64_t>(Warm.getAction(Q).Action);
+        }
+    });
+    HotGroupedNs =
+        Total / (static_cast<double>(HotGrouped.size()) * HotRounds);
   }
   // The reader alone on the same subset: no virtual call, no fallback.
   double HotDirectNs = 0.0;
@@ -4689,18 +4755,33 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_BenchmarkChainVersusTable) {
     });
     HotDirectNs = Total / (static_cast<double>(HotSet.size()) * HotRounds);
   }
-  // One query, one cell, everything in L1: the floor for this reader.
-  double SameNs = 0.0;
-  if (!HotSet.empty()) {
-    const BenchQuery &BQ = Queries[HotSet.front()];
-    LegalityQuery Q(BQ.Opcode, BQ.Types, BQ.Mem);
+  // One query, one cell, everything in L1.  This is per-query compute, but it
+  // is not a single number: the reader's work depends on the rule set.  Report
+  // a unary rule set and a memory rule set, which bracket the range.
+  auto OneCell = [&](unsigned I) {
+    if (I >= Queries.size())
+      return 0.0;
+    const BenchQuery &BQ = Queries[I];
     const unsigned Rounds = 200000;
     const double Total = BestOf([&] {
-      for (unsigned R = 0; R != Rounds; ++R)
+      for (unsigned R = 0; R != Rounds; ++R) {
+        LegalityQuery Q(BQ.Opcode, BQ.Types, BQ.Mem);
         Sink += static_cast<uint64_t>(Warm.table().query(Q).Action);
+      }
     });
-    SameNs = Total / Rounds;
+    return Total / Rounds;
+  };
+  unsigned UnaryHit = Queries.size(), MemHit = Queries.size();
+  for (unsigned I : HitQueries) {
+    if (UnaryHit == Queries.size() && Queries[I].Types.size() == 1 &&
+        Queries[I].Mem.empty())
+      UnaryHit = I;
+    if (MemHit == Queries.size() && !Queries[I].Mem.empty())
+      MemHit = I;
   }
+  const double SameNs = HotSet.empty() ? 0.0 : OneCell(HotSet.front());
+  const double UnaryNs = OneCell(UnaryHit);
+  const double MemNs = OneCell(MemHit);
 
   auto PerQuery = [&](double Ns_, unsigned Count) {
     return Count ? Ns_ / Count : 0.0;
@@ -4732,15 +4813,35 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_BenchmarkChainVersusTable) {
     llvm::outs() << "  hit no memdesc (" << HitNoMemQueries.size() << "): "
                  << format("%.1f", PerQuery(HitNoMemNs, HitNoMemQueries.size()))
                  << " ns/query\n";
+  if (!HitRealMemQueries.empty())
+    llvm::outs() << "  hit real memdesc (" << HitRealMemQueries.size()
+                 << "): "
+                 << format("%.1f",
+                           PerQuery(HitRealMemNs, HitRealMemQueries.size()))
+                 << " ns/query (pointer address, nonzero align)\n";
   if (!HotSet.empty())
     llvm::outs() << "  hit hot (" << HotSet.size() << " queries, "
                  << HotRounds << " rounds): " << format("%.1f", HotNs)
                  << " ns/query\n";
+  if (!HotGrouped.empty())
+    llvm::outs() << "  hit hot grouped (" << HotGrouped.size()
+                 << " queries sorted by opcode): "
+                 << format("%.1f", HotGroupedNs) << " ns/query\n";
   if (!HotSet.empty()) {
     llvm::outs() << "  hit hot query()  : " << format("%.1f", HotDirectNs)
                  << " ns/query (no virtual, no fallback)\n";
+    const BenchQuery &Pick = Queries[HotSet.front()];
     llvm::outs() << "  one cell         : " << format("%.1f", SameNs)
-                 << " ns/query (single query, L1-resident)\n";
+                 << " ns/query (random hit #" << HotSet.front() << ", "
+                 << Pick.Types.size() << " types, "
+                 << (Pick.Mem.empty() ? "no memdesc" : "memdesc")
+                 << ", L1-resident)\n";
+    if (UnaryNs)
+      llvm::outs() << "  one cell unary   : " << format("%.1f", UnaryNs)
+                   << " ns/query\n";
+    if (MemNs)
+      llvm::outs() << "  one cell memdesc : " << format("%.1f", MemNs)
+                   << " ns/query\n";
   }
   llvm::outs() << "  residual (" << ResidualQueries.size() << "): "
                << format("%.1f", PerQuery(ResidualNs, ResidualQueries.size()))
