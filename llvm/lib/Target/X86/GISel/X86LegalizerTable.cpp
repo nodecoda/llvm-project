@@ -13,6 +13,7 @@
 #include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <optional>
 
 using namespace llvm;
@@ -63,6 +64,46 @@ namespace {
 
 constexpr int kUnknownClass = -1;
 constexpr int kPointerVectorClass = -2;
+
+/// The class arrays are emitted in (Kind, ElemBits, Lanes) order, so a
+/// classification is a lower_bound instead of a walk over every class.  The
+/// static_assert keeps that invariant honest: a generator change that
+/// reorders the arrays fails the build instead of misclassifying a type.
+constexpr bool lessClass(const LegalizerTypeClass &A,
+                         const LegalizerTypeClass &B) {
+  if (A.Kind != B.Kind)
+    return A.Kind < B.Kind;
+  if (A.ElemBits != B.ElemBits)
+    return A.ElemBits < B.ElemBits;
+  return A.Lanes < B.Lanes;
+}
+
+template <unsigned N>
+constexpr bool sortedClasses(const LegalizerTypeClass (&Classes)[N]) {
+  for (unsigned I = 1; I < N; ++I)
+    if (!lessClass(Classes[I - 1], Classes[I]))
+      return false;
+  return true;
+}
+
+static_assert(sortedClasses(X86TypeClasses),
+              "X86TypeClasses must be sorted by (Kind, ElemBits, Lanes)");
+static_assert(sortedClasses(X86MemClasses),
+              "X86MemClasses must be sorted by (Kind, ElemBits, Lanes)");
+
+template <unsigned N>
+int classOf(const LegalizerTypeClass (&Classes)[N], uint8_t Kind,
+            unsigned Bits, unsigned Lanes) {
+  const LegalizerTypeClass Key{Kind, static_cast<uint16_t>(Bits),
+                               static_cast<uint16_t>(Lanes)};
+  const auto *End = Classes + N;
+  const auto *It = std::lower_bound(Classes, End, Key, lessClass);
+  if (It != End && It->Kind == Key.Kind && It->ElemBits == Key.ElemBits &&
+      It->Lanes == Key.Lanes)
+    return static_cast<int>(It - Classes);
+  return kUnknownClass;
+}
+
 constexpr uint32_t kOpaqueCell = 0xFFFFFFFFu;
 
 /// Class of a type, or kUnknownClass / kPointerVectorClass.
@@ -97,10 +138,9 @@ int classifyType(LLT T) {
   } else {
     return kUnknownClass;
   }
-  for (unsigned I = 0; I < X86NumTypeClasses; ++I)
-    if (X86TypeClasses[I].Kind == Kind && X86TypeClasses[I].ElemBits == Bits &&
-        X86TypeClasses[I].Lanes == Lanes)
-      return static_cast<int>(I);
+  const int Idx = classOf(X86TypeClasses, Kind, Bits, Lanes);
+  if (Idx >= 0)
+    return Idx;
   return Kind == Kind_PtrVector ? kPointerVectorClass : kUnknownClass;
 }
 
@@ -133,11 +173,7 @@ int classifyMemType(LLT T) {
   } else {
     return kUnknownClass;
   }
-  for (unsigned I = 0; I < X86NumMemClasses; ++I)
-    if (X86MemClasses[I].Kind == Kind && X86MemClasses[I].ElemBits == Bits &&
-        X86MemClasses[I].Lanes == Lanes)
-      return static_cast<int>(I);
-  return kUnknownClass;
+  return classOf(X86MemClasses, Kind, Bits, Lanes);
 }
 
 /// A pointer whose address space is not zero is outside the table's pointer
