@@ -8,6 +8,9 @@
 
 #include "X86LegalizerTable.h"
 #include "X86Subtarget.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Format.h"
@@ -26,6 +29,10 @@ using namespace llvm::LegalizeMutations;
 static cl::opt<bool>
     X86GISelTableStats("x86-gisel-table-stats", cl::Hidden, cl::init(false),
                        cl::desc("Report how the X86 legalizer table answered"));
+
+static cl::opt<bool> X86GISelTableResiduals(
+    "x86-gisel-table-residuals", cl::Hidden, cl::init(false),
+    cl::desc("Report which queries fall outside the X86 legalizer table"));
 
 namespace {
 
@@ -251,7 +258,11 @@ uint32_t X86LegalizerTable::fill(unsigned Table, const LegalityQuery &Q,
                                  unsigned MemClass) const {
   const LegalizerTableDesc &D = X86Tables[Table];
   SmallVector<LLT, 4> Types(Q.Types.begin(), Q.Types.end());
-  Types[D.Slots[0]] = representative(L0);
+  // A zero-type query (G_BR) keeps its empty type list: the rule set cannot
+  // read a slot that the query does not have, so the representative would be
+  // answering on behalf of an operand that does not exist.
+  if (Types.size() > D.Slots[0])
+    Types[D.Slots[0]] = representative(L0);
   if (D.Dims[1] > 1 && Types.size() > D.Slots[1])
     Types[D.Slots[1]] = representative(L1);
 
@@ -292,6 +303,8 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
   const int Table = x86TableForOpcode(Q.Opcode);
   if (Table < 0) {
     ++Untabulated;
+    if (X86GISelTableResiduals)
+      ++UntabulatedOps[Q.Opcode];
     return R;
   }
   const LegalizerTableDesc &D = X86Tables[Table];
@@ -299,6 +312,29 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
   // A type outside the lattice is not a failure: the evaluator is a function of
   // the query, so it can answer the concrete types directly.  This is the
   // residual path; there is no rule chain behind it.
+  // Why a query left the lattice.  Only collected under the diagnostic flag:
+  // the answer itself never depends on this.
+  auto RecordKey = [&](LLT T) {
+    if (!X86GISelTableResiduals || !T.isValid())
+      return;
+    uint8_t Kind = 0;
+    unsigned Bits = 0, Lanes = 1;
+    if (T.isPointer()) {
+      Kind = Kind_Pointer;
+    } else if (T.isPointerVector()) {
+      Kind = Kind_PtrVector;
+      Lanes = T.isFixedVector() ? T.getNumElements() : 0;
+    } else if (T.isVector()) {
+      Kind = Kind_Vector;
+      Bits = T.getScalarSizeInBits();
+      Lanes = T.getNumElements();
+    } else if (T.isScalar()) {
+      Kind = Kind_Scalar;
+      Bits = T.getSizeInBits().getFixedValue();
+    }
+    ++ResidualKeys[(uint64_t(Kind) << 32) | (uint64_t(Bits) << 8) | Lanes];
+  };
+
   auto AskEvaluator = [&](bool PointerVector) -> Result {
     std::optional<LegalizeActionStep> Step = X86EvalTable(Table, Subtarget, Q);
     if (!Step) {
@@ -335,18 +371,45 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
     return AskEvaluator(PointerVector);
   }
 
+  // A query with no operand at a keyed slot (G_BR and friends) cannot be
+  // influenced by that slot: a rule set that read it would be reading past
+  // the end of Q.Types.  Class 0 is therefore as good as any, and the cell
+  // answers instead of the query falling out to the evaluator.  This is the
+  // same convention as slot 1 below.
   const int C0 = Q.Types.size() > D.Slots[0] ? classifyType(Q.Types[D.Slots[0]])
-                                             : kUnknownClass;
+                                             : 0;
   // A unary query has no slot 1.  The descriptor is uniform, so missing slot 1
   // maps to class 0; the rules in a unary rule set cannot read it.
   int C1 = 0;
   if (D.Dims[1] > 1 && Q.Types.size() > D.Slots[1])
     C1 = classifyType(Q.Types[D.Slots[1]]);
 
-  if (C0 == kPointerVectorClass || C1 == kPointerVectorClass)
+  if (C0 == kPointerVectorClass || C1 == kPointerVectorClass) {
+    if (X86GISelTableResiduals) {
+      if (C0 == kPointerVectorClass && Q.Types.size() > D.Slots[0])
+        RecordKey(Q.Types[D.Slots[0]]);
+      if (C1 == kPointerVectorClass && Q.Types.size() > D.Slots[1])
+        RecordKey(Q.Types[D.Slots[1]]);
+    }
     return AskEvaluator(/*PointerVector=*/true);
-  if (C0 < 0 || C1 < 0)
+  }
+  if (C0 < 0 || C1 < 0) {
+    if (X86GISelTableResiduals) {
+      if (C0 < 0) {
+        if (Q.Types.size() > D.Slots[0] && Q.Types[D.Slots[0]].isValid())
+          RecordKey(Q.Types[D.Slots[0]]);
+        else {
+          ++ResidualNoType;
+          if (X86GISelTableResiduals)
+            ++ResidualNoTypeOps[Q.Opcode];
+        }
+      }
+      if (C1 < 0 && Q.Types.size() > D.Slots[1] &&
+          Q.Types[D.Slots[1]].isValid())
+        RecordKey(Q.Types[D.Slots[1]]);
+    }
     return AskEvaluator(/*PointerVector=*/false);
+  }
 
   const uint8_t L0 = C0;
   const uint8_t L1 = D.Dims[1] > 1 ? C1 : 0;
@@ -360,8 +423,10 @@ X86LegalizerTable::query(const LegalityQuery &Q) const {
     }
     const LegalityQuery::MemDesc &MD = Q.MMODescrs[D.MemSlot];
     const int CM = classifyMemType(MD.MemoryTy);
-    if (CM < 0)
+    if (CM < 0) {
+      RecordKey(MD.MemoryTy);
       return AskEvaluator(/*PointerVector=*/false);
+    }
     MemClass = CM * X86NumAlignClasses + alignClass(MD.AlignInBits);
   }
 
@@ -403,13 +468,52 @@ bool X86LegalizerTable::lookup(const LegalityQuery &Q,
 }
 
 X86LegalizerTable::~X86LegalizerTable() {
-  if (!X86GISelTableStats)
+  if (!X86GISelTableStats && !X86GISelTableResiduals)
     return;
-  errs() << "x86-gisel-table: signature " << format_hex(signature(), 0)
+  if (X86GISelTableStats)
+    errs() << "x86-gisel-table: signature " << format_hex(signature(), 0)
          << " hit " << Hits << " residual " << Residuals
          << " escape " << Escapes << " outside " << Outsides << " ptrvec "
-         << PointerVectors << " addrspace " << AddressSpaceResiduals
-         << " untabulated " << Untabulated << " fills " << Fills << "\n";
+           << PointerVectors << " addrspace " << AddressSpaceResiduals
+           << " untabulated " << Untabulated << " fills " << Fills << "\n";
+  if (!X86GISelTableResiduals)
+    return;
+  errs() << "x86-gisel-table residuals: no-type " << ResidualNoType << "\n";
+  SmallVector<std::pair<unsigned, uint64_t>, 16> Ops(ResidualNoTypeOps.begin(),
+                                                     ResidualNoTypeOps.end());
+  llvm::sort(Ops, [](const auto &A, const auto &B) {
+    return A.second > B.second;
+  });
+  for (const auto &Entry : ArrayRef(Ops).take_front(10))
+    errs() << "  no-type " << Entry.second << " x " << Entry.first << "\n";
+  SmallVector<std::pair<unsigned, uint64_t>, 8> Un(UntabulatedOps.begin(),
+                                                  UntabulatedOps.end());
+  llvm::sort(Un, [](const auto &A, const auto &B) {
+    return A.second > B.second;
+  });
+  for (const auto &Entry : ArrayRef(Un).take_front(8))
+    errs() << "  untabulated " << Entry.second << " x opcode " << Entry.first
+           << "\n";
+  SmallVector<std::pair<uint64_t, uint64_t>, 16> Keys(ResidualKeys.begin(),
+                                                      ResidualKeys.end());
+  llvm::sort(Keys, [](const auto &A, const auto &B) {
+    return A.second > B.second;
+  });
+  for (const auto &Entry : ArrayRef(Keys).take_front(10)) {
+    const unsigned Kind = Entry.first >> 32;
+    const unsigned Bits = (Entry.first >> 8) & 0xFFFFFF;
+    const unsigned Lanes = Entry.first & 0xFF;
+    const char *Name = Kind == Kind_Pointer   ? "p"
+                       : Kind == Kind_Vector  ? "v"
+                       : Kind == Kind_PtrVector ? "vp"
+                                               : "s";
+    errs() << "  " << Entry.second << " x " << Name;
+    if (Kind == Kind_Vector || Kind == Kind_PtrVector)
+      errs() << Lanes;
+    if (Kind != Kind_Pointer)
+      errs() << Bits;
+    errs() << "\n";
+  }
 }
 
 void X86LegalizerTable::selfCheck(raw_ostream &OS) {

@@ -39,6 +39,11 @@ static cl::opt<bool> X86GISelTableCheck(
     "x86-gisel-table-check", cl::Hidden, cl::init(false),
     cl::desc("Check the X86 legalizer table against the rule chains"));
 
+static cl::opt<bool> X86GISelNoTable(
+    "x86-gisel-no-table", cl::Hidden, cl::init(false),
+    cl::desc("Answer legalization queries from the rule chains instead of "
+             "the table"));
+
 X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI,
                                    const X86TargetMachine &TM)
     : Subtarget(STI) {
@@ -49,13 +54,15 @@ X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI,
   // reference the differential check compares against.  They are a statement
   // sequence generated from GISel/X86LegalizerInfo.td, so they stay inside the
   // constructor and the member Subtarget stays in scope.
-  if (X86GISelTableCheck) {
+  if (X86GISelTableCheck || X86GISelNoTable) {
 #include "X86LegalizerInfo.inc"
 
-    verify(*STI.getInstrInfo());
+    if (X86GISelTableCheck)
+      verify(*STI.getInstrInfo());
   }
 
-  setTable(std::make_unique<X86LegalizerTable>(*this, STI, PointerBits));
+  if (!X86GISelNoTable)
+    setTable(std::make_unique<X86LegalizerTable>(*this, STI, PointerBits));
 
   if (X86GISelTableCheck) {
     X86LegalizerTable Table(*this, STI, PointerBits);

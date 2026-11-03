@@ -28,6 +28,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/CodeGen/GlobalISel/LegalizerInfo.h"
 #include <cstdint>
+#include <map>
 #include <vector>
 
 namespace llvm {
@@ -107,6 +108,10 @@ private:
   mutable uint64_t Hits = 0, Residuals = 0, Escapes = 0, Outsides = 0,
                    PointerVectors = 0, AddressSpaceResiduals = 0,
                    Untabulated = 0, Fills = 0;
+  mutable uint64_t ResidualNoType = 0;
+  mutable std::map<uint64_t, uint64_t> ResidualKeys;
+  mutable std::map<unsigned, uint64_t> ResidualNoTypeOps;
+  mutable std::map<unsigned, uint64_t> UntabulatedOps;
 };
 
 } // namespace llvm
