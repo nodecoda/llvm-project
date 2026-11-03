@@ -700,19 +700,31 @@ class ClampNumElements<int Idx, LegalizeArgType EltTy,
     : LegalizeCall<BuilderClampNumElements,
                    [LegalizeArgIndex<Idx>, EltTy, MaxTy]>;
 
-/// The element count is a C++ integer expression: targets routinely compute it
-/// from features (`HasAVX2 ? 8 : 4`), so it stays text.  The index and the
-/// element type are still checked.
+/// A literal element count.  The lane-count position is `ShapeLanes`, so the
+/// number is typed the same way `WidenScalarToNextPow2`'s bit width is; that is
+/// what lets Core IR read the count instead of treating the rule as an escape.
 ///
 /// The direction is not "any": clampMinNumElements() raises a too-small vector
 /// (MoreElements -> merge) and clampMaxNumElements() splits a too-large one
 /// (FewerElements -> split).  Only clampNumElements() is the composite that
 /// picks a direction at query time.
-class ClampMinNumElements<int Idx, LegalizeArgType EltTy, string Num>
+class ClampMinNumElements<int Idx, LegalizeArgType EltTy, int Num>
+    : LegalizeCall<BuilderClampMinNumElements,
+                   [LegalizeArgIndex<Idx>, EltTy, LegalizeArgLanes<Num>]>;
+
+class ClampMaxNumElements<int Idx, LegalizeArgType EltTy, int Num>
+    : LegalizeCall<BuilderClampMaxNumElements,
+                   [LegalizeArgIndex<Idx>, EltTy, LegalizeArgLanes<Num>]>;
+
+/// An element count computed from features (`HasAVX2 ? 8 : 4`).  Targets
+/// routinely derive it from the subtarget, so it stays text until the
+/// length-expression node lands; these are the remaining reason the two clamp
+/// builders escape Core IR.
+class ClampMinNumElementsExpr<int Idx, LegalizeArgType EltTy, string Num>
     : LegalizeCall<BuilderClampMinNumElements,
                    [LegalizeArgIndex<Idx>, EltTy, LegalizeRawArg<Num>]>;
 
-class ClampMaxNumElements<int Idx, LegalizeArgType EltTy, string Num>
+class ClampMaxNumElementsExpr<int Idx, LegalizeArgType EltTy, string Num>
     : LegalizeCall<BuilderClampMaxNumElements,
                    [LegalizeArgIndex<Idx>, EltTy, LegalizeRawArg<Num>]>;
 

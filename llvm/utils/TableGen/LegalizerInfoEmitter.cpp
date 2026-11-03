@@ -1701,10 +1701,26 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
          mutationJsonInt(Idx, "set_lanes", lltLanes(MaxTy))});
     return;
   }
-  // clampMinNumElements / clampMaxNumElements take their element count as a
-  // C++ expression (for example "HasBWI ? 64 : 32").  It has no literal Core
-  // IR form, so those rules are escapes, not guessed rules.
+  if (Builder == "BuilderClampMinNumElements" ||
+      Builder == "BuilderClampMaxNumElements") {
+    // The literal form: index, element type, lane count.  The *Expr forms spell
+    // the count as C++ and are rejected by the RawArg check above, so this
+    // branch only ever sees a number.
+    const bool Min = Builder == "BuilderClampMinNumElements";
+    unsigned Idx = Int(0);
+    std::string Elt = lltElt(Ty(1));
+    unsigned Lanes = Int(2);
+    Out.push_back(
+        {Min ? "MoreElements" : "FewerElements", Idx,
+         WithPred(allOf({elementTypeIs(Idx, Elt),
+                         Min ? fewerElementsThan(Idx, Lanes)
+                             : moreElementsThan(Idx, Lanes)})),
+         mutationJsonInt(Idx, "set_lanes", Lanes)});
+    return;
+  }
 
+  // The remaining gap is the *Expr element counts, which the RawArg check
+  // above already turned into escapes; everything else must have an expansion.
   PrintFatalError(Rule.getLoc(), "no Core IR expansion for builder '" + Method +
                                      "'; add it to LegalizerInfo.td "
                                      "first");

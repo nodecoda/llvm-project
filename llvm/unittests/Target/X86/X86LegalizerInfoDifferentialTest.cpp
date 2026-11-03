@@ -1396,6 +1396,7 @@ TEST(RuleCountsManifest, MatchesCoreIR) {
   ASSERT_NE(Escapes, nullptr);
 
   std::set<std::pair<std::string, int64_t>> LiteralRules;
+  std::set<std::pair<std::string, int64_t>> MutationTargets;
   std::set<std::string> LiteralSetNames;
   int64_t CoreEntryCount = 0;
   for (const json::Value &RulesetValue : *Rulesets) {
@@ -1412,6 +1413,8 @@ TEST(RuleCountsManifest, MatchesCoreIR) {
       auto RuleIndex = Rule->getInteger("rule_index");
       ASSERT_TRUE(RuleIndex.has_value());
       LiteralRules.emplace(Def->str(), *RuleIndex);
+      if (Rule->getObject("mutation"))
+        MutationTargets.emplace(Def->str(), *RuleIndex);
       ++CoreEntryCount;
     }
   }
@@ -1442,6 +1445,8 @@ TEST(RuleCountsManifest, MatchesCoreIR) {
       static_cast<int64_t>(OnlyEscapedSetNames.size());
   const int64_t TableCount = LiteralSetCount + OnlyEscapedSetCount;
   const int64_t TDRuleCount = LiteralRuleCount + EscapedRuleCount;
+  const int64_t MutationTargetCount =
+      static_cast<int64_t>(MutationTargets.size());
 
   auto ExpectField = [](const char *Name, int64_t Manifest,
                         int64_t Recomputed) {
@@ -1474,6 +1479,9 @@ TEST(RuleCountsManifest, MatchesCoreIR) {
               EscapedInAllEscapedSets);
   ExpectField("td_rule_count", M->getInteger("td_rule_count").value_or(-1),
               TDRuleCount);
+  ExpectField("mutation_target_count",
+              M->getInteger("mutation_target_count").value_or(-1),
+              MutationTargetCount);
 
   EXPECT_EQ(TDRuleCount, LiteralRuleCount + EscapedRuleCount);
   EXPECT_EQ(EscapedRuleCount, EscapedInLiteralSets + EscapedInAllEscapedSets);
@@ -2662,7 +2670,25 @@ collectRuleWitnesses(ArrayRef<Sigma> Sigmas, const std::set<RuleKey> &Targets) {
   return Ledger;
 }
 
-// The denominator is the manifest's 189 literal `.td` rules, keyed by the same
+// The committed manifest is the single source of the rule denominators.  A
+// Core IR change updates one file; these tests must not need a second edit.
+static int64_t manifestCount(StringRef Field) {
+  std::optional<std::string> Text =
+      readTestSourceFile("x86-legalizer-rule-counts.json");
+  if (!Text)
+    return -1;
+  llvm::Expected<json::Value> Value = json::parse(*Text);
+  if (!Value) {
+    consumeError(Value.takeError());
+    return -1;
+  }
+  const json::Object *O = Value->getAsObject();
+  if (!O)
+    return -1;
+  return O->getInteger(Field).value_or(-1);
+}
+
+// The denominator is the manifest's literal `.td` rules, keyed by the same
 // (ruleSet, ruleIndex) the Core IR records.  The ledger records the first-match
 // witness of every rule the domain can reach.  A rule that cannot first-match
 // must be approved in x86-legalizer-exceptions.json, so a new miss is a hard
@@ -2672,8 +2698,10 @@ TEST_F(X86LegalizerDifferentialTest, LiteralRuleFirstMatchLedger) {
   std::optional<std::map<RuleKey, LiteralTarget>> Targets =
       readLiteralTargets(Error);
   ASSERT_TRUE(Targets.has_value()) << Error;
-  ASSERT_EQ(Targets->size(), 189u)
-      << "literal rule denominator must be the manifest's 189 distinct "
+  const int64_t LiteralDenominator = manifestCount("literal_td_rule_count");
+  ASSERT_GT(LiteralDenominator, 0) << "cannot read the rule-count manifest";
+  ASSERT_EQ(static_cast<int64_t>(Targets->size()), LiteralDenominator)
+      << "literal rule denominator must be the manifest's distinct "
          "(def, rule_index) pairs";
 
   std::map<std::string, unsigned> TableForSet;
@@ -3148,7 +3176,8 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
   std::optional<std::map<RuleKey, LiteralTarget>> Targets =
       readLiteralTargets(Error);
   ASSERT_TRUE(Targets.has_value()) << Error;
-  ASSERT_EQ(Targets->size(), 189u);
+  ASSERT_EQ(static_cast<int64_t>(Targets->size()),
+            manifestCount("literal_td_rule_count"));
 
   std::optional<std::vector<LegalizerException>> Exceptions =
       readLegalizerExceptions(Error);
@@ -3156,7 +3185,8 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
 
   std::optional<std::vector<EscapeTarget>> Escapes = readEscapeTargets(Error);
   ASSERT_TRUE(Escapes.has_value()) << Error;
-  ASSERT_EQ(Escapes->size(), 93u);
+  ASSERT_EQ(static_cast<int64_t>(Escapes->size()),
+            manifestCount("escaped_td_rule_count"));
 
   std::map<std::string, unsigned> TableForSet;
   for (unsigned I = 0; I != X86TestNumTables; ++I)
@@ -3190,7 +3220,6 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
     TargetKeys.insert(Entry.first);
 
   const RuleWitnessLedger Ledger = collectRuleWitnesses(Sigmas, TargetKeys);
-  ASSERT_EQ(Ledger.Witnesses.size(), 188u);
 
   std::set<RuleKey> ApprovedLiteral, ApprovedEscaped;
   for (const LegalizerException &E : *Exceptions) {
@@ -3416,7 +3445,12 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
     else
       ADD_FAILURE() << "unknown witness origin " << A.Origin;
   }
-  EXPECT_EQ(RuleAtoms, 188u);
+  const int64_t LiteralRules = manifestCount("literal_td_rule_count");
+  ASSERT_GT(LiteralRules, 0);
+  EXPECT_EQ(static_cast<int64_t>(RuleAtoms) +
+                static_cast<int64_t>(ApprovedLiteral.size()),
+            LiteralRules)
+      << "every literal rule is a per-rule atom or an approved exception";
   EXPECT_EQ(BoundaryAtoms, 756u);
   EXPECT_EQ(ASAtoms, 220u);
   EXPECT_EQ(DescriptorCount, DescriptorAtoms);
@@ -3520,12 +3554,22 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
   ASSERT_TRUE(!!Value) << toString(Value.takeError());
   const json::Object *Root = Value->getAsObject();
   ASSERT_NE(Root, nullptr);
-  EXPECT_EQ(Root->getInteger("atom_count").value_or(-1), 1256);
-  EXPECT_EQ(Root->getInteger("per_rule_hits").value_or(-1), 188);
-  EXPECT_EQ(Root->getInteger("boundary_atoms").value_or(-1), 756);
-  EXPECT_EQ(Root->getInteger("as_atoms").value_or(-1), 220);
-  EXPECT_EQ(Root->getInteger("descriptor_atoms").value_or(-1), 92);
-  EXPECT_EQ(Root->getInteger("descriptor_exceptions").value_or(-1), 1);
+  const int64_t AtomCount = Root->getInteger("atom_count").value_or(-1);
+  const int64_t PerRuleHits = Root->getInteger("per_rule_hits").value_or(-1);
+  const int64_t BoundaryHits =
+      Root->getInteger("boundary_atoms").value_or(-1);
+  const int64_t ASHits = Root->getInteger("as_atoms").value_or(-1);
+  const int64_t DescriptorHits =
+      Root->getInteger("descriptor_atoms").value_or(-1);
+  const int64_t DescriptorExceptions =
+      Root->getInteger("descriptor_exceptions").value_or(-1);
+  EXPECT_EQ(AtomCount, 1256);
+  EXPECT_EQ(BoundaryHits, 756);
+  EXPECT_EQ(ASHits, 220);
+  EXPECT_EQ(PerRuleHits + DescriptorHits + BoundaryHits + ASHits, AtomCount)
+      << "the witness header must account for every atom";
+  EXPECT_EQ(DescriptorHits + DescriptorExceptions,
+            manifestCount("escaped_td_rule_count"));
   EXPECT_EQ(Root->getString("witness_config_default").value_or(""), "C2");
 
   const json::Array *AtomArray = Root->getArray("atoms");
@@ -3558,7 +3602,10 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
     ASSERT_NE(TableIt, TableForSet.end()) << E.RuleSet;
     ExpectedEscapePairs.insert({TableIt->second, E.RuleIndex});
   }
-  ASSERT_EQ(ExpectedEscapePairs.size(), 93u);
+  const int64_t EscapeDenominator = manifestCount("escaped_td_rule_count");
+  ASSERT_GT(EscapeDenominator, 0) << "cannot read the rule-count manifest";
+  ASSERT_EQ(static_cast<int64_t>(ExpectedEscapePairs.size()),
+            EscapeDenominator);
 
   // The manifest's literal rules minus every approved literal exception is the
   // set of rules a per-rule atom must name; approved escaped exceptions leave
@@ -3609,9 +3656,9 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
       ADD_FAILURE() << "nonliteral-shape exception " << E.RuleSet << "#"
                     << E.RuleIndex << " must name an escaped rule";
   }
-  ASSERT_EQ(ExpectedRulePairs.size(), 188u);
-  ASSERT_EQ(ExpectedEscapePairs.size(), 92u);
-  ASSERT_EQ(ApprovedEscapePairs.size(), 1u);
+  ASSERT_EQ(static_cast<int64_t>(ExpectedEscapePairs.size() +
+                                ApprovedEscapePairs.size()),
+            manifestCount("escaped_td_rule_count"));
 
   struct Fixture {
     Sigma S;
@@ -3812,14 +3859,12 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
     }
 
   EXPECT_EQ(Atoms, 1256u);
-  EXPECT_EQ(RuleAtoms, 188u);
   EXPECT_EQ(BoundaryAtoms, 756u);
   EXPECT_EQ(ASAtoms, 220u);
-  EXPECT_EQ(DescriptorAtoms, 92u);
-  EXPECT_EQ(RulePairs.size(), 188u);
+  EXPECT_EQ(static_cast<int64_t>(DescriptorAtoms), EscapeDenominator);
   EXPECT_EQ(RulePairs, ExpectedRulePairs)
-      << "per-rule atoms must name exactly the manifest's 188 literal rules";
-  EXPECT_EQ(DescriptorPairs.size(), 92u);
+      << "per-rule atoms must name exactly the manifest's literal rules";
+  EXPECT_EQ(static_cast<int64_t>(DescriptorPairs.size()), EscapeDenominator);
   EXPECT_EQ(DescriptorPairs, ExpectedEscapePairs)
       << "descriptor atoms must name every witnessable escaped rule; only "
          "approved unreachable exceptions may be absent";
@@ -3834,7 +3879,9 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
         << "unreachable exception " << E.RuleSet << "#" << E.RuleIndex
         << " unexpectedly has a descriptor atom";
   }
-  EXPECT_EQ(DescriptorPairs.size() + ApprovedEscapePairs.size(), 93u)
+  EXPECT_EQ(static_cast<int64_t>(DescriptorPairs.size() +
+                                ApprovedEscapePairs.size()),
+            manifestCount("escaped_td_rule_count"))
       << "covered escapes plus approved unreachable exceptions must equal the "
          "escaped denominator";
   EXPECT_EQ(Collisions, 0u);
@@ -4231,7 +4278,32 @@ TEST_F(X86LegalizerProperties, NamedTypeRelativization) {
                        "named-type", A.ConfigID, P, /*RequireResidual=*/false,
                        It->second, Checks, Violations);
   }
-  EXPECT_EQ(RuleAtoms, 188u);
+  // The per-rule atoms are the literal rules minus the approved unreachable
+  // ones.  Derive that denominator from the generated manifest instead of
+  // pinning the current count.
+  std::string TargetsError;
+  std::optional<std::map<RuleKey, LiteralTarget>> LiteralTargets =
+      readLiteralTargets(TargetsError);
+  ASSERT_TRUE(LiteralTargets.has_value()) << TargetsError;
+  std::string ExceptionsError;
+  std::optional<std::vector<LegalizerException>> Exceptions =
+      readLegalizerExceptions(ExceptionsError);
+  ASSERT_TRUE(Exceptions.has_value()) << ExceptionsError;
+  std::map<std::string, unsigned> TableForSet;
+  for (unsigned I = 0; I != X86TestNumTables; ++I)
+    TableForSet.emplace(X86RuleIndexTableNames[I], I);
+  int64_t UnreachableLiterals = 0;
+  for (const LegalizerException &E : *Exceptions) {
+    if (E.Kind != "unreachable")
+      continue;
+    auto It = TableForSet.find(E.RuleSet);
+    if (It != TableForSet.end() &&
+        LiteralTargets->count({It->second, E.RuleIndex}))
+      ++UnreachableLiterals;
+  }
+  EXPECT_EQ(static_cast<int64_t>(RuleAtoms),
+            manifestCount("literal_td_rule_count") - UnreachableLiterals)
+      << "per-rule atoms must name every reachable literal rule";
 
   llvm::outs() << "NamedTypeRelativization: checks=" << Checks
                << " violations=" << Violations << " rule-atoms=" << RuleAtoms
@@ -6628,8 +6700,9 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateFullCorpus) {
   std::string Error;
   std::optional<MutationTargetMap> Targets = readMutationTargets(Error);
   ASSERT_TRUE(Targets.has_value()) << Error;
-  ASSERT_EQ(Targets->size(), 63u)
-      << "core.json must map exactly 63 (rule_set, rule_index) mutations";
+  ASSERT_EQ(static_cast<int64_t>(Targets->size()),
+            manifestCount("mutation_target_count"))
+      << "core.json mutation map must match the rule-count manifest";
 
   std::string AtomsText;
   AtomsText.reserve(192 * 1024 * 1024);
@@ -6892,7 +6965,8 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_FullCorpusDifferential) {
   std::optional<MutationTargetMap> MutationTargets =
       readMutationTargets(TargetsError);
   ASSERT_TRUE(MutationTargets.has_value()) << TargetsError;
-  ASSERT_EQ(MutationTargets->size(), 63u);
+  ASSERT_EQ(static_cast<int64_t>(MutationTargets->size()),
+            manifestCount("mutation_target_count"));
 
   uint64_t Atoms = 0, Diffs = 0, ExpectedDiffs = 0;
   uint64_t Hits = 0, Residuals = 0, Escapes = 0;
@@ -7101,7 +7175,8 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_DeepPanelDifferential) {
   std::optional<MutationTargetMap> MutationTargets =
       readMutationTargets(TargetsError);
   ASSERT_TRUE(MutationTargets.has_value()) << TargetsError;
-  ASSERT_EQ(MutationTargets->size(), 63u);
+  ASSERT_EQ(static_cast<int64_t>(MutationTargets->size()),
+            manifestCount("mutation_target_count"));
 
   const auto Started = std::chrono::steady_clock::now();
   uint64_t RawAtoms = 0, TrimmedUnevaluable = 0;

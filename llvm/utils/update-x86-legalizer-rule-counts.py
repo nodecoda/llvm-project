@@ -38,6 +38,12 @@ Field definitions (all counts are derived from the Core IR):
       Distinct rule sets in total: ``literal_bearing_rule_set_count`` plus
       ``all_escaped_rule_set_count``.
 
+  mutation_target_count
+      Number of distinct ``(def, rule_index)`` pairs whose rule carries
+      mutation metadata in Core IR.  This is the denominator the corpus
+      generator uses to decide which rules can mutate a query slot; it is not
+      a rule count.
+
   td_rule_count
       Total TableGen rules: ``literal_td_rule_count`` plus
       ``escaped_td_rule_count``.
@@ -70,6 +76,7 @@ def compute_counts(core):
     escapes = core["escapes"]
 
     literal_keys = set()
+    mutation_keys = set()
     core_entry_count = 0
     literal_set_names = set()
     for ruleset in rulesets:
@@ -77,6 +84,8 @@ def compute_counts(core):
         literal_set_names.add(def_name)
         for rule in ruleset["rules"]:
             literal_keys.add((def_name, rule["rule_index"]))
+            if "mutation" in rule:
+                mutation_keys.add((def_name, rule["rule_index"]))
             core_entry_count += 1
 
     escaped_set_names = {escape["ruleset"] for escape in escapes}
@@ -105,6 +114,7 @@ def compute_counts(core):
         "escaped_in_literal_sets": escaped_in_literal_sets,
         "escaped_in_all_escaped_sets": escaped_in_all_escaped_sets,
         "td_rule_count": literal_td_rule_count + escaped_td_rule_count,
+        "mutation_target_count": len(mutation_keys),
     }
 
 
