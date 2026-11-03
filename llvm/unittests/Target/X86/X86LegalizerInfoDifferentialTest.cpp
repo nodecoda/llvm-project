@@ -726,6 +726,8 @@ static const Config *findConfig(StringRef ID) {
   return nullptr;
 }
 
+static const Config *findFullConfig(StringRef ID);
+
 static std::optional<LLT> parseJSONLLT(StringRef S, unsigned PointerBits) {
   if (S.consume_front("p")) {
     unsigned AddressSpace = 0;
@@ -3704,8 +3706,8 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateCorpusFromCppPoints) {
 
   std::optional<StringRef> ConfigOpt = Root->getString("config");
   ASSERT_TRUE(ConfigOpt.has_value());
-  const Config *C = findConfig(*ConfigOpt);
-  ASSERT_NE(C, nullptr) << "unknown config " << *ConfigOpt;
+  const Config *C = findFullConfig(*ConfigOpt);
+  ASSERT_NE(C, nullptr) << "unknown full config " << *ConfigOpt;
   Sigma S = makeSigma(*C);
   ASSERT_TRUE(S.STI);
   X86LegalizerInfoReference Oracle(
