@@ -227,7 +227,13 @@ class Parser:
                     node = Ident(f"{node_name(node)}.{name.text}")
             elif t.text == "(":
                 args, _ = self.parse_args()
-                node = Call(node_name(node), args)
+                if isinstance(node, Call):
+                    # C++ predicate objects: typeIs(0, s32)(Query).  The
+                    # trailing call applies the predicate; its arguments are
+                    # appended so the predicate's own arguments survive.
+                    node = Call(node.name, list(node.args) + list(args))
+                else:
+                    node = Call(node_name(node), args)
             elif t.text == "[":
                 self.take()
                 idx = self.parse_expr()

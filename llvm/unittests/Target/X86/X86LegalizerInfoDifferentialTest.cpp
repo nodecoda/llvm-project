@@ -3710,6 +3710,43 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateCorpusFromCppPoints) {
   ASSERT_NE(C, nullptr) << "unknown full config " << *ConfigOpt;
   Sigma S = makeSigma(*C);
   ASSERT_TRUE(S.STI);
+
+  // The points file carries the subtarget feature map it was generated for.
+  // A bare config ID is not enough: the ID once selected a sigma table while
+  // the filler used a full config, which hid eight wrong answers.  Validate
+  // every feature the legalizer reads against the constructed subtarget.
+  const json::Object *Desc = Root->getObject("config_descriptor");
+  ASSERT_NE(Desc, nullptr) << "points file has no config_descriptor";
+  std::optional<StringRef> DescId = Desc->getString("id");
+  ASSERT_TRUE(DescId.has_value()) << "config_descriptor has no id";
+  EXPECT_EQ(*DescId, C->ID) << "config descriptor does not match config";
+  const json::Object *Features = Desc->getObject("features");
+  ASSERT_NE(Features, nullptr) << "config_descriptor has no features";
+  auto CheckFeature = [&](StringRef Name, bool Actual) {
+    std::optional<bool> Expected = Features->getBoolean(Name);
+    ASSERT_TRUE(Expected.has_value()) << "missing feature " << Name;
+    EXPECT_EQ(*Expected, Actual)
+        << "config " << C->ID << " feature " << Name;
+  };
+  CheckFeature("is64Bit", S.STI->is64Bit());
+  CheckFeature("canUseCMOV", S.STI->canUseCMOV());
+  CheckFeature("hasSSE1", S.STI->hasSSE1());
+  CheckFeature("hasSSE2", S.STI->hasSSE2());
+  CheckFeature("hasSSE41", S.STI->hasSSE41());
+  CheckFeature("hasAVX", S.STI->hasAVX());
+  CheckFeature("hasAVX2", S.STI->hasAVX2());
+  CheckFeature("hasAVX512", S.STI->hasAVX512());
+  CheckFeature("hasVLX", S.STI->hasVLX());
+  CheckFeature("hasDQI", S.STI->hasDQI());
+  CheckFeature("hasBWI", S.STI->hasBWI());
+  CheckFeature("useSoftFloat", S.STI->useSoftFloat());
+  CheckFeature("hasX87", S.STI->hasX87());
+  CheckFeature("hasPOPCNT", S.STI->hasPOPCNT());
+  CheckFeature("hasLZCNT", S.STI->hasLZCNT());
+  CheckFeature("hasBMI", S.STI->hasBMI());
+  CheckFeature("hasVPOPCNTDQ", S.STI->hasVPOPCNTDQ());
+  CheckFeature("isTarget64BitLP64", S.STI->isTarget64BitLP64());
+
   X86LegalizerInfoReference Oracle(
       *S.STI, *static_cast<const X86TargetMachine *>(S.TM.get()));
   const unsigned PointerBits = C->Is64 ? 64 : 32;
@@ -3724,8 +3761,21 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateCorpusFromCppPoints) {
 
   std::string Out;
   raw_string_ostream OS(Out);
+  auto EmitField = [&](StringRef Name, const json::Value *Value) {
+    OS << "  \"" << Name << "\": ";
+    if (Value)
+      OS << *Value;
+    else
+      OS << "null";
+    OS << ",\n";
+  };
   OS << "{\n  \"schema\": \"llvm-x86-legalizer-cpp-corpus\",\n";
-  OS << "  \"version\": 1,\n";
+  OS << "  \"version\": 2,\n";
+  EmitField("source", Root->get("source"));
+  EmitField("oracle", Root->get("oracle"));
+  EmitField("config_descriptor", Root->get("config_descriptor"));
+  EmitField("coverage", Root->get("coverage"));
+  EmitField("counts", Root->get("counts"));
   OS << "  \"source_sha256\": \"" << SourceSha << "\",\n";
   OS << "  \"config\": \"" << C->ID << "\",\n";
   OS << "  \"points_sha256\": \"" << sha256Hex(*Text) << "\",\n";

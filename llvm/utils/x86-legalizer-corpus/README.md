@@ -1,8 +1,8 @@
 # x86-legalizer-corpus
 
 Build legalizer query corpora from the **hand-written** X86 legalizer C++
-(`llvm/lib/Target/X86/GISel/X86LegalizerInfo.cpp`), then let the C++ reference
-fill in the expected answers.
+(`llvm/lib/Target/X86/GISel/X86LegalizerInfo.cpp`), at any git revision
+(default `upstream/main`), then let an oracle fill in the expected answers.
 
 This tool is deliberately not a TableGen reader.  It parses the source file
 that a human wrote, so the corpus describes the chain semantics that the
@@ -26,27 +26,49 @@ The only producer of an expected action is
 `points` output is therefore safe to diff and review: it contains no answers
 that the table could have influenced.
 
+## Source and oracle
+
+The tool separates *where the shapes come from* from *where the answers come
+from*:
+
+| Piece | Default | Meaning |
+|---|---|---|
+| source | `--source-rev upstream/main` | the C++ file the query shapes come from |
+| oracle | `none` by default; `reference` when `--build` is given | the only producer of `expected` |
+| coverage exceptions | `coverage_exceptions.json` | reviewed reasons for rules that cannot be probed |
+
+`--oracle=none` writes a shapes-only corpus: every atom is present, none has
+an `expected` field.  `--oracle=reference` runs the frozen C++
+`X86LegalizerInfoReference::getAction()` through `X86Tests` and is the only
+mode that fills `expected`.
+
+If `source.revision != oracle.revision` the corpus is cross-revision: the
+envelope carries `"oracle": {"cross_revision": true, ...}` and
+`--oracle=reference` refuses to run unless `--allow-cross-revision` is given.
+With the flag, `<out>.report.json` records the rule delta by
+`(rule_set, method, argument text)`, not by rule index.
+
 ## Quick start
 
-Run from a checkout that has the frozen reference revision (see
-`llvm/unittests/Target/X86/x86-legalizer-reference-provenance.json`):
-
 ```bash
-# 1. Parse the hand-written chain into a rule ledger.
+# 1. Shapes from upstream/main, with no expected answers.  This is the
+#    default workflow for a revision that has no matching oracle build.
+python3 llvm/utils/x86-legalizer-corpus corpus \
+    --source-rev upstream/main --oracle=none --tier witness \
+    --out /tmp/up-shapes.json
+
+# 2. Rule ledger for the same revision.
 python3 llvm/utils/x86-legalizer-corpus parse \
-    --source-rev ebac17721d12 --config C2 --out /tmp/x86-ast.json
+    --source-rev upstream/main --config C2 --out /tmp/up-ast.json
 
-# 2. Turn the ledger into query shapes (witness tier by default).
-python3 llvm/utils/x86-legalizer-corpus points \
-    --source-rev ebac17721d12 --tier witness --out /tmp/x86-points.json
-
-# 3. Cross-check the hand-written chain against the TableGen emission.
+# 3. Cross-check the hand-written chain against a TableGen emission.
 python3 llvm/utils/x86-legalizer-corpus verify \
-    --ast /tmp/x86-ast.json \
+    --ast /tmp/up-ast.json \
     --td-inc build/unittests/Target/X86/X86LegalizerRuleIndex.inc \
-    --out /tmp/x86-report.json
+    --out /tmp/up-report.json
 
-# 4. Fill the expected answers from the C++ reference.
+# 4. Corpus with expected answers from the frozen C++ reference.
+#    The source revision must match the reference unless you opt in.
 python3 llvm/utils/x86-legalizer-corpus corpus \
     --source-rev ebac17721d12 --tier witness \
     --build /path/to/build --out /tmp/x86-corpus.json
@@ -57,26 +79,30 @@ and tells you what to do next.  Environment overrides for step 4 are
 `X86_LEGALIZER_CPP_POINTS` and `X86_LEGALIZER_CPP_CORPUS_OUT`; they select the
 input points and the output corpus for the gtest driver.
 
+Step 3 exits 3 on `upstream/main`: TableGen has two `G_CTPOP` rules that the
+main-branch C++ chain does not have (`HasVPOPCNTDQ`, `HasVPOPCNTDQVL`).  That
+is the tool reporting a real source delta, not a corpus bug.
+
 ## Tiers
 
-| Tier | What it adds | Points on the frozen revision |
+| Tier | What it adds | Points on the frozen revision (C2) |
 |---|---|---|
-| `witness` | reviewed 12-point boundary panel, address-space probes, per-rule witnesses | 1246 |
-| `full` | every class pair over the C++ class axis, plus the witness panel | 197896 |
-| `deep` | `full` plus the reviewed 60-point deep panel | 288280 |
+| `witness` | reviewed 12-point boundary panel, address-space probes, per-rule witnesses | 2219 |
+| `full` | every class pair over the C++ class axis, plus the witness panel | 208853 |
+| `deep` | `full` plus the reviewed 60-point deep panel | 319541 |
 
 Tiers only change the query shapes.  They never change the expected answers,
-which always come from the reference.
+which always come from the oracle.
 
 `full` and `deep` prune class-pair and boundary shapes that put a pointer (or
-pointer vector) in a slot targeted by an element-size mutation
-(`clampScalar`, `scalarSameSizeAs`, `widenScalarOrEltToNextPow2`, ...).  The
-reference applies the first match's mutation, and `LLT::changeElementSize`
-rejects pointers with an assertion, so those are not well-formed legalizer
-queries.  The points document records the count under
-`"pruned": {"pointer_element_size": N}` (10884 for `full`, 17508 for `deep`).
-This is a query-shape safety filter, not an oracle: it never writes an
-expected action.
+pointer vector) in a slot targeted by an element-size mutation that can match
+vectors of pointers (`clampScalarOrElt`, `scalarSameSizeAs`,
+`min/maxScalarOrElt`).  The reference applies the first match's mutation, and
+`LLT::changeElementSize` rejects pointers with an assertion, so those are not
+well-formed legalizer queries.  The points document records the count under
+`"pruned": {"pointer_element_size": N}` (858 for `full`, 2010 for `deep` on
+the frozen revision).  This is a query-shape safety filter, not an oracle: it
+never writes an expected action.
 
 ## Configs
 
@@ -103,7 +129,10 @@ The parser is a strict subset of C++, not a general interpreter:
 - `if`/`else` with literal pruning, including `auto &Action = ...` chains;
 - `for (unsigned Op : {G_...})` expansion;
 - the builder chain methods listed in `KNOWN_METHODS`;
-- lambdas are recorded as opaque rules (never executed).
+- lambdas are recorded, not executed; simple literal predicates inside a
+  lambda (`typeIs`, `typeInSet`, `typePairInSet`, `scalar*Than`, ...) are
+  modelled to find a witness, and anything else stays unverified until it has
+  a reviewed coverage exception.
 
 Anything else is a hard error with a line number.  `--allow-opaque` downgrades
 an unknown chain method to a recorded warning; use it only when you are
@@ -112,8 +141,13 @@ inspecting a new source revision, never for a committed corpus.
 ## Extending the tool
 
 - **New chain method**: add it to `KNOWN_METHODS`, teach `record_shape()` which
-  slots it reads, and add a case to `domain.probe_for_rule()`.  The point of the
-  ledger is that a silent no-op is impossible.
+  slots it reads, and add a case to `domain.probe_candidates()` and
+  `domain.rule_matches()`.  The point of the ledger is that a silent no-op is
+  impossible.
+- **New lambda predicate**: extend `domain.pred_witness()` /
+  `probe_from_lambda()` for a literal predicate, or record a reviewed
+  exception.  A rule whose predicate cannot be modelled is never silently
+  dropped.
 - **New `Subtarget` predicate**: add it to `target.FEATURE_KEYS` and to every
   `CONFIGS` row.  The parser fails if a guard mentions a predicate that the
   feature environment does not define.
@@ -121,6 +155,88 @@ inspecting a new source revision, never for a committed corpus.
   format uses those strings, so a rename is a corpus-format change.
 - **New boundary panel**: change `target.BOUNDARY_PANEL` or `DEEP_PANEL`.
   These are review constants, intentionally not derived from the source.
+
+## Coverage manifest
+
+Every points/corpus document carries a coverage manifest, and both commands
+exit 3 when a rule has no verified probe and no reviewed exception:
+
+```json
+"coverage": {
+  "rules": {
+    "source_total": 277, "active": 273, "verified": 263,
+    "probed_candidates": 263,
+    "inactive": [{"rule_set": "X86_FNEG", "rule_index": 0,
+                  "reason": "feature predicate false"}],
+    "excepted": [{"rule_set": "...", "rule_index": 3, "reason": "..."}],
+    "unprobed": []
+  },
+  "opcodes": {
+    "total": 115, "multi_opcode_builders": 19, "secondary_opcodes": 53,
+    "per_opcode_atoms": {"X86_EXTRACT": {"G_EXTRACT": 17, "G_INSERT": 18}},
+    "uncovered": []
+  },
+  "policy": "..."
+}
+```
+
+- `verified` means the candidate shape is the **first match** under the
+  modelled chain predicates, not merely that the rule's own predicate is
+  true.
+- A builder such as `getActionDefinitionsBuilder({G_EXTRACT, G_INSERT})` gets
+  rule, boundary, and address-space probes for **every** opcode.  Lambdas that
+  branch on `Query.Opcode` are evaluated per opcode, including lambda-local
+  variables such as `SubIdx = Query.Opcode == G_EXTRACT ? 0 : 1`.
+- `--allow-coverage-gaps` downgrades the exit-3 gate for inspection only; do
+  not use it for a committed corpus.
+
+### Registering a coverage exception
+
+1. Run `points`/`corpus`; exit 3 lists every unprobed rule.
+2. Confirm why it cannot be probed: unreachable under the preceding clamps,
+   shadowed by an earlier match, or an opaque lambda with no literal witness.
+3. Add an entry to `coverage_exceptions.json`:
+
+   ```json
+   {"rule_set": "X86_ADD", "rule_index": 9, "method": "clampMinNumElements",
+    "configs": ["C0", "C3"],
+    "reason": "a one-element fixed vector is a scalar; earlier clamps win"}
+   ```
+
+   Matching fields are `rule_set` (required), `rule_index`, `method`, `arg`,
+   `arg_contains`, and `config`/`configs`.
+4. The reason must describe the source semantics, not "the test fails".  An
+   exception is reviewed together with the code change that needs it.
+
+## Comparing corpora
+
+`diff` joins two corpora on the canonical query key
+`(config fingerprint, opcode, types, memory type, align bits)`.  It never
+joins on atom ids, array order, or raw bytes:
+
+```bash
+python3 llvm/utils/x86-legalizer-corpus diff \
+    --left /tmp/up-corpus.json --right /tmp/ref-corpus.json \
+    --out /tmp/diff.json
+```
+
+The report contains `expected_diff`, `left_only`, `right_only`, and
+`per_rule_coverage`.  `expected` is compared only where both sides carry
+one: a shapes-only corpus against a filled corpus reports
+`expected_available: false`, never a false "0 differences".  `--strict`
+exits 1 on any difference.
+
+Cross-revision example: `upstream/main` corpus vs the frozen-reference corpus
+has `expected_diff: []` over the 2133 common query keys and two
+`right_only` probes, the `G_CTPOP` rules gated by `HasVPOPCNTDQ` and
+`HasVPOPCNTDQVL`.  That is the intended signal: the C++ source moved, the
+shared behavior did not.
+
+Shapes-only and filled corpora share one atom shape:
+`{"id", "origin", "rule_set", "opcode", "rule_index", "config", "query":
+{"types": [...], "mem": {"type", "align"}}}`, where pointers carry their bit
+width (`p0:64`, `v2p0:64`).  The intermediate points file used by the C++
+filler keeps the short spellings and top-level `types`/`mem`/`align`.
 
 ## Deltas and verification
 
@@ -162,8 +278,8 @@ python3 -m unittest discover -s llvm/utils/x86-legalizer-corpus/tests -v
 ```
 
 The suite covers the lexer, the expression evaluator, branch/loop expansion,
-the frozen-reference census, point determinism, the oracle boundary, and the
-delta registry.  Tests that need the frozen revision or a built
+the frozen-reference census, point determinism, the oracle boundary, the
+coverage manifest, corpus comparison, and the delta registry.  Tests that need the frozen revision or a built
 `X86LegalizerRuleIndex.inc` skip when those artifacts are absent.
 
 Frozen-revision census (a change here means the reader or the source moved):

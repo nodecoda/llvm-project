@@ -37,6 +37,15 @@ KNOWN_METHODS = {
 
 OPAQUE_METHODS = {"legalIf", "customIf", "lowerIf", "widenScalarIf"}
 
+# Methods whose first argument may be a feature predicate.  When it evaluates
+# to false the C++ builder adds no rule at all; keeping the rule visible but
+# inactive is what makes a per-config coverage report honest.
+PRED_GATED_METHODS = {
+    "legalFor", "legalForTypesWithMemDesc", "customFor", "lowerFor",
+    "libcallFor", "customForCartesianProduct", "clampScalar", "minScalar",
+    "maxScalar",
+}
+
 
 @dataclass
 class Rule:
@@ -46,13 +55,30 @@ class Rule:
     args: list
     arg_text: list
     guard: list = field(default_factory=list)   # [(text, active)], active: bool|None
+    evaluated_args: list = field(default_factory=list)
 
     @property
     def active(self):
         for _, value in self.guard:
             if value is None:
                 return None
-        return all(bool(v) for _, v in self.guard)
+        if not all(bool(v) for _, v in self.guard):
+            return False
+        if self.method in PRED_GATED_METHODS and self.evaluated_args:
+            first = self.evaluated_args[0]
+            if isinstance(first, bool):
+                return first
+        return True
+
+    def why_inactive(self):
+        for text, value in self.guard:
+            if value is False:
+                return f"guard false: {text}"
+        if self.method in PRED_GATED_METHODS and self.evaluated_args:
+            first = self.evaluated_args[0]
+            if isinstance(first, bool) and not first:
+                return "feature predicate false"
+        return None
 
 
 @dataclass
@@ -382,6 +408,15 @@ class BodyParser:
         if close < 0:
             return end, None
         args = parse_args(self.toks, open_i, close, env)
+        evaluated = []
+        for arg in args:
+            if isinstance(arg, (E.Lambda, E.Unknown)):
+                evaluated.append(None)
+                continue
+            try:
+                evaluated.append(E.eval_expr(arg, env))
+            except E.ExprError:
+                evaluated.append(None)
         rule = Rule(
             index=len(builder.rules),
             method=method,
@@ -389,6 +424,7 @@ class BodyParser:
             args=args,
             arg_text=[" ".join(t.text for t in self.toks[open_i + 1:close])],
             guard=list(guards),
+            evaluated_args=evaluated,
         )
         builder.rules.append(rule)
         if method not in KNOWN_METHODS:

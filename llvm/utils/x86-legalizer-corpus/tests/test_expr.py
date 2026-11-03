@@ -54,6 +54,13 @@ class ExprEvalTest(unittest.TestCase):
         with self.assertRaises(E.EvalError):
             parse_eval("notDeclared")
 
+    def test_predicate_object_call_keeps_its_arguments(self):
+        node = E.Parser(lexer.lex("typeInSet(0, {v4s32})(Query)")).parse_expr()
+        self.assertIsInstance(node, E.Call)
+        self.assertEqual(node.name, "typeInSet")
+        self.assertEqual(len(node.args), 3)
+        self.assertIsInstance(node.args[1], E.ListLit)
+
     def test_lambda_keeps_params_and_body(self):
         src = ("[](unsigned TypeIdx, LLT Ty, const LegalityQuery &Q) "
                "{ return typeIs(0, Types[TypeIdx]); }")

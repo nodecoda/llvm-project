@@ -1,11 +1,16 @@
+import contextlib
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import testlib
+import cli
+import oracle
 
 
 MINI = """\
@@ -64,7 +69,8 @@ class CliTest(unittest.TestCase):
             handle.write(source)
         blobs = []
         for name in ("p1.json", "p2.json"):
-            proc = run_cli("points", "--input", self.src, "--out", self.out(name))
+            proc = run_cli("points", "--input", self.src,
+                           "--allow-coverage-gaps", "--out", self.out(name))
             self.assertEqual(proc.returncode, 0, proc.stderr)
             with open(self.out(name), "rb") as handle:
                 blobs.append(handle.read())
@@ -79,7 +85,7 @@ class CliTest(unittest.TestCase):
         with open(self.src, "w", encoding="utf-8") as handle:
             handle.write(source)
         proc = run_cli("corpus", "--input", self.src,
-                       "--out", self.out("corpus.json"))
+                       "--allow-coverage-gaps", "--out", self.out("corpus.json"))
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("pass --build", proc.stderr)
         self.assertTrue(os.path.exists(self.out("corpus.json.points.json")))
@@ -127,6 +133,83 @@ class CliTest(unittest.TestCase):
         self.assertEqual(report["unexplained"], [])
         self.assertEqual(report["known_deltas_used"],
                          ["X86_ADD:td_expands_lambda"])
+
+    def test_oracle_none_emits_shapes_only(self):
+        source = MINI.replace("      .frobnicate({s8});\n", "")
+        with open(self.src, "w", encoding="utf-8") as handle:
+            handle.write(source)
+        proc = run_cli("corpus", "--input", self.src, "--oracle=none",
+                       "--allow-coverage-gaps", "--out", self.out("shapes.json"))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(self.out("shapes.json"), "r", encoding="utf-8") as handle:
+            doc = json.load(handle)
+        self.assertEqual(doc["oracle"]["kind"], "none")
+        self.assertFalse(doc["oracle"]["cross_revision"])
+        self.assertEqual(doc["atom_count"], len(doc["atoms"]))
+        self.assertTrue(doc["atoms"])
+        self.assertTrue(all("expected" not in atom for atom in doc["atoms"]))
+
+
+def fake_reference_fill(build, points_path, out_path):
+    with open(points_path, "r", encoding="utf-8") as handle:
+        doc = json.load(handle)
+    doc["schema"] = cli.CORPUS_SCHEMA
+    doc["atoms"] = doc.pop("points")
+    doc["atom_count"] = len(doc["atoms"])
+    for atom in doc["atoms"]:
+        atom["expected"] = {"action": "legal"}
+    with open(out_path, "w", encoding="utf-8") as handle:
+        json.dump(doc, handle)
+
+
+class CrossRevisionTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.src = os.path.join(self.tmp.name, "mini.cpp")
+        with open(self.src, "w", encoding="utf-8") as handle:
+            handle.write(MINI.replace("      .frobnicate({s8});\n", ""))
+
+    def corpus_args(self, out, *extra):
+        return ["corpus", "--input", self.src, "--oracle=reference",
+                "--allow-coverage-gaps", "--build",
+                os.path.join(self.tmp.name, "build"), "--out", out, *extra]
+
+    def patch_oracle(self):
+        stack = []
+        stack.append(mock.patch.object(
+            oracle, "reference_revision", return_value="oracle-rev"))
+        stack.append(mock.patch.object(
+            cli, "_cross_revision_delta",
+            return_value={"source_only": [], "oracle_only": []}))
+        for item in stack:
+            item.start()
+            self.addCleanup(item.stop)
+
+    def test_reference_oracle_refuses_cross_revision(self):
+        self.patch_oracle()
+        out = os.path.join(self.tmp.name, "corpus.json")
+        with self.assertRaises(SystemExit) as caught:
+            cli.main(self.corpus_args(out))
+        self.assertIn("cross-revision corpus", str(caught.exception))
+        self.assertFalse(os.path.exists(out))
+
+    def test_allow_cross_revision_marks_the_corpus(self):
+        self.patch_oracle()
+        self.addCleanup(mock.patch.stopall)
+        with mock.patch.object(oracle, "run_reference_filler",
+                               side_effect=fake_reference_fill):
+            out = os.path.join(self.tmp.name, "corpus.json")
+            with contextlib.redirect_stdout(io.StringIO()):
+                cli.main(self.corpus_args(out, "--allow-cross-revision"))
+        with open(out, "r", encoding="utf-8") as handle:
+            doc = json.load(handle)
+        self.assertEqual(doc["oracle"]["kind"], "reference")
+        self.assertTrue(doc["oracle"]["cross_revision"])
+        self.assertEqual(doc["atom_count"], len(doc["atoms"]))
+        self.assertTrue(all("expected" in atom for atom in doc["atoms"]))
+        self.assertTrue(os.path.exists(out + ".report.json"))
+
 
 
 if __name__ == "__main__":

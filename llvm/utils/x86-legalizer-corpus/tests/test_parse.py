@@ -129,6 +129,39 @@ X86LegalizerInfo::X86LegalizerInfo(const X86Subtarget &STI) : Subtarget(STI) {
         self.assertIn("line 2", str(ctx.exception))
         self.assertIn("NotAnOpcode", str(ctx.exception))
 
+    def test_upstream_main_census_and_ctpop_delta(self):
+        source = testlib.source_at("upstream/main")
+        if source is None:
+            self.skipTest("upstream/main is not available in this checkout")
+        text, info = source
+        r = testlib.parse_text(text, "C2")
+        self.assertEqual(r.census(), {
+            "call_sites": 58, "builders": 62, "opcodes": 115,
+            "classes": 24, "mem_classes": 23, "aligns": 1,
+        })
+        self.assertEqual(r.unknown_methods, [])
+        self.assertEqual(r.unknown_refs, [])
+        self.assertEqual(r.opaque_lambdas, 10)
+        self.assertEqual(sum(len(b.rules) for b in r.builders), 275)
+
+        # The frozen reference adds the two HasVPOPCNTDQ legalFor rules that
+        # upstream/main does not have yet.  Keeping this assertion here makes
+        # the source delta visible instead of silently filling upstream shapes
+        # with frozen-revision answers.
+        reference = testlib.reference_source()
+        if reference is None:
+            self.skipTest("frozen reference revision is not available")
+        ref = testlib.parse_text(reference[0], "C2")
+        up_ctpop = builder(r, "X86_CTPOP")
+        ref_ctpop = builder(ref, "X86_CTPOP")
+        self.assertEqual(len(up_ctpop.rules), 5)
+        self.assertEqual(len(ref_ctpop.rules), 7)
+        up_args = {x.arg_text[0] for x in up_ctpop.rules}
+        ref_only = [x for x in ref_ctpop.rules
+                    if x.arg_text[0] not in up_args]
+        self.assertEqual(len(ref_only), 2)
+        self.assertTrue(all("VPOPCNTDQ" in x.arg_text[0] for x in ref_only))
+
     def test_frozen_reference_census(self):
         source = testlib.reference_source()
         if source is None:

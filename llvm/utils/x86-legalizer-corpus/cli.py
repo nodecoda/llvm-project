@@ -7,38 +7,51 @@ import os
 import subprocess
 import sys
 
+import corpusdiff
 import domain
 import emit
+import oracle
 import parse
 import target
 import verify
+
+CORPUS_SCHEMA = "llvm-x86-legalizer-cpp-corpus"
+CORPUS_VERSION = 2
+
+
+def _source_info(text, revision, path):
+    return {
+        "rev": revision,
+        "revision": revision,
+        "path": path,
+        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "lines": text.count("\n") + (0 if text.endswith("\n") else 1),
+    }
 
 
 def load_source(args):
     if args.input:
         with open(args.input, "r", encoding="utf-8") as handle:
             text = handle.read()
-        return text, {
-            "rev": None,
-            "path": os.path.abspath(args.input),
-            "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-            "lines": text.count("\n") + (0 if text.endswith("\n") else 1),
-        }
-    if not args.source_rev:
-        raise SystemExit("either --input or --source-rev is required")
-    spec = f"{args.source_rev}:{args.source_path}"
+        return text, _source_info(text, None, os.path.abspath(args.input))
+    revision = args.source_rev or target.DEFAULT_SOURCE_REV
+    spec = f"{revision}:{args.source_path}"
     proc = subprocess.run(
         ["git", "-C", args.repo, "show", spec],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if proc.returncode != 0:
         raise SystemExit(proc.stderr.strip() or f"git show {spec} failed")
     text = proc.stdout
-    return text, {
-        "rev": args.source_rev,
-        "path": args.source_path,
-        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-        "lines": text.count("\n") + (0 if text.endswith("\n") else 1),
-    }
+    return text, _source_info(text, revision, args.source_path)
+
+
+def read_revision(repo, revision, path):
+    proc = subprocess.run(
+        ["git", "-C", repo, "show", f"{revision}:{path}"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
 
 
 def parse_input(args):
@@ -50,6 +63,29 @@ def parse_input(args):
             print(f"unknown chain method {method} at line {line}", file=sys.stderr)
         raise SystemExit(2)
     return result, source
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def coverage_gate(coverage, allow_gaps):
+    gaps = coverage["rules"]["unprobed"]
+    uncovered = coverage["opcodes"]["uncovered"]
+    if allow_gaps or (not gaps and not uncovered):
+        return
+    for gap in gaps:
+        print(f"coverage gap: {gap['rule_set']} rule {gap['rule_index']} "
+              f"{gap['method']} ({gap['kind']}): {gap['reason']}",
+              file=sys.stderr)
+    for gap in uncovered:
+        print(f"coverage gap: {gap['rule_set']} opcode {gap['opcode']} has no "
+              f"rule/boundary/AS point", file=sys.stderr)
+    raise SystemExit(3)
 
 
 def cmd_parse(args):
@@ -64,14 +100,21 @@ def cmd_parse(args):
 
 def cmd_points(args):
     result, source = parse_input(args)
-    points, classes, mem_classes, panel, pruned = domain.build_points(
-        result, args.tier)
-    doc = emit.points_document(result, source, args.tier, points, classes,
-                               mem_classes, panel, pruned)
+    exceptions = domain.load_coverage_exceptions(args.coverage_exceptions)
+    points, classes, mem_classes, panel, pruned, coverage = domain.build_points(
+        result, args.tier, exceptions)
+    coverage_gate(coverage, args.allow_coverage_gaps)
+    doc = emit.points_document(
+        result, source, args.tier, points, classes, mem_classes, panel, pruned,
+        coverage=coverage, oracle=oracle.oracle_doc("none"),
+        config_descriptor=target.config_descriptor(args.config))
     emit.write_json(args.out, doc)
     print(json.dumps({"out": args.out, "tier": args.tier,
                       "points": len(points), "pruned": doc["pruned"],
-                      "origins": doc["origin_counts"]}, sort_keys=True))
+                      "origins": doc["origin_counts"],
+                      "rules_verified": coverage["rules"]["verified"],
+                      "rules_unprobed": len(coverage["rules"]["unprobed"])},
+                     sort_keys=True))
 
 
 def cmd_verify(args):
@@ -111,31 +154,183 @@ def cmd_verify(args):
         raise SystemExit(3)
 
 
+def _cross_revision_delta(args, result, oracle_revision, source):
+    text = read_revision(args.repo, oracle_revision, args.source_path)
+    if text is None:
+        raise SystemExit(
+            f"cannot read the oracle source {oracle_revision} from {args.repo}")
+    info = _source_info(text, oracle_revision, args.source_path)
+    oracle_result = parse.parse_source(
+        text, info, args.config, target.CONFIGS[args.config])
+    delta = oracle.rule_delta(result, oracle_result)
+    return delta
+
+
+def _canonical_llt(name, pointer_bits):
+    """Match the C++ witnessLLTName spelling: pointers carry their width."""
+    if name.startswith("p"):
+        return f"{name}:{pointer_bits}"
+    if name.startswith("v") and name.find("p") > 0:
+        return f"{name}:{pointer_bits}"
+    return name
+
+
+def _corpus_atom(point, pointer_bits=64):
+    """The corpus atom shape, shared by shapes-only and filled corpora."""
+    query = {"types": [_canonical_llt(t, pointer_bits)
+                       for t in point["types"]]}
+    if point.get("mem") is not None:
+        query["mem"] = {"type": _canonical_llt(point["mem"], pointer_bits),
+                        "align": point.get("align", 0)}
+    return {
+        "id": point["id"],
+        "origin": point["origin"],
+        "rule_set": point["rule_set"],
+        "opcode": point["opcode"],
+        "rule_index": point["rule_index"],
+        "config": None,
+        "query": query,
+    }
+
+
+def _shapes_corpus(args, source, doc, coverage, oracle_doc, points):
+    config = target.config_descriptor(args.config)
+    pointer_bits = 64 if target.CONFIGS[args.config]["is64Bit"] else 32
+    atoms = []
+    for point in points:
+        atom = _corpus_atom(point, pointer_bits)
+        atom["config"] = config["id"]
+        atoms.append(atom)
+    return {
+        "schema": CORPUS_SCHEMA,
+        "version": CORPUS_VERSION,
+        "source": source,
+        "oracle": oracle_doc,
+        "config_descriptor": config,
+        "coverage": coverage,
+        "counts": doc["counts"],
+        "points_sha256": None,
+        "atom_count": len(atoms),
+        "atoms": atoms,
+    }
+
+
 def cmd_corpus(args):
     result, source = parse_input(args)
-    points, classes, mem_classes, panel, pruned = domain.build_points(
-        result, args.tier)
+    exceptions = domain.load_coverage_exceptions(args.coverage_exceptions)
+    points, classes, mem_classes, panel, pruned, coverage = domain.build_points(
+        result, args.tier, exceptions)
+    coverage_gate(coverage, args.allow_coverage_gaps)
+
+    kind = args.oracle
+    if kind is None:
+        kind = "reference" if args.build else None
+    source_revision = source.get("revision")
+    cross = False
+    delta = None
+    oracle_doc = None
+
+    if kind is None:
+        oracle_doc = None
+    elif kind == "none":
+        oracle_doc = oracle.oracle_doc("none")
+    elif kind == "reference":
+        reference = oracle.reference_revision(args.repo)
+        if reference is None:
+            raise SystemExit(
+                "cannot find the frozen reference provenance under "
+                f"{args.repo}")
+        cross = source_revision != reference
+        if cross:
+            delta = _cross_revision_delta(args, result, reference, source)
+            if not args.allow_cross_revision:
+                missing = ", ".join(
+                    f"{x['rule_set']}#{x['rule_index']} {x['method']}"
+                    for x in delta["oracle_only"])
+                raise SystemExit(
+                    f"cross-revision corpus: source {source_revision or '<input>'} "
+                    f"!= oracle reference {reference}"
+                    + (f"; oracle-only rules: {missing}" if missing else "")
+                    + "; pass --allow-cross-revision to mark the corpus")
+        oracle_doc = oracle.oracle_doc("reference", reference, cross)
+    else:
+        raise SystemExit(f"unknown oracle {kind}")
+
     points_path = os.path.abspath(args.points_out or (args.out + ".points.json"))
-    emit.write_json(points_path, emit.points_document(
-        result, source, args.tier, points, classes, mem_classes, panel, pruned))
-    if not args.build:
-        print(f"points written to {points_path}; pass --build to fill expected",
-              file=sys.stderr)
+    doc = emit.points_document(
+        result, source, args.tier, points, classes, mem_classes, panel, pruned,
+        coverage=coverage, oracle=oracle_doc,
+        config_descriptor=target.config_descriptor(args.config))
+    emit.write_json(points_path, doc)
+
+    if kind is None:
+        print(f"points written to {points_path}; pass --build to fill expected, "
+              "or --oracle=none for a shapes-only corpus", file=sys.stderr)
         return
-    binary = os.path.join(args.build, "unittests", "Target", "X86", "X86Tests")
-    if not os.path.exists(binary):
-        raise SystemExit(f"X86Tests not found under {args.build}")
-    env = dict(os.environ)
-    env["X86_LEGALIZER_CPP_POINTS"] = points_path
-    env["X86_LEGALIZER_CPP_CORPUS_OUT"] = os.path.abspath(args.out)
-    proc = subprocess.run(
-        [binary, "--gtest_also_run_disabled_tests",
-         "--gtest_filter=*GenerateCorpusFromCppPoints*"],
-        cwd=args.build, env=env)
-    if proc.returncode != 0:
-        raise SystemExit(proc.returncode)
-    print(json.dumps({"points": points_path, "corpus": os.path.abspath(args.out)},
-                     sort_keys=True))
+
+    if kind == "none":
+        corpus = _shapes_corpus(args, source, doc, coverage, oracle_doc, points)
+        corpus["points_sha256"] = file_sha256(points_path)
+        emit.write_json(args.out, corpus)
+        print(json.dumps({
+            "points": points_path, "corpus": os.path.abspath(args.out),
+            "oracle": "none", "atoms": len(points),
+            "rules_verified": coverage["rules"]["verified"],
+        }, sort_keys=True))
+        return
+
+    if not args.build:
+        raise SystemExit("--oracle=reference requires --build")
+    oracle.run_reference_filler(args.build, points_path, args.out)
+
+    with open(args.out, "r", encoding="utf-8") as handle:
+        filled = json.load(handle)
+    if filled.get("schema") != CORPUS_SCHEMA:
+        raise SystemExit(f"{args.out} is not a {CORPUS_SCHEMA} document")
+    if filled.get("atom_count") != len(points):
+        raise SystemExit(
+            f"filler wrote {filled.get('atom_count')} atoms, expected "
+            f"{len(points)}")
+
+    report = {
+        "schema": "llvm-x86-legalizer-corpus-report",
+        "version": CORPUS_VERSION,
+        "source": source,
+        "oracle": oracle_doc,
+        "coverage": coverage,
+        "counts": doc["counts"],
+        "corpus": os.path.abspath(args.out),
+        "points_sha256": file_sha256(points_path),
+    }
+    if delta is not None:
+        report["source_oracle_delta"] = delta
+    emit.write_json(args.out + ".report.json", report)
+    print(json.dumps({
+        "points": points_path, "corpus": os.path.abspath(args.out),
+        "report": os.path.abspath(args.out + ".report.json"),
+        "oracle": "reference", "cross_revision": cross,
+        "atoms": filled["atom_count"],
+        "rules_verified": coverage["rules"]["verified"],
+    }, sort_keys=True))
+
+
+def cmd_diff(args):
+    left = corpusdiff.load(args.left)
+    right = corpusdiff.load(args.right)
+    report = corpusdiff.compare(left, right, "left", "right")
+    report["left"]["path"] = os.path.abspath(args.left)
+    report["right"]["path"] = os.path.abspath(args.right)
+    emit.write_json(args.out, report)
+    summary = {
+        "out": os.path.abspath(args.out),
+        "config_match": report["config_match"],
+        "keys": report["keys"],
+        "expected_available": report["expected_available"],
+        "expected_diff": len(report["expected_diff"]),
+    }
+    print(json.dumps(summary, sort_keys=True))
+    if args.strict and corpusdiff.has_differences(report):
+        raise SystemExit(1)
 
 
 def build_parser():
@@ -146,13 +341,21 @@ def build_parser():
 
     def common(sp):
         sp.add_argument("--input", help="read this C++ file instead of a revision")
-        sp.add_argument("--source-rev", help="e.g. ebac17721d12 or upstream/main")
+        sp.add_argument("--source-rev", default=target.DEFAULT_SOURCE_REV,
+                        help="git revision to read (default: upstream/main)")
         sp.add_argument("--source-path", default=target.DEFAULT_SOURCE_PATH)
         sp.add_argument("--repo", default=".")
         sp.add_argument("--config", default=target.DEFAULT_CONFIG,
                         choices=sorted(target.CONFIGS))
         sp.add_argument("--allow-opaque", action="store_true",
                         help="do not fail on an unknown chain method")
+
+    def coverage(sp):
+        sp.add_argument("--coverage-exceptions",
+                        help="JSON file of reviewed coverage exceptions")
+        sp.add_argument("--allow-coverage-gaps", action="store_true",
+                        help="emit points despite unregistered coverage gaps "
+                             "(inspection only)")
 
     sp = sub.add_parser("parse")
     common(sp)
@@ -161,6 +364,7 @@ def build_parser():
 
     sp = sub.add_parser("points")
     common(sp)
+    coverage(sp)
     sp.add_argument("--tier", default="witness",
                     choices=("witness", "full", "deep"))
     sp.add_argument("--out", required=True)
@@ -175,12 +379,27 @@ def build_parser():
 
     sp = sub.add_parser("corpus")
     common(sp)
+    coverage(sp)
     sp.add_argument("--tier", default="witness",
                     choices=("witness", "full", "deep"))
+    sp.add_argument("--oracle", choices=("none", "reference"),
+                    help="expected-action source (default: reference when "
+                         "--build is given, otherwise points-only)")
+    sp.add_argument("--allow-cross-revision", action="store_true",
+                    help="allow source.revision != oracle.revision; the "
+                         "corpus is marked cross_revision")
     sp.add_argument("--build", help="LLVM build dir containing X86Tests")
     sp.add_argument("--points-out")
     sp.add_argument("--out", required=True)
     sp.set_defaults(func=cmd_corpus)
+
+    sp = sub.add_parser("diff")
+    sp.add_argument("--left", required=True)
+    sp.add_argument("--right", required=True)
+    sp.add_argument("--out", required=True)
+    sp.add_argument("--strict", action="store_true",
+                    help="exit 1 when keys, expected actions, or configs differ")
+    sp.set_defaults(func=cmd_diff)
     return p
 
 

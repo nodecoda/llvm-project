@@ -8,7 +8,7 @@ import expr as E
 
 AST_SCHEMA = "llvm-x86-legalizer-cpp-ast"
 POINTS_SCHEMA = "llvm-x86-legalizer-points"
-VERSION = 1
+VERSION = 2
 
 
 def write_json(path, obj):
@@ -18,6 +18,17 @@ def write_json(path, obj):
         os.makedirs(directory, exist_ok=True)
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(data)
+
+
+def render_value(value):
+    """A JSON-friendly rendering of a parse-time evaluated argument."""
+    if E.is_llt(value):
+        return E.llt_name(value)
+    if isinstance(value, list):
+        return [render_value(v) for v in value]
+    if isinstance(value, (bool, int, str)):
+        return value
+    return None
 
 
 def ast_document(result, source):
@@ -32,6 +43,7 @@ def ast_document(result, source):
                 "guard": [{"text": text, "value": value} for text, value in r.guard],
                 "active": r.active,
                 "arg": r.arg_text[0] if r.arg_text else "",
+                "arg_values": [render_value(v) for v in r.evaluated_args],
                 "slots": sorted(b.slots),
             })
         builders.append({
@@ -64,11 +76,12 @@ def ast_document(result, source):
 
 
 def points_document(result, source, tier, points, classes, mem_classes, panel,
-                    pruned=0):
+                    pruned=0, coverage=None, oracle=None,
+                    config_descriptor=None):
     counts = {}
     for p in points:
         counts[p["origin"]] = counts.get(p["origin"], 0) + 1
-    return {
+    doc = {
         "schema": POINTS_SCHEMA,
         "version": VERSION,
         "source": source,
@@ -83,3 +96,25 @@ def points_document(result, source, tier, points, classes, mem_classes, panel,
         "pruned": {"pointer_element_size": pruned} if pruned else {},
         "points": points,
     }
+    if oracle is not None:
+        doc["oracle"] = oracle
+    if config_descriptor is not None:
+        doc["config_descriptor"] = config_descriptor
+    if coverage is not None:
+        doc["coverage"] = coverage
+    doc["counts"] = {
+        "points": len(points),
+        "origins": counts,
+        "pruned_pointer_element_size": pruned,
+    }
+    if coverage is not None:
+        doc["counts"].update({
+            "rules_source_total": coverage["rules"]["source_total"],
+            "rules_active": coverage["rules"]["active"],
+            "rules_verified": coverage["rules"]["verified"],
+            "rules_excepted": len(coverage["rules"]["excepted"]),
+            "rules_unprobed": len(coverage["rules"]["unprobed"]),
+            "opcodes_total": coverage["opcodes"]["total"],
+            "opcodes_uncovered": len(coverage["opcodes"]["uncovered"]),
+        })
+    return doc

@@ -65,3 +65,28 @@ def parse_text(text, config="C2"):
     source = {"rev": None, "path": "<test>", "sha256": "test",
               "lines": text.count("\n") + 1}
     return parse.parse_source(text, source, config, CONFIGS[config])
+
+def source_at(revision):
+    """Return (source_text, source_info) for *revision*, or None if absent.
+
+    The revision is read with ``git show`` so the test never needs a checkout
+    of the upstream branch.  A shallow clone without the ref skips instead of
+    failing.
+    """
+    root = repo_root()
+    if root is None or revision is None:
+        return None
+    source_path = "llvm/lib/Target/X86/GISel/X86LegalizerInfo.cpp"
+    proc = subprocess.run(
+        ["git", "-C", root, "show", f"{revision}:{source_path}"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if proc.returncode != 0:
+        return None
+    text = proc.stdout
+    return text, {
+        "rev": revision,
+        "revision": revision,
+        "path": source_path,
+        "sha256": "test",
+        "lines": text.count("\n") + 1,
+    }

@@ -95,4 +95,52 @@ SKIP_WITNESS_SLOT1_AS = {
 }
 
 DEFAULT_CONFIG = "C2"
+DEFAULT_SOURCE_REV = "upstream/main"
 DEFAULT_SOURCE_PATH = "llvm/lib/Target/X86/GISel/X86LegalizerInfo.cpp"
+
+# The C++ constructor spells the Subtarget predicates with local aliases.  A
+# lambda body is scanned as tokens, so it needs the same aliases the parser's
+# environment had.
+def feature_env(features):
+    env = dict(features)
+    env["__features__"] = features
+    env["Is64Bit"] = features["is64Bit"]
+    env["HasCMOV"] = features["canUseCMOV"]
+    env["HasSSE1"] = features["hasSSE1"]
+    env["HasSSE2"] = features["hasSSE2"]
+    env["HasSSE41"] = features["hasSSE41"]
+    env["HasAVX"] = features["hasAVX"]
+    env["HasAVX2"] = features["hasAVX2"]
+    env["HasAVX512"] = features["hasAVX512"]
+    env["HasVLX"] = features["hasVLX"]
+    env["HasDQI"] = features["hasAVX512"] and features["hasDQI"]
+    env["HasBWI"] = features["hasAVX512"] and features["hasBWI"]
+    env["UseX87"] = (not features["useSoftFloat"]) and features["hasX87"]
+    env["HasPOPCNT"] = features["hasPOPCNT"]
+    env["HasLZCNT"] = features["hasLZCNT"]
+    env["HasBMI"] = features["hasBMI"]
+    env["HasVPOPCNTDQ"] = features["hasVPOPCNTDQ"]
+    return env
+
+
+# The four full-corpus configurations, matching FullConfigs in
+# X86LegalizerInfoDifferentialTest.cpp.  The C++ filler validates this map
+# against the constructed subtarget; a mismatch is a hard error.
+CONFIG_INFO = {
+    "C0": {"triple": "i386", "fset": "-x87"},
+    "C1": {"triple": "x86_64", "fset": ""},
+    "C2": {"triple": "x86_64",
+           "fset": "+sse,+sse2,+sse4.1,+avx,+avx2,+avx512f,+avx512dq,"
+                   "+avx512bw,+avx512vl,+popcnt,+avx512vpopcntdq,+lzcnt,"
+                   "+bmi,+cmov"},
+    "C3": {"triple": "i386", "fset": "+x87,+popcnt,+lzcnt,+bmi,+cmov"},
+}
+
+
+def config_descriptor(config):
+    return {
+        "id": config,
+        "triple": CONFIG_INFO[config]["triple"],
+        "fset": CONFIG_INFO[config]["fset"],
+        "features": CONFIGS[config],
+    }
