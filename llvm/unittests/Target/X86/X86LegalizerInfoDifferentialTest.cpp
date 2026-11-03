@@ -693,8 +693,30 @@ static std::optional<std::string> readTestSourceFile(StringRef Name) {
   return (*Buffer)->getBuffer().str();
 }
 
+static std::optional<std::string> readFile(StringRef Path) {
+  auto Buffer = MemoryBuffer::getFile(Path);
+  if (!Buffer)
+    return std::nullopt;
+  return (*Buffer)->getBuffer().str();
+}
+
 static std::string sha256Hex(StringRef Data) {
   return toHex(SHA256::hash(arrayRefFromStringRef(Data)), /*LowerCase=*/true);
+}
+
+// The 63 table descriptors only name the opcodes the .td test tables cover;
+// a C++-derived corpus also queries the other opcodes a builder mentions.
+// Build the full mapping from the same .def the enum comes from.
+static std::optional<unsigned> opcodeForAnyName(StringRef Name) {
+  return StringSwitch<std::optional<unsigned>>(Name)
+#undef HANDLE_TARGET_OPCODE
+#undef HANDLE_TARGET_OPCODE_MARKER
+#define HANDLE_TARGET_OPCODE(OPC) .Case(#OPC, OPC)
+#define HANDLE_TARGET_OPCODE_MARKER(IDENT, OPC)
+#include "llvm/Support/TargetOpcodes.def"
+      .Default(std::nullopt);
+#undef HANDLE_TARGET_OPCODE
+#undef HANDLE_TARGET_OPCODE_MARKER
 }
 
 static const Config *findConfig(StringRef ID) {
@@ -3650,6 +3672,136 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
                << " witness atoms (descriptor=" << DescriptorCount
                << " exceptions=" << DescriptorExceptions
                << " collisions=" << Collisions << ") to " << OutPath << "\n";
+}
+
+// Not a test.  Fill the query points produced by
+// llvm/utils/x86-legalizer-corpus with answers from the frozen reference.
+//
+//   X86_LEGALIZER_CPP_POINTS=<points.json> \
+//   X86_LEGALIZER_CPP_CORPUS_OUT=<corpus.json> \
+//   X86Tests --gtest_also_run_disabled_tests \
+//     --gtest_filter='*GenerateCorpusFromCppPoints*'
+//
+// The points file is the only input: it names the opcode, the type tuple and
+// the optional memory descriptor.  Nothing here reads the .td or its generated
+// .inc; the answer comes from X86LegalizerInfoReference, which is the frozen
+// oracle.  Points are consumed in file order, which the Python generator
+// sorts, so the output is deterministic.
+TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateCorpusFromCppPoints) {
+  const char *PointsPath = std::getenv("X86_LEGALIZER_CPP_POINTS");
+  const char *OutPath = std::getenv("X86_LEGALIZER_CPP_CORPUS_OUT");
+  if (!PointsPath || !OutPath)
+    GTEST_SKIP()
+        << "set X86_LEGALIZER_CPP_POINTS and X86_LEGALIZER_CPP_CORPUS_OUT";
+
+  std::optional<std::string> Text = readFile(PointsPath);
+  ASSERT_TRUE(Text.has_value()) << "cannot read " << PointsPath;
+  Expected<json::Value> Parsed = json::parse(*Text);
+  ASSERT_TRUE(static_cast<bool>(Parsed))
+      << toString(Parsed.takeError());
+  const json::Object *Root = Parsed->getAsObject();
+  ASSERT_NE(Root, nullptr);
+
+  std::optional<StringRef> ConfigOpt = Root->getString("config");
+  ASSERT_TRUE(ConfigOpt.has_value());
+  const Config *C = findConfig(*ConfigOpt);
+  ASSERT_NE(C, nullptr) << "unknown config " << *ConfigOpt;
+  Sigma S = makeSigma(*C);
+  ASSERT_TRUE(S.STI);
+  X86LegalizerInfoReference Oracle(
+      *S.STI, *static_cast<const X86TargetMachine *>(S.TM.get()));
+  const unsigned PointerBits = C->Is64 ? 64 : 32;
+
+  const json::Array *Points = Root->getArray("points");
+  ASSERT_NE(Points, nullptr);
+
+  StringRef SourceSha;
+  if (const json::Object *Source = Root->getObject("source"))
+    if (std::optional<StringRef> Sha = Source->getString("sha256"))
+      SourceSha = *Sha;
+
+  std::string Out;
+  raw_string_ostream OS(Out);
+  OS << "{\n  \"schema\": \"llvm-x86-legalizer-cpp-corpus\",\n";
+  OS << "  \"version\": 1,\n";
+  OS << "  \"source_sha256\": \"" << SourceSha << "\",\n";
+  OS << "  \"config\": \"" << C->ID << "\",\n";
+  OS << "  \"points_sha256\": \"" << sha256Hex(*Text) << "\",\n";
+  OS << "  \"atom_count\": " << Points->size() << ",\n";
+  OS << "  \"atoms\": [\n";
+
+  unsigned Emitted = 0;
+  for (const json::Value &V : *Points) {
+    const json::Object *P = V.getAsObject();
+    ASSERT_NE(P, nullptr);
+    std::optional<StringRef> IdOpt = P->getString("id");
+    std::optional<StringRef> OriginOpt = P->getString("origin");
+    std::optional<StringRef> RuleSetOpt = P->getString("rule_set");
+    std::optional<StringRef> OpcodeOpt = P->getString("opcode");
+    ASSERT_TRUE(IdOpt && OriginOpt && RuleSetOpt && OpcodeOpt);
+    StringRef Id = *IdOpt, Origin = *OriginOpt, RuleSet = *RuleSetOpt,
+              Opcode = *OpcodeOpt;
+    std::optional<unsigned> Op = opcodeForAnyName(Opcode);
+    ASSERT_TRUE(Op.has_value()) << "unknown opcode " << Opcode;
+
+    const json::Array *Types = P->getArray("types");
+    ASSERT_NE(Types, nullptr);
+    SmallVector<LLT, 3> TypeVec;
+    for (const json::Value &T : *Types) {
+      std::optional<StringRef> Name = T.getAsString();
+      ASSERT_TRUE(Name.has_value());
+      std::optional<LLT> Ty = parseJSONLLT(*Name, PointerBits);
+      ASSERT_TRUE(Ty.has_value()) << *Name;
+      TypeVec.push_back(*Ty);
+    }
+
+    SmallVector<LegalityQuery::MemDesc, 1> MemDescs;
+    uint64_t Align = 0;
+    if (const json::Value *MemValue = P->get("mem")) {
+      if (!MemValue->getAsNull()) {
+        std::optional<StringRef> Name = MemValue->getAsString();
+        ASSERT_TRUE(Name.has_value());
+        std::optional<LLT> MemTy = parseJSONLLT(*Name, PointerBits);
+        ASSERT_TRUE(MemTy.has_value()) << *Name;
+        std::optional<int64_t> A = P->getInteger("align");
+        ASSERT_TRUE(A.has_value());
+        Align = static_cast<uint64_t>(*A);
+        MemDescs.emplace_back(*MemTy, Align, AtomicOrdering::NotAtomic,
+                              AtomicOrdering::NotAtomic);
+      }
+    }
+
+    LegalityQuery Q(*Op, TypeVec, MemDescs);
+    const LegalizeActionStep Step = Oracle.getAction(Q);
+
+    std::optional<int64_t> RuleIndex = P->getInteger("rule_index");
+    OS << "    {\"id\":\"" << Id << "\",\"origin\":\"" << Origin
+       << "\",\"rule_set\":\"" << RuleSet << "\",\"opcode\":\"" << Opcode
+       << "\",\"rule_index\":";
+    if (RuleIndex)
+      OS << *RuleIndex;
+    else
+      OS << "null";
+    OS << ",\"config\":\"" << C->ID << "\",\"query\":{\"types\":[";
+    for (unsigned I = 0; I != TypeVec.size(); ++I)
+      OS << (I ? "," : "") << "\"" << witnessLLTName(TypeVec[I]) << "\"";
+    OS << "]";
+    if (!MemDescs.empty())
+      OS << ",\"mem\":{\"type\":\"" << witnessLLTName(MemDescs[0].MemoryTy)
+         << "\",\"align\":" << MemDescs[0].AlignInBits << "}";
+    OS << "},\"expected\":";
+    renderStepJson(OS, Step);
+    OS << "}" << (++Emitted == Points->size() ? "\n" : ",\n");
+  }
+  OS << "  ]\n}\n";
+  OS.flush();
+
+  std::error_code EC;
+  raw_fd_ostream File(OutPath, EC);
+  ASSERT_FALSE(EC) << OutPath << ": " << EC.message();
+  File << Out;
+  File.close();
+  llvm::outs() << "wrote " << Emitted << " atoms to " << OutPath << "\n";
 }
 
 // T1: every committed atom must get the reference's decision from the table.
