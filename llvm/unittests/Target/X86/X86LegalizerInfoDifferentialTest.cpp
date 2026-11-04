@@ -4850,6 +4850,36 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_BenchmarkChainVersusTable) {
     }
   }
 
+  // How far the chain walks before it answers.  The rule-index evaluator is
+  // the same rule order as the chain, so a match's index is one less than the
+  // number of guards evaluated.  The table answers in one cell lookup, so this
+  // is the length the table replaces.
+  double TraceWalk = 0.0;
+  unsigned TraceNoRule = 0, TraceMaxWalk = 0, TraceWalked = 0;
+  unsigned WalkHist[8] = {};
+  if (!Trace.empty()) {
+    RuleIndexMutationsOff Guard(X86EvalRuleIndexMutations);
+    for (const BenchQuery &BQ : Trace) {
+      const int T = x86RuleIndexTableForOpcode(BQ.Opcode);
+      if (T < 0)
+        continue;
+      LegalityQuery Q(BQ.Opcode, BQ.Types, BQ.Mem);
+      const std::optional<RuleHit> Hit = queryRuleIndex(T, *S.STI, Q);
+      if (!Hit) {
+        ++TraceNoRule;
+        TraceWalk += X86RuleIndexNumRules[T];
+        ++WalkHist[7];
+        TraceMaxWalk = std::max(TraceMaxWalk, X86RuleIndexNumRules[T]);
+      } else {
+        const unsigned Walked = Hit->RuleIndex + 1;
+        TraceWalk += Walked;
+        ++WalkHist[std::min(Walked, 7u) - 1];
+        TraceMaxWalk = std::max(TraceMaxWalk, Walked);
+      }
+      ++TraceWalked;
+    }
+  }
+
   // Where the per-query cost goes.  One query, one cell, repeated: no fill,
   // no cache miss, no query mix.  The differences between rows are the work
   // a shape makes the reader do.
@@ -4983,6 +5013,15 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_BenchmarkChainVersusTable) {
   llvm::outs() << "  residual (" << ResidualQueries.size() << "): "
                << format("%.1f", PerQuery(ResidualNs, ResidualQueries.size()))
                << " ns/query\n";
+  if (TraceWalked)
+    llvm::outs() << "  trace rule walk  : "
+                 << format("%.2f", TraceWalk / TraceWalked)
+                 << " rules/query (max " << TraceMaxWalk << ", no match "
+                 << TraceNoRule << ", walk 1..4+ "
+                 << format("%u/%u/%u/%u", WalkHist[0], WalkHist[1],
+                           WalkHist[2], WalkHist[3] + WalkHist[4] + WalkHist[5] +
+                                            WalkHist[6] + WalkHist[7])
+                 << ")\n";
   if (!Trace.empty())
     llvm::outs() << "  trace warm       : " << format("%.1f", TraceWarmNs)
                  << " ns/query (chain " << format("%.1f", TraceChainNs)
