@@ -227,7 +227,7 @@ def _write_json(path, obj):
 
 
 def _result(atom, index, outcome, steps=0, detail_code="", detail="",
-            stderr_tail_text="", reason=None):
+            stderr_tail_text="", reason=None, failed_on_opcode=None):
     try:
         steps = int(steps)
     except (TypeError, ValueError):
@@ -244,6 +244,8 @@ def _result(atom, index, outcome, steps=0, detail_code="", detail="",
     }
     if reason is not None:
         result["reason"] = reason
+    if failed_on_opcode is not None:
+        result["failed_on_opcode"] = failed_on_opcode
     return result
 
 
@@ -296,7 +298,8 @@ def _outcome_result(atom, index, event, stderr_text):
         reason = event.get("reason") or "driver"
     return _result(atom, index, outcome, steps=event.get("steps", 0),
                    detail_code=detail_code, detail=detail,
-                   stderr_tail_text=tail, reason=reason)
+                   stderr_tail_text=tail, reason=reason,
+                   failed_on_opcode=event.get("failed_on_opcode"))
 
 
 # ---------------------------------------------------------------------------

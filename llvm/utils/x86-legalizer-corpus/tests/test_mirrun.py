@@ -103,7 +103,7 @@ def main():
         os.fsync(out.fileno())
 
         if action == "normal":
-            emit({
+            event = {
                 "event": "outcome",
                 "id": atom_id,
                 "index": pos,
@@ -112,7 +112,10 @@ def main():
                 "steps": plan.get("steps", 1),
                 "detail_code": plan.get("detail_code", ""),
                 "detail": plan.get("detail", ""),
-            })
+            }
+            if "failed_on_opcode" in plan:
+                event["failed_on_opcode"] = plan["failed_on_opcode"]
+            emit(event)
         elif action == "slow_construct":
             time.sleep(30)
         elif action == "slow_legalize":
@@ -525,6 +528,19 @@ class MirRunTest(unittest.TestCase):
                          "libcall")
         self.assertEqual(report["counts"]["legalized"], 1)
         self.assertEqual(report["counts"]["failed"], 1)
+
+    def test_failed_on_opcode_is_preserved(self):
+        corpus = make_corpus(1)
+        report, proc = self.run_ok(
+            corpus,
+            scenario={"atoms": {
+                "atom/0": {"action": "normal", "outcome": "failed",
+                           "detail_code": "unable_to_legalize",
+                           "failed_on_opcode": "G_IMPLICIT_DEF"},
+            }})
+        atom = self.report_atom(report, "atom/0")
+        self.assertEqual(atom["outcome"], "failed")
+        self.assertEqual(atom["failed_on_opcode"], "G_IMPLICIT_DEF")
 
     def test_budget_marker_marks_budget_and_parses_steps(self):
         corpus = make_corpus(3)

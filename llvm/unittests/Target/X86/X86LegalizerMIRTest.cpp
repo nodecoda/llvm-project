@@ -241,6 +241,10 @@ struct Outcome {
   unsigned long Steps;
   const char *DetailCode;
   std::string Detail;
+  /// For ``failed``: the opcode of the instruction the legalizer actually
+  /// failed on.  The atom's own opcode is not enough, because auxiliary
+  /// producers (e.g. injected G_IMPLICIT_DEFs) can fail first.
+  std::string FailedOnOpcode;
 };
 
 void emitOutcome(raw_fd_ostream &OS, const Atom &A, unsigned Index,
@@ -249,7 +253,10 @@ void emitOutcome(raw_fd_ostream &OS, const Atom &A, unsigned Index,
      << "\",\"index\":" << Index << ",\"opcode\":\"" << jsonEscape(A.OpcodeName)
      << "\",\"outcome\":\"" << O.Kind << "\",\"steps\":" << O.Steps
      << ",\"detail_code\":\"" << jsonEscape(O.DetailCode) << "\",\"detail\":\""
-     << jsonEscape(O.Detail) << "\"}\n";
+     << jsonEscape(O.Detail) << "\"";
+  if (!O.FailedOnOpcode.empty())
+    OS << ",\"failed_on_opcode\":\"" << jsonEscape(O.FailedOnOpcode) << "\"";
+  OS << "}\n";
   OS.flush();
 }
 
@@ -865,7 +872,10 @@ TEST_F(X86LegalizerMIRTest, DISABLED_RunCorpusThroughLegalizer) {
                  "disabled";
       }
     }
-    emit(A, Index, Outcome{"failed", Budget.getSteps(), DetailCode, Detail});
+    Outcome FailedOn{"failed", Budget.getSteps(), DetailCode, Detail};
+    FailedOn.FailedOnOpcode =
+        MF.getSubtarget().getInstrInfo()->getName(Result.FailedOn->getOpcode());
+    emit(A, Index, FailedOn);
   }
 
   OS << "{\"event\":\"summary\",\"schema\":"
