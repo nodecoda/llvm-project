@@ -4596,6 +4596,11 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_BenchmarkChainVersusTable) {
 
   GeneratedLegalizerInfoForTest Chain(*S.STI);
   TableOnlyLegalizer Warm(*S.STI);
+  // The chain production ran before the table: the frozen hand-written rules,
+  // not the generator's transcription of them.  Timed by the same loop, so the
+  // comparison is against what the compiler actually shipped.
+  X86LegalizerInfoReference Ref(
+      *S.STI, *static_cast<const X86TargetMachine *>(S.TM.get()));
 
   // What building the rule sets costs, per subtarget.  A LegalizerInfo is
   // built once per distinct X86Subtarget (X86Subtarget.h caches it), so this
@@ -4822,12 +4827,13 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_BenchmarkChainVersusTable) {
     for (const BenchQuery &BQ : List)
       AskOne(LI, BQ);
   };
-  double TraceWarmNs = 0.0, TraceChainNs = 0.0;
+  double TraceWarmNs = 0.0, TraceChainNs = 0.0, TraceRefNs = 0.0;
   unsigned TraceHit = 0, TraceResidual = 0, TraceOther = 0;
   if (!Trace.empty()) {
     SweepOf(Warm, Trace); // pay the fill before timing
     TraceWarmNs = BestOf([&] { SweepOf(Warm, Trace); }) / Trace.size();
     TraceChainNs = BestOf([&] { SweepOf(Chain, Trace); }) / Trace.size();
+    TraceRefNs = BestOf([&] { SweepOf(Ref, Trace); }) / Trace.size();
     for (const BenchQuery &BQ : Trace) {
       LegalityQuery Q(BQ.Opcode, BQ.Types, BQ.Mem);
       switch (Warm.table().query(Q).Kind) {
@@ -4980,9 +4986,10 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_BenchmarkChainVersusTable) {
   if (!Trace.empty())
     llvm::outs() << "  trace warm       : " << format("%.1f", TraceWarmNs)
                  << " ns/query (chain " << format("%.1f", TraceChainNs)
-                 << ", " << format("%.2f", TraceChainNs / TraceWarmNs)
-                 << "x), hit " << TraceHit << " residual " << TraceResidual
-                 << " other " << TraceOther << "\n";
+                 << ", reference " << format("%.1f", TraceRefNs) << ", "
+                 << format("%.2f", TraceRefNs / TraceWarmNs)
+                 << "x vs reference), hit " << TraceHit << " residual "
+                 << TraceResidual << " other " << TraceOther << "\n";
   for (const auto &Shape : ShapeCosts)
     llvm::outs() << "  shape " << format("%-22s", Shape.first) << ": "
                  << format("%.1f", Shape.second) << " ns/query\n";
