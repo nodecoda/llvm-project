@@ -138,13 +138,60 @@ defm X : MC, C;
 ```
 
 ```
-#4 TGParser::AddParentClass(RecordsEntry&, ClassReference&)  TGParser.cpp:385-401
+#4 TGParser::AddParentClass(RecordsEntry&, ClassReference&)  TGParser.cpp:393
 #5 TGParser::ParseDefm()                                     TGParser.cpp:4647
 ```
 
 `AddParentClass(RecordsEntry&)` 只处理 `Rec` 与 `Assertion`，其余类型直接
 `Entry.Loop->Entries`；`Dump` 条目的 `Loop` 为空。完整输出：
 `out/crash-dump-multiclass.txt`。
+
+---
+
+## 2.1 崩溃专项：两个上游 bug 的确认（`crashes/`）
+
+复跑：
+
+```bash
+notes/tablegen/experiments/crashes/run.sh
+# 或 TBLGEN=/path/to/llvm-tblgen .../crashes/run.sh
+```
+
+| 文件 | rc | 结论 |
+| --- | ---: | --- |
+| `head_empty_field.td` | 134 | `!head(字段)`，字段最终为 `[]` → assert `Record.cpp:875` |
+| `head_empty_deferred.td` | 134 | `!head(!filter(...))` 在 final resolve 变空 → 同一 assert |
+| `tail_empty_deferred.td` | 134 | `!tail` 同理 → assert `Record.cpp:882` |
+| `dump_multiclass_defm_class.td` | 139 | `defm X : MC, C;` → SIGSEGV `TGParser.cpp:393` |
+| `dump_multiclass_defm_class_anon.td` | 139 | 匿名 `defm : MC, C;` 同样崩溃 |
+| `dump_multiclass_defm_class_only_dump.td` | 139 | dump 是唯一 body 条目也崩溃 |
+| `dump_multiclass_foreach.td` | 139 | dump 在 multiclass 内 foreach 里也崩溃 |
+| `dump_multiclass_noclass_ok.td` | 0 | 对照：`defm X : MC;` 正常打印 `note: hi` |
+| `assert_multiclass_defm_class_ok.td` | 0 | 对照：`assert` 条目被显式跳过 |
+| `defvar_multiclass_defm_class_ok.td` | 0 | 对照：`defvar` 不进入 `NewEntries` |
+
+**Bug 1（`!head`/`!tail`）**：解析期只拒绝具体空字面量（`TGParser.cpp:1380-1383`）；
+延迟变空的操作数走到 `UnOpInit::Fold`，只剩 `assert`（`Record.cpp:875/882`）。
+assertions 构建 SIGABRT，release 构建越界 UB。最小复现：
+
+```tablegen
+class C<int N> { int h = !head(!filter(x, [1, 2], !gt(x, N))); }
+def D : C<5>;
+```
+
+**Bug 2（multiclass `dump` + `defm ..., Class`）**：`dump` 是 multiclass body 合法
+语句（白名单 `TGParser.cpp:4530-4537`）；`ParseDefm` 对每个 `RecordsEntry` 调用
+`AddParentClass(RecordsEntry&)`（`TGParser.cpp:4640-4655`），后者只处理 `Rec` 与
+`Assertion`，对 `Dump` 解引用空 `Loop`（`TGParser.cpp:393`）。最小复现：
+
+```tablegen
+class C;
+multiclass MC { dump "hi"; def D; }
+defm X : MC, C;
+```
+
+两个问题都不在现有 479 个 `llvm/test/TableGen` 测试覆盖内（全量仍 479/479 通过）。
+完整分析、历史提交与修复建议见 `crashes/README.md`。
 
 ---
 

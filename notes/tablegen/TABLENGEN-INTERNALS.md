@@ -528,8 +528,14 @@ parser 的中间状态（scope/LetStack/多阶段 resolve）才需要临时 `LLV
 
 1. 【实测】同一 body 内重复字段**静默覆盖**，不报错：`int x = 1; int x = 2;` → x=2
    （`errors/07`；`AddValue:213` 对已存在字段只 `setValue`）。
-2. 【实测】`!head(空 list)` 在 assertions 构建直接 assert 崩溃（`errors/08`，SIGABRT）。
-   生产构建行为未定义；不要在 `.td` 里依赖空 list。
+2. 【实测】`!head/!tail(空 list)` 在 assertions 构建直接 SIGABRT（`errors/08`、
+   `experiments/crashes/head_empty*.td`）。**关键在"延迟变空"**：解析期只拦截具体空字面量
+   （`TGParser.cpp:1380-1383`），字段、模板参数、`!filter/!foreach/!listremove` 的结果
+   在 final resolve 才变空，此时 `UnOpInit::Fold` 只有 `assert`（`Record.cpp:875` head /
+   `:882` tail）。release/NDEBUG 下 assert 被编译掉，随后 `getElement(0)`/`slice(1)`
+   对空容器越界 = UB。修复：把 assert 换成 `PrintFatalError(CurRec->getLoc(), ...)`
+   （`LOG2` 已有先例，`Record.cpp:930` 附近）+ lit 回归测试。详见
+   `experiments/crashes/README.md`。
 3. 【实测】`!initialized(字段)` 在字段为 `?` 时无法 resolve；字面量 `?` 才行（§5.3）。
 4. 【实测】`!getdagopname` 返回 dag 根的 `$name`，不是算子名；未命名时是 unset。
    取算子名用 `!cast<string>(!getdagop(d))`（`getsetdagop.td` + 本分支探针）。
@@ -555,9 +561,17 @@ parser 的中间状态（scope/LetStack/多阶段 resolve）才需要临时 `LLV
     （`TGParser.cpp:3619-3627`，`checkConcrete:89-115`）。`field` 是给"故意保留未解析值"
     的 CodeEmitterGen 类场景留的逃生口。
 20. 【实测/源码】`multiclass` 里放 `dump`，再用 `defm X : MC, SomeClass;` 会
-    **段错误**：`AddParentClass(RecordsEntry&)`（`TGParser.cpp:385-401`）对
-    Dump 条目无条件解引用 `Entry.Loop`。最小复现与 backtrace 见
-    `out/crash-dump-multiclass.txt`。这是上游 bug，不是用法问题。
+    **SIGSEGV**：`AddParentClass(RecordsEntry&)`（`TGParser.cpp:385-401`，崩溃行 393）
+    只处理 `Rec` 与 `Assertion`，其余条目无条件解引用 `Entry.Loop`；`Dump` 的 `Loop`
+    为空。精确触发矩阵（`experiments/crashes/`）：
+    * 必崩：`defm X : MC, C;`、匿名 `defm : MC, C;`、dump 为唯一 body 条目、
+      dump 位于 multiclass 内 `foreach`；rc=139。
+    * 不崩：`defm X : MC;`（不走 class-parent 分支）、`assert` 条目（被显式跳过，
+      `TGParser.cpp:390-391`）、`defvar`（不进 `NewEntries`）；rc=0。
+    历史：递归来自 2018-06-21 `7d69e0f37d282`；`Assertion` 特判来自 2021-04-30
+    `985ab6e1fa575`；`Dump` 从未加入。修复：`if (Entry.Assertion || Entry.Dump) return
+    false;`（dump 消息在 `resolve()` 阶段已打印）+ `llvm/test/TableGen/` 回归测试。
+    最小复现、backtrace 与对照见 `experiments/crashes/README.md`。这是上游 bug。
 21. 【源码】`DetailedRecordsBackend` 用 `getGlobals()`（只含 ExtraGlobals），
     所以 `defvar` 可见、`def` 不可见；想看全部请用 `-print-records`。
 22. 【源码】`getAllDerivedDefinitions` 只索引 defs，不返回 class；结果引用内部可变

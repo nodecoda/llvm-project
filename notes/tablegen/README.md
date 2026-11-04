@@ -11,13 +11,14 @@
 
 | 文件 | 内容 |
 | --- | --- |
-| `TABLENGEN-INTERNALS.md` | 主文档：架构、源码地图、类型/求值模型、后端、性能、20 条专家级 gotcha |
+| `TABLENGEN-INTERNALS.md` | 主文档：架构、源码地图、类型/求值模型、后端、性能、24 条专家级 gotcha |
 | `EXPERIMENTS.md` | 实验索引：每个 `.td` 证明了什么，附实测输出 |
 | `experiments/01_core.td` | class/def/defm/multiclass/foreach/defset/匿名记录/名字改写 |
 | `experiments/02_types.td` | Init/RecTy 类型系统与转换边界 |
 | `experiments/03_ops.td` | 62 个 `!` 运算符的实测语义 |
 | `experiments/04_preproc.td` | `#ifdef/#define/-D/-E/include` 与 depfile |
 | `experiments/errors/*.td` | 24 个负例：一份"错误信息 → 源码位置"对照表 |
+| `experiments/crashes/` | 两个上游崩溃的最小复现、对照实验与修复建议（`!head`/`!tail` 空 list；multiclass `dump` + `defm ... , Class`） |
 | `experiments/run.sh` | 一键复现全部输出到 `out/` |
 | `out/` | 实测输出（`-print-records`、错误矩阵、耗时、study report） |
 
@@ -27,6 +28,7 @@
 source /home/ubuntu/llvm/toolset/env.sh
 llvm-use pr-lane                       # 或直接使用 $LLVM_HOME/builds/pr-lane/bin
 notes/tablegen/experiments/run.sh       # 重新生成 out/
+notes/tablegen/experiments/crashes/run.sh  # 复现两个上游崩溃（134/139）
 sed -n '1,120p' notes/tablegen/TABLENGEN-INTERNALS.md
 ```
 
