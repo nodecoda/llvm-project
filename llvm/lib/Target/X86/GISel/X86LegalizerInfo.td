@@ -851,14 +851,26 @@ def X86_FPTOUI : LegalizeRuleSet<["G_FPTOUI"]> {
 }
 
 def X86_BUILD_VECTOR : LegalizeRuleSet<["G_BUILD_VECTOR"]> {
-  let Comments = ["vector ops"];
+  let Comments = [
+    "vector ops",
+    "G_BUILD_VECTOR cannot be legalized by adding elements: the added",
+    "elements are undef, and narrowing the widened vector back to the",
+    "original type recreates the instruction being legalized, so the",
+    "legalizer would re-enqueue the same query forever.  Only clamp the",
+    "maximum number of elements; a narrow build vector is reported as",
+    "unsupported (and falls back to SelectionDAG) instead of looping.",
+    "Lowering non-constant narrow build vectors is tracked by #143099.",
+  ];
   let Rules = [
     LegalizeQueryGuardedCall<BuilderCustomIf, BuildVectorCustom, []>,
-    ClampNumElements<0, X86_v16s8, X86_s8MaxVector>,
-    ClampNumElements<0, X86_v8s16, X86_s16MaxVector>,
-    ClampNumElements<0, X86_v4s32, X86_s32MaxVector>,
-    ClampNumElements<0, X86_v2s64, X86_s64MaxVector>,
-    MoreElementsToNextPow2<0>,
+    ClampMaxNumElementsSel<0, X86_s8,
+        LegalizeSelectLanes<[HasAVX512, HasAVX], [64, 32], 16>>,
+    ClampMaxNumElementsSel<0, X86_s16,
+        LegalizeSelectLanes<[HasAVX512, HasAVX], [32, 16], 8>>,
+    ClampMaxNumElementsSel<0, X86_s32,
+        LegalizeSelectLanes<[HasAVX512, HasAVX], [16, 8], 4>>,
+    ClampMaxNumElementsSel<0, X86_s64,
+        LegalizeSelectLanes<[HasAVX512, HasAVX], [8, 4], 2>>,
   ];
 }
 
