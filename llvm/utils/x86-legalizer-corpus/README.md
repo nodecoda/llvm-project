@@ -152,6 +152,183 @@ python3 llvm/utils/x86-legalizer-corpus trace-diff \
 first divergent step for each difference.  `answer_kind` is provenance: it is
 summarised, never counted as a difference.
 
+## End-to-end MIR
+
+The corpus, differential, and trace drivers decide what a *query* becomes.
+This runner decides whether the real legalizer *stops*: each atom becomes a
+minimal `MachineFunction`, is verifier-gated, then runs
+`legalizeMachineFunction` with a step-budget observer.  Every atom gets a
+fresh `Module`, `Function`, `MachineModuleInfo`, and `MachineFunction` (never
+reuse a cached MF), one MBB with one target instruction, `G_IMPLICIT_DEF`
+sources, and a `COPY` liveness anchor when the defs would be trivially dead.
+`MF.verify()` must pass; a verifier failure is `construction_mismatch` and
+the legalizer is not run.  `StepBudgetObserver` counts
+`createdInstr + changingInstr + erasingInstr` and calls `report_fatal_error`
+above `--max-steps` (default 10000), naming the atom on stderr; the
+supervisor adds an external timeout for loops that never touch an MI.
+Termination is the only judgement.  Synthetic operands have no semantics.
+
+The three earlier layers miss artifact-level livelocks.  A `v2s32`
+`G_BUILD_VECTOR` atom says `MoreElements`; differential and trace agree, and
+the trace advances to `v4s32`.  The real helper appends undef lanes
+(`moreElementsVector()`), then `buildDeleteTrailingVectorElements()` deletes
+them and rebuilds a `v2s32` `G_BUILD_VECTOR`, so the next query is the same
+`v2s32`, forever.  The loop lives in `query -> helper -> artifact`, below the
+simulated state machine.
+
+Build and run the disabled driver through `mir-run`:
+
+```bash
+ninja -C build X86Tests
+
+python3 llvm/utils/x86-legalizer-corpus/__main__.py mir-run \
+    --corpus up-C2.json \
+    --build build \
+    --rules production --shard-size 2000 --timeout 120 --max-steps 10000 \
+    --jobs 4 --out mir-C2.json
+```
+
+`mir-run` resolves `build/bin/X86Tests` or
+`build/unittests/Target/X86/X86Tests`, runs
+`--gtest_also_run_disabled_tests --gtest_filter='*RunCorpusThroughLegalizer'`,
+and sets `X86_LEGALIZER_MIR_CORPUS_IN` (input), `X86_LEGALIZER_MIR_OUT`
+(JSONL), `X86_LEGALIZER_MIR_MAX_STEPS` (default 10000),
+`X86_LEGALIZER_MIR_SHARD` (`i/N`, default `0/1`), and
+`X86_LEGALIZER_MIR_RULES` (`production` or `reference`).
+
+Sharding uses `N = ceil(atoms / --shard-size)`; shard `i` owns
+`global_index % N == i`.  `--jobs` runs shards concurrently and merges in
+corpus order.  `--only-atom ID` runs a temporary one-atom corpus as `0/1`,
+keeps the original atom count, and marks the rest `not_run` (`only-atom`).
+
+The driver also reads `X86_LEGALIZER_MIR_START_INDEX` (global 0-based atom
+index, default 0) and begins at that atom.  Shards are resume-capable: with
+`--shard-size 2000 --jobs N`, if a shard hits budget, hang, or crash, the
+supervisor restarts the same shard after that atom via `START_INDEX`,
+preserving the anomaly result and continuing with the remaining atoms.  Any
+stall that still makes no progress is reported as `not_run`, so the report
+stays honest.  A process that ends after the last complete outcome but before
+the next atom writes its `start` marker is not evidence about that atom: it is
+reported as `not_run` (`timeout_before_start` on a timeout,
+`unattributed_termination` otherwise), never as a `crash`, and the resume loop
+retries it from that index.  The driver opens its JSONL before parsing the
+corpus; if a shard times out before any marker (a slow corpus load, not
+evidence about an atom), the supervisor retries once with a six-times longer
+deadline and only then reports `not_run` with reason `timeout_before_start`
+(exit 2).  The longer deadline is one-shot: the next invocation that makes
+progress returns to the configured timeout.
+Missing/invalid environment or unreadable corpus prints
+`X86_LEGALIZER_MIR_INFRA_ERROR` and exits 2, never a gtest skip.
+
+The report is `llvm-x86-legalizer-mir-run` version 1:
+
+```json
+{
+  "schema": "llvm-x86-legalizer-mir-run", "version": 1,
+  "corpus": {"path": "...", "sha256": "...", "config": "C2", "atoms": 2217},
+  "rules": "production",
+  "budget": {"max_steps": 10000, "timeout_s": 120, "shard_size": 2000},
+  "counts": {"legalized": 388, "failed": 1034, "budget": 20, "hang": 0,
+             "crash": 24, "unbuildable": 447, "construction_mismatch": 304,
+             "not_run": 0},
+  "first_anomaly": {...}, "atoms": [{"id": "...", "outcome": "budget", "steps": 10001}]
+}
+```
+
+It also carries `a3`, `anomalies`, `new_findings`, `known_anomalies`,
+`coverage_gaps`, `libcalls: "disabled"`, `only_atom`, `infra_warnings`,
+`unbuildable_reasons`, and `shard_summaries`; `sum(counts) == corpus.atoms`.
+`first_anomaly` is the first observed atom that is not `legalized`/`failed`
+(it may be `unbuildable`, `construction_mismatch`, `budget`, `hang`, or
+`crash`); `not_run` placeholders from `--only-atom` or an unresolved stall
+are not observations and are skipped.
+
+Exit 0 means every atom is terminal (`legalized`, `failed`, `unbuildable`,
+`construction_mismatch`); exit 1 means some `budget`, `hang`, or `crash`;
+exit 2 is infrastructure, including a corpus/config pointer-width mismatch.
+`not_run` following an anomaly keeps that anomaly's exit 1.  `--only-atom`
+decides the exit from the atom actually run.  A timeout before the `legalize`
+marker (`slow_or_stuck_before_legalizer`), a pre-start timeout
+(`timeout_before_start`), and an unattributable termination between atoms
+(`unattributed_termination`) are incomplete evidence and exit 2, as does any
+other unexplained `not_run`.
+
+### Observed witness baseline
+
+The committed baseline is `mir-baseline-witness.json`.  It is **not clean**:
+
+| Config | Atoms | legalized | failed | unbuildable | construction_mismatch | budget | crash |
+|---|---|---|---|---|---|---|---|
+| C0 | 2062 | 170 | 1119 | 441 | 303 | 5 | 24 |
+| C1 | 2169 | 316 | 1059 | 445 | 304 | 21 | 24 |
+| C2 | 2217 | 388 | 1034 | 447 | 304 | 20 | 24 |
+| C3 | 2093 | 216 | 1103 | 442 | 303 | 5 | 24 |
+
+Every config has exactly 5 known `X86_BUILD_VECTOR` `MoreElements` atoms that
+reach `budget`; those are the A3 family, not regressions.  Non-family budgets
+are 0 / 16 / 15 / 0 (C0 / C1 / C2 / C3), and every config has 24 crashes (all
+`crash:assert`).  **A3 is NOT MET** because the unfixed production reports
+contain those non-family budgets and crashes; the baseline records
+`"a3_met": false`.  The 4 `G_UADDE` `[v2p0:*, p0:*]` atoms per config pass
+the verifier, then assert inside the legalizer; they are among the 24
+`crash:assert` results, not reclassified.  All crashes are recorded anomalies
+on synthetic MIR, not confirmed legalizer bugs.  Control flow is out of scope:
+15 `G_BR` and 15 `G_BRCOND` atoms per config are `unbuildable`, as are the 5
+`G_PHI` `MoreElements` atoms per config.  Crashes are recorded, not fixed.
+The baseline also records the per-config `MoreElements` census
+(49/49/48/49 expected-action atoms, 5 `G_PHI` each), a
+`construction_mismatch` breakdown by opcode and stable detail code, the
+unbuildable reasons, and sorted atom ids for every anomaly bucket, so a
+count change is attributable instead of opaque.
+
+Every `construction_mismatch` is a verifier rejection of a corpus shape that
+cannot exist in real MIR: pointers in `G_ANYEXT`/`G_SEXT`/`G_FPEXT`, pointer
+`G_PTR_ADD` offsets, load/store sizes that do not match the result, a
+`G_EXTRACT` whose source is not larger, and mixed scalar/vector
+`G_IS_FPCLASS`.  The legalizer is not run for those atoms.
+
+### A1 / A2 evidence
+
+```bash
+# A1: expect outcome=budget, steps=10001, exit 1.
+python3 llvm/utils/x86-legalizer-corpus/__main__.py mir-run \
+    --corpus up-C2.json --build build \
+    --rules production --shard-size 100000 --timeout 120 --max-steps 10000 \
+    --only-atom cpp/X86_BUILD_VECTOR/G_BUILD_VECTOR/rule/3 \
+    --out mir-A1-C2.json
+
+# A2: temporary fixed rules; checks failed, restore, budget, clean .td.
+/home/ubuntu/llvm/trees/explore/llvm/utils/x86-legalizer-corpus/mir-a2-probe.sh \
+    --tree "$PWD" --build build --corpus up-C2.json \
+    --atom cpp/X86_BUILD_VECTOR/G_BUILD_VECTOR/rule/3
+```
+
+A2 checks `failed|legalized` on the patched run (on the frozen revision the
+probe atom ends `failed`; the report lands in
+`--evidence-dir`/mir-A2-C2.json), restores the `.td`, rebuilds production,
+re-requires the A1 atom to be `budget` (steps `max_steps + 1`), and requires a
+clean target file.  The patch is a **temporary C2 TableGen proxy for
+PR #238277**, not the merged C++ fix; the upstream commit changes
+pre-TableGen C++ and does not apply here.
+
+A5: run one config twice and diff only per-atom
+`{id, outcome, steps, detail_code}`; timing and `stderr_tail` are excluded.
+A6: C0/C3 use 32-bit pointers and C1/C2 64-bit.  A corpus/config width or
+config-ID mismatch is rejected before per-atom work with exit 2, never as
+`construction_mismatch`.  `mir-baseline-witness.json` is a deterministic
+projection of four witness reports (sorted atom ids, no timestamp,
+`sort_keys=True`, counts, MoreElements census, A3 buckets,
+construction_mismatch breakdown, unbuildable reasons, and out-of-scope
+counts).  Regenerate with `--shard-size 2000 --jobs 4 --timeout 30` (see
+`provenance.regenerate_reports`), then re-project the fields listed in
+`provenance.regenerate_baseline`.
+
+The fixture class is `X86LegalizerMIRTest`, not
+`X86LegalizerDifferentialTest`: the differential fixture is anonymous-namespace
+in another TU and gtest rejects two fixture classes under one suite name.  The
+test name is unchanged, so `--gtest_filter='*RunCorpusThroughLegalizer'`
+still selects exactly this driver.
+
 ## Tiers
 
 | Tier | What it adds | Points on the frozen revision (C2) |

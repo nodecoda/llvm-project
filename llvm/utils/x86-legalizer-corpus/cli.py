@@ -11,6 +11,7 @@ import corpusdiff
 import domain
 import emit
 import expr as E
+import mirrun
 import oracle
 import parse
 import target
@@ -426,6 +427,31 @@ def cmd_migrate(args):
     }, sort_keys=True))
 
 
+def cmd_mir_run(args):
+    try:
+        report, code = mirrun.run(
+            args.corpus, args.out, build=args.build, driver=args.driver,
+            rules=args.rules, shard_size=args.shard_size,
+            timeout=args.timeout, max_steps=args.max_steps,
+            only_atom=args.only_atom, a2_probe=args.a2_probe,
+            jobs=args.jobs)
+    except mirrun.MirRunInfraError as err:
+        print(f"mir-run infrastructure error: {err}", file=sys.stderr)
+        raise SystemExit(2)
+    summary = {
+        "out": os.path.abspath(args.out),
+        "atoms": report["corpus"]["atoms"],
+        "counts": report["counts"],
+        "first_anomaly": (None if report["first_anomaly"] is None
+                          else report["first_anomaly"]["id"]),
+        "a3": report["a3"]["status"],
+        "libcalls": report["libcalls"],
+    }
+    print(json.dumps(summary, sort_keys=True))
+    if code:
+        raise SystemExit(code)
+
+
 def build_parser():
     p = argparse.ArgumentParser(
         prog="x86-legalizer-corpus",
@@ -509,6 +535,25 @@ def build_parser():
     sp.add_argument("--strict", action="store_true",
                     help="exit 1 when ids, statuses, rounds, or traces differ")
     sp.set_defaults(func=cmd_trace_diff)
+
+    sp = sub.add_parser("mir-run")
+    sp.add_argument("--corpus", required=True,
+                    help="filled corpus JSON from the corpus subcommand")
+    sp.add_argument("--build", help="LLVM build dir containing X86Tests")
+    sp.add_argument("--driver", help="explicit X86Tests binary")
+    sp.add_argument("--rules", default="production",
+                    choices=("production", "reference"))
+    sp.add_argument("--shard-size", type=int, default=2000)
+    sp.add_argument("--timeout", type=float, default=120,
+                    help="per-shard timeout in seconds")
+    sp.add_argument("--max-steps", type=int, default=10000)
+    sp.add_argument("--jobs", type=int, default=1,
+                    help="run up to N shards concurrently (default: 1)")
+    sp.add_argument("--only-atom", help="run exactly one atom id")
+    sp.add_argument("--a2-probe", action="store_true",
+                    help="mark this as the fixed-rules A2 probe (A3 exempt)")
+    sp.add_argument("--out", required=True)
+    sp.set_defaults(func=cmd_mir_run)
 
     sp = sub.add_parser("diff")
     sp.add_argument("--left", required=True)

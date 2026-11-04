@@ -275,6 +275,8 @@ add_llvm_unittest(X86Tests
   TernlogTest.cpp
   X86LegalizerInfoDifferentialTest.cpp
   X86LegalizerInfoReference.cpp
+  X86LegalizerMIRTest.cpp
+  X86LegalizerTestSupport.cpp
   X86LegalizerInfoReferenceMutants.h
   X86SelectionDAGTest.cpp
   )
