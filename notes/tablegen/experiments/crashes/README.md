@@ -4,6 +4,9 @@
 RelWithDebInfo + assertions（`/home/ubuntu/llvm/builds/pr-lane`）。
 复现：`TBLGEN=/path/to/llvm-tblgen ./run.sh`。
 
+上游 issue：[#238797](https://github.com/llvm/llvm-project/issues/238797)（`!head`/`!tail`）、
+[#238799](https://github.com/llvm/llvm-project/issues/238799)（multiclass `dump`）。
+
 | 文件 | rc | 结论 |
 | --- | ---: | --- |
 | `head_empty_field.td` | 134 | `!head(字段)`，字段最终为 `[]` → assert `Record.cpp:875` |

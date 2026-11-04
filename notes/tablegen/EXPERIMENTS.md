@@ -191,6 +191,8 @@ defm X : MC, C;
 ```
 
 两个问题都不在现有 479 个 `llvm/test/TableGen` 测试覆盖内（全量仍 479/479 通过）。
+已提交上游 issue：[#238797](https://github.com/llvm/llvm-project/issues/238797)（head/tail）、
+[#238799](https://github.com/llvm/llvm-project/issues/238799)（multiclass dump）。
 完整分析、历史提交与修复建议见 `crashes/README.md`。
 
 ---
