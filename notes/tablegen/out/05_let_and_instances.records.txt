@@ -1,0 +1,63 @@
+------------- Classes -----------------
+class C {
+  int x = 1;
+  string s = "c";
+}
+class L {
+  list<R> seen = !instances<R>(".*");
+  bit hasRB = 1;
+}
+class NameUser {
+  string n = NameUser:NAME;
+}
+class R {
+}
+class Two<int Two:a = ?, int Two:b = !add(Two:a, 10), string Two:n = !strconcat("T", !cast<string>(Two:a))> {
+  int va = Two:a;
+  int vb = Two:b;
+  string vn = Two:n;
+}
+------------- Defs -----------------
+def D {	// C
+  int x = 3;
+  string s = "c";
+}
+def E {	// C
+  int x = 2;
+  string s = "c";
+}
+def F {	// C
+  int x = 1;
+  string s = "top";
+}
+def G {	// NameUser
+  string n = "G";
+}
+def H {	// Two
+  int va = 5;
+  int vb = 15;
+  string vn = "T5";
+}
+def I {	// Two
+  int va = 5;
+  int vb = 7;
+  string vn = "T5";
+}
+def J_x {	// C
+  int x = 101;
+  string s = "c";
+}
+def LA {	// L
+  list<R> seen = [RA, RB];
+  bit hasRB = 1;
+}
+def LB {	// L
+  list<R> seen = [RA, RB, RC];
+  bit hasRB = 1;
+}
+def RA {	// R
+}
+def RB {	// R
+}
+def RC {	// R
+}

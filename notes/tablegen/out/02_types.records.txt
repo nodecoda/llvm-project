@@ -1,0 +1,76 @@
+------------- Classes -----------------
+class R {
+  int n = 1;
+}
+------------- Defs -----------------
+def RInst {	// R
+  int n = 1;
+}
+def RInst2 {	// R
+  int n = 1;
+}
+def T {
+  int i = 42;
+  bit b = 1;
+  bits<8> b8 = { 0, 0, 0, 0, 0, 1, 0, 1 };
+  bits<4> hi = { 0, 0, 0, 0 };
+  bit lsb = 1;
+  bits<16> cat = { 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1 };
+  bits<8> fromInt = { 0, 0, 1, 0, 1, 0, 1, 0 };
+  int fromBits = 5;
+  bits<4> small = { 0, 0, 1, 1 };
+  bits<8> widened = { 0, 0, 1, 1, 0, 0, 1, 1 };
+  string s1 = "abc";
+  string s2 = "abc11z";
+  string s3 = "ab";
+  string s4 = "xyz";
+  string s5 = "ell";
+  int s6 = 2;
+  bit s7 = 1;
+  string s8 = "bAnAnA";
+  string s9 = "mixed";
+  string s10 = "MIXED";
+  string s11 = "{ 0, 0, 0, 0, 0, 1, 0, 1 }";
+  list<int> empty = [];
+  list<int> ints = [1, 2, 3];
+  list<bits<8>> bl = [{ 0, 0, 0, 0, 0, 0, 0, 1 }, { 0, 0, 0, 0, 0, 0, 1, 0 }, { 0, 0, 0, 0, 0, 0, 1, 1 }];
+  list<list<int>> ll = [[1], [2, 3]];
+  list<int> flat = [1, 2, 3];
+  list<int> doubled = [1, 2, 3, 1, 2, 3];
+  list<int> splat = [7, 7, 7];
+  list<int> removed = [1, 3];
+  list<int> ranged = [1, 3, 5];
+  list<int> sorted = [1, 2, 3];
+  int head = 1;
+  list<int> tail = [2, 3];
+  int size = 3;
+  bit isEmpty = 1;
+  int maybe = ?;
+  int initUnset = 0;
+  int intsInit = 1;
+  dag d = (add 1, "x", { 0, 0, 0, 0, 0, 1, 0, 1 });
+  dag d2 = ("mul" 2:$lhs, 3:$rhs);
+  string opname = "add";
+  string rootName = "root";
+  int arg0 = 1;
+  string name1 = ?;
+  dag d3 = (add 9, "x", { 0, 0, 0, 0, 0, 1, 0, 1 });
+  dag d4 = (sub 1, "x", { 0, 0, 0, 0, 0, 1, 0, 1 });
+  dag d7 = (add 1:$a, 2:$b);
+  dag d5 = (add 1, "x":$renamed, { 0, 0, 0, 0, 0, 1, 0, 1 });
+  dag d6 = (add 1, "x", { 0, 0, 0, 0, 0, 1, 0, 1 }, 7);
+  R rec = RInst;
+  bit isR = 1;
+  list<R> recs = [RInst, RInst2];
+  bit cmp = 1;
+  bit hasR = 1;
+  bit hasQ = 0;
+}
+def add {
+}
+def extra {
+}
+def mul {
+}
+def sub {
+}

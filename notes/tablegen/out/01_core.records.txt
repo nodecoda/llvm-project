@@ -1,0 +1,188 @@
+------------- Classes -----------------
+class Base<int Base:N = ?, string Base:S = "base"> {
+  int n = Base:N;
+  string s = Base:S;
+  list<int> l = [Base:N];
+}
+class Derived {	// Base
+  int n = 1;
+  string s = "derived";
+  list<int> l = [1];
+}
+class Shadow {
+  int x = 1;
+  string tag = "A";
+}
+class Shadow2 {	// Shadow
+  int x = 2;
+  string tag = "B";
+}
+------------- Defs -----------------
+def CastCheck {
+  Base rec = D0;
+  string recName = "D0";
+  int viaName = 4;
+  list<Base> insts = [D0, D1, DD, F0, F1, F2, L10, L20, M0_a, M0_b, M1_a, M1_b, M2_a, M2_b, N00, N01, N10, N11, S0, S1, W0_p, W0_w_a, W0_w_b, anonymous_0, anonymous_1, anonymous_2, anonymous_3];
+}
+def D0 {	// Base
+  int n = 4;
+  string s = "base";
+  list<int> l = [4];
+}
+def D1 {	// Base
+  int n = 5;
+  string s = "one";
+  list<int> l = [4];
+}
+def DD {	// Base Derived
+  int n = 1;
+  string s = "derived";
+  list<int> l = [1];
+}
+def DS {	// Shadow Shadow2
+  int x = 2;
+  string tag = "B";
+}
+def DS2 {	// Shadow Shadow2
+  int x = 3;
+  string tag = "B";
+}
+def F0 {	// Base
+  int n = 0;
+  string s = "base";
+  list<int> l = [0];
+}
+def F1 {	// Base
+  int n = 1;
+  string s = "base";
+  list<int> l = [1];
+}
+def F2 {	// Base
+  int n = 2;
+  string s = "base";
+  list<int> l = [2];
+}
+def L10 {	// Base
+  int n = 10;
+  string s = "base";
+  list<int> l = [10];
+}
+def L20 {	// Base
+  int n = 20;
+  string s = "base";
+  list<int> l = [20];
+}
+def M0_a {	// Base
+  int n = 7;
+  string s = "leaf";
+  list<int> l = [7];
+}
+def M0_b {	// Base
+  int n = 8;
+  string s = "leaf";
+  list<int> l = [8];
+}
+def M1_a {	// Base
+  int n = 7;
+  string s = "custom";
+  list<int> l = [7];
+}
+def M1_b {	// Base
+  int n = 8;
+  string s = "custom";
+  list<int> l = [8];
+}
+def M2_a {	// Base
+  int n = 42;
+  string s = "leaf";
+  list<int> l = [9];
+}
+def M2_b {	// Base
+  int n = 42;
+  string s = "leaf";
+  list<int> l = [10];
+}
+def N00 {	// Base
+  int n = 0;
+  string s = "base";
+  list<int> l = [0];
+}
+def N01 {	// Base
+  int n = 1;
+  string s = "base";
+  list<int> l = [1];
+}
+def N10 {	// Base
+  int n = 10;
+  string s = "base";
+  list<int> l = [10];
+}
+def N11 {	// Base
+  int n = 11;
+  string s = "base";
+  list<int> l = [11];
+}
+def S0 {	// Base
+  int n = 10;
+  string s = "base";
+  list<int> l = [10];
+}
+def S1 {	// Base
+  int n = 11;
+  string s = "base";
+  list<int> l = [11];
+}
+def Sum {
+  int total = 21;
+  int count = 2;
+  string reprs = "S0 {	// Base
+  int n = 10;
+  string s = "base";
+  list<int> l = [10];
+}
+ | S1 {	// Base
+  int n = 11;
+  string s = "base";
+  list<int> l = [11];
+}
+";
+  list<string> names = ["S0", "S1"];
+}
+def UsesVar {
+  int x = 3;
+}
+def W0_p {	// Base
+  int n = 1;
+  string s = "base";
+  list<int> l = [1];
+}
+def W0_w_a {	// Base
+  int n = 101;
+  string s = "leaf";
+  list<int> l = [101];
+}
+def W0_w_b {	// Base
+  int n = 102;
+  string s = "leaf";
+  list<int> l = [102];
+}
+def anonymous_0 {	// Base
+  int n = 11;
+  string s = "base";
+  list<int> l = [11];
+}
+def anonymous_1 {	// Base
+  int n = 21;
+  string s = "base";
+  list<int> l = [21];
+}
+def anonymous_2 {	// Base
+  int n = 100;
+  string s = "base";
+  list<int> l = [100];
+}
+def anonymous_3 {	// Base
+  int n = 101;
+  string s = "base";
+  list<int> l = [101];
+}

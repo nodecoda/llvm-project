@@ -1,0 +1,85 @@
+------------- Classes -----------------
+class R {
+  int n = 0;
+}
+------------- Defs -----------------
+def P {
+  int a1 = 6;
+  int a2 = 7;
+  int a3 = 24;
+  int a4 = 3;
+  int a5 = -3;
+  int a6 = 1;
+  int a7 = 0;
+  int a8 = 2;
+  int a9 = 5;
+  int a10 = 5;
+  int a11 = 16;
+  int a12 = 9223372036854775804;
+  int a13 = -4;
+  int a14 = 3;
+  int a15 = 20;
+  bit c1 = 1;
+  bit c2 = 1;
+  bit c3 = 1;
+  bit c4 = 1;
+  bit c5 = 1;
+  bit c6 = 1;
+  bit c7 = 0;
+  int zero = 0;
+  int l1 = 7;
+  int l2 = 8;
+  int cd = 2;
+  string sw = "B";
+  string swd = "DEFAULT";
+  list<int> li = [3, 1, 2, 1];
+  list<int> sl = [1, 1, 2, 3];
+  list<R> sl2 = [RA, RB];
+  list<int> r1 = [0, 1, 2, 3];
+  list<int> r2 = [1, 2, 3];
+  list<int> r3 = [1, 3, 5];
+  list<int> r4 = [];
+  list<int> r5 = [4, 2];
+  list<int> rm = [3, 2];
+  string il = "a-b-c";
+  int s1 = 4;
+  list<int> noInts = [];
+  bit e1 = 1;
+  int h1 = 3;
+  list<int> t1 = [1, 2, 1];
+  list<int> f1 = [3, 2];
+  int fold = 7;
+  list<int> each = [30, 10, 20, 10];
+  int fnd = 2;
+  int fnd2 = -1;
+  int fnd3 = 4;
+  bit m1 = 1;
+  bit m2 = 0;
+  string sub = "cdef";
+  string sub2 = "cd";
+  string low = "abc";
+  string up = "ABC";
+  string rep = "RA {	// R
+  int n = 1;
+}
+";
+  string repL = "[1, 2]";
+  string fromInt = "42";
+  bits<8> fromBitsCast = { 0, 0, 0, 0, 0, 1, 0, 1 };
+  R fromName = RA;
+  bit isA = 1;
+  bit ex = 1;
+  bit ex2 = 0;
+  list<R> insts = [RA, RB];
+  list<R> instsRegex = [RA, RB];
+}
+def RA {	// R
+  int n = 1;
+}
+def RB {	// R
+  int n = 2;
+}
+def add {
+}
+def sub {
+}

@@ -1,0 +1,17 @@
+PLEASE submit a bug report to https://github.com/llvm/llvm-project/issues/ and include the crash backtrace and instructions to reproduce the bug.
+Stack dump:
+0.	Program arguments: /home/ubuntu/llvm/builds/pr-lane/bin/llvm-tblgen -print-records /home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/25_multiclass_dump_crash.td
+Stack dump without symbol names (ensure you have llvm-symbolizer in your PATH or set the environment var `LLVM_SYMBOLIZER_PATH` to point to it):
+0  libLLVMSupport.so.24.0git  0x00007fa0dd45a872 llvm::sys::PrintStackTrace(llvm::raw_ostream&, int) + 66
+1  libLLVMSupport.so.24.0git  0x00007fa0dd4578fc llvm::sys::RunSignalHandlers() + 76
+2  libLLVMSupport.so.24.0git  0x00007fa0dd457fd5
+3  libc.so.6                  0x00007fa0dcd43520
+4  libLLVMTableGen.so.24.0git 0x00007fa0dd4f1e7c llvm::TGParser::AddParentClass(llvm::RecordsEntry&, llvm::ClassReference&) + 76
+5  libLLVMTableGen.so.24.0git 0x00007fa0dd50132f llvm::TGParser::ParseDefm() + 2415
+6  libLLVMTableGen.so.24.0git 0x00007fa0dd503038 llvm::TGParser::ParseFile() + 856
+7  libLLVMTableGen.so.24.0git 0x00007fa0dd4b3905 llvm::TableGenMain(char const*, llvm::function_ref<bool (llvm::TableGenOutputFiles&, llvm::RecordKeeper const&)>) + 2869
+8  llvm-tblgen                0x000055b6163616ea
+9  libc.so.6                  0x00007fa0dcd2ad90
+10 libc.so.6                  0x00007fa0dcd2ae40 __libc_start_main + 128
+11 llvm-tblgen                0x000055b6162f8fc5
+rc=139 (139 = SIGSEGV, expected)

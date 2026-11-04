@@ -1,0 +1,3 @@
+def FromInclude ;
+def HasA ;
+def NoB ;

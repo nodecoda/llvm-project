@@ -1,0 +1,18 @@
+### []
+def FromInclude {
+def HasA {
+def NoB {
+### [-DFEATURE_A]
+def FromInclude {
+def HasA {
+def NoB {
+### [-DFEATURE_A -DFEATURE_B]
+def BAndA {
+def FromInclude {
+def HasA {
+def HasB {
+### [-DFEATURE_B]
+def BAndA {
+def FromInclude {
+def HasA {
+def HasB {

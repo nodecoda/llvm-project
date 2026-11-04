@@ -1,0 +1,38 @@
+/*===- TableGen'erated file -------------------------------------*- C++ -*-===*\
+|*                                                                            *|
+|* TableGen study report                                                      *|
+|*                                                                            *|
+|* Automatically generated file, do not edit!                                 *|
+|* From: 01_core.td                                                           *|
+|*                                                                            *|
+\*===----------------------------------------------------------------------===*/
+
+input: /home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/01_core.td
+classes: 4  defs: 32  anonymous defs: 4  globals: 2  values on defs (incl. inherited): 94
+root classes: 2  classes with template args: 1
+
+== field types (defs) ==
+  33	int
+  31	string
+  27	list<int>
+  1	Base
+  1	list<Base>
+  1	list<string>
+
+== classes by direct derived records ==
+  27	Base
+  2	Shadow2
+  1	Derived
+  1	Shadow
+
+== first 10 classes ==
+  class Base (values=3, targs=2, parents=0)
+  class Derived (values=3, targs=0, parents=1)
+  class Shadow (values=2, targs=0, parents=0)
+  class Shadow2 (values=2, targs=0, parents=1)
+
+== first 10 anonymous defs ==
+  anonymous_0
+  anonymous_1
+  anonymous_2
+  anonymous_3

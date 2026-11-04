@@ -1,0 +1,21 @@
+------------- Classes -----------------
+class A<int A:n = ?> {
+  int v = A:n;
+}
+------------- Defs -----------------
+def I1 {	// A
+  int v = 1;
+}
+def I2 {	// A
+  int v = 2;
+}
+def O0 {	// A
+  int v = 0;
+}
+def O3 {	// A
+  int v = 3;
+}
+def Q {
+  list<string> outer = ["O0", "I1", "I2", "O3"];
+  list<string> inner = ["I1", "I2"];
+}

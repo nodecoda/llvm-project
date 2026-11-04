@@ -1,0 +1,139 @@
+### 01_dup_def.td rc=1
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/01_dup_def.td:2:5: error: def already exists: A
+def A;
+    ^
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/01_dup_def.td:1:5: note: location of previous definition
+def A;
+    ^
+### 02_bad_type.td rc=1
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/02_bad_type.td:1:17: error: Field 'x' of type 'int' is incompatible with value '"s"' of type 'string'
+def D { int x = "s"; }
+                ^
+/home/ubuntu/llvm/builds/pr-lane/bin/llvm-tblgen: 1 errors.
+### 03_unknown_var.td rc=1
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/03_unknown_var.td:1:17: error: Variable not defined: 'noSuchVar'
+def D { int x = noSuchVar; }
+                ^
+/home/ubuntu/llvm/builds/pr-lane/bin/llvm-tblgen: 1 errors.
+### 04_let_unknown.td rc=1
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/04_let_unknown.td:2:5: error: Value 'noSuchField' unknown!
+let noSuchField = 1 in def E;
+    ^
+### 05_missing_targ.td rc=1
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/05_missing_targ.td:2:9: error: value not specified for template argument 'C:a'
+def D : C;
+        ^
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/05_missing_targ.td:1:13: note: declared in 'C'
+class C<int a> { int n = a; }
+            ^
+### 06_defset_type.td rc=1
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/06_defset_type.td:2:27: error: adding record of incompatible type 'B' to defset
+defset list<A> As = { def B0 : B; }
+                          ^
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/06_defset_type.td:2:8: note: location of defset declaration
+defset list<A> As = { def B0 : B; }
+       ^
+### 07_dup_field.td rc=0
+------------- Classes -----------------
+------------- Defs -----------------
+def D {
+  int x = 2;
+}
+### 08_head_empty.td rc=134
+llvm-tblgen: /home/ubuntu/llvm/trees/pr-lane/llvm/lib/TableGen/Record.cpp:875: const llvm::Init* llvm::UnOpInit::Fold(const llvm::Record*, bool) const: Assertion `!LHSl->empty() && "Empty list in head"' failed.
+PLEASE submit a bug report to https://github.com/llvm/llvm-project/issues/ and include the crash backtrace and instructions to reproduce the bug.
+Stack dump:
+0.	Program arguments: /home/ubuntu/llvm/builds/pr-lane/bin/llvm-tblgen -print-records /home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/08_head_empty.td
+Stack dump without symbol names (ensure you have llvm-symbolizer in your PATH or set the environment var `LLVM_SYMBOLIZER_PATH` to point to it):
+0  libLLVMSupport.so.24.0git  0x00007f73b74a8872 llvm::sys::PrintStackTrace(llvm::raw_ostream&, int) + 66
+### 09_div_zero.td rc=1
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/09_div_zero.td:1:5: error: Illegal operation: division by zero
+def D { int x = !div(1, 0); }
+    ^
+### 10_log_zero.td rc=1
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/10_log_zero.td:1:5: error: Illegal operation: logtwo is undefined on arguments less than or equal to 0
+def D { int x = !logtwo(0); }
+    ^
+### 11_cast_missing.td rc=1
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/11_cast_missing.td:2:5: error: Undefined reference to record: 'nope'
+
+def D { A x = !cast<A>("nope"); }
+    ^
+### 12_getdagarg_oob.td rc=1
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/12_getdagarg_oob.td:2:5: error: !getdagarg index 5 is out of range (dag has 2 arguments)
+def D { dag g = (op 1, 2); int x = !getdagarg<int>(g, 5); }
+    ^
+### 13_self_field.td rc=1
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/13_self_field.td:1:17: error: Recursion / self-assignment forbidden
+def D { int x = x; }
+                ^
+/home/ubuntu/llvm/builds/pr-lane/bin/llvm-tblgen: 1 errors.
+### 14_cycle.td rc=1
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/14_cycle.td:1:17: error: Variable not defined: 'b'
+def D { int a = b; int b = a; }
+                ^
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/14_cycle.td:1:5: error: Initializer of 'b' in 'D' could not be fully resolved: a
+def D { int a = b; int b = a; }
+    ^
+### 15_override_targ.td rc=1
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/15_override_targ.td:2:20: error: Value 'a' unknown!
+def D : C<1> { let a = 2; }
+                   ^
+### 16_unknown_class.td rc=1
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/16_unknown_class.td:1:9: error: Couldn't find class 'NoSuchClass'
+def D : NoSuchClass;
+        ^
+### 17_define_value.td rc=1
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/17_define_value.td:1:11: error: only comments are supported after #define NAME
+#define M 1
+          ^
+### 18_unterminated.td rc=1
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/18_unterminated.td:1:21: error: end of line in string literal
+def D { string s = "abc; }
+                    ^
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/18_unterminated.td:1:20: error: Unknown or reserved token when parsing a value
+def D { string s = "abc; }
+                   ^
+### 19_template_arg_type.td rc=1
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/19_template_arg_type.td:1:13: warning: unused template argument: C:a
+class C<int a>; def D : C<"str">;
+            ^
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/19_template_arg_type.td:1:27: error: Value specified for template argument 'C:a' is of type string; expected type int: "str"
+class C<int a>; def D : C<"str">;
+                          ^
+### 20_let_append_int.td rc=1
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/20_let_append_int.td:2:19: error: expected '=' in let expression
+def D : C { let x += 2; }
+                  ^
+### 21_let_append_ok.td rc=0
+------------- Classes -----------------
+class C {
+  list<int> items = [2, 3];
+  string s = "b";
+  dag d = (op 1);
+}
+### 22_let_append_bad.td rc=1
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/22_let_append_bad.td:2:24: error: Cannot append to field 'count' of type 'int' (expected list, string, code, or dag)
+def D : C { let append count = 1; }
+                       ^
+### 23_unset_final_ok.td rc=0
+------------- Classes -----------------
+------------- Defs -----------------
+def D {
+  int x = ?;
+  string s = ?;
+}
+### 24_unset_targ_default.td rc=1
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/24_unset_targ_default.td:2:9: error: value not specified for template argument 'C:a'
+def D : C;
+        ^
+/home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/24_unset_targ_default.td:1:13: note: declared in 'C'
+class C<int a = ?> { int n = a; }
+            ^
+### 25_multiclass_dump_crash.td rc=139
+PLEASE submit a bug report to https://github.com/llvm/llvm-project/issues/ and include the crash backtrace and instructions to reproduce the bug.
+Stack dump:
+0.	Program arguments: /home/ubuntu/llvm/builds/pr-lane/bin/llvm-tblgen -print-records /home/ubuntu/llvm/trees/pr-lane/notes/tablegen/experiments/errors/25_multiclass_dump_crash.td
+Stack dump without symbol names (ensure you have llvm-symbolizer in your PATH or set the environment var `LLVM_SYMBOLIZER_PATH` to point to it):
+0  libLLVMSupport.so.24.0git  0x00007f9ee2dd8872 llvm::sys::PrintStackTrace(llvm::raw_ostream&, int) + 66
+1  libLLVMSupport.so.24.0git  0x00007f9ee2dd58fc llvm::sys::RunSignalHandlers() + 76
