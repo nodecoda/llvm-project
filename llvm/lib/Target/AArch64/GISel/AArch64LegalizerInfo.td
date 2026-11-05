@@ -218,7 +218,7 @@ def AArch64_IMPLICIT_DEF : LegalizeRuleSet<["G_IMPLICIT_DEF", "G_FREEZE", "G_CON
     WidenScalarToNextPow2<0>,
     ClampScalar<0, AArch64_s8, AArch64_s64>,
     MoreElementsToNextPow2<0>,
-    WidenVectorEltsToVectorMinSize<0, 64>,
+    CoreWiden<(ElemOf (Slot 0)), (MinVectorSize 64)>,
     ClampNumElements<0, AArch64_v8s8, AArch64_v16s8>,
     ClampNumElements<0, AArch64_v4s16, AArch64_v8s16>,
     ClampNumElements<0, AArch64_v2s32, AArch64_v4s32>,
@@ -900,7 +900,7 @@ def AArch64_SITOFP : LegalizeRuleSet<["G_SITOFP", "G_UITOFP"]> {
     WidenScalarOrEltToNextPow2OrMinSize<1>,
     MinScalar<1, AArch64_f32>,
     LowerIf<AArch64_Pred_938ab9ea>,
-    WidenScalarOrEltToNextPow2OrMinSizeSel<0, LegalizeSelectBits<[AArch64_HasFP16], [16], 32>>,
+    CoreWiden<(Slot 0), (CoreSelect AArch64_HasFP16, 16, 32)>,
     ScalarizeIf<AArch64_Pred_47fbed85, 0>,
     WidenScalarIf<AArch64_Pred_e47b6b4a, LegalizeRawMutation<"LegalizeMutations::changeElementSizeTo(0, 1)">>,
     WidenScalarIf<AArch64_Pred_92f28716, LegalizeRawMutation<"LegalizeMutations::changeElementSizeTo(1, 0)">>,
@@ -1072,7 +1072,7 @@ def AArch64_INSERT_VECTOR_ELT : LegalizeRuleSet<["G_INSERT_VECTOR_ELT"]> {
     LegalIf<AArch64_Pred_1a80c04b>,
     LegalForTriplesIf<AArch64_HasSVE, [LegalizeTypeTriple<AArch64_nxv16s8, AArch64_s32, AArch64_s64>, LegalizeTypeTriple<AArch64_nxv8s16, AArch64_s32, AArch64_s64>, LegalizeTypeTriple<AArch64_nxv4s32, AArch64_s32, AArch64_s64>, LegalizeTypeTriple<AArch64_nxv2s64, AArch64_s64, AArch64_s64>]>,
     MoreElementsToNextPow2<0>,
-    WidenVectorEltsToVectorMinSize<0, 64>,
+    CoreWiden<(ElemOf (Slot 0)), (MinVectorSize 64)>,
     ClampNumElements<0, AArch64_v8s8, AArch64_v16s8>,
     ClampNumElements<0, AArch64_v4s16, AArch64_v8s16>,
     ClampNumElements<0, AArch64_v2s32, AArch64_v4s32>,
@@ -1088,7 +1088,7 @@ def AArch64_BUILD_VECTOR : LegalizeRuleSet<["G_BUILD_VECTOR"]> {
     ClampNumElements<0, AArch64_v4s32, AArch64_v4s32>,
     ClampNumElements<0, AArch64_v2s64, AArch64_v2s64>,
     MinScalarOrElt<0, AArch64_s8>,
-    WidenVectorEltsToVectorMinSize<0, 64>,
+    CoreWiden<(ElemOf (Slot 0)), (MinVectorSize 64)>,
     WidenScalarOrEltToNextPow2<0>,
     MinScalarSameAs<1, 0>
   ];
@@ -1262,7 +1262,7 @@ def AArch64_VECREDUCE_ADD : LegalizeRuleSet<["G_VECREDUCE_ADD"]> {
     ClampMaxNumElements<1, AArch64_s32, 4>,
     ClampMaxNumElements<1, AArch64_s16, 8>,
     ClampMaxNumElements<1, AArch64_s8, 16>,
-    WidenVectorEltsToVectorMinSize<1, 64>,
+    CoreWiden<(ElemOf (Slot 1)), (MinVectorSize 64)>,
     Scalarize<1>
   ];
 }
