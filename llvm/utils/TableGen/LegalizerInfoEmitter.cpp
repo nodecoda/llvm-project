@@ -566,8 +566,23 @@ static int matchedOverloadIndex(const Record &Rule) {
   return -1;
 }
 
+/// The one place that decides whether a LegalizeRule record was written in the
+/// typed core IR.  Consumers should not spell the schema class name: it is a
+/// lowering detail, and a second spelling is exactly how a new consumer comes
+/// to miss the core path.
+enum class RuleKind { Legacy, Core };
+
+static RuleKind classifyRule(const Record &Rule) {
+  return Rule.isSubClassOf("LegalizeCoreRule") ? RuleKind::Core
+                                               : RuleKind::Legacy;
+}
+
+static bool isCoreRule(const Record &Rule) {
+  return classifyRule(Rule) == RuleKind::Core;
+}
+
 void LegalizerInfoEmitter::verifyRule(const Record &Rule) {
-  if (Rule.isSubClassOf("LegalizeCoreRule")) {
+  if (isCoreRule(Rule)) {
     verifyCoreRule(Records, Rule);
     return;
   }
@@ -839,7 +854,7 @@ void LegalizerInfoEmitter::emitRuleSet(raw_ostream &OS, const Record &RuleSet) {
 
   for (size_t I = 0, E = Rules.size(); I != E; ++I) {
     const Record &Rule = *Rules[I];
-    if (Rule.isSubClassOf("LegalizeCoreRule")) {
+    if (isCoreRule(Rule)) {
       verifyCoreRule(Records, Rule);
       emitCoreRule(Rule, OS);
       OS << (I + 1 == E ? ";\n" : "\n");
@@ -3449,7 +3464,7 @@ static const LoweringHandler *lookupLoweringHandler(StringRef Builder) {
 void expandRule(const RecordKeeper &Records, const Record &Rule,
                 std::vector<CoreRule> &Out, std::string &Why) {
   Why.clear();
-  if (Rule.isSubClassOf("LegalizeCoreRule")) {
+  if (isCoreRule(Rule)) {
     expandCoreRule(Records, Rule, Out);
     return;
   }
@@ -3746,7 +3761,7 @@ static LoweringStats verifyLoweringRegistry(const RecordKeeper &Records) {
     bool WithoutTable = false;
     for (const Record *Rule : RS->getValueAsListOfDefs("Rules")) {
       ++S.Rules;
-      if (Rule->isSubClassOf("LegalizeCoreRule")) {
+      if (isCoreRule(*Rule)) {
         ++S.CoreRules;
         verifyCoreRule(Records, *Rule);
         continue;
@@ -3918,7 +3933,7 @@ void LegalizerInfoEmitter::runCore(raw_ostream &OS) {
   // uses op/on/to declares the version its readers need.
   bool HasCoreRule = llvm::any_of(RuleSets, [](const Record *RS) {
     return llvm::any_of(RS->getValueAsListOfDefs("Rules"), [](const Record *R) {
-      return R->isSubClassOf("LegalizeCoreRule");
+      return isCoreRule(*R);
     });
   });
   OS << "{\n";
@@ -3949,7 +3964,7 @@ void LegalizerInfoEmitter::runCore(raw_ostream &OS) {
     std::vector<const Record *> Rules = RuleSet->getValueAsListOfDefs("Rules");
     for (size_t RuleIdx = 0; RuleIdx != Rules.size(); ++RuleIdx) {
       const Record *Rule = Rules[RuleIdx];
-      if (!Rule->isSubClassOf("LegalizeCoreRule") &&
+      if (!isCoreRule(*Rule) &&
           builderRecordName(*Rule) == "BuilderImmIdx")
         continue;
       std::vector<CoreRule> Expanded;
@@ -4585,7 +4600,7 @@ class LegalizerTableEmitterImpl {
   /// two separate type arguments (ClampScalar's bounds) names bounds, not a
   /// query, so only list/pair/memdesc arguments are used.
   void collectRuleTuples(const Record &Rule, std::vector<RuleTuple> &Out) {
-    if (Rule.isSubClassOf("LegalizeCoreRule"))
+    if (isCoreRule(Rule))
       return;
     std::vector<const Record *> Args = Rule.getValueAsListOfDefs("Args");
     // A builder that takes a slot index treats its type arguments as bounds
@@ -5512,7 +5527,7 @@ class LegalizerTableEmitterImpl {
   bool translateRule(const Record &Rule, std::string &Out, std::string &Why,
                      const unsigned *RuleIdx = nullptr,
                      bool GuardOnly = false) {
-    if (Rule.isSubClassOf("LegalizeCoreRule"))
+    if (isCoreRule(Rule))
       return translateCoreRule(Rule, Out, Why, RuleIdx, GuardOnly);
     RuleTranslation T(Rule, TablePrefix, Out, Why, RuleIdx, GuardOnly);
     if (!Rule.getValueAsString("OpaqueArgs").empty())
@@ -5616,7 +5631,7 @@ class LegalizerTableEmitterImpl {
     if (Rules.empty())
       return false;
     const Record &Last = *Rules.back();
-    if (Last.isSubClassOf("LegalizeCoreRule") ||
+    if (isCoreRule(Last) ||
         !Last.getValueAsString("OpaqueArgs").empty() ||
         Last.getValueAsOptionalDef("Pred") ||
         !Last.getValueAsListOfDefs("Args").empty())
@@ -6202,7 +6217,7 @@ public:
   unsigned arityOf(const Record &RuleSet) {
     unsigned Arity = 1;
     for (const Record *Rule : RuleSet.getValueAsListOfDefs("Rules")) {
-      if (Rule->isSubClassOf("LegalizeCoreRule"))
+      if (isCoreRule(*Rule))
         continue;
       const std::vector<const Record *> Args =
           Rule->getValueAsListOfDefs("Args");
@@ -6294,7 +6309,7 @@ public:
   static unsigned testArityOf(const Record &RuleSet) {
     unsigned Arity = 1;
     for (const Record *Rule : RuleSet.getValueAsListOfDefs("Rules")) {
-      if (Rule->isSubClassOf("LegalizeCoreRule"))
+      if (isCoreRule(*Rule))
         continue;
       const std::vector<const Record *> Args =
           Rule->getValueAsListOfDefs("Args");
