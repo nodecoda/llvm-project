@@ -229,10 +229,153 @@ def X86_X87OrS32 : LegalizeSelectType<[UseX87NotSSE1], [X86_s16], X86_s32>;
 def X86_CMOVOrS8 : LegalizeSelectType<[HasCMOV], [X86_s16], X86_s8>;
 
 // Types used by individual rule sets.
-def X86_IntTypes32 : LegalizeNamedTypeList<[X86_s8, X86_s16, X86_s32, X86_p0]>;
-def X86_IntTypes64 : LegalizeNamedTypeList<[X86_s8, X86_s16, X86_s32, X86_s64, X86_p0]>;
-def X86_PtrTypes32 : LegalizeNamedTypeList<[X86_s1, X86_s8, X86_s16, X86_s32]>;
-def X86_PtrTypes64 : LegalizeNamedTypeList<[X86_s1, X86_s8, X86_s16, X86_s32, X86_s64]>;
+def X86_IntTypes32 : LegalizeCoreTypeSet<[X86_s8, X86_s16, X86_s32, X86_p0]>;
+def X86_IntTypes64 : LegalizeCoreTypeSet<[X86_s8, X86_s16, X86_s32, X86_s64, X86_p0]>;
+def X86_PtrTypes32 : LegalizeCoreTypeSet<[X86_s1, X86_s8, X86_s16, X86_s32]>;
+def X86_PtrTypes64 : LegalizeCoreTypeSet<[X86_s1, X86_s8, X86_s16, X86_s32, X86_s64]>;
+
+class WithSSE1And64Bit<dag rest> {
+  dag G = (CoreAll (CoreAll HasSSE1, Is64Bit), rest);
+}
+class WithSSE1OrX87<dag rest> {
+  dag G = (CoreAll (CoreAny HasSSE1, UseX87), rest);
+}
+class WithSSE2And64Bit<dag rest> {
+  dag G = (CoreAll (CoreAll HasSSE2, Is64Bit), rest);
+}
+class WithSSE2OrX87<dag rest> {
+  dag G = (CoreAll (CoreAny HasSSE2, UseX87), rest);
+}
+def X86_Types_v2s64v8s16v16s8 : LegalizeCoreTypeSet<[X86_v2s64, X86_v8s16, X86_v16s8]>;
+def X86_Types_v4s64v8s32v16s16v32s8 : LegalizeCoreTypeSet<[X86_v4s64, X86_v8s32, X86_v16s16, X86_v32s8]>;
+def X86_Types_v8s64v16s32v32s16v64s8 : LegalizeCoreTypeSet<[X86_v8s64, X86_v16s32, X86_v32s16, X86_v64s8]>;
+def X86_Types_p0s1s8s16s32s64 : LegalizeCoreTypeSet<[X86_p0, X86_s1, X86_s8, X86_s16, X86_s32, X86_s64]>;
+def X86_Types_s80 : LegalizeCoreTypeSet<[X86_s80]>;
+def X86_Types_s128 : LegalizeCoreTypeSet<[X86_s128]>;
+def X86_Types_v16s8v8s16v4s32v2s64 : LegalizeCoreTypeSet<[X86_v16s8, X86_v8s16, X86_v4s32, X86_v2s64]>;
+def X86_Types_v32s8v16s16v8s32v4s64 : LegalizeCoreTypeSet<[X86_v32s8, X86_v16s16, X86_v8s32, X86_v4s64]>;
+def X86_Types_v64s8v32s16v16s32v8s64 : LegalizeCoreTypeSet<[X86_v64s8, X86_v32s16, X86_v16s32, X86_v8s64]>;
+def X86_Types_p0s8s16s32 : LegalizeCoreTypeSet<[X86_p0, X86_s8, X86_s16, X86_s32]>;
+def X86_Types_s64 : LegalizeCoreTypeSet<[X86_s64]>;
+def X86_Types_s32 : LegalizeCoreTypeSet<[X86_s32]>;
+def X86_Types_s8s16s32 : LegalizeCoreTypeSet<[X86_s8, X86_s16, X86_s32]>;
+def X86_Types_v16s32v8s64 : LegalizeCoreTypeSet<[X86_v16s32, X86_v8s64]>;
+def X86_Types_v64s8v32s16 : LegalizeCoreTypeSet<[X86_v64s8, X86_v32s16]>;
+def X86_Types_v8s16 : LegalizeCoreTypeSet<[X86_v8s16]>;
+def X86_Types_v4s32 : LegalizeCoreTypeSet<[X86_v4s32]>;
+def X86_Types_v16s16v8s32 : LegalizeCoreTypeSet<[X86_v16s16, X86_v8s32]>;
+def X86_Types_v16s32 : LegalizeCoreTypeSet<[X86_v16s32]>;
+def X86_Types_v8s64 : LegalizeCoreTypeSet<[X86_v8s64]>;
+def X86_Types_v2s64v4s64 : LegalizeCoreTypeSet<[X86_v2s64, X86_v4s64]>;
+def X86_Types_v32s16 : LegalizeCoreTypeSet<[X86_v32s16]>;
+def X86_Types_s8 : LegalizeCoreTypeSet<[X86_s8]>;
+def X86_Types_s1 : LegalizeCoreTypeSet<[X86_s1]>;
+def X86_Types_p0 : LegalizeCoreTypeSet<[X86_p0]>;
+def X86_Types_s8s16s32s128 : LegalizeCoreTypeSet<[X86_s8, X86_s16, X86_s32, X86_s128]>;
+def X86_Types_s8s16s32s64s128 : LegalizeCoreTypeSet<[X86_s8, X86_s16, X86_s32, X86_s64, X86_s128]>;
+def X86_Types_s32s64 : LegalizeCoreTypeSet<[X86_s32, X86_s64]>;
+def X86_Types_v2s64 : LegalizeCoreTypeSet<[X86_v2s64]>;
+def X86_Types_v8s32v4s64 : LegalizeCoreTypeSet<[X86_v8s32, X86_v4s64]>;
+def X86_Types_s8s32 : LegalizeCoreTypeSet<[X86_s8, X86_s32]>;
+def X86_Types_s8s64 : LegalizeCoreTypeSet<[X86_s8, X86_s64]>;
+def X86_Types_s8s80 : LegalizeCoreTypeSet<[X86_s8, X86_s80]>;
+def X86_Types_s32s64s80 : LegalizeCoreTypeSet<[X86_s32, X86_s64, X86_s80]>;
+def X86_Types_s16s32s64 : LegalizeCoreTypeSet<[X86_s16, X86_s32, X86_s64]>;
+def X86_UADDEPairSet : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s8, X86_s8>, LegalizeTypePair<X86_s16, X86_s8>, LegalizeTypePair<X86_s32, X86_s8>]>;
+def X86_UADDEPairSet2 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s64, X86_s8>]>;
+def X86_SHLPairSet : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s8, X86_s8>, LegalizeTypePair<X86_s16, X86_s8>, LegalizeTypePair<X86_s32, X86_s8>]>;
+def X86_SHLPairSet2 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s64, X86_s8>]>;
+def X86_CTPOPPairSet : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s16, X86_s16>, LegalizeTypePair<X86_s32, X86_s32>]>;
+def X86_CTPOPPairSet2 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s64, X86_s64>]>;
+def X86_CTPOPPairSet3 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_v16s32, X86_v16s32>,
+                     LegalizeTypePair<X86_v8s64, X86_v8s64>]>;
+def X86_CTPOPPairSet4 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_v4s32, X86_v4s32>,
+                     LegalizeTypePair<X86_v8s32, X86_v8s32>,
+                     LegalizeTypePair<X86_v2s64, X86_v2s64>,
+                     LegalizeTypePair<X86_v4s64, X86_v4s64>]>;
+def X86_CTLZPairSet : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s16, X86_s16>, LegalizeTypePair<X86_s32, X86_s32>]>;
+def X86_CTLZPairSet2 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s64, X86_s64>]>;
+def X86_CTTZ_ZERO_POISONPairSet : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s16, X86_s16>, LegalizeTypePair<X86_s32, X86_s32>]>;
+def X86_CTTZ_ZERO_POISONPairSet2 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s64, X86_s64>]>;
+def X86_CTTZPairSet : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s16, X86_s16>, LegalizeTypePair<X86_s32, X86_s32>]>;
+def X86_CTTZPairSet2 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s64, X86_s64>]>;
+def X86_INTTOPTRPairSet : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_p0, X86_sMaxScalar>]>;
+def X86_PTR_ADDPairSet : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_p0, X86_s32>]>;
+def X86_PTR_ADDPairSet2 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_p0, X86_s64>]>;
+def X86_FPEXTPairSet : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s64, X86_s32>]>;
+def X86_FPEXTPairSet2 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_v4s64, X86_v4s32>]>;
+def X86_FPEXTPairSet3 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_v8s64, X86_v8s32>]>;
+def X86_FPEXTPairSet4 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s64, X86_s32>, LegalizeTypePair<X86_s80, X86_s32>, LegalizeTypePair<X86_s80, X86_s64>]>;
+def X86_FPTRUNCPairSet : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s32, X86_s64>]>;
+def X86_FPTRUNCPairSet2 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_v4s32, X86_v4s64>]>;
+def X86_FPTRUNCPairSet3 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_v8s32, X86_v8s64>]>;
+def X86_FPTRUNCPairSet4 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s32, X86_s64>, LegalizeTypePair<X86_s32, X86_s80>, LegalizeTypePair<X86_s64, X86_s80>]>;
+def X86_SITOFPPairSet : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s32, X86_s32>]>;
+def X86_SITOFPPairSet2 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s32, X86_s64>]>;
+def X86_SITOFPPairSet3 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s64, X86_s32>]>;
+def X86_SITOFPPairSet4 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s64, X86_s64>]>;
+def X86_FPTOSIPairSet : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s32, X86_s32>]>;
+def X86_FPTOSIPairSet2 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s64, X86_s32>]>;
+def X86_FPTOSIPairSet3 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s32, X86_s64>]>;
+def X86_FPTOSIPairSet4 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s64, X86_s64>]>;
+def X86_UITOFPPairSet : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s32, X86_s32>, LegalizeTypePair<X86_s32, X86_s64>, LegalizeTypePair<X86_s64, X86_s32>, LegalizeTypePair<X86_s64, X86_s64>]>;
+def X86_FPTOUIPairSet : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s32, X86_s32>, LegalizeTypePair<X86_s32, X86_s64>, LegalizeTypePair<X86_s64, X86_s32>, LegalizeTypePair<X86_s64, X86_s64>]>;
+def X86_EXTRACTPairSet : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_v16s8, X86_v32s8>,
+                     LegalizeTypePair<X86_v8s16, X86_v16s16>,
+                     LegalizeTypePair<X86_v4s32, X86_v8s32>,
+                     LegalizeTypePair<X86_v2s64, X86_v4s64>]>;
+def X86_EXTRACTPairSet2 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_v16s8, X86_v64s8>,
+                     LegalizeTypePair<X86_v32s8, X86_v64s8>,
+                     LegalizeTypePair<X86_v8s16, X86_v32s16>,
+                     LegalizeTypePair<X86_v16s16, X86_v32s16>,
+                     LegalizeTypePair<X86_v4s32, X86_v16s32>,
+                     LegalizeTypePair<X86_v8s32, X86_v16s32>,
+                     LegalizeTypePair<X86_v2s64, X86_v8s64>,
+                     LegalizeTypePair<X86_v4s64, X86_v8s64>]>;
+def X86_INSERTPairSet : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_v32s8, X86_v16s8>,
+                     LegalizeTypePair<X86_v16s16, X86_v8s16>,
+                     LegalizeTypePair<X86_v8s32, X86_v4s32>,
+                     LegalizeTypePair<X86_v4s64, X86_v2s64>]>;
+def X86_INSERTPairSet2 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_v64s8, X86_v16s8>,
+                     LegalizeTypePair<X86_v64s8, X86_v32s8>,
+                     LegalizeTypePair<X86_v32s16, X86_v8s16>,
+                     LegalizeTypePair<X86_v32s16, X86_v16s16>,
+                     LegalizeTypePair<X86_v16s32, X86_v4s32>,
+                     LegalizeTypePair<X86_v16s32, X86_v8s32>,
+                     LegalizeTypePair<X86_v8s64, X86_v2s64>,
+                     LegalizeTypePair<X86_v8s64, X86_v4s64>]>;
+def X86_CONCAT_VECTORSPairSet : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_v32s8, X86_v16s8>, LegalizeTypePair<X86_v16s16, X86_v8s16>,
+                      LegalizeTypePair<X86_v8s32, X86_v4s32>, LegalizeTypePair<X86_v4s64, X86_v2s64>]>;
+def X86_CONCAT_VECTORSPairSet2 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_v64s8, X86_v16s8>, LegalizeTypePair<X86_v64s8, X86_v32s8>, LegalizeTypePair<X86_v32s16, X86_v8s16>,
+                      LegalizeTypePair<X86_v32s16, X86_v16s16>, LegalizeTypePair<X86_v16s32, X86_v4s32>, LegalizeTypePair<X86_v16s32, X86_v8s32>,
+                      LegalizeTypePair<X86_v8s64, X86_v2s64>, LegalizeTypePair<X86_v8s64, X86_v4s64>]>;
+def X86_SELECTPairSet : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s16, X86_s32>, LegalizeTypePair<X86_s32, X86_s32>, LegalizeTypePair<X86_p0, X86_s32>]>;
+def X86_SELECTPairSet2 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s8, X86_s32>]>;
+def X86_SELECTPairSet3 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s64, X86_s32>]>;
+def X86_SELECTPairSet4 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s80, X86_s32>]>;
+def X86_IS_FPCLASSPairSet : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s1, X86_s32>, LegalizeTypePair<X86_s1, X86_s64>, LegalizeTypePair<X86_s1, X86_s80>]>;
+def X86_MemOpMemDescSet : LegalizeCoreMemDescSet<[LegalizeMemDesc<X86_s8, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s16, X86_p0, X86_s16, 1>,
+                       LegalizeMemDesc<X86_s32, X86_p0, X86_s32, 1>, LegalizeMemDesc<X86_s80, X86_p0, X86_s80, 1>,
+                       LegalizeMemDesc<X86_p0, X86_p0, X86_p0, 1>, LegalizeMemDesc<X86_v4s8, X86_p0, X86_v4s8, 1>]>;
+def X86_MemOpMemDescSet2 : LegalizeCoreMemDescSet<[LegalizeMemDesc<X86_s64, X86_p0, X86_s64, 1>, LegalizeMemDesc<X86_v2s32, X86_p0, X86_v2s32, 1>]>;
+def X86_MemOpMemDescSet3 : LegalizeCoreMemDescSet<[LegalizeMemDesc<X86_v4s32, X86_p0, X86_v4s32, 1>]>;
+def X86_MemOpMemDescSet4 : LegalizeCoreMemDescSet<[LegalizeMemDesc<X86_v16s8, X86_p0, X86_v16s8, 1>, LegalizeMemDesc<X86_v8s16, X86_p0, X86_v8s16, 1>,
+                         LegalizeMemDesc<X86_v2s64, X86_p0, X86_v2s64, 1>, LegalizeMemDesc<X86_v2p0, X86_p0, X86_v2p0, 1>]>;
+def X86_MemOpMemDescSet5 : LegalizeCoreMemDescSet<[LegalizeMemDesc<X86_v32s8, X86_p0, X86_v32s8, 1>, LegalizeMemDesc<X86_v16s16, X86_p0, X86_v16s16, 1>,
+                         LegalizeMemDesc<X86_v8s32, X86_p0, X86_v8s32, 1>, LegalizeMemDesc<X86_v4s64, X86_p0, X86_v4s64, 1>,
+                         LegalizeMemDesc<X86_v4p0, X86_p0, X86_v4p0, 1>]>;
+def X86_MemOpMemDescSet6 : LegalizeCoreMemDescSet<[LegalizeMemDesc<X86_v64s8, X86_p0, X86_v64s8, 1>, LegalizeMemDesc<X86_v32s16, X86_p0, X86_v32s16, 1>,
+                         LegalizeMemDesc<X86_v16s32, X86_p0, X86_v16s32, 1>, LegalizeMemDesc<X86_v8s64, X86_p0, X86_v8s64, 1>]>;
+def X86_LOADMemDescSet : LegalizeCoreMemDescSet<[LegalizeMemDesc<X86_s8, X86_p0, X86_s1, 1>, LegalizeMemDesc<X86_s16, X86_p0, X86_s8, 1>,
+                   LegalizeMemDesc<X86_s32, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s32, X86_p0, X86_s16, 1>]>;
+def X86_LOADMemDescSet2 : LegalizeCoreMemDescSet<[LegalizeMemDesc<X86_s64, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s64, X86_p0, X86_s16, 1>,
+                     LegalizeMemDesc<X86_s64, X86_p0, X86_s32, 1>]>;
+def X86_ExtLoadRulesMemDescSet : LegalizeCoreMemDescSet<[LegalizeMemDesc<X86_s16, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s32, X86_p0, X86_s8, 1>,
+                   LegalizeMemDesc<X86_s32, X86_p0, X86_s16, 1>]>;
+def X86_ExtLoadRulesMemDescSet2 : LegalizeCoreMemDescSet<[LegalizeMemDesc<X86_s64, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s64, X86_p0, X86_s16, 1>,
+                     LegalizeMemDesc<X86_s64, X86_p0, X86_s32, 1>]>;
+def X86_X87MemRulesMemDescSet : LegalizeCoreMemDescSet<[LegalizeMemDesc<X86_s80, X86_p0, X86_s32, 1>, LegalizeMemDesc<X86_s80, X86_p0, X86_s64, 1>,
+                     LegalizeMemDesc<X86_s64, X86_p0, X86_s32, 1>]>;
 
 def X86_IMPLICIT_DEF : LegalizeRuleSet<[
   "G_IMPLICIT_DEF", "G_PHI", "G_FREEZE", "G_CONSTANT_FOLD_BARRIER"
@@ -244,33 +387,36 @@ def X86_IMPLICIT_DEF : LegalizeRuleSet<[
     "s128 = EXTEND (G_IMPLICIT_DEF s32/s64) -> s128 = G_IMPLICIT_DEF",
   ];
   let Rules = [
-    LegalFor<[X86_p0, X86_s1, X86_s8, X86_s16, X86_s32, X86_s64]>,
-    LegalForIf<UseX87, [X86_s80]>,
-    LegalForIf<Is64Bit, [X86_s128]>,
-    LegalForIf<HasSSE2, [X86_v16s8, X86_v8s16, X86_v4s32, X86_v2s64]>,
-    LegalForIf<HasAVX, [X86_v32s8, X86_v16s16, X86_v8s32, X86_v4s64]>,
-    LegalForIf<HasAVX512, [X86_v64s8, X86_v32s16, X86_v16s32, X86_v8s64]>,
-    WidenScalarOrEltToNextPow2<0, 8>,
-    ClampScalarOrElt<0, X86_s8, X86_sMaxScalar>,
-    MoreElementsToNextPow2<0>,
-    ClampNumElements<0, X86_v16s8, X86_s8MaxVector>,
-    ClampNumElements<0, X86_v8s16, X86_s16MaxVector>,
-    ClampNumElements<0, X86_v4s32, X86_s32MaxVector>,
-    ClampNumElements<0, X86_v2s64, X86_s64MaxVector>,
-    ClampMaxNumElementsSel<0, X86_p0,
-        LegalizeSelectLanes<[Is64BitAndAVX512, Is64BitAndAVX, Is64Bit,
-                             HasAVX512, HasAVX],
-                            [8, 4, 2, 16, 8], 4>>,
-    ScalarizeIf<LegalizeQueryPredicate<"scalarOrEltWiderThan(0, 64)">, 0>,
+    CoreLegal<(CoreIn (Slot 0), X86_Types_p0s1s8s16s32s64)>,
+    CoreLegal<(CoreAll UseX87, (CoreIn (Slot 0), X86_Types_s80))>,
+    CoreLegal<(CoreAll Is64Bit, (CoreIn (Slot 0), X86_Types_s128))>,
+    CoreLegal<(CoreAll HasSSE2, (CoreIn (Slot 0), X86_Types_v16s8v8s16v4s32v2s64))>,
+    CoreLegal<(CoreAll HasAVX, (CoreIn (Slot 0), X86_Types_v32s8v16s16v8s32v4s64))>,
+    CoreLegal<(CoreAll HasAVX512, (CoreIn (Slot 0), X86_Types_v64s8v32s16v16s32v8s64))>,
+    CoreWiden<(ElemOf (Slot 0)), (Pow2Min 8)>,
+    CoreWiden<(ElemOf (Slot 0)), (Ty X86_s8)>,
+    CoreNarrow<(ElemOf (Slot 0)), (Ty X86_sMaxScalar)>,
+    CoreMore<(Slot 0), (Pow2)>,
+    CoreClampMinNumElementsSel<0, X86_s8, (NumElems (Ty X86_v16s8))>,
+    CoreClampMaxNumElementsSel<0, X86_s8, (NumElems (Ty X86_s8MaxVector))>,
+    CoreClampMinNumElementsSel<0, X86_s16, (NumElems (Ty X86_v8s16))>,
+    CoreClampMaxNumElementsSel<0, X86_s16, (NumElems (Ty X86_s16MaxVector))>,
+    CoreClampMinNumElementsSel<0, X86_s32, (NumElems (Ty X86_v4s32))>,
+    CoreClampMaxNumElementsSel<0, X86_s32, (NumElems (Ty X86_s32MaxVector))>,
+    CoreClampMinNumElementsSel<0, X86_s64, (NumElems (Ty X86_v2s64))>,
+    CoreClampMaxNumElementsSel<0, X86_s64, (NumElems (Ty X86_s64MaxVector))>,
+    CoreClampMaxNumElementsSel<0, X86_p0, (CoreSelect (CoreAll Is64Bit, HasAVX512), 8, (CoreSelect (CoreAll Is64Bit, HasAVX), 4, (CoreSelect Is64Bit, 2, (CoreSelect HasAVX512, 16, (CoreSelect HasAVX, 8, 4)))))>,
+    CoreScalarizeIf<(Slot 0), (CoreGt (BitsOf (Slot 0)), 64)>
   ];
 }
 
 def X86_CONSTANT : LegalizeRuleSet<["G_CONSTANT"]> {
   let Rules = [
-    LegalFor<[X86_p0, X86_s8, X86_s16, X86_s32]>,
-    LegalForIf<Is64Bit, [X86_s64]>,
-    WidenScalarToNextPow2<0, 8>,
-    ClampScalar<0, X86_s8, X86_sMaxScalar>,
+    CoreLegal<(CoreIn (Slot 0), X86_Types_p0s8s16s32)>,
+    CoreLegal<(CoreAll Is64Bit, (CoreIn (Slot 0), X86_Types_s64))>,
+    CoreWiden<(Slot 0), (Pow2Min 8)>,
+    CoreWiden<(Slot 0), (Ty X86_s8)>,
+    CoreNarrow<(Slot 0), (Ty X86_sMaxScalar)>
   ];
 }
 
@@ -279,8 +425,8 @@ def X86_LROUND : LegalizeRuleSet<["G_LROUND", "G_LLROUND"]> {
     // The former opaque body returned (slot 1, s32) unconditionally for an
     // s16 slot; that is exactly minScalarIf on the same guard, and the
     // table's step can express it.
-    MinScalarIf<IsS16In1, 1, X86_s32>,
-    Libcall,
+    CoreWidenIf<(Slot 1), (Ty X86_s32), (CoreEq (Slot 1), (Ty X86_s16))>,
+    CoreAlwaysLibcall
   ];
 }
 
@@ -290,297 +436,307 @@ def X86_FCOS : LegalizeRuleSet<[
   "G_FLOG", "G_FLOG2", "G_FLOG10", "G_FPOWI", "G_FSINCOS", "G_FCEIL", "G_FFLOOR"
 ]> {
   let Rules = [
-    Libcall,
+    CoreAlwaysLibcall
   ];
 }
 
 def X86_FNEG : LegalizeRuleSet<["G_FNEG"]> {
   let Rules = [
-    LegalForIf<UseX87NotSSE1, [X86_s32]>,
-    LegalForIf<UseX87NotSSE2, [X86_s64]>,
-    LegalForIf<UseX87, [X86_s80]>,
-    Lower,
+    CoreLegal<(CoreAll (CoreAll UseX87, (CoreNot HasSSE1)), (CoreIn (Slot 0), X86_Types_s32))>,
+    CoreLegal<(CoreAll (CoreAll UseX87, (CoreNot HasSSE2)), (CoreIn (Slot 0), X86_Types_s64))>,
+    CoreLegal<(CoreAll UseX87, (CoreIn (Slot 0), X86_Types_s80))>,
+    CoreAlwaysLower
   ];
 }
 
 def X86_FSQRT : LegalizeRuleSet<["G_FSQRT"]> {
   let Rules = [
-    LegalForIf<SSE1OrX87, [X86_s32]>,
-    LegalForIf<SSE2OrX87, [X86_s64]>,
-    LegalForIf<UseX87, [X86_s80]>,
+    CoreLegal<WithSSE1OrX87<(CoreIn (Slot 0), X86_Types_s32)>.G>,
+    CoreLegal<WithSSE2OrX87<(CoreIn (Slot 0), X86_Types_s64)>.G>,
+    CoreLegal<(CoreAll UseX87, (CoreIn (Slot 0), X86_Types_s80))>
   ];
 }
 
 def X86_GET_ROUNDING : LegalizeRuleSet<["G_GET_ROUNDING", "G_SET_ROUNDING"]> {
   let Rules = [
-    CustomFor<[X86_s32]>,
+    CoreCustom<(CoreIn (Slot 0), X86_Types_s32)>
   ];
 }
 
 def X86_MERGE_VALUES : LegalizeRuleSet<["G_MERGE_VALUES"]> {
   let Rules = [
-    WidenScalarToNextPow2<1, 8>,
-    WidenScalarToNextPow2<0, 16>,
-    MinScalar<1, X86_s8>,
-    MinScalar<0, X86_s32>,
-    LegalizeQueryGuardedCall<BuilderLegalIf, MergeWidths, []>,
+    CoreWiden<(Slot 1), (Pow2Min 8)>,
+    CoreWiden<(Slot 0), (Pow2Min 16)>,
+    CoreWiden<(Slot 1), (Ty X86_s8)>,
+    CoreWiden<(Slot 0), (Ty X86_s32)>,
+    CoreLegal<(CoreAll (CoreAny (CoreEq (SizeOf (Slot 0)), 16), (CoreEq (SizeOf (Slot 0)), 32), (CoreEq (SizeOf (Slot 0)), 64), (CoreEq (SizeOf (Slot 0)), 128), (CoreEq (SizeOf (Slot 0)), 256), (CoreEq (SizeOf (Slot 0)), 512)), (CoreAny (CoreEq (SizeOf (Slot 1)), 8), (CoreEq (SizeOf (Slot 1)), 16), (CoreEq (SizeOf (Slot 1)), 32), (CoreEq (SizeOf (Slot 1)), 64), (CoreEq (SizeOf (Slot 1)), 128), (CoreEq (SizeOf (Slot 1)), 256)))>
   ];
 }
 
 def X86_UNMERGE_VALUES : LegalizeRuleSet<["G_UNMERGE_VALUES"]> {
   let Rules = [
-    WidenScalarToNextPow2<0, 8>,
-    WidenScalarToNextPow2<1, 16>,
-    MinScalar<0, X86_s8>,
-    MinScalar<1, X86_s32>,
-    LegalizeQueryGuardedCall<BuilderLegalIf, UnmergeWidths, []>,
+    CoreWiden<(Slot 0), (Pow2Min 8)>,
+    CoreWiden<(Slot 1), (Pow2Min 16)>,
+    CoreWiden<(Slot 0), (Ty X86_s8)>,
+    CoreWiden<(Slot 1), (Ty X86_s32)>,
+    CoreLegal<(CoreAll (CoreAny (CoreEq (SizeOf (Slot 1)), 16), (CoreEq (SizeOf (Slot 1)), 32), (CoreEq (SizeOf (Slot 1)), 64), (CoreEq (SizeOf (Slot 1)), 128), (CoreEq (SizeOf (Slot 1)), 256), (CoreEq (SizeOf (Slot 1)), 512)), (CoreAny (CoreEq (SizeOf (Slot 0)), 8), (CoreEq (SizeOf (Slot 0)), 16), (CoreEq (SizeOf (Slot 0)), 32), (CoreEq (SizeOf (Slot 0)), 64), (CoreEq (SizeOf (Slot 0)), 128), (CoreEq (SizeOf (Slot 0)), 256)))>
   ];
 }
 
 def X86_UMIN : LegalizeRuleSet<["G_UMIN", "G_UMAX", "G_SMIN", "G_SMAX"]> {
   let Rules = [
-    WidenScalarToNextPow2<0, 32>,
-    Lower,
+    CoreWiden<(Slot 0), (Pow2Min 32)>,
+    CoreAlwaysLower
   ];
 }
 
 def X86_ADD : LegalizeRuleSet<["G_ADD", "G_SUB"]> {
   let Comments = ["integer addition/subtraction"];
   let Rules = [
-    LegalFor<[X86_s8, X86_s16, X86_s32]>,
-    LegalForIf<Is64Bit, [X86_s64]>,
-    LegalForIf<HasSSE2, [X86_v16s8, X86_v8s16, X86_v4s32, X86_v2s64]>,
-    LegalForIf<HasAVX2, [X86_v32s8, X86_v16s16, X86_v8s32, X86_v4s64]>,
-    LegalForIf<HasAVX512, [X86_v16s32, X86_v8s64]>,
-    LegalForIf<HasBWI, [X86_v64s8, X86_v32s16]>,
-    ClampMinNumElements<0, X86_s8, 16>,
-    ClampMinNumElements<0, X86_s16, 8>,
-    ClampMinNumElements<0, X86_s32, 4>,
-    ClampMinNumElements<0, X86_s64, 2>,
-    ClampMaxNumElementsSel<0, X86_s8,
-        LegalizeSelectLanes<[HasBWI, HasAVX2], [64, 32], 16>>,
-    ClampMaxNumElementsSel<0, X86_s16,
-        LegalizeSelectLanes<[HasBWI, HasAVX2], [32, 16], 8>>,
-    ClampMaxNumElementsSel<0, X86_s32,
-        LegalizeSelectLanes<[HasAVX512, HasAVX2], [16, 8], 4>>,
-    ClampMaxNumElementsSel<0, X86_s64,
-        LegalizeSelectLanes<[HasAVX512, HasAVX2], [8, 4], 2>>,
-    WidenScalarToNextPow2<0, 32>,
-    ClampScalar<0, X86_s8, X86_sMaxScalar>,
-    Scalarize<0>,
+    CoreLegal<(CoreIn (Slot 0), X86_Types_s8s16s32)>,
+    CoreLegal<(CoreAll Is64Bit, (CoreIn (Slot 0), X86_Types_s64))>,
+    CoreLegal<(CoreAll HasSSE2, (CoreIn (Slot 0), X86_Types_v16s8v8s16v4s32v2s64))>,
+    CoreLegal<(CoreAll HasAVX2, (CoreIn (Slot 0), X86_Types_v32s8v16s16v8s32v4s64))>,
+    CoreLegal<(CoreAll HasAVX512, (CoreIn (Slot 0), X86_Types_v16s32v8s64))>,
+    CoreLegal<(CoreAll HasBWI, (CoreIn (Slot 0), X86_Types_v64s8v32s16))>,
+    CoreClampMinNumElements<0, X86_s8, 16>,
+    CoreClampMinNumElements<0, X86_s16, 8>,
+    CoreClampMinNumElements<0, X86_s32, 4>,
+    CoreClampMinNumElements<0, X86_s64, 2>,
+    CoreClampMaxNumElementsSel<0, X86_s8, (CoreSelect HasBWI, 64, (CoreSelect HasAVX2, 32, 16))>,
+    CoreClampMaxNumElementsSel<0, X86_s16, (CoreSelect HasBWI, 32, (CoreSelect HasAVX2, 16, 8))>,
+    CoreClampMaxNumElementsSel<0, X86_s32, (CoreSelect HasAVX512, 16, (CoreSelect HasAVX2, 8, 4))>,
+    CoreClampMaxNumElementsSel<0, X86_s64, (CoreSelect HasAVX512, 8, (CoreSelect HasAVX2, 4, 2))>,
+    CoreWiden<(Slot 0), (Pow2Min 32)>,
+    CoreWiden<(Slot 0), (Ty X86_s8)>,
+    CoreNarrow<(Slot 0), (Ty X86_sMaxScalar)>,
+    CoreScalarize<(Slot 0)>
   ];
 }
 
 def X86_UADDE : LegalizeRuleSet<["G_UADDE", "G_UADDO", "G_USUBE", "G_USUBO"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<X86_s8, X86_s8>, LegalizeTypePair<X86_s16, X86_s8>, LegalizeTypePair<X86_s32, X86_s8>]>,
-    LegalForPairsIf<Is64Bit, [LegalizeTypePair<X86_s64, X86_s8>]>,
-    WidenScalarToNextPow2<0, 32>,
-    ClampScalar<0, X86_s8, X86_sMaxScalar>,
-    ClampScalar<1, X86_s8, X86_s8>,
-    Scalarize<0>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), X86_UADDEPairSet)>,
+    CoreLegal<(CoreAll Is64Bit, (CoreInPairs (Slot 0), (Slot 1), X86_UADDEPairSet2))>,
+    CoreWiden<(Slot 0), (Pow2Min 32)>,
+    CoreWiden<(Slot 0), (Ty X86_s8)>,
+    CoreNarrow<(Slot 0), (Ty X86_sMaxScalar)>,
+    CoreWiden<(Slot 1), (Ty X86_s8)>,
+    CoreNarrow<(Slot 1), (Ty X86_s8)>,
+    CoreScalarize<(Slot 0)>
   ];
 }
 
 def X86_MUL : LegalizeRuleSet<["G_MUL"]> {
   let Comments = ["integer multiply"];
   let Rules = [
-    LegalFor<[X86_s8, X86_s16, X86_s32]>,
-    LegalForIf<Is64Bit, [X86_s64]>,
-    LegalForIf<HasSSE2, [X86_v8s16]>,
-    LegalForIf<HasSSE41, [X86_v4s32]>,
-    LegalForIf<HasAVX2, [X86_v16s16, X86_v8s32]>,
-    LegalForIf<HasAVX512, [X86_v16s32]>,
-    LegalForIf<HasDQI, [X86_v8s64]>,
-    LegalForIf<DQIAndVLX, [X86_v2s64, X86_v4s64]>,
-    LegalForIf<HasBWI, [X86_v32s16]>,
-    ClampMinNumElements<0, X86_s16, 8>,
-    ClampMinNumElements<0, X86_s32, 4>,
-    ClampMinNumElementsSel<0, X86_s64,
-        LegalizeSelectLanes<[HasVLX], [2], 8>>,
-    ClampMaxNumElementsSel<0, X86_s16,
-        LegalizeSelectLanes<[HasBWI, HasAVX2], [32, 16], 8>>,
-    ClampMaxNumElementsSel<0, X86_s32,
-        LegalizeSelectLanes<[HasAVX512, HasAVX2], [16, 8], 4>>,
-    ClampMaxNumElements<0, X86_s64, 8>,
-    WidenScalarToNextPow2<0, 32>,
-    ClampScalar<0, X86_s8, X86_sMaxScalar>,
-    Scalarize<0>,
+    CoreLegal<(CoreIn (Slot 0), X86_Types_s8s16s32)>,
+    CoreLegal<(CoreAll Is64Bit, (CoreIn (Slot 0), X86_Types_s64))>,
+    CoreLegal<(CoreAll HasSSE2, (CoreIn (Slot 0), X86_Types_v8s16))>,
+    CoreLegal<(CoreAll HasSSE41, (CoreIn (Slot 0), X86_Types_v4s32))>,
+    CoreLegal<(CoreAll HasAVX2, (CoreIn (Slot 0), X86_Types_v16s16v8s32))>,
+    CoreLegal<(CoreAll HasAVX512, (CoreIn (Slot 0), X86_Types_v16s32))>,
+    CoreLegal<(CoreAll HasDQI, (CoreIn (Slot 0), X86_Types_v8s64))>,
+    CoreLegal<(CoreAll (CoreAll HasDQI, HasVLX), (CoreIn (Slot 0), X86_Types_v2s64v4s64))>,
+    CoreLegal<(CoreAll HasBWI, (CoreIn (Slot 0), X86_Types_v32s16))>,
+    CoreClampMinNumElements<0, X86_s16, 8>,
+    CoreClampMinNumElements<0, X86_s32, 4>,
+    CoreClampMinNumElementsSel<0, X86_s64, (CoreSelect HasVLX, 2, 8)>,
+    CoreClampMaxNumElementsSel<0, X86_s16, (CoreSelect HasBWI, 32, (CoreSelect HasAVX2, 16, 8))>,
+    CoreClampMaxNumElementsSel<0, X86_s32, (CoreSelect HasAVX512, 16, (CoreSelect HasAVX2, 8, 4))>,
+    CoreClampMaxNumElements<0, X86_s64, 8>,
+    CoreWiden<(Slot 0), (Pow2Min 32)>,
+    CoreWiden<(Slot 0), (Ty X86_s8)>,
+    CoreNarrow<(Slot 0), (Ty X86_sMaxScalar)>,
+    CoreScalarize<(Slot 0)>
   ];
 }
 
 def X86_SMULH : LegalizeRuleSet<["G_SMULH", "G_UMULH"]> {
   let Rules = [
-    LegalFor<[X86_s8, X86_s16, X86_s32]>,
-    LegalForIf<Is64Bit, [X86_s64]>,
-    WidenScalarToNextPow2<0, 32>,
-    ClampScalar<0, X86_s8, X86_sMaxScalar>,
-    Scalarize<0>,
+    CoreLegal<(CoreIn (Slot 0), X86_Types_s8s16s32)>,
+    CoreLegal<(CoreAll Is64Bit, (CoreIn (Slot 0), X86_Types_s64))>,
+    CoreWiden<(Slot 0), (Pow2Min 32)>,
+    CoreWiden<(Slot 0), (Ty X86_s8)>,
+    CoreNarrow<(Slot 0), (Ty X86_sMaxScalar)>,
+    CoreScalarize<(Slot 0)>
   ];
 }
 
 def X86_SDIV : LegalizeRuleSet<["G_SDIV", "G_SREM", "G_UDIV", "G_UREM"]> {
   let Comments = ["integer divisions"];
   let Rules = [
-    LegalFor<[X86_s8, X86_s16, X86_s32]>,
-    LegalForIf<Is64Bit, [X86_s64]>,
-    LibcallFor<[X86_s64]>,
-    ClampScalar<0, X86_s8, X86_sMaxScalar>,
+    CoreLegal<(CoreIn (Slot 0), X86_Types_s8s16s32)>,
+    CoreLegal<(CoreAll Is64Bit, (CoreIn (Slot 0), X86_Types_s64))>,
+    CoreLibcall<(CoreIn (Slot 0), X86_Types_s64)>,
+    CoreWiden<(Slot 0), (Ty X86_s8)>,
+    CoreNarrow<(Slot 0), (Ty X86_sMaxScalar)>
   ];
 }
 
 def X86_SHL : LegalizeRuleSet<["G_SHL", "G_LSHR", "G_ASHR"]> {
   let Comments = ["integer shifts"];
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<X86_s8, X86_s8>, LegalizeTypePair<X86_s16, X86_s8>, LegalizeTypePair<X86_s32, X86_s8>]>,
-    LegalForPairsIf<Is64Bit, [LegalizeTypePair<X86_s64, X86_s8>]>,
-    ClampScalar<0, X86_s8, X86_sMaxScalar>,
-    ClampScalar<1, X86_s8, X86_s8>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), X86_SHLPairSet)>,
+    CoreLegal<(CoreAll Is64Bit, (CoreInPairs (Slot 0), (Slot 1), X86_SHLPairSet2))>,
+    CoreWiden<(Slot 0), (Ty X86_s8)>,
+    CoreNarrow<(Slot 0), (Ty X86_sMaxScalar)>,
+    CoreWiden<(Slot 1), (Ty X86_s8)>,
+    CoreNarrow<(Slot 1), (Ty X86_s8)>
   ];
 }
 
 def X86_AND : LegalizeRuleSet<["G_AND", "G_OR", "G_XOR"]> {
   let Comments = ["integer logic"];
   let Rules = [
-    LegalFor<[X86_s8, X86_s16, X86_s32]>,
-    LegalForIf<Is64Bit, [X86_s64]>,
-    LegalForIf<HasSSE2, [X86_v16s8, X86_v8s16, X86_v4s32, X86_v2s64]>,
-    LegalForIf<HasAVX, [X86_v32s8, X86_v16s16, X86_v8s32, X86_v4s64]>,
-    LegalForIf<HasAVX512, [X86_v64s8, X86_v32s16, X86_v16s32, X86_v8s64]>,
-    ClampNumElements<0, X86_v16s8, X86_s8MaxVector>,
-    ClampNumElements<0, X86_v8s16, X86_s16MaxVector>,
-    ClampNumElements<0, X86_v4s32, X86_s32MaxVector>,
-    ClampNumElements<0, X86_v2s64, X86_s64MaxVector>,
-    WidenScalarToNextPow2<0, 32>,
-    ClampScalar<0, X86_s8, X86_sMaxScalar>,
-    Scalarize<0>,
+    CoreLegal<(CoreIn (Slot 0), X86_Types_s8s16s32)>,
+    CoreLegal<(CoreAll Is64Bit, (CoreIn (Slot 0), X86_Types_s64))>,
+    CoreLegal<(CoreAll HasSSE2, (CoreIn (Slot 0), X86_Types_v16s8v8s16v4s32v2s64))>,
+    CoreLegal<(CoreAll HasAVX, (CoreIn (Slot 0), X86_Types_v32s8v16s16v8s32v4s64))>,
+    CoreLegal<(CoreAll HasAVX512, (CoreIn (Slot 0), X86_Types_v64s8v32s16v16s32v8s64))>,
+    CoreClampMinNumElementsSel<0, X86_s8, (NumElems (Ty X86_v16s8))>,
+    CoreClampMaxNumElementsSel<0, X86_s8, (NumElems (Ty X86_s8MaxVector))>,
+    CoreClampMinNumElementsSel<0, X86_s16, (NumElems (Ty X86_v8s16))>,
+    CoreClampMaxNumElementsSel<0, X86_s16, (NumElems (Ty X86_s16MaxVector))>,
+    CoreClampMinNumElementsSel<0, X86_s32, (NumElems (Ty X86_v4s32))>,
+    CoreClampMaxNumElementsSel<0, X86_s32, (NumElems (Ty X86_s32MaxVector))>,
+    CoreClampMinNumElementsSel<0, X86_s64, (NumElems (Ty X86_v2s64))>,
+    CoreClampMaxNumElementsSel<0, X86_s64, (NumElems (Ty X86_s64MaxVector))>,
+    CoreWiden<(Slot 0), (Pow2Min 32)>,
+    CoreWiden<(Slot 0), (Ty X86_s8)>,
+    CoreNarrow<(Slot 0), (Ty X86_sMaxScalar)>,
+    CoreScalarize<(Slot 0)>
   ];
 }
 
 def X86_ICMP : LegalizeRuleSet<["G_ICMP"]> {
   let Rules = [
-    LegalForCartesianProduct<
-        LegalizeInlineTypeList<[X86_s8]>,
-        LegalizeSelectTypeList<[Is64Bit], [X86_IntTypes64], X86_IntTypes32>>,
-    ClampScalar<0, X86_s8, X86_s8>,
-    WidenScalarToNextPow2<1, 8>,
-    ClampScalar<1, X86_s8, X86_sMaxScalar>,
+    CoreLegal<(CoreAll Is64Bit, (CoreIn (Slot 0), X86_Types_s8), (CoreIn (Slot 1), X86_IntTypes64))>,
+    CoreLegal<(CoreAll (CoreNot Is64Bit), (CoreIn (Slot 0), X86_Types_s8), (CoreIn (Slot 1), X86_IntTypes32))>,
+    CoreWiden<(Slot 0), (Ty X86_s8)>,
+    CoreNarrow<(Slot 0), (Ty X86_s8)>,
+    CoreWiden<(Slot 1), (Pow2Min 8)>,
+    CoreWiden<(Slot 1), (Ty X86_s8)>,
+    CoreNarrow<(Slot 1), (Ty X86_sMaxScalar)>
   ];
 }
 
 def X86_BSWAP : LegalizeRuleSet<["G_BSWAP"]> {
   let Comments = ["bswap"];
   let Rules = [
-    LegalFor<[X86_s32]>,
-    LegalForIf<Is64Bit, [X86_s64]>,
-    WidenScalarToNextPow2<0, 32>,
-    ClampScalar<0, X86_s32, X86_sMaxScalar>,
+    CoreLegal<(CoreIn (Slot 0), X86_Types_s32)>,
+    CoreLegal<(CoreAll Is64Bit, (CoreIn (Slot 0), X86_Types_s64))>,
+    CoreWiden<(Slot 0), (Pow2Min 32)>,
+    CoreWiden<(Slot 0), (Ty X86_s32)>,
+    CoreNarrow<(Slot 0), (Ty X86_sMaxScalar)>
   ];
 }
 
 def X86_CTPOP : LegalizeRuleSet<["G_CTPOP"]> {
   let Comments = ["popcount"];
   let Rules = [
-    LegalForPairsIf<HasPOPCNT, [LegalizeTypePair<X86_s16, X86_s16>, LegalizeTypePair<X86_s32, X86_s32>]>,
-    LegalForPairsIf<POPCNTAnd64Bit, [LegalizeTypePair<X86_s64, X86_s64>]>,
-    LegalForPairsIf<HasVPOPCNTDQ,
-                    [LegalizeTypePair<X86_v16s32, X86_v16s32>,
-                     LegalizeTypePair<X86_v8s64, X86_v8s64>]>,
-    LegalForPairsIf<VPOPCNTAndVLX,
-                    [LegalizeTypePair<X86_v4s32, X86_v4s32>,
-                     LegalizeTypePair<X86_v8s32, X86_v8s32>,
-                     LegalizeTypePair<X86_v2s64, X86_v2s64>,
-                     LegalizeTypePair<X86_v4s64, X86_v4s64>]>,
-    WidenScalarToNextPow2<1, 16>,
-    ClampScalar<1, X86_s16, X86_sMaxScalar>,
-    ScalarSameSizeAs<0, 1>,
+    CoreLegal<(CoreAll HasPOPCNT, (CoreInPairs (Slot 0), (Slot 1), X86_CTPOPPairSet))>,
+    CoreLegal<(CoreAll (CoreAll HasPOPCNT, Is64Bit), (CoreInPairs (Slot 0), (Slot 1), X86_CTPOPPairSet2))>,
+    CoreLegal<(CoreAll HasVPOPCNTDQ, (CoreInPairs (Slot 0), (Slot 1), X86_CTPOPPairSet3))>,
+    CoreLegal<(CoreAll (CoreAll HasVPOPCNTDQ, HasVLX), (CoreInPairs (Slot 0), (Slot 1), X86_CTPOPPairSet4))>,
+    CoreWiden<(Slot 1), (Pow2Min 16)>,
+    CoreWiden<(Slot 1), (Ty X86_s16)>,
+    CoreNarrow<(Slot 1), (Ty X86_sMaxScalar)>,
+    CoreWiden<(Slot 0), (SameAs 1)>,
+    CoreNarrow<(Slot 0), (SameAs 1)>
   ];
 }
 
 def X86_CTLZ : LegalizeRuleSet<["G_CTLZ"]> {
   let Comments = ["count leading zeros (LZCNT)"];
   let Rules = [
-    LegalForPairsIf<HasLZCNT, [LegalizeTypePair<X86_s16, X86_s16>, LegalizeTypePair<X86_s32, X86_s32>]>,
-    LegalForPairsIf<LZCNTAnd64Bit, [LegalizeTypePair<X86_s64, X86_s64>]>,
-    WidenScalarToNextPow2<1, 16>,
-    ClampScalar<1, X86_s16, X86_sMaxScalar>,
-    ScalarSameSizeAs<0, 1>,
+    CoreLegal<(CoreAll HasLZCNT, (CoreInPairs (Slot 0), (Slot 1), X86_CTLZPairSet))>,
+    CoreLegal<(CoreAll (CoreAll HasLZCNT, Is64Bit), (CoreInPairs (Slot 0), (Slot 1), X86_CTLZPairSet2))>,
+    CoreWiden<(Slot 1), (Pow2Min 16)>,
+    CoreWiden<(Slot 1), (Ty X86_s16)>,
+    CoreNarrow<(Slot 1), (Ty X86_sMaxScalar)>,
+    CoreWiden<(Slot 0), (SameAs 1)>,
+    CoreNarrow<(Slot 0), (SameAs 1)>
   ];
 }
 
 def X86_CTTZ_ZERO_POISON : LegalizeRuleSet<["G_CTTZ_ZERO_POISON"]> {
   let Comments = ["count trailing zeros"];
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<X86_s16, X86_s16>, LegalizeTypePair<X86_s32, X86_s32>]>,
-    LegalForPairsIf<Is64Bit, [LegalizeTypePair<X86_s64, X86_s64>]>,
-    WidenScalarToNextPow2<1, 16>,
-    ClampScalar<1, X86_s16, X86_sMaxScalar>,
-    ScalarSameSizeAs<0, 1>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), X86_CTTZ_ZERO_POISONPairSet)>,
+    CoreLegal<(CoreAll Is64Bit, (CoreInPairs (Slot 0), (Slot 1), X86_CTTZ_ZERO_POISONPairSet2))>,
+    CoreWiden<(Slot 1), (Pow2Min 16)>,
+    CoreWiden<(Slot 1), (Ty X86_s16)>,
+    CoreNarrow<(Slot 1), (Ty X86_sMaxScalar)>,
+    CoreWiden<(Slot 0), (SameAs 1)>,
+    CoreNarrow<(Slot 0), (SameAs 1)>
   ];
 }
 
 def X86_CTTZ : LegalizeRuleSet<["G_CTTZ"]> {
   let Rules = [
-    LegalForPairsIf<HasBMI, [LegalizeTypePair<X86_s16, X86_s16>, LegalizeTypePair<X86_s32, X86_s32>]>,
-    LegalForPairsIf<BMIAnd64Bit, [LegalizeTypePair<X86_s64, X86_s64>]>,
-    WidenScalarToNextPow2<1, 16>,
-    ClampScalar<1, X86_s16, X86_sMaxScalar>,
-    ScalarSameSizeAs<0, 1>,
+    CoreLegal<(CoreAll HasBMI, (CoreInPairs (Slot 0), (Slot 1), X86_CTTZPairSet))>,
+    CoreLegal<(CoreAll (CoreAll HasBMI, Is64Bit), (CoreInPairs (Slot 0), (Slot 1), X86_CTTZPairSet2))>,
+    CoreWiden<(Slot 1), (Pow2Min 16)>,
+    CoreWiden<(Slot 1), (Ty X86_s16)>,
+    CoreNarrow<(Slot 1), (Ty X86_sMaxScalar)>,
+    CoreWiden<(Slot 0), (SameAs 1)>,
+    CoreNarrow<(Slot 0), (SameAs 1)>
   ];
 }
 
 def X86_BR : LegalizeRuleSet<["G_BR"]> {
   let Rules = [
-    AlwaysLegal,
+    CoreAlwaysLegal
   ];
 }
 
 def X86_BRCOND : LegalizeRuleSet<["G_BRCOND"]> {
   let Rules = [
-    LegalFor<[X86_s1]>,
+    CoreLegal<(CoreIn (Slot 0), X86_Types_s1)>
   ];
 }
 
 def X86_PTRTOINT : LegalizeRuleSet<["G_PTRTOINT"]> {
   let Rules = [
-    LegalForCartesianProduct<
-        LegalizeSelectTypeList<[Is64Bit], [X86_PtrTypes64], X86_PtrTypes32>,
-        LegalizeInlineTypeList<[X86_p0]>>,
-    MaxScalar<0, X86_sMaxScalar>,
-    WidenScalarToNextPow2<0, 8>,
+    CoreLegal<(CoreAll Is64Bit, (CoreIn (Slot 0), X86_PtrTypes64), (CoreIn (Slot 1), X86_Types_p0))>,
+    CoreLegal<(CoreAll (CoreNot Is64Bit), (CoreIn (Slot 0), X86_PtrTypes32), (CoreIn (Slot 1), X86_Types_p0))>,
+    CoreNarrow<(Slot 0), (Ty X86_sMaxScalar)>,
+    CoreWiden<(Slot 0), (Pow2Min 8)>
   ];
 }
 
 def X86_INTTOPTR : LegalizeRuleSet<["G_INTTOPTR"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<X86_p0, X86_sMaxScalar>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), X86_INTTOPTRPairSet)>
   ];
 }
 
 def X86_CONSTANT_POOL : LegalizeRuleSet<["G_CONSTANT_POOL"]> {
   let Rules = [
-    LegalFor<[X86_p0]>,
+    CoreLegal<(CoreIn (Slot 0), X86_Types_p0)>
   ];
 }
 
 def X86_PTR_ADD : LegalizeRuleSet<["G_PTR_ADD"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<X86_p0, X86_s32>]>,
-    LegalForPairsIf<Is64Bit, [LegalizeTypePair<X86_p0, X86_s64>]>,
-    WidenScalarToNextPow2<1, 32>,
-    ClampScalar<1, X86_s32, X86_sMaxScalar>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), X86_PTR_ADDPairSet)>,
+    CoreLegal<(CoreAll Is64Bit, (CoreInPairs (Slot 0), (Slot 1), X86_PTR_ADDPairSet2))>,
+    CoreWiden<(Slot 1), (Pow2Min 32)>,
+    CoreWiden<(Slot 1), (Ty X86_s32)>,
+    CoreNarrow<(Slot 1), (Ty X86_sMaxScalar)>
   ];
 }
 
 def X86_FRAME_INDEX : LegalizeRuleSet<["G_FRAME_INDEX"]> {
   let Rules = [
-    LegalFor<[X86_p0]>,
+    CoreLegal<(CoreIn (Slot 0), X86_Types_p0)>
   ];
 }
 
 def X86_GLOBAL_VALUE : LegalizeRuleSet<["G_GLOBAL_VALUE"]> {
   let Rules = [
-    CustomFor<[X86_p0]>,
+    CoreCustom<(CoreIn (Slot 0), X86_Types_p0)>
   ];
 }
 
@@ -599,59 +755,45 @@ multiclass X86_MemOp<string Op, list<string> Note, list<LegalizeRule> Tail> {
   def NAME : LegalizeRuleSet<[Op]> {
     let Comments = Note;
     let Rules = [
-      LegalForMemDesc<[LegalizeMemDesc<X86_s8, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s16, X86_p0, X86_s16, 1>,
-                       LegalizeMemDesc<X86_s32, X86_p0, X86_s32, 1>, LegalizeMemDesc<X86_s80, X86_p0, X86_s80, 1>,
-                       LegalizeMemDesc<X86_p0, X86_p0, X86_p0, 1>, LegalizeMemDesc<X86_v4s8, X86_p0, X86_v4s8, 1>]>,
-      LegalForMemDescIf<Is64Bit,
-                        [LegalizeMemDesc<X86_s64, X86_p0, X86_s64, 1>, LegalizeMemDesc<X86_v2s32, X86_p0, X86_v2s32, 1>]>,
-      LegalForMemDescIf<HasSSE1, [LegalizeMemDesc<X86_v4s32, X86_p0, X86_v4s32, 1>]>,
-      LegalForMemDescIf<HasSSE2,
-                        [LegalizeMemDesc<X86_v16s8, X86_p0, X86_v16s8, 1>, LegalizeMemDesc<X86_v8s16, X86_p0, X86_v8s16, 1>,
-                         LegalizeMemDesc<X86_v2s64, X86_p0, X86_v2s64, 1>, LegalizeMemDesc<X86_v2p0, X86_p0, X86_v2p0, 1>]>,
-      LegalForMemDescIf<HasAVX,
-                        [LegalizeMemDesc<X86_v32s8, X86_p0, X86_v32s8, 1>, LegalizeMemDesc<X86_v16s16, X86_p0, X86_v16s16, 1>,
-                         LegalizeMemDesc<X86_v8s32, X86_p0, X86_v8s32, 1>, LegalizeMemDesc<X86_v4s64, X86_p0, X86_v4s64, 1>,
-                         LegalizeMemDesc<X86_v4p0, X86_p0, X86_v4p0, 1>]>,
-      LegalForMemDescIf<HasAVX512,
-                        [LegalizeMemDesc<X86_v64s8, X86_p0, X86_v64s8, 1>, LegalizeMemDesc<X86_v32s16, X86_p0, X86_v32s16, 1>,
-                         LegalizeMemDesc<X86_v16s32, X86_p0, X86_v16s32, 1>, LegalizeMemDesc<X86_v8s64, X86_p0, X86_v8s64, 1>]>
-    ] # Tail;
+    CoreLegal<(CoreInMemDesc (Slot 0), (Slot 1), (MemSlot 0), X86_MemOpMemDescSet)>,
+    CoreLegal<(CoreAll Is64Bit, (CoreInMemDesc (Slot 0), (Slot 1), (MemSlot 0), X86_MemOpMemDescSet2))>,
+    CoreLegal<(CoreAll HasSSE1, (CoreInMemDesc (Slot 0), (Slot 1), (MemSlot 0), X86_MemOpMemDescSet3))>,
+    CoreLegal<(CoreAll HasSSE2, (CoreInMemDesc (Slot 0), (Slot 1), (MemSlot 0), X86_MemOpMemDescSet4))>,
+    CoreLegal<(CoreAll HasAVX, (CoreInMemDesc (Slot 0), (Slot 1), (MemSlot 0), X86_MemOpMemDescSet5))>,
+    CoreLegal<(CoreAll HasAVX512, (CoreInMemDesc (Slot 0), (Slot 1), (MemSlot 0), X86_MemOpMemDescSet6))>
+  ] # Tail;
   }
 }
 
 defm X86_LOAD : X86_MemOp<"G_LOAD", ["load/store: add more corner cases"], [
-  // X86 supports extending loads but not stores for GPRs.
-  LegalForMemDesc<[LegalizeMemDesc<X86_s8, X86_p0, X86_s1, 1>, LegalizeMemDesc<X86_s16, X86_p0, X86_s8, 1>,
-                   LegalizeMemDesc<X86_s32, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s32, X86_p0, X86_s16, 1>]>,
-  LegalForMemDescIf<Is64Bit,
-                    [LegalizeMemDesc<X86_s64, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s64, X86_p0, X86_s16, 1>,
-                     LegalizeMemDesc<X86_s64, X86_p0, X86_s32, 1>]>,
-  WidenScalarToNextPow2<0, 8>,
-  ClampScalar<0, X86_s8, X86_sMaxScalar>,
-  Scalarize<0>,
-]>;
+    // X86 supports extending loads but not stores for GPRs.
+    CoreLegal<(CoreInMemDesc (Slot 0), (Slot 1), (MemSlot 0), X86_LOADMemDescSet)>,
+    CoreLegal<(CoreAll Is64Bit, (CoreInMemDesc (Slot 0), (Slot 1), (MemSlot 0), X86_LOADMemDescSet2))>,
+    CoreWiden<(Slot 0), (Pow2Min 8)>,
+    CoreWiden<(Slot 0), (Ty X86_s8)>,
+    CoreNarrow<(Slot 0), (Ty X86_sMaxScalar)>,
+    CoreScalarize<(Slot 0)>
+  ]>;
 
 defm X86_STORE : X86_MemOp<"G_STORE", [], [
-  // A store whose value type differs from the memory type is not legalized
-  // here; the type has to match exactly.
-  LegalizeQueryGuardedCall<BuilderCustomIf, StoreValueDiffers, []>,
-  WidenScalarToNextPow2<0, 8>,
-  ClampScalar<0, X86_s8, X86_sMaxScalar>,
-  Scalarize<0>,
-]>;
+    // A store whose value type differs from the memory type is not legalized
+    // here; the type has to match exactly.
+    CoreCustom<(CoreNe (Slot 0), (MemTy (MemSlot 0)))>,
+    CoreWiden<(Slot 0), (Pow2Min 8)>,
+    CoreWiden<(Slot 0), (Ty X86_s8)>,
+    CoreNarrow<(Slot 0), (Ty X86_sMaxScalar)>,
+    CoreScalarize<(Slot 0)>
+  ]>;
 
 
 // Both extending loads accept exactly the same (type, memory type) pairs; the
 // hand-written chain built them in one `for (Op : {G_SEXTLOAD, G_ZEXTLOAD})`,
 // so this body existed once.  Sharing it keeps it that way.
 defvar X86_ExtLoadRules = [
-  LegalForMemDesc<[LegalizeMemDesc<X86_s16, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s32, X86_p0, X86_s8, 1>,
-                   LegalizeMemDesc<X86_s32, X86_p0, X86_s16, 1>]>,
-  LegalForMemDescIf<Is64Bit,
-                    [LegalizeMemDesc<X86_s64, X86_p0, X86_s8, 1>, LegalizeMemDesc<X86_s64, X86_p0, X86_s16, 1>,
-                     LegalizeMemDesc<X86_s64, X86_p0, X86_s32, 1>]>,
-  // TODO - SSE41/AVX2/AVX512F/AVX512BW vector extensions
-];
+    CoreLegal<(CoreInMemDesc (Slot 0), (Slot 1), (MemSlot 0), X86_ExtLoadRulesMemDescSet)>,
+    CoreLegal<(CoreAll Is64Bit, (CoreInMemDesc (Slot 0), (Slot 1), (MemSlot 0), X86_ExtLoadRulesMemDescSet2))>,
+    // TODO - SSE41/AVX2/AVX512F/AVX512BW vector extensions
+  ];
 
 def X86_SEXTLOAD : LegalizeRuleSet<["G_SEXTLOAD"]> {
   let Rules = X86_ExtLoadRules;
@@ -664,10 +806,8 @@ def X86_ZEXTLOAD : LegalizeRuleSet<["G_ZEXTLOAD"]> {
 // The x87 load and store accept the same three (type, memory type) pairs; one
 // `for (Op : {G_FPEXTLOAD, G_FPTRUNCSTORE})` in the former C++.
 defvar X86_X87MemRules = [
-  LegalForMemDescIf<UseX87,
-                    [LegalizeMemDesc<X86_s80, X86_p0, X86_s32, 1>, LegalizeMemDesc<X86_s80, X86_p0, X86_s64, 1>,
-                     LegalizeMemDesc<X86_s64, X86_p0, X86_s32, 1>]>,
-];
+    CoreLegal<(CoreAll UseX87, (CoreInMemDesc (Slot 0), (Slot 1), (MemSlot 0), X86_X87MemRulesMemDescSet))>
+  ];
 
 def X86_FPEXTLOAD : LegalizeRuleSet<["G_FPEXTLOAD"]> {
   let Rules = X86_X87MemRules;
@@ -680,131 +820,135 @@ def X86_FPTRUNCSTORE : LegalizeRuleSet<["G_FPTRUNCSTORE"]> {
 def X86_ANYEXT : LegalizeRuleSet<["G_ANYEXT"]> {
   let Comments = ["sext, zext, and anyext"];
   let Rules = [
-    LegalFor<[X86_s8, X86_s16, X86_s32, X86_s128]>,
-    LegalForIf<Is64Bit, [X86_s64]>,
-    WidenScalarToNextPow2<0, 8>,
-    ClampScalar<0, X86_s8, X86_sMaxScalar>,
-    WidenScalarToNextPow2<1, 8>,
-    ClampScalar<1, X86_s8, X86_sMaxScalar>,
-    Scalarize<0>,
+    CoreLegal<(CoreIn (Slot 0), X86_Types_s8s16s32s128)>,
+    CoreLegal<(CoreAll Is64Bit, (CoreIn (Slot 0), X86_Types_s64))>,
+    CoreWiden<(Slot 0), (Pow2Min 8)>,
+    CoreWiden<(Slot 0), (Ty X86_s8)>,
+    CoreNarrow<(Slot 0), (Ty X86_sMaxScalar)>,
+    CoreWiden<(Slot 1), (Pow2Min 8)>,
+    CoreWiden<(Slot 1), (Ty X86_s8)>,
+    CoreNarrow<(Slot 1), (Ty X86_sMaxScalar)>,
+    CoreScalarize<(Slot 0)>
   ];
 }
 
 def X86_SEXT : LegalizeRuleSet<["G_SEXT", "G_ZEXT"]> {
   let Rules = [
-    LegalFor<[X86_s8, X86_s16, X86_s32]>,
-    LegalForIf<Is64Bit, [X86_s64]>,
-    WidenScalarToNextPow2<0, 8>,
-    ClampScalar<0, X86_s8, X86_sMaxScalar>,
-    WidenScalarToNextPow2<1, 8>,
-    ClampScalar<1, X86_s8, X86_sMaxScalar>,
-    Scalarize<0>,
+    CoreLegal<(CoreIn (Slot 0), X86_Types_s8s16s32)>,
+    CoreLegal<(CoreAll Is64Bit, (CoreIn (Slot 0), X86_Types_s64))>,
+    CoreWiden<(Slot 0), (Pow2Min 8)>,
+    CoreWiden<(Slot 0), (Ty X86_s8)>,
+    CoreNarrow<(Slot 0), (Ty X86_sMaxScalar)>,
+    CoreWiden<(Slot 1), (Pow2Min 8)>,
+    CoreWiden<(Slot 1), (Ty X86_s8)>,
+    CoreNarrow<(Slot 1), (Ty X86_sMaxScalar)>,
+    CoreScalarize<(Slot 0)>
   ];
 }
 
 def X86_TRUNC : LegalizeRuleSet<["G_TRUNC"]> {
   let Rules = [
-    LegalForCartesianProduct<
-        LegalizeInlineTypeList<[X86_s1, X86_s8, X86_s16, X86_s32, X86_s64]>,
-        LegalizeInlineTypeList<[X86_s8, X86_s16, X86_s32, X86_s64, X86_s128]>>,
+    CoreLegal<(CoreAll (CoreIn (Slot 0), X86_PtrTypes64), (CoreIn (Slot 1), X86_Types_s8s16s32s64s128))>
   ];
 }
 
 def X86_SEXT_INREG : LegalizeRuleSet<["G_SEXT_INREG"]> {
   let Rules = [
-    Lower,
+    CoreAlwaysLower
   ];
 }
 
 def X86_FCONSTANT : LegalizeRuleSet<["G_FCONSTANT"]> {
   let Comments = ["fp constants"];
   let Rules = [
-    LegalFor<[X86_s32, X86_s64]>,
-    LegalForIf<UseX87, [X86_s80]>,
+    CoreLegal<(CoreIn (Slot 0), X86_Types_s32s64)>,
+    CoreLegal<(CoreAll UseX87, (CoreIn (Slot 0), X86_Types_s80))>
   ];
 }
 
 def X86_FADD : LegalizeRuleSet<["G_FADD", "G_FSUB", "G_FMUL", "G_FDIV"]> {
   let Comments = ["fp arithmetic"];
   let Rules = [
-    LegalFor<[X86_s32, X86_s64]>,
-    LegalForIf<HasSSE1, [X86_v4s32]>,
-    LegalForIf<HasSSE2, [X86_v2s64]>,
-    LegalForIf<HasAVX, [X86_v8s32, X86_v4s64]>,
-    LegalForIf<HasAVX512, [X86_v16s32, X86_v8s64]>,
-    LegalForIf<UseX87, [X86_s80]>,
+    CoreLegal<(CoreIn (Slot 0), X86_Types_s32s64)>,
+    CoreLegal<(CoreAll HasSSE1, (CoreIn (Slot 0), X86_Types_v4s32))>,
+    CoreLegal<(CoreAll HasSSE2, (CoreIn (Slot 0), X86_Types_v2s64))>,
+    CoreLegal<(CoreAll HasAVX, (CoreIn (Slot 0), X86_Types_v8s32v4s64))>,
+    CoreLegal<(CoreAll HasAVX512, (CoreIn (Slot 0), X86_Types_v16s32v8s64))>,
+    CoreLegal<(CoreAll UseX87, (CoreIn (Slot 0), X86_Types_s80))>
   ];
 }
 
 def X86_FABS : LegalizeRuleSet<["G_FABS"]> {
   let Rules = [
-    LegalForIf<UseX87, [X86_s80]>,
-    LegalForIf<UseX87Not64Bit, [X86_s64]>,
-    Lower,
+    CoreLegal<(CoreAll UseX87, (CoreIn (Slot 0), X86_Types_s80))>,
+    CoreLegal<(CoreAll (CoreAll UseX87, (CoreNot Is64Bit)), (CoreIn (Slot 0), X86_Types_s64))>,
+    CoreAlwaysLower
   ];
 }
 
 def X86_FCMP : LegalizeRuleSet<["G_FCMP"]> {
   let Comments = ["fp comparison"];
   let Rules = [
-    LegalForIf<SSE1OrX87, [X86_s8, X86_s32]>,
-    LegalForIf<SSE2OrX87, [X86_s8, X86_s64]>,
-    LegalForIf<UseX87, [X86_s8, X86_s80]>,
-    ClampScalar<0, X86_s8, X86_s8>,
-    ClampScalar<1, X86_s32, X86_s64OrS32>,
-    WidenScalarToNextPow2<1>,
+    CoreLegal<WithSSE1OrX87<(CoreIn (Slot 0), X86_Types_s8s32)>.G>,
+    CoreLegal<WithSSE2OrX87<(CoreIn (Slot 0), X86_Types_s8s64)>.G>,
+    CoreLegal<(CoreAll UseX87, (CoreIn (Slot 0), X86_Types_s8s80))>,
+    CoreWiden<(Slot 0), (Ty X86_s8)>,
+    CoreNarrow<(Slot 0), (Ty X86_s8)>,
+    CoreWiden<(Slot 1), (Ty X86_s32)>,
+    CoreNarrow<(Slot 1), (Ty X86_s64OrS32)>,
+    CoreWiden<(Slot 1), (Pow2)>
   ];
 }
 
 def X86_FPEXT : LegalizeRuleSet<["G_FPEXT"]> {
   let Comments = ["fp conversions"];
   let Rules = [
-    LegalForPairsIf<HasSSE2, [LegalizeTypePair<X86_s64, X86_s32>]>,
-    LegalForPairsIf<HasAVX, [LegalizeTypePair<X86_v4s64, X86_v4s32>]>,
-    LegalForPairsIf<HasAVX512, [LegalizeTypePair<X86_v8s64, X86_v8s32>]>,
-    LowerForPairsIf<UseX87, [LegalizeTypePair<X86_s64, X86_s32>, LegalizeTypePair<X86_s80, X86_s32>, LegalizeTypePair<X86_s80, X86_s64>]>,
-    Libcall,
+    CoreLegal<(CoreAll HasSSE2, (CoreInPairs (Slot 0), (Slot 1), X86_FPEXTPairSet))>,
+    CoreLegal<(CoreAll HasAVX, (CoreInPairs (Slot 0), (Slot 1), X86_FPEXTPairSet2))>,
+    CoreLegal<(CoreAll HasAVX512, (CoreInPairs (Slot 0), (Slot 1), X86_FPEXTPairSet3))>,
+    CoreLower<(CoreAll UseX87, (CoreInPairs (Slot 0), (Slot 1), X86_FPEXTPairSet4))>,
+    CoreAlwaysLibcall
   ];
 }
 
 def X86_FPTRUNC : LegalizeRuleSet<["G_FPTRUNC"]> {
   let Rules = [
-    LegalForPairsIf<HasSSE2, [LegalizeTypePair<X86_s32, X86_s64>]>,
-    LegalForPairsIf<HasAVX, [LegalizeTypePair<X86_v4s32, X86_v4s64>]>,
-    LegalForPairsIf<HasAVX512, [LegalizeTypePair<X86_v8s32, X86_v8s64>]>,
-    LowerForPairsIf<UseX87, [LegalizeTypePair<X86_s32, X86_s64>, LegalizeTypePair<X86_s32, X86_s80>, LegalizeTypePair<X86_s64, X86_s80>]>,
+    CoreLegal<(CoreAll HasSSE2, (CoreInPairs (Slot 0), (Slot 1), X86_FPTRUNCPairSet))>,
+    CoreLegal<(CoreAll HasAVX, (CoreInPairs (Slot 0), (Slot 1), X86_FPTRUNCPairSet2))>,
+    CoreLegal<(CoreAll HasAVX512, (CoreInPairs (Slot 0), (Slot 1), X86_FPTRUNCPairSet3))>,
+    CoreLower<(CoreAll UseX87, (CoreInPairs (Slot 0), (Slot 1), X86_FPTRUNCPairSet4))>
   ];
 }
 
 def X86_SITOFP : LegalizeRuleSet<["G_SITOFP"]> {
   let Rules = [
-    LegalForPairsIf<HasSSE1, [LegalizeTypePair<X86_s32, X86_s32>]>,
-    LegalForPairsIf<SSE1And64Bit, [LegalizeTypePair<X86_s32, X86_s64>]>,
-    LegalForPairsIf<HasSSE2, [LegalizeTypePair<X86_s64, X86_s32>]>,
-    LegalForPairsIf<SSE2And64Bit, [LegalizeTypePair<X86_s64, X86_s64>]>,
-    ClampScalar<1, X86_X87OrS32, X86_sMaxScalar>,
-    WidenScalarToNextPow2<1>,
-    CustomForCartesianProductIf<UseX87,
-                                LegalizeInlineTypeList<[X86_s32, X86_s64, X86_s80]>,
-                                LegalizeInlineTypeList<[X86_s16, X86_s32, X86_s64]>>,
-    ClampScalar<0, X86_s32, X86_s64OrS32>,
-    WidenScalarToNextPow2<0>,
+    CoreLegal<(CoreAll HasSSE1, (CoreInPairs (Slot 0), (Slot 1), X86_SITOFPPairSet))>,
+    CoreLegal<WithSSE1And64Bit<(CoreInPairs (Slot 0), (Slot 1), X86_SITOFPPairSet2)>.G>,
+    CoreLegal<(CoreAll HasSSE2, (CoreInPairs (Slot 0), (Slot 1), X86_SITOFPPairSet3))>,
+    CoreLegal<WithSSE2And64Bit<(CoreInPairs (Slot 0), (Slot 1), X86_SITOFPPairSet4)>.G>,
+    CoreWiden<(Slot 1), (Ty X86_X87OrS32)>,
+    CoreNarrow<(Slot 1), (Ty X86_sMaxScalar)>,
+    CoreWiden<(Slot 1), (Pow2)>,
+    CoreCustom<(CoreAll UseX87, (CoreAll (CoreIn (Slot 0), X86_Types_s32s64s80), (CoreIn (Slot 1), X86_Types_s16s32s64)))>,
+    CoreWiden<(Slot 0), (Ty X86_s32)>,
+    CoreNarrow<(Slot 0), (Ty X86_s64OrS32)>,
+    CoreWiden<(Slot 0), (Pow2)>
   ];
 }
 
 def X86_FPTOSI : LegalizeRuleSet<["G_FPTOSI"]> {
   let Rules = [
-    LegalForPairsIf<HasSSE1, [LegalizeTypePair<X86_s32, X86_s32>]>,
-    LegalForPairsIf<SSE1And64Bit, [LegalizeTypePair<X86_s64, X86_s32>]>,
-    LegalForPairsIf<HasSSE2, [LegalizeTypePair<X86_s32, X86_s64>]>,
-    LegalForPairsIf<SSE2And64Bit, [LegalizeTypePair<X86_s64, X86_s64>]>,
-    ClampScalar<0, X86_X87OrS32, X86_sMaxScalar>,
-    WidenScalarToNextPow2<0>,
-    CustomForCartesianProductIf<UseX87,
-                                LegalizeInlineTypeList<[X86_s16, X86_s32, X86_s64]>,
-                                LegalizeInlineTypeList<[X86_s32, X86_s64, X86_s80]>>,
-    ClampScalar<1, X86_s32, X86_s64OrS32>,
-    WidenScalarToNextPow2<1>,
+    CoreLegal<(CoreAll HasSSE1, (CoreInPairs (Slot 0), (Slot 1), X86_FPTOSIPairSet))>,
+    CoreLegal<WithSSE1And64Bit<(CoreInPairs (Slot 0), (Slot 1), X86_FPTOSIPairSet2)>.G>,
+    CoreLegal<(CoreAll HasSSE2, (CoreInPairs (Slot 0), (Slot 1), X86_FPTOSIPairSet3))>,
+    CoreLegal<WithSSE2And64Bit<(CoreInPairs (Slot 0), (Slot 1), X86_FPTOSIPairSet4)>.G>,
+    CoreWiden<(Slot 0), (Ty X86_X87OrS32)>,
+    CoreNarrow<(Slot 0), (Ty X86_sMaxScalar)>,
+    CoreWiden<(Slot 0), (Pow2)>,
+    CoreCustom<(CoreAll UseX87, (CoreAll (CoreIn (Slot 0), X86_Types_s16s32s64), (CoreIn (Slot 1), X86_Types_s32s64s80)))>,
+    CoreWiden<(Slot 1), (Ty X86_s32)>,
+    CoreNarrow<(Slot 1), (Ty X86_s64OrS32)>,
+    CoreWiden<(Slot 1), (Pow2)>
   ];
 }
 
@@ -820,14 +964,15 @@ def X86_UITOFP : LegalizeRuleSet<["G_UITOFP"]> {
     "to asm instructions.",
   ];
   let Rules = [
-    LegalForPairsIf<HasAVX512,
-                     [LegalizeTypePair<X86_s32, X86_s32>, LegalizeTypePair<X86_s32, X86_s64>, LegalizeTypePair<X86_s64, X86_s32>, LegalizeTypePair<X86_s64, X86_s64>]>,
-    LegalizeQueryGuardedCall<BuilderCustomIf, GPRNarrowNoAVX512, []>,
-    LegalizeQueryGuardedCall<BuilderLowerIf, GPRLower64, []>,
-    ClampScalar<0, X86_s32, X86_s64OrS32>,
-    WidenScalarToNextPow2<0>,
-    ClampScalar<1, X86_s32, X86_sMaxScalar>,
-    WidenScalarToNextPow2<1>,
+    CoreLegal<(CoreAll HasAVX512, (CoreInPairs (Slot 0), (Slot 1), X86_UITOFPPairSet))>,
+    CoreCustom<(CoreAll (CoreNot HasAVX512), (CoreAny (CoreAll HasSSE1, (CoreEq (Slot 0), (Ty X86_s32))), (CoreAll HasSSE2, (CoreEq (Slot 0), (Ty X86_s64)))), (CoreLt (BitsOf (Slot 1)), (CoreSelect Is64Bit, 64, 32)))>,
+    CoreLower<(CoreAll (CoreNot HasAVX512), (CoreAny (CoreAll HasSSE1, (CoreEq (Slot 0), (Ty X86_s32))), (CoreAll HasSSE2, (CoreEq (Slot 0), (Ty X86_s64)))), Is64Bit, (CoreEq (Slot 1), (Ty X86_s64)))>,
+    CoreWiden<(Slot 0), (Ty X86_s32)>,
+    CoreNarrow<(Slot 0), (Ty X86_s64OrS32)>,
+    CoreWiden<(Slot 0), (Pow2)>,
+    CoreWiden<(Slot 1), (Ty X86_s32)>,
+    CoreNarrow<(Slot 1), (Ty X86_sMaxScalar)>,
+    CoreWiden<(Slot 1), (Pow2)>
   ];
 }
 
@@ -839,14 +984,15 @@ def X86_FPTOUI : LegalizeRuleSet<["G_FPTOUI"]> {
     "support of G_BUILD_VECTOR/G_INSERT_VECTOR_ELT is required beforehand.",
   ];
   let Rules = [
-    LegalForPairsIf<HasAVX512,
-                     [LegalizeTypePair<X86_s32, X86_s32>, LegalizeTypePair<X86_s32, X86_s64>, LegalizeTypePair<X86_s64, X86_s32>, LegalizeTypePair<X86_s64, X86_s64>]>,
-    LegalizeQueryGuardedCall<BuilderCustomIf, FPResultGPRNoAVX512, []>,
-    LegalizeQueryGuardedCall<BuilderLowerIf, FPResultGPRLower64, []>,
-    ClampScalar<0, X86_s32, X86_sMaxScalar>,
-    WidenScalarToNextPow2<0>,
-    ClampScalar<1, X86_s32, X86_s64OrS32>,
-    WidenScalarToNextPow2<1>,
+    CoreLegal<(CoreAll HasAVX512, (CoreInPairs (Slot 0), (Slot 1), X86_FPTOUIPairSet))>,
+    CoreCustom<(CoreAll (CoreNot HasAVX512), (CoreAny (CoreAll HasSSE1, (CoreEq (Slot 1), (Ty X86_s32))), (CoreAll HasSSE2, (CoreEq (Slot 1), (Ty X86_s64)))), (CoreLt (BitsOf (Slot 0)), (CoreSelect Is64Bit, 64, 32)))>,
+    CoreLower<(CoreAll (CoreNot HasAVX512), (CoreAny (CoreAll HasSSE1, (CoreEq (Slot 1), (Ty X86_s32))), (CoreAll HasSSE2, (CoreEq (Slot 1), (Ty X86_s64)))), Is64Bit, (CoreEq (Slot 0), (Ty X86_s64)))>,
+    CoreWiden<(Slot 0), (Ty X86_s32)>,
+    CoreNarrow<(Slot 0), (Ty X86_sMaxScalar)>,
+    CoreWiden<(Slot 0), (Pow2)>,
+    CoreWiden<(Slot 1), (Ty X86_s32)>,
+    CoreNarrow<(Slot 1), (Ty X86_s64OrS32)>,
+    CoreWiden<(Slot 1), (Pow2)>
   ];
 }
 
@@ -862,15 +1008,11 @@ def X86_BUILD_VECTOR : LegalizeRuleSet<["G_BUILD_VECTOR"]> {
     "Lowering non-constant narrow build vectors is tracked by #143099.",
   ];
   let Rules = [
-    LegalizeQueryGuardedCall<BuilderCustomIf, BuildVectorCustom, []>,
-    ClampMaxNumElementsSel<0, X86_s8,
-        LegalizeSelectLanes<[HasAVX512, HasAVX], [64, 32], 16>>,
-    ClampMaxNumElementsSel<0, X86_s16,
-        LegalizeSelectLanes<[HasAVX512, HasAVX], [32, 16], 8>>,
-    ClampMaxNumElementsSel<0, X86_s32,
-        LegalizeSelectLanes<[HasAVX512, HasAVX], [16, 8], 4>>,
-    ClampMaxNumElementsSel<0, X86_s64,
-        LegalizeSelectLanes<[HasAVX512, HasAVX], [8, 4], 2>>,
+    CoreCustom<(CoreAny (CoreAll HasSSE1, (CoreEq (Slot 0), (Ty X86_v4s32))), (CoreAll HasSSE2, (CoreIn (Slot 0), X86_Types_v2s64v8s16v16s8)), (CoreAll HasAVX, (CoreIn (Slot 0), X86_Types_v4s64v8s32v16s16v32s8)), (CoreAll HasAVX512, (CoreIn (Slot 0), X86_Types_v8s64v16s32v32s16v64s8)))>,
+    CoreClampMaxNumElementsSel<0, X86_s8, (CoreSelect HasAVX512, 64, (CoreSelect HasAVX, 32, 16))>,
+    CoreClampMaxNumElementsSel<0, X86_s16, (CoreSelect HasAVX512, 32, (CoreSelect HasAVX, 16, 8))>,
+    CoreClampMaxNumElementsSel<0, X86_s32, (CoreSelect HasAVX512, 16, (CoreSelect HasAVX, 8, 4))>,
+    CoreClampMaxNumElementsSel<0, X86_s64, (CoreSelect HasAVX512, 8, (CoreSelect HasAVX, 4, 2))>
   ];
 }
 
@@ -881,45 +1023,21 @@ def X86_BUILD_VECTOR : LegalizeRuleSet<["G_BUILD_VECTOR"]> {
 // cannot do, so the two opcodes have one rule set each.
 def X86_EXTRACT : LegalizeRuleSet<["G_EXTRACT"]> {
   let Rules = [
-    LegalForPairsIf<HasAVX,
-                    [LegalizeTypePair<X86_v16s8, X86_v32s8>,
-                     LegalizeTypePair<X86_v8s16, X86_v16s16>,
-                     LegalizeTypePair<X86_v4s32, X86_v8s32>,
-                     LegalizeTypePair<X86_v2s64, X86_v4s64>]>,
-    LegalForPairsIf<HasAVX512,
-                    [LegalizeTypePair<X86_v16s8, X86_v64s8>,
-                     LegalizeTypePair<X86_v32s8, X86_v64s8>,
-                     LegalizeTypePair<X86_v8s16, X86_v32s16>,
-                     LegalizeTypePair<X86_v16s16, X86_v32s16>,
-                     LegalizeTypePair<X86_v4s32, X86_v16s32>,
-                     LegalizeTypePair<X86_v8s32, X86_v16s32>,
-                     LegalizeTypePair<X86_v2s64, X86_v8s64>,
-                     LegalizeTypePair<X86_v4s64, X86_v8s64>]>,
+    CoreLegal<(CoreAll HasAVX, (CoreInPairs (Slot 0), (Slot 1), X86_EXTRACTPairSet))>,
+    CoreLegal<(CoreAll HasAVX512, (CoreInPairs (Slot 0), (Slot 1), X86_EXTRACTPairSet2))>,
     // G_EXTRACT also has an immediate, which the pair rules do not read.  An
     // explicit terminal rule marks it covered; falling off the end would say
     // the same thing, but the verifier cannot see that.
-    Unsupported,
+    CoreAlwaysUnsupported
   ];
 }
 
 def X86_INSERT : LegalizeRuleSet<["G_INSERT"]> {
   let Rules = [
-    LegalForPairsIf<HasAVX,
-                    [LegalizeTypePair<X86_v32s8, X86_v16s8>,
-                     LegalizeTypePair<X86_v16s16, X86_v8s16>,
-                     LegalizeTypePair<X86_v8s32, X86_v4s32>,
-                     LegalizeTypePair<X86_v4s64, X86_v2s64>]>,
-    LegalForPairsIf<HasAVX512,
-                    [LegalizeTypePair<X86_v64s8, X86_v16s8>,
-                     LegalizeTypePair<X86_v64s8, X86_v32s8>,
-                     LegalizeTypePair<X86_v32s16, X86_v8s16>,
-                     LegalizeTypePair<X86_v32s16, X86_v16s16>,
-                     LegalizeTypePair<X86_v16s32, X86_v4s32>,
-                     LegalizeTypePair<X86_v16s32, X86_v8s32>,
-                     LegalizeTypePair<X86_v8s64, X86_v2s64>,
-                     LegalizeTypePair<X86_v8s64, X86_v4s64>]>,
+    CoreLegal<(CoreAll HasAVX, (CoreInPairs (Slot 0), (Slot 1), X86_INSERTPairSet))>,
+    CoreLegal<(CoreAll HasAVX512, (CoreInPairs (Slot 0), (Slot 1), X86_INSERTPairSet2))>,
     // See G_EXTRACT: the immediate operand is not read by these rules.
-    Unsupported,
+    CoreAlwaysUnsupported
   ];
 }
 
@@ -928,33 +1046,30 @@ def X86_CONCAT_VECTORS : LegalizeRuleSet<["G_CONCAT_VECTORS"]> {
     "todo: only permit dst types up to max legal vector register size?",
   ];
   let Rules = [
-    LegalForPairsIf<HasSSE1,
-                     [LegalizeTypePair<X86_v32s8, X86_v16s8>, LegalizeTypePair<X86_v16s16, X86_v8s16>,
-                      LegalizeTypePair<X86_v8s32, X86_v4s32>, LegalizeTypePair<X86_v4s64, X86_v2s64>]>,
-    LegalForPairsIf<HasAVX,
-                     [LegalizeTypePair<X86_v64s8, X86_v16s8>, LegalizeTypePair<X86_v64s8, X86_v32s8>, LegalizeTypePair<X86_v32s16, X86_v8s16>,
-                      LegalizeTypePair<X86_v32s16, X86_v16s16>, LegalizeTypePair<X86_v16s32, X86_v4s32>, LegalizeTypePair<X86_v16s32, X86_v8s32>,
-                      LegalizeTypePair<X86_v8s64, X86_v2s64>, LegalizeTypePair<X86_v8s64, X86_v4s64>]>,
+    CoreLegal<(CoreAll HasSSE1, (CoreInPairs (Slot 0), (Slot 1), X86_CONCAT_VECTORSPairSet))>,
+    CoreLegal<(CoreAll HasAVX, (CoreInPairs (Slot 0), (Slot 1), X86_CONCAT_VECTORSPairSet2))>
   ];
 }
 
 def X86_SELECT : LegalizeRuleSet<["G_SELECT"]> {
   let Comments = ["todo: vectors and address spaces"];
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<X86_s16, X86_s32>, LegalizeTypePair<X86_s32, X86_s32>, LegalizeTypePair<X86_p0, X86_s32>]>,
-    LegalForPairsIf<NotCMOV, [LegalizeTypePair<X86_s8, X86_s32>]>,
-    LegalForPairsIf<Is64Bit, [LegalizeTypePair<X86_s64, X86_s32>]>,
-    LegalForPairsIf<UseX87, [LegalizeTypePair<X86_s80, X86_s32>]>,
-    ClampScalar<1, X86_s32, X86_s32>,
-    WidenScalarToNextPow2<0, 8>,
-    ClampScalar<0, X86_CMOVOrS8, X86_sMaxScalar>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), X86_SELECTPairSet)>,
+    CoreLegal<(CoreAll (CoreNot HasCMOV), (CoreInPairs (Slot 0), (Slot 1), X86_SELECTPairSet2))>,
+    CoreLegal<(CoreAll Is64Bit, (CoreInPairs (Slot 0), (Slot 1), X86_SELECTPairSet3))>,
+    CoreLegal<(CoreAll UseX87, (CoreInPairs (Slot 0), (Slot 1), X86_SELECTPairSet4))>,
+    CoreWiden<(Slot 1), (Ty X86_s32)>,
+    CoreNarrow<(Slot 1), (Ty X86_s32)>,
+    CoreWiden<(Slot 0), (Pow2Min 8)>,
+    CoreWiden<(Slot 0), (Ty X86_CMOVOrS8)>,
+    CoreNarrow<(Slot 0), (Ty X86_sMaxScalar)>
   ];
 }
 
 def X86_MEMCPY : LegalizeRuleSet<["G_MEMCPY", "G_MEMMOVE", "G_MEMSET"]> {
   let Comments = ["memory intrinsics"];
   let Rules = [
-    Libcall,
+    CoreAlwaysLibcall
   ];
 }
 
@@ -962,7 +1077,7 @@ def X86_DYN_STACKALLOC : LegalizeRuleSet<[
   "G_DYN_STACKALLOC", "G_STACKSAVE", "G_STACKRESTORE"
 ]> {
   let Rules = [
-    Lower,
+    CoreAlwaysLower
   ];
 }
 
@@ -972,7 +1087,7 @@ def X86_IS_FPCLASS : LegalizeRuleSet<["G_IS_FPCLASS"]> {
     "fpclass for i686 is disabled for llvm issue #171992",
   ];
   let Rules = [
-    LowerForPairsIf<Is64Bit, [LegalizeTypePair<X86_s1, X86_s32>, LegalizeTypePair<X86_s1, X86_s64>, LegalizeTypePair<X86_s1, X86_s80>]>,
+    CoreLower<(CoreAll Is64Bit, (CoreInPairs (Slot 0), (Slot 1), X86_IS_FPCLASSPairSet))>
   ];
 }
 
@@ -980,9 +1095,9 @@ def X86_INTRINSIC_ROUNDEVEN : LegalizeRuleSet<[
   "G_INTRINSIC_ROUNDEVEN", "G_INTRINSIC_TRUNC"
 ]> {
   let Rules = [
-    Scalarize<0>,
-    MinScalar<0, X86_s32>,
-    Libcall,
+    CoreScalarize<(Slot 0)>,
+    CoreWiden<(Slot 0), (Ty X86_s32)>,
+    CoreAlwaysLibcall
   ];
 }
 
@@ -990,18 +1105,18 @@ def X86_INTRINSIC : LegalizeRuleSet<[
   "G_INTRINSIC", "G_INTRINSIC_W_SIDE_EFFECTS"
 ]> {
   let Rules = [
-    AlwaysLegal,
+    CoreAlwaysLegal
   ];
 }
 
 def X86_TRAP : LegalizeRuleSet<["G_TRAP", "G_DEBUGTRAP", "G_UBSANTRAP"]> {
   let Rules = [
-    AlwaysLegal,
+    CoreAlwaysLegal
   ];
 }
 
 def X86_INVOKE_REGION_START : LegalizeRuleSet<["G_INVOKE_REGION_START"]> {
   let Rules = [
-    AlwaysLegal,
+    CoreAlwaysLegal
   ];
 }

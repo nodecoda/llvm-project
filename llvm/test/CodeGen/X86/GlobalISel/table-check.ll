@@ -23,7 +23,7 @@
 ; point would mean a rule set the generator cannot translate, which is a gap to
 ; close rather than to allow.
 ;
-; CHECK: x86-gisel-table-check: points 1397 compared 1397 mismatches 0 skipped 0 residual 811 outside 0 ptrvec 0 addrspace {{[0-9]+}} untabulated 0
+; CHECK: x86-gisel-table-check: points 1408 compared 1408 mismatches 0 skipped 0 residual 811 outside 0 ptrvec 0 addrspace {{[0-9]+}} untabulated 0
 
 define void @f() {
   ret void

@@ -1453,7 +1453,9 @@ TEST(RuleCountsManifest, MatchesCoreIR) {
       auto RuleIndex = Rule->getInteger("rule_index");
       ASSERT_TRUE(RuleIndex.has_value());
       LiteralRules.emplace(Def->str(), *RuleIndex);
-      if (Rule->getObject("mutation"))
+      // A core rule carries its mutation in `on`/`to`; terminal rules have
+      // no mutation to target.
+      if (Rule->getObject("on"))
         MutationTargets.emplace(Def->str(), *RuleIndex);
       ++CoreEntryCount;
     }
@@ -1582,47 +1584,55 @@ TEST_F(X86LegalizerDifferentialTest, SelectGuardsAreNotFolded) {
   const json::Object *Core = Value->getAsObject();
   ASSERT_NE(Core, nullptr);
 
-  // A type position: X86_INTTOPTR legalizes (p0, sMaxScalar), so slot 1 is the
-  // Is64Bit select rather than one of its branches.
+  // A type position: X86_INTTOPTR legalizes the pair (p0, sMaxScalar) as one
+  // pair set, whose second element is the Is64Bit select rather than one of
+  // its branches.
   const json::Object *IntToPtr = coreRulesetByName(*Core, "X86_INTTOPTR");
   ASSERT_NE(IntToPtr, nullptr);
   const json::Object *Pair = findCoreRule(*IntToPtr, 0, "Legal");
   ASSERT_NE(Pair, nullptr);
   const json::Object *PairPred = Pair->getObject("predicate");
   ASSERT_NE(PairPred, nullptr);
+  EXPECT_EQ(PairPred->getString("kind").value_or(""), "inPairs");
   const json::Array *PairArgs = PairPred->getArray("args");
   ASSERT_NE(PairArgs, nullptr);
-  ASSERT_EQ(PairArgs->size(), 2u);
-  const json::Object *Slot1 = (*PairArgs)[1].getAsObject();
-  ASSERT_NE(Slot1, nullptr);
-  EXPECT_EQ(Slot1->getString("name").value_or(""), "typeIs");
-  const json::Array *Slot1Args = Slot1->getArray("args");
-  ASSERT_NE(Slot1Args, nullptr);
-  ASSERT_EQ(Slot1Args->size(), 2u);
-  const json::Object *Slot1Value = (*Slot1Args)[1].getAsObject();
+  ASSERT_EQ(PairArgs->size(), 3u);
+  const json::Object *PairSet = (*PairArgs)[2].getAsObject();
+  ASSERT_NE(PairSet, nullptr);
+  EXPECT_EQ(PairSet->getString("of").value_or(""), "Type");
+  const json::Array *PairElems = PairSet->getArray("elems");
+  ASSERT_NE(PairElems, nullptr);
+  ASSERT_EQ(PairElems->size(), 1u);
+  const json::Array *FirstPair = (*PairElems)[0].getAsArray();
+  ASSERT_NE(FirstPair, nullptr);
+  ASSERT_EQ(FirstPair->size(), 2u);
+  EXPECT_EQ((*FirstPair)[0].getAsString().value_or(""), "p0:*");
+  const json::Object *Slot1Value = (*FirstPair)[1].getAsObject();
   ASSERT_NE(Slot1Value, nullptr);
   const json::Object *TypeSelect = Slot1Value->getObject("select");
   ASSERT_NE(TypeSelect, nullptr) << "slot 1 must keep the select node";
   EXPECT_EQ(TypeSelect->getString("then").value_or(""), "s64");
   EXPECT_EQ(TypeSelect->getString("else").value_or(""), "s32");
 
-  // A bit-count position: ClampScalar's upper bound is the same select, and
-  // the scalarWiderThan leaf reads the bit count, not a chosen number.
+  // A target position: ClampScalar's upper bound is the same select, and the
+  // narrow action carries it as the target type, not a chosen number.
   const json::Object *Constant = coreRulesetByName(*Core, "X86_CONSTANT");
   ASSERT_NE(Constant, nullptr);
-  const json::Object *Narrow = findCoreRule(*Constant, 3, "NarrowScalar");
+  const json::Object *Narrow = findCoreRule(*Constant, 4, "NarrowScalar");
   ASSERT_NE(Narrow, nullptr);
-  const json::Object *NarrowPred = Narrow->getObject("predicate");
-  ASSERT_NE(NarrowPred, nullptr);
-  const json::Array *NarrowArgs = NarrowPred->getArray("args");
-  ASSERT_NE(NarrowArgs, nullptr);
-  ASSERT_EQ(NarrowArgs->size(), 2u);
-  const json::Object *BitsValue = (*NarrowArgs)[1].getAsObject();
-  ASSERT_NE(BitsValue, nullptr);
-  const json::Object *BitsSelect = BitsValue->getObject("select");
+  const json::Object *NarrowTo = Narrow->getObject("to");
+  ASSERT_NE(NarrowTo, nullptr);
+  const json::Array *NarrowToArgs = NarrowTo->getArray("args");
+  ASSERT_NE(NarrowToArgs, nullptr);
+  ASSERT_EQ(NarrowToArgs->size(), 1u);
+  const json::Object *NarrowTy = (*NarrowToArgs)[0].getAsObject();
+  ASSERT_NE(NarrowTy, nullptr);
+  const json::Object *TyValue = NarrowTy->getObject("value");
+  ASSERT_NE(TyValue, nullptr);
+  const json::Object *BitsSelect = TyValue->getObject("select");
   ASSERT_NE(BitsSelect, nullptr) << "the clamp bound must keep the select node";
-  EXPECT_EQ(BitsSelect->getString("then").value_or(""), "64");
-  EXPECT_EQ(BitsSelect->getString("else").value_or(""), "32");
+  EXPECT_EQ(BitsSelect->getString("then").value_or(""), "s64");
+  EXPECT_EQ(BitsSelect->getString("else").value_or(""), "s32");
 
   // A lane-count position: the max-vector clamp is a priority list, so its
   // false branch is another select rather than the fallback count.
@@ -1634,24 +1644,35 @@ TEST_F(X86LegalizerDifferentialTest, SelectGuardsAreNotFolded) {
   ASSERT_NE(ClampPred, nullptr);
   const json::Array *ClampArgs = ClampPred->getArray("args");
   ASSERT_NE(ClampArgs, nullptr);
-  ASSERT_EQ(ClampArgs->size(), 2u);
-  const json::Object *LanesLeaf = (*ClampArgs)[1].getAsObject();
+  ASSERT_EQ(ClampArgs->size(), 4u);
+  const json::Object *LanesLeaf = (*ClampArgs)[3].getAsObject();
   ASSERT_NE(LanesLeaf, nullptr);
-  EXPECT_EQ(LanesLeaf->getString("name").value_or(""), "moreElementsThan");
+  EXPECT_EQ(LanesLeaf->getString("kind").value_or(""), "gt");
   const json::Array *LanesArgs = LanesLeaf->getArray("args");
   ASSERT_NE(LanesArgs, nullptr);
   ASSERT_EQ(LanesArgs->size(), 2u);
+  const json::Object *NumElems = (*LanesArgs)[0].getAsObject();
+  ASSERT_NE(NumElems, nullptr);
+  EXPECT_EQ(NumElems->getString("kind").value_or(""), "numElems");
   const json::Object *LanesValue = (*LanesArgs)[1].getAsObject();
   ASSERT_NE(LanesValue, nullptr);
-  const json::Object *LanesSelect = LanesValue->getObject("select");
-  ASSERT_NE(LanesSelect, nullptr);
-  EXPECT_EQ(LanesSelect->getInteger("then").value_or(-1), 64);
-  const json::Object *ElseValue = LanesSelect->getObject("else");
-  ASSERT_NE(ElseValue, nullptr);
-  const json::Object *ElseSelect = ElseValue->getObject("select");
+  EXPECT_EQ(LanesValue->getString("kind").value_or(""), "select");
+  const json::Array *LanesSelectArgs = LanesValue->getArray("args");
+  ASSERT_NE(LanesSelectArgs, nullptr);
+  ASSERT_EQ(LanesSelectArgs->size(), 3u);
+  auto IntAt = [](const json::Value &V) {
+    const json::Object *O = V.getAsObject();
+    return O ? O->getInteger("value").value_or(-1) : -1;
+  };
+  EXPECT_EQ(IntAt((*LanesSelectArgs)[1]), 64);
+  const json::Object *ElseSelect = (*LanesSelectArgs)[2].getAsObject();
   ASSERT_NE(ElseSelect, nullptr) << "the fallback must stay a nested select";
-  EXPECT_EQ(ElseSelect->getInteger("then").value_or(-1), 32);
-  EXPECT_EQ(ElseSelect->getInteger("else").value_or(-1), 16);
+  EXPECT_EQ(ElseSelect->getString("kind").value_or(""), "select");
+  const json::Array *ElseArgs = ElseSelect->getArray("args");
+  ASSERT_NE(ElseArgs, nullptr);
+  ASSERT_EQ(ElseArgs->size(), 3u);
+  EXPECT_EQ(IntAt((*ElseArgs)[1]), 32);
+  EXPECT_EQ(IntAt((*ElseArgs)[2]), 16);
 }
 
 TEST_F(X86LegalizerDifferentialTest, ReferenceBehaviorFingerprint) {
@@ -2066,7 +2087,7 @@ TEST_F(X86LegalizerDifferentialTest, SelfCheckDomainSmoke) {
   Table.mutableTable().selfCheck(OS);
   OS.flush();
 
-  EXPECT_NE(Log.find("points 1407"), std::string::npos) << Log;
+  EXPECT_NE(Log.find("points 1408"), std::string::npos) << Log;
   EXPECT_NE(Log.find("mismatches 0"), std::string::npos) << Log;
   EXPECT_NE(Log.find("skipped 0"), std::string::npos) << Log;
 }
@@ -2091,7 +2112,7 @@ TEST_F(X86LegalizerDifferentialTest, RuleIndexAgreesWithReference) {
     SmallVector<X86TablePoint, 0> Points;
     Points.reserve(X86NumTablePoints);
     x86CollectTablePoints(Points, S.STI->isTarget64BitLP64() ? 64 : 32);
-    ASSERT_EQ(Points.size(), 1407u);
+    ASSERT_EQ(Points.size(), 1408u);
 
     for (const X86TablePoint &P : Points) {
       ArrayRef<LLT> Types(P.Types, P.NumTypes);
@@ -2164,7 +2185,7 @@ TEST_F(X86LegalizerDifferentialTest, RuleIndexAgreesWithReference) {
   // The domain is the table's own: a decline here would mean the rules stopped
   // matching queries the reader still asks.
   EXPECT_EQ(Matched, 2182u) << Diag.str();
-  EXPECT_EQ(NoRule, 632u) << Diag.str();
+  EXPECT_EQ(NoRule, 634u) << Diag.str();
   EXPECT_EQ(Opaque, 0u) << Diag.str();
 }
 
@@ -2571,6 +2592,12 @@ static ArrayRef<GuardAtom> guardAtoms() {
       {"G_ADD", LLT::fixed_vector(2, 16)},
       {"G_MUL", LLT::fixed_vector(2, 16)},
       {"G_MUL", LLT::fixed_vector(16, 64)},
+      // The clamp-scalar widen rule sits behind WidenScalarToNextPow2, so it
+      // can only fire on a power-of-two scalar narrower than 8 bits.
+      {"G_IMPLICIT_DEF", LLT::scalar(2)},
+      // The s16 lane clamp fires below the class list's v8s16.
+      {"G_IMPLICIT_DEF", LLT::fixed_vector(2, 16)},
+      {"G_AND", LLT::fixed_vector(2, 16)},
   };
   return Atoms;
 }
@@ -2831,8 +2858,11 @@ collectRuleWitnesses(ArrayRef<Sigma> Sigmas, const std::set<RuleKey> &Targets) {
         Ledger.Witnesses.emplace(Key, W);
       };
 
+      // Pointer-bearing probes must use the configuration's pointer width:
+      // a 32-bit subtarget's p0 is not the 64-bit class, and a rule set with
+      // a 32-bit-only guard (X86_PTRTOINT#1) has no other way to be seen.
       enumerateTableDomain(
-          TI, 64,
+          TI, STI.isTarget64BitLP64() ? 64 : 32,
           [&](DomainKind, ArrayRef<LLT> Types, bool HasMem, LLT MemTy,
               uint64_t Align) { Consider(Types, HasMem, MemTy, Align); });
 
@@ -3421,11 +3451,17 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
           << "duplicate exception for " << E.RuleSet << "#" << E.RuleIndex;
     }
   }
+  std::string MissingText;
+  for (const RuleKey &K : TargetKeys)
+    if (!Ledger.Witnesses.count(K) && !ApprovedLiteral.count(K))
+      MissingText += std::string(" ") + X86RuleIndexTableNames[K.first] + "#" +
+                     std::to_string(K.second);
   ASSERT_EQ(Ledger.Witnesses.size() + ApprovedLiteral.size(), Targets->size())
-      << "every literal rule must be either witnessed or approved";
+      << "every literal rule must be either witnessed or approved; missing:"
+      << MissingText;
 
   std::vector<WitnessAtom> Atoms;
-  Atoms.reserve(1255);
+  Atoms.reserve(1304);
 
   // Per-rule atoms: the first query the first-match search found for the rule,
   // in the configuration the search assigned it.
@@ -3631,7 +3667,7 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
   EXPECT_EQ(ASAtoms, 220u);
   EXPECT_EQ(DescriptorCount, DescriptorAtoms);
   EXPECT_EQ(DescriptorCount + DescriptorExceptions, Escapes->size());
-  EXPECT_EQ(Atoms.size(), 1255u);
+  EXPECT_EQ(Atoms.size(), 1304u);
 
   std::sort(Atoms.begin(), Atoms.end(),
             [](const WitnessAtom &L, const WitnessAtom &R) {
@@ -4486,7 +4522,7 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
       Root->getInteger("descriptor_atoms").value_or(-1);
   const int64_t DescriptorExceptions =
       Root->getInteger("descriptor_exceptions").value_or(-1);
-  EXPECT_EQ(AtomCount, 1255);
+  EXPECT_EQ(AtomCount, 1304);
   EXPECT_EQ(BoundaryHits, 756);
   EXPECT_EQ(ASHits, 220);
   EXPECT_EQ(PerRuleHits + DescriptorHits + BoundaryHits + ASHits, AtomCount)
@@ -4497,7 +4533,7 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
 
   const json::Array *AtomArray = Root->getArray("atoms");
   ASSERT_NE(AtomArray, nullptr);
-  EXPECT_EQ(AtomArray->size(), 1255u);
+  EXPECT_EQ(AtomArray->size(), 1304u);
 
   std::string Error;
   std::optional<std::map<RuleKey, LiteralTarget>> Targets =
@@ -4781,7 +4817,7 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
                     << It->second;
     }
 
-  EXPECT_EQ(Atoms, 1255u);
+  EXPECT_EQ(Atoms, 1304u);
   EXPECT_EQ(BoundaryAtoms, 756u);
   EXPECT_EQ(ASAtoms, 220u);
   EXPECT_EQ(static_cast<int64_t>(DescriptorAtoms), EscapeDenominator);
@@ -5931,7 +5967,7 @@ TEST_F(X86LegalizerDifferentialTest, MutationKillMatrix) {
       << "the 14 .td mutants must cover 14 different rule sets";
 
   const KillMatrixResult KM = computeKillMatrix();
-  ASSERT_EQ(KM.Atoms, 1255u)
+  ASSERT_EQ(KM.Atoms, 1304u)
       << "the kill matrix must replay every witness atom";
   ASSERT_EQ(std::size(Mutants), 16u);
 
@@ -7124,7 +7160,7 @@ TEST_F(X86LegalizerDifferentialTest, ReleasePathNoApply) {
   std::string Error;
   std::optional<std::vector<WitnessAtom>> Atoms = readWitnessAtoms(Error);
   ASSERT_TRUE(Atoms.has_value()) << Error;
-  ASSERT_EQ(Atoms->size(), 1255u);
+  ASSERT_EQ(Atoms->size(), 1304u);
 
   std::map<std::string, unsigned> ConfigForID;
   for (unsigned I = 0; I != std::size(FullConfigs); ++I)

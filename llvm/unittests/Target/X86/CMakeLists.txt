@@ -96,40 +96,40 @@ endfunction()
 # 1. X86_CTPOP: the 128/256-bit rule loses its VPOPCNTDQ half.  A target with
 # VPOPCNTDQ but without VLX can see the difference.
 x86_add_legalizer_mutant(X86LegalizerInfoMutant1
-  "LegalForPairsIf<VPOPCNTAndVLX,"
-  "LegalForPairsIf<HasVPOPCNTDQ,")
+  "(CoreAll (CoreAll HasVPOPCNTDQ, HasVLX), (CoreInPairs (Slot 0), (Slot 1), X86_CTPOPPairSet4))"
+  "(CoreAll HasVPOPCNTDQ, (CoreInPairs (Slot 0), (Slot 1), X86_CTPOPPairSet4))")
 
 # 2. X86_CTLZ: HasLZCNT was written as HasPOPCNT.  Only a LZCNT target without
 # POPCNT separates the two.
 x86_add_legalizer_mutant(X86LegalizerInfoMutant2
-  "LegalForPairsIf<HasLZCNT, [LegalizeTypePair<X86_s16, X86_s16>, LegalizeTypePair<X86_s32, X86_s32>]>"
-  "LegalForPairsIf<HasPOPCNT, [LegalizeTypePair<X86_s16, X86_s16>, LegalizeTypePair<X86_s32, X86_s32>]>")
+  "(CoreAll HasLZCNT, (CoreInPairs (Slot 0), (Slot 1), X86_CTLZPairSet))"
+  "(CoreAll HasPOPCNT, (CoreInPairs (Slot 0), (Slot 1), X86_CTLZPairSet))")
 
 # 3. X86_CTTZ: HasBMI was written as HasLZCNT.
 x86_add_legalizer_mutant(X86LegalizerInfoMutant3
-  "LegalForPairsIf<HasBMI, [LegalizeTypePair<X86_s16, X86_s16>, LegalizeTypePair<X86_s32, X86_s32>]>"
-  "LegalForPairsIf<HasLZCNT, [LegalizeTypePair<X86_s16, X86_s16>, LegalizeTypePair<X86_s32, X86_s32>]>")
+  "(CoreAll HasBMI, (CoreInPairs (Slot 0), (Slot 1), X86_CTTZPairSet))"
+  "(CoreAll HasLZCNT, (CoreInPairs (Slot 0), (Slot 1), X86_CTTZPairSet))")
 
 # 4. X86_MUL: the pairwise s64 rule lost the DQI half of its guard.
 x86_add_legalizer_mutant(X86LegalizerInfoMutant4
-  "LegalForIf<DQIAndVLX, [X86_v2s64, X86_v4s64]>"
-  "LegalForIf<HasVLX, [X86_v2s64, X86_v4s64]>")
+  "(CoreAll (CoreAll HasDQI, HasVLX), (CoreIn (Slot 0), X86_Types_v2s64v4s64))"
+  "(CoreAll HasVLX, (CoreIn (Slot 0), X86_Types_v2s64v4s64))")
 
 # 5. X86_ADD: the 512-bit BWI rule was guarded by VLX instead.
 x86_add_legalizer_mutant(X86LegalizerInfoMutant5
-  "LegalForIf<HasBWI, [X86_v64s8, X86_v32s16]>"
-  "LegalForIf<HasVLX, [X86_v64s8, X86_v32s16]>")
+  "(CoreAll HasBWI, (CoreIn (Slot 0), X86_Types_v64s8v32s16))"
+  "(CoreAll HasVLX, (CoreIn (Slot 0), X86_Types_v64s8v32s16))")
 
 # 6. X86_IMPLICIT_DEF: s128 is no longer legal on every 64-bit target, only
 # where AVX is available.
 x86_add_legalizer_mutant(X86LegalizerInfoMutant6
-  "LegalForIf<Is64Bit, [X86_s128]>"
-  "LegalForIf<HasAVX, [X86_s128]>")
+  "(CoreAll Is64Bit, (CoreIn (Slot 0), X86_Types_s128))"
+  "(CoreAll HasAVX, (CoreIn (Slot 0), X86_Types_s128))")
 
 # 7. X86_SELECT: the !CMOV rule was inverted to a CMOV rule.
 x86_add_legalizer_mutant(X86LegalizerInfoMutant7
-  "LegalForPairsIf<NotCMOV, [LegalizeTypePair<X86_s8, X86_s32>]>"
-  "LegalForPairsIf<HasCMOV, [LegalizeTypePair<X86_s8, X86_s32>]>")
+  "(CoreAll (CoreNot HasCMOV), (CoreInPairs (Slot 0), (Slot 1), X86_SELECTPairSet2))"
+  "(CoreAll HasCMOV, (CoreInPairs (Slot 0), (Slot 1), X86_SELECTPairSet2))")
 
 # 8. X86_FNEG: the named predicate is replaced by its logical negation,
 # !(UseX87 && !HasSSE1) == !UseX87 || HasSSE1.
@@ -139,33 +139,33 @@ x86_add_legalizer_mutant(X86LegalizerInfoMutant8
 
 # 9. X86_CONCAT_VECTORS: the v32s8 <- v16s8 pair is dropped from the SSE1 rule.
 x86_add_legalizer_mutant(X86LegalizerInfoMutant9
-  "[LegalizeTypePair<X86_v32s8, X86_v16s8>, LegalizeTypePair<X86_v16s16, X86_v8s16>,"
-  "[LegalizeTypePair<X86_v16s16, X86_v8s16>,")
+  "def X86_CONCAT_VECTORSPairSet : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_v32s8, X86_v16s8>, LegalizeTypePair<X86_v16s16, X86_v8s16>,"
+  "def X86_CONCAT_VECTORSPairSet : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_v16s16, X86_v8s16>,")
 
 # 10. X86_INSERT: the v64s8 <- v16s8 pair is dropped from the AVX512 rule.
 x86_add_legalizer_mutant(X86LegalizerInfoMutant10
-  "[LegalizeTypePair<X86_v64s8, X86_v16s8>,\n                     LegalizeTypePair<X86_v64s8, X86_v32s8>,"
-  "[LegalizeTypePair<X86_v64s8, X86_v32s8>,")
+  "X86_INSERTPairSet2 : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_v64s8, X86_v16s8>,"
+  "X86_INSERTPairSet2 : LegalizeCoreTypePairSet<[")
 
 # 11. X86_CTTZ_ZERO_POISON: the s16 pair is dropped from the unguarded rule.
 x86_add_legalizer_mutant(X86LegalizerInfoMutant11
-  "LegalForPairs<[LegalizeTypePair<X86_s16, X86_s16>, LegalizeTypePair<X86_s32, X86_s32>]>"
-  "LegalForPairs<[LegalizeTypePair<X86_s32, X86_s32>]>")
+  "def X86_CTTZ_ZERO_POISONPairSet : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s16, X86_s16>, LegalizeTypePair<X86_s32, X86_s32>]>;"
+  "def X86_CTTZ_ZERO_POISONPairSet : LegalizeCoreTypePairSet<[LegalizeTypePair<X86_s32, X86_s32>]>;")
 
 # 12. X86_BSWAP: s32 is custom instead of legal.
 x86_add_legalizer_mutant(X86LegalizerInfoMutant12
-  "LegalFor<[X86_s32]>,"
-  "CustomFor<[X86_s32]>,")
+  "CoreLegal<(CoreIn (Slot 0), X86_Types_s32)>,\n    CoreLegal<(CoreAll Is64Bit, (CoreIn (Slot 0), X86_Types_s64))>,"
+  "CoreCustom<(CoreIn (Slot 0), X86_Types_s32)>,\n    CoreLegal<(CoreAll Is64Bit, (CoreIn (Slot 0), X86_Types_s64))>,")
 
 # 13. X86_IS_FPCLASS: the x87/64-bit lowering rule was changed to legal.
 x86_add_legalizer_mutant(X86LegalizerInfoMutant13
-  "LowerForPairsIf<Is64Bit, [LegalizeTypePair<X86_s1, X86_s32>, LegalizeTypePair<X86_s1, X86_s64>, LegalizeTypePair<X86_s1, X86_s80>]>"
-  "LegalForPairsIf<Is64Bit, [LegalizeTypePair<X86_s1, X86_s32>, LegalizeTypePair<X86_s1, X86_s64>, LegalizeTypePair<X86_s1, X86_s80>]>")
+  "CoreLower<(CoreAll Is64Bit, (CoreInPairs (Slot 0), (Slot 1), X86_IS_FPCLASSPairSet))>"
+  "CoreLegal<(CoreAll Is64Bit, (CoreInPairs (Slot 0), (Slot 1), X86_IS_FPCLASSPairSet))>")
 
 # 14. X86_ANYEXT: the four legal result types are custom instead.
 x86_add_legalizer_mutant(X86LegalizerInfoMutant14
-  "LegalFor<[X86_s8, X86_s16, X86_s32, X86_s128]>,"
-  "CustomFor<[X86_s8, X86_s16, X86_s32, X86_s128]>,")
+  "CoreLegal<(CoreIn (Slot 0), X86_Types_s8s16s32s128)>"
+  "CoreCustom<(CoreIn (Slot 0), X86_Types_s8s16s32s128)>")
 
 # TC-29/TC-31: the SUT must be the tuple recorded in the corpus JSON.  Two of
 # the pinned inputs, the generated .inc and the Core IR, are build products, so
