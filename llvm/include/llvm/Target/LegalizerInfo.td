@@ -1158,3 +1158,5 @@ def LoweringScalarizeIf0 : LegalizeLowering<BuilderScalarizeIf, 0, ExOne, [Actio
 def LoweringUnsupported0 : LegalizeLowering<BuilderUnsupported, 0, ExOne, [ActionUnsupported]>;
 def LoweringUnsupportedFor0 : LegalizeLowering<BuilderUnsupportedFor, 0, ExOne, [ActionUnsupported], []>;
 def LoweringUnsupportedIf0 : LegalizeLowering<BuilderUnsupportedIf, 0, ExOne, [ActionUnsupported]>;
+
+include "llvm/Target/LegalizerCore.td"

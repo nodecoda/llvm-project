@@ -232,6 +232,51 @@ mutation direction.  The emitter declares the feature booleans and type
 constants ahead of the rule sets, so the generated fragment is self-contained
 inside the target's constructor.
 
+#### Sort-checked core rules
+
+The builder vocabulary above is executable, but it is not typed: every builder
+takes an index and a type expression, and nothing distinguishes a type slot
+from a memory descriptor or an element count.  `LegalizerCore.td` adds a small
+typed core language on top of the same rule sets:
+
+```tablegen
+def WidenTo64 : CoreWiden<(Slot 0), (Pow2Min 64)>;
+def WidenVec  : CoreWiden<(ElemOf (Slot 1)), (Ty s16)>;
+def SplitWhen : CoreMoreIf<(Slot 0), (Pow2),
+                           (CoreGt (NumElems (Slot 0)), 4)>;
+```
+
+A rule is one operator (`Widen`, `Narrow`, `More`, `Fewer`, `Bitcast`), an
+observation expression, and a target constructor.  The observation has a sort
+(`Type`, `Int`, `Bool`, `MemDesc`, `Opcode`, `Kind`, `Ordering`), and the
+target must be one the operator accepts.  The action is not written by the
+rule: it is a total function of (operator, target sort), so a rule cannot
+perform a direction its operator does not imply.
+
+The checker runs in every legalizer backend, including `-gen-legalizer`, and is
+exposed as `-gen-legalizer-check`.  It rejects a rule whose observation or
+target has the wrong sort, an operator applied to a sort it does not accept, a
+comparison between different sorts, a `Clamp` without two bounds, and a
+primitive with no C++ shim.  The diagnostic names the operator, the expected
+sort, the actual sort, and the `.td` line.
+
+The C++ translation is still a builder call: `CoreWiden` over a slot lowers to
+`widenScalarToNextPow2`/`minScalar`/`minScalarSameAs`, `CoreMore` to
+`moreElementsToNextPow2`, and so on.  A `CoreGuard` is emitted as a
+`LegalityQuery` lambda built from the same observer vocabulary.  The generated
+fragment therefore has exactly the same runtime shape as the hand-written
+chain; the typed layer only exists at TableGen time.
+
+`-gen-legalizer-core` carries both views.  Rows with the primitive vocabulary
+emit `op`/`on`/`to` and declare schema version 0.4; legacy rows keep the 0.3
+`action`/`type_idx`/`mutation` fields byte-for-byte.  A target that does not
+use the primitives still emits 0.3.
+
+The checker is a sort checker, not a shape checker.  `More` on a scalar is
+sort-correct because the slot's sort is always `Type`; that the slot is a
+vector at run time is the guard's job.  The differential test remains the only
+semantic gate.
+
 ### Answering queries from a table
 
 A target can also ask `-gen-legalizer-table` for a table instead of the builder
