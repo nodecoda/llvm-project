@@ -931,7 +931,8 @@ def AArch64_CTLZ : LegalizeRuleSet<["G_CTLZ", "G_CTLS"]> {
     CoreClampMaxNumElements<0, AArch64_s32, 4>,
     CoreMore<(Slot 0), (Pow2)>,
     CoreScalarizeIf<(Slot 0), (CoreGt (BitsOf (Slot 0)), 32)>,
-    ScalarSameSizeAs<0, 1>
+    CoreWiden<(Slot 0), (SameAs 1)>,
+    CoreNarrow<(Slot 0), (SameAs 1)>
   ];
 }
 
@@ -953,7 +954,8 @@ def AArch64_CTTZ : LegalizeRuleSet<["G_CTTZ"]> {
     CoreWiden<(Slot 1), (Pow2Min 32)>,
     CoreWiden<(Slot 1), (Ty AArch64_s32)>,
     CoreNarrow<(Slot 1), (Ty AArch64_s64)>,
-    ScalarSameSizeAs<0, 1>,
+    CoreWiden<(Slot 0), (SameAs 1)>,
+    CoreNarrow<(Slot 0), (SameAs 1)>,
     CoreLegal<(CoreAll AArch64_HasCSSC,
                        (CoreIn (Slot 0), AArch64_S32Or64Set))>,
     CoreCustom<(CoreAll (CoreNot AArch64_HasCSSC),
