@@ -5311,7 +5311,7 @@ class LegalizerTableEmitterImpl {
         if (!T)
           return;
         SmallVector<TableType, 2> Resolved;
-        if (!resolve(T->getValueAsString("Expr"), T->getName(), Resolved, 0))
+        if (!resolveType(*T, Resolved))
           return;
         for (const TableType &R : Resolved)
           AddType(Idx, R);
@@ -5334,18 +5334,13 @@ class LegalizerTableEmitterImpl {
           for (unsigned I = 0; I != 2 && Ok; ++I) {
             const Record *Ty = E->getValueAsDef("Type" + std::to_string(I));
             SmallVector<TableType, 2> Resolved;
-            Ok = resolve(Ty->getValueAsString("Expr"), Ty->getName(), Resolved,
-                         0) &&
-                 Resolved.size() == 1;
+            Ok = resolveType(*Ty, Resolved) && Resolved.size() == 1;
             if (Ok)
               T.Types[I ? I1 : I0] = Resolved.front();
           }
           const Record *MemTy = E->getValueAsDef("MemTy");
           SmallVector<TableType, 2> Mem;
-          Ok = Ok &&
-               resolve(MemTy->getValueAsString("Expr"), MemTy->getName(), Mem,
-                       0) &&
-               Mem.size() == 1;
+          Ok = Ok && resolveType(*MemTy, Mem) && Mem.size() == 1;
           if (!Ok)
             return;
           T.HasMem = true;
@@ -5374,21 +5369,33 @@ class LegalizerTableEmitterImpl {
           // express.
           if (Width != NSlots)
             return;
-          RuleTuple T;
-          T.Types.assign(Width, TableType{});
-          for (unsigned I = 0; I != NSlots; ++I) {
+          // A select-bearing element names one class per feature
+          // combination, so it contributes one point per branch and the
+          // tuple's branches are combined positionally.
+          SmallVector<SmallVector<TableType, 2>, 3> Alts(NSlots);
+          bool Ok = true;
+          for (unsigned I = 0; I != NSlots && Ok; ++I) {
             const Record *Ty = E->getValueAsDef("Type" + std::to_string(I));
-            SmallVector<TableType, 2> Resolved;
-            if (!resolve(Ty->getValueAsString("Expr"), Ty->getName(), Resolved,
-                         0))
-              return;
-            // A slot of a named tuple names one class; a select-bearing type
-            // would not be a literal point.
-            if (Resolved.size() != 1)
-              return;
-            T.Types[Idx[I]] = Resolved.front();
+            Ok = resolveType(*Ty, Alts[I]) && !Alts[I].empty();
           }
-          Exact.push_back(std::move(T));
+          if (!Ok)
+            return;
+          SmallVector<unsigned, 3> Pick(NSlots, 0);
+          while (true) {
+            RuleTuple T;
+            T.Types.assign(Width, TableType{});
+            for (unsigned I = 0; I != NSlots; ++I)
+              T.Types[Idx[I]] = Alts[I][Pick[I]];
+            Exact.push_back(std::move(T));
+            unsigned I = 0;
+            for (; I != NSlots; ++I) {
+              if (++Pick[I] != Alts[I].size())
+                break;
+              Pick[I] = 0;
+            }
+            if (I == NSlots)
+              break;
+          }
         }
         return;
       }
@@ -5401,7 +5408,7 @@ class LegalizerTableEmitterImpl {
           return;
         for (const Record *E : N.Kids[1]->Op->getValueAsListOfDefs("Elems")) {
           SmallVector<TableType, 2> Resolved;
-          if (!resolve(E->getValueAsString("Expr"), E->getName(), Resolved, 0))
+          if (!resolveType(*E, Resolved))
             continue;
           for (const TableType &R : Resolved)
             AddType(Idx, R);
@@ -5448,6 +5455,19 @@ class LegalizerTableEmitterImpl {
   /// arguments.  A builder that takes two separate type arguments
   /// (ClampScalar's bounds) names bounds, not a query, so only
   /// list/pair/memdesc arguments are used.
+  /// The classes a named-type record stands for.  A select type carries an
+  /// empty `Expr` and names its branches in `Types`/`Otherwise`; the domain
+  /// has to contain every branch, exactly as the legacy builder expanded them.
+  bool resolveType(const Record &Ty, SmallVectorImpl<TableType> &Out) {
+    if (Ty.isSubClassOf("LegalizeSelectType")) {
+      for (const Record *B : Ty.getValueAsListOfDefs("Types"))
+        if (!resolveType(*B, Out))
+          return false;
+      return resolveType(*Ty.getValueAsDef("Otherwise"), Out);
+    }
+    return resolve(Ty.getValueAsString("Expr"), Ty.getName(), Out, 0);
+  }
+
   void collectRuleTuples(const Record &Rule, std::vector<RuleTuple> &Out) {
     if (isCoreRule(Rule)) {
       collectCoreRuleTuples(Rule, Out);
