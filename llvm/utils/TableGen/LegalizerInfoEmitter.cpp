@@ -2432,6 +2432,11 @@ struct CoreShimRow {
   /// False for a terminal action whose C++ takes only the guard: there is no
   /// type index because there is no mutation.
   bool TakesTypeIdx = true;
+  /// The predicate-free method, for a terminal rule with no guard.  `Lower`
+  /// and `[CoreAlwaysLower]` have to compile to the same chain call, so the
+  /// unguarded form is named here rather than spelled as an always-true
+  /// lambda.  Empty when the action has no unconditional method.
+  StringRef Unguarded = "";
 };
 
 /// One row per primitive the C++ layer can execute.  The checker rejects a
@@ -2472,15 +2477,17 @@ static const CoreShimRow CoreShimTable[] = {
      CoreTableTranslation::None},
     {"bitcast", "slot", "ty", "coreBitcastTo", 1, CoreTableTranslation::None},
     {"legal", "", "", "coreLegalIf", 0, CoreTableTranslation::GuardedAction,
-     /*TakesTypeIdx=*/false},
+     /*TakesTypeIdx=*/false, /*Unguarded=*/"alwaysLegal"},
     {"custom", "", "", "coreCustomIf", 0, CoreTableTranslation::GuardedAction,
-     /*TakesTypeIdx=*/false},
+     /*TakesTypeIdx=*/false, /*Unguarded=*/"custom"},
     {"lower", "", "", "coreLowerIf", 0, CoreTableTranslation::GuardedAction,
-     /*TakesTypeIdx=*/false},
+     /*TakesTypeIdx=*/false, /*Unguarded=*/"lower"},
     {"unsupported", "", "", "coreUnsupportedIf", 0,
-     CoreTableTranslation::GuardedAction, /*TakesTypeIdx=*/false},
+     CoreTableTranslation::GuardedAction, /*TakesTypeIdx=*/false,
+     /*Unguarded=*/"unsupported"},
     {"scalarize", "slot", "", "coreScalarizeIf", 0,
-     CoreTableTranslation::Scalarize},
+     CoreTableTranslation::Scalarize, /*TakesTypeIdx=*/true,
+     /*Unguarded=*/"scalarize"},
 };
 
 static const CoreShimRow *lookupCoreShim(StringRef Operator, StringRef On,
@@ -2565,6 +2572,8 @@ static StringRef coreKindPredicate(StringRef Kind) {
     return "isScalableVector";
   if (Kind == "kindPointer")
     return "isPointer";
+  if (Kind == "kindPointerVector")
+    return "isPointerVector";
   return "";
 }
 
@@ -2704,6 +2713,9 @@ private:
   std::string emitNot(const CoreNode &N) {
     return "!(" + childBool(N, 0) + ")";
   }
+  std::string emitIsPow2(const CoreNode &N) {
+    return "llvm::isPowerOf2_32(" + childValue(N, 0) + ")";
+  }
   std::string emitIn(const CoreNode &N);
   std::string emitCompare(const CoreNode &N);
 };
@@ -2755,6 +2767,7 @@ std::string CoreCxxEmitter::boolean(const CoreNode &N) {
       {"all", &CoreCxxEmitter::emitAll},
       {"any", &CoreCxxEmitter::emitAny},
       {"not", &CoreCxxEmitter::emitNot},
+      {"isPow2", &CoreCxxEmitter::emitIsPow2},
       {"in", &CoreCxxEmitter::emitIn},
       {"eq", &CoreCxxEmitter::emitCompare},
       {"ne", &CoreCxxEmitter::emitCompare},
@@ -2992,17 +3005,26 @@ void LegalizerInfoEmitter::emitCoreRule(const Record &Rule, raw_ostream &OS) {
                                        C.Operator->getName() + "' over '" + On +
                                        "' to '" + To + "'");
 
+  const Record *Pred = Rule.getValueAsOptionalDef("Pred");
+  const Init *G = Rule.getValueInit("CoreGuard");
+  const bool HasGuard = Pred || (G && !isa<UnsetInit>(G));
+  if (!HasGuard && !Shim->Unguarded.empty()) {
+    // A terminal without a guard is the predicate-free method, so a rule
+    // written in the vocabulary compiles to the same call as its builder.
+    OS << "      ." << Shim->Unguarded << "(";
+    if (Shim->TakesTypeIdx)
+      OS << C.TypeIdx;
+    OS << ")";
+    return;
+  }
+
   OS << "      ." << Shim->Method << "(";
-  if (const Record *P = Rule.getValueAsOptionalDef("Pred")) {
-    emitPredicate(*P, OS);
-  } else if (const Init *G = Rule.getValueInit("CoreGuard")) {
-    if (!isa<UnsetInit>(G)) {
-      std::unique_ptr<CoreNode> Guard = parseCoreNode(*G, Rule);
-      OS << "[=](const LegalityQuery &Query) { return "
-         << Cxx.boolean(*Guard) << "; }";
-    } else {
-      OS << "[](const LegalityQuery &) { return true; }";
-    }
+  if (Pred) {
+    emitPredicate(*Pred, OS);
+  } else if (G && !isa<UnsetInit>(G)) {
+    std::unique_ptr<CoreNode> Guard = parseCoreNode(*G, Rule);
+    OS << "[=](const LegalityQuery &Query) { return " << Cxx.boolean(*Guard)
+       << "; }";
   } else {
     OS << "[](const LegalityQuery &) { return true; }";
   }

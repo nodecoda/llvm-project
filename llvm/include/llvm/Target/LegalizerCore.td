@@ -26,7 +26,8 @@
 //
 //   sorts         Type, Int, Bool, MemDesc, Opcode, Kind, Ordering, String
 //   operators     Widen, Narrow, More, Fewer, Bitcast,
-//                 Legal, Custom, Lower, Unsupported (terminal), Scalarize
+//                 Legal, Custom, Lower, Unsupported (terminal), Scalarize,
+//                 IsPow2
 //   constructors  Pow2, Pow2Min(n), MultipleOf(n), Ty(t), SameAs(k),
 //                 MinVectorSize(n), Clamp(l,h)
 //   observers     Slot, ElemOf, NumElems, BitsOf, SizeOf, AlignOf, AddrSpace,
@@ -187,6 +188,7 @@ def KindScalar         : LegalizeCoreExpr<"kindScalar", [], SortKind>;
 def KindVector         : LegalizeCoreExpr<"kindVector", [], SortKind>;
 def KindScalableVector : LegalizeCoreExpr<"kindScalableVector", [], SortKind>;
 def KindPointer        : LegalizeCoreExpr<"kindPointer", [], SortKind>;
+def KindPointerVector  : LegalizeCoreExpr<"kindPointerVector", [], SortKind>;
 
 /// Atomic orderings, for MemOrdering comparisons.
 def OrderingUnordered : LegalizeCoreExpr<"orderingUnordered", [], SortOrdering>;
@@ -243,6 +245,11 @@ def CoreLt : LegalizeCoreCompare<"lt">;
 def CoreLe : LegalizeCoreCompare<"le">;
 def CoreGt : LegalizeCoreCompare<"gt">;
 def CoreGe : LegalizeCoreCompare<"ge">;
+
+/// Integer power-of-two test.  The legalizer vocabulary has always had it
+/// (`scalarOrEltSizeNotPow2`, `sizeNotPow2`); a rule that needs the positive
+/// form (`isPowerOf2_32`) used to spell a lambda.
+def CoreIsPow2 : LegalizeCoreExpr<"isPow2", [SortInt], SortBool>;
 
 /// Set membership: `(CoreIn (SortOf (Slot 0)) MyKindSet)`.
 def CoreIn : LegalizeCoreExpr<"in", [], SortBool> { let SetMembership = 1; }
@@ -307,6 +314,14 @@ class CoreLower<dag guard>       : LegalizeCoreRule<(LowerOp)> {
 class CoreUnsupported<dag guard> : LegalizeCoreRule<(UnsupportedOp)> {
   let CoreGuard = guard;
 }
+
+/// The unconditional form: no guard, so the C++ is the predicate-free method
+/// (`alwaysLegal`, `custom`, `lower`, `unsupported`) rather than an `*If` with
+/// an always-true lambda.  `[CoreAlwaysLower]` in a Rules list is `[Lower]`.
+def CoreAlwaysLegal       : LegalizeCoreRule<(LegalOp)>;
+def CoreAlwaysCustom      : LegalizeCoreRule<(CustomOp)>;
+def CoreAlwaysLower       : LegalizeCoreRule<(LowerOp)>;
+def CoreAlwaysUnsupported : LegalizeCoreRule<(UnsupportedOp)>;
 
 class CoreScalarize<dag on> : LegalizeCoreRule<(ScalarizeOp on)>;
 class CoreScalarizeIf<dag on, dag guard>

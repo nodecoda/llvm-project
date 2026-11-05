@@ -17,6 +17,7 @@ def IsVector : LegalizeFeature<"Subtarget.isVector()">;
 
 def IntSet  : LegalizeCoreTypeSet<[s32, s64]>;
 def KindSet : LegalizeCoreKindSet<[KindScalar, KindVector]>;
+def PtrVecSet : LegalizeCoreKindSet<[KindPointerVector]>;
 
 def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
   let Rules = [
@@ -73,13 +74,17 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
     CoreWidenIf<(Slot 0), (Pow2),
                 (CoreIn (Slot 0), IntSet)>,
     CoreWidenIf<(Slot 0), (Pow2),
+                (CoreIsPow2 (SizeOf (Slot 0)))>,
+    CoreWidenIf<(Slot 0), (Pow2),
+                (CoreIn (SortOf (Slot 0)), PtrVecSet)>,
+    CoreWidenIf<(Slot 0), (Pow2),
                 (CoreLe (BitsOf (Slot 0)), 32)>,
     CoreWidenIf<(Slot 0), (Pow2),
                 (CoreLt (BitsOf (Slot 0)), 32)>
   ];
 }
 
-// CHECK:       "core_rules": 35,
+// CHECK:       "core_rules": 37,
 // CHECK:       "core_operators": ["bitcast", "custom", "fewer", "legal", "lower", "more", "narrow", "scalarize", "unsupported", "widen"]
 
 // CXX:       .coreWidenScalarToNextPow2([](const LegalityQuery &) { return true; }, 0)
@@ -115,6 +120,8 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
 // CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return (Is32) && (IsVector) && (!(((Query.Types[0]).getScalarSizeInBits() == 8))); }, 0)
 // CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return (((Query.Types[0]).getScalarSizeInBits() < 8)) || (((Query.Types[1]).getScalarSizeInBits() != 16)); }, 0)
 // CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return (Query.Types[0] == s32 || Query.Types[0] == s64); }, 0)
+// CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return llvm::isPowerOf2_32((Query.Types[0]).getSizeInBits()); }, 0)
+// CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return (Query.Types[0].isPointerVector()); }, 0)
 // CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.Types[0]).getScalarSizeInBits() <= 32); }, 0)
 // CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.Types[0]).getScalarSizeInBits() < 32); }, 0);
 

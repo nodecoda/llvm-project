@@ -269,13 +269,30 @@ def DropLanes   : CoreScalarize<(Slot 0)>;
 ```
 
 `Scalarize` observes the slot it drops the lanes of but still writes no
-target: the result type follows from the action.  `(CoreTrue)` states an
-unconditional action; the guard is otherwise never optional, so a terminal
-rule always says when it applies.  The shims are `coreLegalIf`, `coreCustomIf`,
-`coreLowerIf`, `coreUnsupportedIf`, and `coreScalarizeIf`, all of which compose
-the corresponding `LegalizeRuleSet` factory.  The table backends translate
-them as a guarded action with no mutation, which is exactly what the chain
-does.
+target: the result type follows from the action.  The shims are `coreLegalIf`,
+`coreCustomIf`, `coreLowerIf`, `coreUnsupportedIf`, and `coreScalarizeIf`, all
+of which compose the corresponding `LegalizeRuleSet` factory.  The table
+backends translate them as a guarded action with no mutation, which is exactly
+what the chain does.
+
+A terminal with no guard is written with the `CoreAlways*` defs, which lower
+to the predicate-free methods rather than to an `*If` with an always-true
+lambda:
+
+```tablegen
+def AlwaysHandled : LegalizeRuleSet<["G_X"]> {
+  let Rules = [CoreAlwaysLegal, CoreAlwaysLower, CoreScalarize<(Slot 0)>];
+}
+```
+
+That is `.alwaysLegal().lower().scalarize(0)`, byte-for-byte the chain a rule
+set written with the bare builder defs produces, so moving a predicate-free
+rule into the vocabulary does not move any target's artifact.
+
+The kinds are the LLT kinds, `KindScalar`, `KindVector`,
+`KindScalableVector`, `KindPointer` and `KindPointerVector`, and
+`(CoreIsPow2 <int>)` is the integer power-of-two test the builder predicates
+already used (`scalarOrEltSizeNotPow2`, `sizeNotPow2`).
 
 The checker runs in every legalizer backend, including `-gen-legalizer`, and is
 exposed as `-gen-legalizer-check`.  It rejects a rule whose observation or
