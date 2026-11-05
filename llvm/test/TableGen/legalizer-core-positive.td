@@ -33,6 +33,10 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
     CoreWiden<(ElemOf (Slot 0)), (MultipleOf 4)>,
     CoreWiden<(ElemOf (Slot 0)), (Ty s64)>,
     CoreWiden<(ElemOf (Slot 0)), (SameAs 1)>,
+    CoreWiden<(ElemOf (Slot 0)), (MinVectorSize 64)>,
+
+    // An Int target chosen by a cached feature.
+    CoreWiden<(Slot 0), (CoreSelect Is32, 16, 32)>,
 
     CoreNarrow<(Slot 0), (Ty s32)>,
     CoreNarrow<(Slot 0), (SameAs 1)>,
@@ -69,7 +73,7 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
   ];
 }
 
-// CHECK:       "core_rules": 29,
+// CHECK:       "core_rules": 31,
 // CHECK:       "core_operators": ["widen", "narrow", "more", "fewer", "bitcast"]
 
 // CXX:       .coreWidenScalarToNextPow2([](const LegalityQuery &) { return true; }, 0)
@@ -79,6 +83,8 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
 // CXX:       .coreMinScalarSameAs([](const LegalityQuery &) { return true; }, 0, 1)
 // CXX:       .coreWidenScalarOrEltToNextPow2([](const LegalityQuery &) { return true; }, 0)
 // CXX:       .coreWidenScalarOrEltToNextPow2([](const LegalityQuery &) { return true; }, 0, 16)
+// CXX:       .coreWidenVectorEltsToVectorMinSize([](const LegalityQuery &) { return true; }, 0, 64)
+// CXX:       .coreWidenScalarOrEltToNextPow2OrMinSize([](const LegalityQuery &) { return true; }, 0, (Is32 ? 16 : 32))
 // CXX:       .coreWidenScalarOrEltToNextMultipleOf([](const LegalityQuery &) { return true; }, 0, 4)
 // CXX:       .coreMinScalarOrElt([](const LegalityQuery &) { return true; }, 0, s64)
 // CXX:       .coreMinScalarSameAs([](const LegalityQuery &) { return true; }, 0, 1)
@@ -105,6 +111,8 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
 // CORE:       "version": "0.4",
 // CORE:       "op": "widen", "on": {"kind":"slot","index":0}, "to": {"kind":"pow2"}
 // CORE:       "op": "widen", "on": {"kind":"elemOf","args":[{"kind":"slot","index":0}]}, "to": {"kind":"pow2Min","args":[{"kind":"int","value":16}]}
+// CORE:       "op": "widen", "on": {"kind":"elemOf","args":[{"kind":"slot","index":0}]}, "to": {"kind":"minVectorSize","args":[{"kind":"int","value":64}]}
+// CORE:       "op": "widen", "on": {"kind":"slot","index":0}, "to": {"kind":"select","args":[{"kind":"leaf","name":"hasFeature","args":["Subtarget.is32()"]},{"kind":"int","value":16},{"kind":"int","value":32}]}
 // CORE:       "op": "narrow", "on": {"kind":"slot","index":0}, "to": {"kind":"ty","args":[{"kind":"type","value":"s32"}]}
 // CORE:       "op": "more", "on": {"kind":"slot","index":0}, "to": {"kind":"pow2"}
 // CORE:       "op": "fewer", "on": {"kind":"slot","index":0}, "to": {"kind":"ty","args":[{"kind":"type","value":"s32"}]}

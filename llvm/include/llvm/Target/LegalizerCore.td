@@ -26,10 +26,11 @@
 //
 //   sorts         Type, Int, Bool, MemDesc, Opcode, Kind, Ordering, String
 //   operators     Widen, Narrow, More, Fewer, Bitcast
-//   constructors  Pow2, Pow2Min(n), MultipleOf(n), Ty(t), SameAs(k), Clamp(l,h)
+//   constructors  Pow2, Pow2Min(n), MultipleOf(n), Ty(t), SameAs(k),
+//                 MinVectorSize(n), Clamp(l,h)
 //   observers     Slot, ElemOf, NumElems, BitsOf, SizeOf, AddrSpace, SortOf,
 //                 MemSlot, MemTy, MemOrdering, Feature
-//   combinators   all/any/not, eq/ne/lt/le/gt/ge, in
+//   combinators   all/any/not, select, eq/ne/lt/le/gt/ge, in
 //
 // This is not a shape checker.  `More` on a scalar is sort-correct: that it
 // also needs a vector at run time is the guard's business, not the sort's.
@@ -164,6 +165,11 @@ def Clamp           : LegalizeCoreExpr<"clamp", [SortInt, SortInt], SortInt>;
 def Ty              : LegalizeCoreExpr<"ty", [SortType], SortType>;
 /// The type of another slot.
 def SameAs          : LegalizeCoreExpr<"sameAs", [SortInt], SortType>;
+/// The element size a fixed vector needs to reach `n` bits: `n / NumElts`,
+/// with the integer division the C++ mutation performs.  A Type target
+/// because it is the new element type, even though the shim also needs the
+/// slot's lane count.
+def MinVectorSize   : LegalizeCoreExpr<"minVectorSize", [SortInt], SortType>;
 
 //===----------------------------------------------------------------------===//
 // Boolean combinators and comparisons
@@ -191,6 +197,12 @@ def CoreGe : LegalizeCoreCompare<"ge">;
 
 /// Set membership: `(CoreIn (SortOf (Slot 0)) MyKindSet)`.
 def CoreIn : LegalizeCoreExpr<"in", [], SortBool> { let SetMembership = 1; }
+
+/// An integer choice: `(CoreSelect cond, then, else)`.  The condition is a
+/// cached subtarget feature, which is why the branches must be Int and the
+/// target is still a literal at build time.
+def CoreSelect
+    : LegalizeCoreExpr<"select", [SortBool, SortInt, SortInt], SortInt>;
 
 /// A set literal.  A type set names LegalizeNamedType defs; a kind set names
 /// SortOf tags.

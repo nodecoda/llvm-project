@@ -2118,6 +2118,11 @@ static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
       PrintFatalError(Owner.getLoc(),
                       "core rule: '" + Name + "' expects a literal slot index");
   }
+  if (Name == "Pow2Min" || Name == "MultipleOf" || Name == "MinVectorSize") {
+    if (N.Kids[0]->Kind != CoreNode::IntNode)
+      PrintFatalError(Owner.getLoc(),
+                      "core rule: '" + Name + "' expects a literal integer");
+  }
   if (Name == "Feature" && N.Kids[0]->Kind != CoreNode::StringNode)
     PrintFatalError(Owner.getLoc(),
                     "core rule: 'Feature' expects a string condition");
@@ -2289,6 +2294,8 @@ static const CoreShimRow CoreShimTable[] = {
     {"widen", "elem", "multipleOf", "coreWidenScalarOrEltToNextMultipleOf", 1},
     {"widen", "elem", "ty", "coreMinScalarOrElt", 1},
     {"widen", "elem", "sameAs", "coreMinScalarSameAs", 1},
+    {"widen", "elem", "minVectorSize", "coreWidenVectorEltsToVectorMinSize", 1},
+    {"widen", "slot", "select", "coreWidenScalarOrEltToNextPow2OrMinSize", 1},
     {"narrow", "slot", "ty", "coreMaxScalar", 1},
     {"narrow", "slot", "sameAs", "coreMaxScalarSameAs", 1},
     {"narrow", "elem", "ty", "coreMaxScalarOrElt", 1},
@@ -2370,6 +2377,9 @@ static void coreNodeJson(const CoreNode &N, const RecordKeeper &Records,
   Out += "}";
 }
 
+static std::string coreCxxBool(const CoreNode &N, const RecordKeeper &Records,
+                               const Record &Owner);
+
 /// The C++ value one node denotes inside a generated predicate.  Only the
 /// observers that have a query expression are accepted; anything else is a
 /// lowering error, not a guess.
@@ -2420,6 +2430,9 @@ static std::string coreCxxValue(const CoreNode &N, const RecordKeeper &Records,
     return Kid(0);
   if (Name == "sameAs")
     return "Query.Types[" + std::to_string(N.Kids[0]->IntValue) + "]";
+  if (Name == "select")
+    return "(" + coreCxxBool(*N.Kids[0], Records, Owner) + " ? " + Kid(1) +
+           " : " + Kid(2) + ")";
   PrintFatalError(Owner.getLoc(),
                   "core rule: '" + Name + "' has no C++ value in a guard");
   return "";
@@ -2607,6 +2620,18 @@ static std::string coreMutationJson(const CoreNode &To,
   if (Name == "sameAs")
     return mutationJson(TypeIdx, "set_elem_bits",
                         "sameAsSlot" + std::to_string(To.Kids[0]->IntValue));
+  if (Name == "minVectorSize")
+    return mutationJsonValue(
+        TypeIdx, "set_elem_bits",
+        "{\"min_vector_size\":" + std::to_string(To.Kids[0]->IntValue) + "}");
+  if (Name == "select") {
+    std::string Cond;
+    coreNodeJson(*To.Kids[0], Records, Cond);
+    return mutationJsonValue(TypeIdx, "set_elem_bits",
+                             "{\"select\":[" + Cond + "," +
+                                 std::to_string(To.Kids[1]->IntValue) + "," +
+                                 std::to_string(To.Kids[2]->IntValue) + "]}");
+  }
   if (Name == "clamp") {
     std::string V = "{\"clamp\":[" + std::to_string(To.Kids[0]->IntValue) +
                     "," + std::to_string(To.Kids[1]->IntValue) + "]}";
@@ -2733,6 +2758,8 @@ void LegalizerInfoEmitter::emitCoreRule(const Record &Rule, raw_ostream &OS) {
         PrintFatalError(Rule.getLoc(),
                         "core rule: a Ty target must name a LegalizeNamedType");
       OS << T.Kids[0]->Op->getName();
+    } else if (To == "select") {
+      OS << coreCxxValue(T, Records, Rule);
     } else if (T.Kids[0]->Kind != CoreNode::IntNode) {
       PrintFatalError(Rule.getLoc(),
                       "core rule: '" + To + "' payload must be a literal int");
@@ -5407,9 +5434,7 @@ class LegalizerTableEmitterImpl {
                      const unsigned *RuleIdx = nullptr,
                      bool GuardOnly = false) {
     if (Rule.isSubClassOf("LegalizeCoreRule"))
-      PrintFatalError(Rule.getLoc(),
-                      "core rule: the table backends do not translate "
-                      "primitive rules yet");
+      return translateCoreRule(Rule, Out, Why, RuleIdx, GuardOnly);
     RuleTranslation T(Rule, TablePrefix, Out, Why, RuleIdx, GuardOnly);
     if (!Rule.getValueAsString("OpaqueArgs").empty())
       return T.translateOpaqueBody();
@@ -5417,6 +5442,92 @@ class LegalizerTableEmitterImpl {
     if (!H)
       return T.Fail();
     return (T.*H->Translate)();
+  }
+
+  /// The guard a core rule carries: the legacy Pred record or the typed
+  /// CoreGuard, in the spelling the evaluator uses.
+  static std::string coreRuleGuardText(const Record &Rule,
+                                       const RecordKeeper &Records) {
+    if (const Record *P = Rule.getValueAsOptionalDef("Pred")) {
+      std::string S;
+      raw_string_ostream OS(S);
+      renderPredicate(*P, OS);
+      OS.flush();
+      if (P->isSubClassOf("LegalizeQueryPredicateBase"))
+        return "(" + S + ")(Q)";
+      return S;
+    }
+    const Init *G = Rule.getValueInit("CoreGuard");
+    if (G && !isa<UnsetInit>(G)) {
+      std::unique_ptr<CoreNode> N = parseCoreNode(*G, Rule);
+      return coreCxxBool(*N, Records, Rule);
+    }
+    return "";
+  }
+
+  /// Translate a core rule into the statements its shim would run.  Only
+  /// primitives with a table translation are accepted; a new primitive must
+  /// be translated here rather than silently dropping the rule set back to
+  /// the chain, so the fatal is deliberate.
+  bool translateCoreRule(const Record &Rule, std::string &Out, std::string &Why,
+                         const unsigned *RuleIdx, bool GuardOnly) {
+    CheckedCoreRule C = checkCoreRule(Rule, Records);
+    StringRef On = coreObservationForm(*C.Obs);
+    StringRef To = C.Target->Op->getValueAsString("Name");
+    StringRef Op = C.Operator->getValueAsString("Name");
+    const CoreShimRow *Shim = lookupCoreShim(Op, On, To);
+    if (!Shim)
+      PrintFatalError(Rule.getLoc(),
+                      "core rule: the table backends do not translate "
+                      "operator '" +
+                          Op + "' over '" + On + "' to '" + To + "' yet");
+    const std::string P = coreRuleGuardText(Rule, Records);
+    const std::string Idx = std::to_string(C.TypeIdx);
+    const std::string V = "Q.Types[" + Idx + "]";
+    std::string Cond;
+    std::string Mut;
+    if (Shim->Method == "coreWidenVectorEltsToVectorMinSize") {
+      const std::string Size = std::to_string(C.Target->Kids[0]->IntValue);
+      Cond = "(" + V + ".isFixedVector() && " + V + ".getSizeInBits() < " +
+             Size + ")";
+      Mut = "[](const LegalityQuery &Q) { const LLT VecTy = Q.Types[" + Idx +
+            "]; const unsigned NumElts = VecTy.getNumElements(); "
+            "const unsigned MinSize = " +
+            Size + " / NumElts; return std::make_pair(unsigned(" + Idx +
+            "), LLT::fixed_vector(NumElts, "
+            "VecTy.getElementType().changeElementSize(MinSize))); }";
+    } else if (Shim->Method == "coreWidenScalarOrEltToNextPow2OrMinSize") {
+      const std::string Min = coreCxxValue(*C.Target, Records, Rule);
+      Cond = "(scalarOrEltNarrowerThan(" + Idx + ", " + Min +
+             ")(Q) || "
+             "scalarOrEltSizeNotPow2(" +
+             Idx + ")(Q))";
+      Mut = "LegalizeMutations::widenScalarOrEltToNextPow2(" + Idx + ", " +
+            Min + ")";
+    } else {
+      PrintFatalError(Rule.getLoc(),
+                      "core rule: the table backends do not translate shim '" +
+                          Shim->Method + "' yet");
+    }
+    Cond = conjunction(P, Cond);
+    std::string Buf;
+    raw_string_ostream OS(Buf);
+    OS << "  if (" << Cond << ") {\n";
+    if (GuardOnly) {
+      OS << "    return true;\n";
+    } else {
+      const std::string RuleIdxText =
+          RuleIdx ? std::to_string(*RuleIdx) : std::string();
+      const std::string MutationsFlag =
+          RuleIdx ? (std::string(TablePrefix) + "EvalRuleIndexMutations")
+                  : std::string();
+      emitStep(OS, C.Action->getValueAsString("Name"), "    ", Mut, RuleIdxText,
+               MutationsFlag);
+    }
+    OS << "  }\n";
+    OS.flush();
+    Out = std::move(Buf);
+    return true;
   }
 
   /// True when the rule set's last rule always matches.  The evaluator's final

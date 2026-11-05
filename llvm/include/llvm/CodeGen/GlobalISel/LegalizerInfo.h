@@ -1402,6 +1402,41 @@ public:
         LegalizeMutations::widenScalarOrEltToNextMultipleOf(TypeIdx, Size));
   }
 
+  LegalizeRuleSet &coreWidenScalarOrEltToNextPow2OrMinSize(LegalityPredicate P,
+                                                           unsigned TypeIdx,
+                                                           unsigned MinSize) {
+    using namespace LegalityPredicates;
+    return actionIf(
+        LegalizeAction::WidenScalar,
+        all(P, any(scalarOrEltNarrowerThan(TypeIdx, MinSize),
+                   scalarOrEltSizeNotPow2(typeIdx(TypeIdx)))),
+        LegalizeMutations::widenScalarOrEltToNextPow2(TypeIdx, MinSize));
+  }
+
+  /// Widen a fixed vector's element size until the vector reaches
+  /// \p VectorSize bits, keeping the lane count.  The element size is
+  /// `VectorSize / NumElts` exactly as the fused method computes it; the
+  /// division is intentionally integral.
+  LegalizeRuleSet &coreWidenVectorEltsToVectorMinSize(LegalityPredicate P,
+                                                      unsigned TypeIdx,
+                                                      unsigned VectorSize) {
+    return actionIf(
+        LegalizeAction::WidenScalar,
+        [=](const LegalityQuery &Query) {
+          const LLT VecTy = Query.Types[TypeIdx];
+          return P(Query) && VecTy.isFixedVector() &&
+                 VecTy.getSizeInBits() < VectorSize;
+        },
+        [=](const LegalityQuery &Query) {
+          const LLT VecTy = Query.Types[TypeIdx];
+          unsigned NumElts = VecTy.getNumElements();
+          unsigned MinSize = VectorSize / NumElts;
+          LLT NewTy = LLT::fixed_vector(
+              NumElts, VecTy.getElementType().changeElementSize(MinSize));
+          return std::make_pair(TypeIdx, NewTy);
+        });
+  }
+
   LegalizeRuleSet &coreMinScalarOrElt(LegalityPredicate P, unsigned TypeIdx,
                                       const LLT Ty) {
     using namespace LegalityPredicates;
