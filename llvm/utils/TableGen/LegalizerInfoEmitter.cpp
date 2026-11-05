@@ -2041,6 +2041,10 @@ static std::string coreSortListText(ArrayRef<const Record *> Sorts) {
 
 static int64_t coreIntLiteral(const CoreNode &N, const Record &Owner,
                               StringRef What);
+/// A size that does not depend on the query: an integer literal, or a chain of
+/// `Select`s over such sizes.  The C++ builders take a `Select`-bearing lane
+/// count, and their chains nest, so a rule must be able to nest too.
+static bool coreConstInt(const CoreNode &N);
 
 /// The sort of one node, after checking every operand against its declared
 /// signature.  `Owner` is the rule, so every diagnostic points at the .td line.
@@ -2284,10 +2288,11 @@ static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
     coreIntLiteral(*N.Kids[0], Owner, "'Clamp' lower bound");
     coreIntLiteral(*N.Kids[1], Owner, "'Clamp' upper bound");
   }
-  if (Tag == "select") {
-    coreIntLiteral(*N.Kids[1], Owner, "'Select' true branch");
-    coreIntLiteral(*N.Kids[2], Owner, "'Select' false branch");
-  }
+  if (Tag == "select" &&
+      (!coreConstInt(*N.Kids[1]) || !coreConstInt(*N.Kids[2])))
+    PrintFatalError(Owner.getLoc(),
+                    "core rule: 'Select' branches must be non-negative "
+                    "integer literals or nested selects");
   if (Tag == "feature" && N.Kids[0]->Kind != CoreNode::StringNode)
     PrintFatalError(Owner.getLoc(),
                     "core rule: 'Feature' expects a string condition");
@@ -2354,6 +2359,15 @@ static int64_t coreIntLiteral(const CoreNode &N, const Record &Owner,
     PrintFatalError(Owner.getLoc(),
                     "core rule: " + What + " must not be negative");
   return N.IntValue;
+}
+
+static bool coreConstInt(const CoreNode &N) {
+  if (N.Kind == CoreNode::IntNode)
+    return N.IntValue >= 0;
+  if (N.Kind != CoreNode::OpNode || coreTag(*N.Op) != "select" ||
+      N.Kids.size() != 3)
+    return false;
+  return coreConstInt(*N.Kids[1]) && coreConstInt(*N.Kids[2]);
 }
 
 /// The type slot an observation projects to.  A shim takes an unsigned

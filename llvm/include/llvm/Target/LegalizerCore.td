@@ -358,8 +358,9 @@ def CoreURem : LegalizeCoreExpr<"urem", [SortInt, SortInt], SortInt>;
 def CoreUDiv : LegalizeCoreExpr<"udiv", [SortInt, SortInt], SortInt>;
 
 /// An integer choice: `(CoreSelect cond, then, else)`.  The condition is a
-/// cached subtarget feature, which is why the branches must be Int and the
-/// target is still a literal at build time.
+/// cached subtarget feature, so the value is still fixed at build time; the
+/// branches must be non-negative literals or nested selects, which is the
+/// shape a chain of feature tests takes.
 def CoreSelect
     : LegalizeCoreExpr<"select", [SortBool, SortInt, SortInt], SortInt>;
 
@@ -516,6 +517,27 @@ class CoreClampMinNumElements<int Idx, LegalizeNamedType Elt, int Num>
                           (CoreEq (ElemOf (Slot Idx)), (Ty Elt)),
                           (CoreLt (NumElems (Slot Idx)), Num))>;
 class CoreClampMaxNumElements<int Idx, LegalizeNamedType Elt, int Num>
+    : CoreFewerIf<(Slot Idx),
+                  (Replace (ScalarOrVecOf Num, (ElemOf (Slot Idx)))),
+                  (CoreAll (CoreEq (SortOf (Slot Idx)), KindVector),
+                           (CoreNot (CoreEq (SortOf (Slot Idx)),
+                                             KindScalableVector)),
+                           (CoreEq (ElemOf (Slot Idx)), (Ty Elt)),
+                           (CoreGt (NumElems (Slot Idx)), Num))>;
+
+/// The same two clamps with the lane count chosen by a cached feature, which
+/// is how a target writes "the widest vector this subtarget can build".  They
+/// are separate classes because `Num` is a `dag` here and a literal in the
+/// forms above; a dag parameter cannot take a bare integer, and an integer
+/// parameter cannot take a select.
+class CoreClampMinNumElementsSel<int Idx, LegalizeNamedType Elt, dag Num>
+    : CoreMoreIf<(Slot Idx), (Replace (VecOf Num, (ElemOf (Slot Idx)))),
+                 (CoreAll (CoreEq (SortOf (Slot Idx)), KindVector),
+                          (CoreNot (CoreEq (SortOf (Slot Idx)),
+                                            KindScalableVector)),
+                          (CoreEq (ElemOf (Slot Idx)), (Ty Elt)),
+                          (CoreLt (NumElems (Slot Idx)), Num))>;
+class CoreClampMaxNumElementsSel<int Idx, LegalizeNamedType Elt, dag Num>
     : CoreFewerIf<(Slot Idx),
                   (Replace (ScalarOrVecOf Num, (ElemOf (Slot Idx)))),
                   (CoreAll (CoreEq (SortOf (Slot Idx)), KindVector),
