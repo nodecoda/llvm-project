@@ -294,6 +294,23 @@ The kinds are the LLT kinds, `KindScalar`, `KindVector`,
 `(CoreIsPow2 <int>)` is the integer power-of-two test the builder predicates
 already used (`scalarOrEltSizeNotPow2`, `sizeNotPow2`).
 
+Four more primitives cover predicates that would otherwise still need a
+lambda:
+
+- `(ScalarOf <type>)` is `LLT::getScalarType()`: the element type of a vector,
+  and the type itself otherwise.  `ElemOf` asserts on a scalar, so a rule that
+  asks about either kind of type cannot use it.
+- `(IsBFloat16 <type>)` asks `LLT::isBFloat16()`.  It is not
+  `(CoreEq ... (Ty bf16))`: `LLT::operator==` falls back to comparing size and
+  scalar-ness when either side is a plain scalar, and under that fallback
+  `LLT::scalar(16) == LLT::bfloat16()`, so the equality over-matches.
+- `(CoreMul a b)`, `(CoreURem a b)` and `(Pow2Ceil n)` are the arithmetic two
+  AArch64 rules need to compare a type against a multiple, or against a
+  remainder, of another type's size.  `Pow2Ceil` is
+  `1 << Log2_32_Ceil(n)`, the value form of what `Pow2Min` asks a mutation
+  for.  That is the whole arithmetic vocabulary: a rule that needs more is a
+  signal to reconsider the vocabulary, not to add another shim.
+
 The checker runs in every legalizer backend, including `-gen-legalizer`, and is
 exposed as `-gen-legalizer-check`.  It rejects a rule whose observation or
 target has the wrong sort, an operator applied to a sort it does not accept, a
@@ -347,6 +364,13 @@ slots, fills a cell lazily by calling the evaluator with the class
 representative, and answers subsequent queries in that class with one array
 load.  The memory descriptor is a separate axis, keyed on the descriptor's LLT
 and on an alignment class, because a rule can compare either.
+
+Both the arity and the descriptor axis are derived from what the rules read.
+A core guard is a tree rather than a predicate string, so the emitter walks the
+tree: a guard that names `Types[1]` or `MMODescr[0]` widens the key exactly as
+a hand-written predicate does.  A rule set that loses either half gets an
+evaluator that indexes past the end of the query it is handed, which is why the
+generated domain and the generated table are checked against the same rules.
 
 A query whose types are outside the generated class list is answered by calling
 the evaluator directly on the concrete query; this is the residual path.  The

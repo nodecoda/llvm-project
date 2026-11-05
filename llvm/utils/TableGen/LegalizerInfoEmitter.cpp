@@ -2655,6 +2655,9 @@ private:
   std::string emitElemOf(const CoreNode &N) {
     return "(" + childValue(N, 0) + ").getElementType()";
   }
+  std::string emitScalarOf(const CoreNode &N) {
+    return "(" + childValue(N, 0) + ").getScalarType()";
+  }
   std::string emitNumElems(const CoreNode &N) {
     return "(" + childValue(N, 0) + ").getNumElements()";
   }
@@ -2713,8 +2716,20 @@ private:
   std::string emitNot(const CoreNode &N) {
     return "!(" + childBool(N, 0) + ")";
   }
+  std::string emitIsBFloat16(const CoreNode &N) {
+    return "(" + childValue(N, 0) + ").isBFloat16()";
+  }
   std::string emitIsPow2(const CoreNode &N) {
     return "llvm::isPowerOf2_32(" + childValue(N, 0) + ")";
+  }
+  std::string emitMul(const CoreNode &N) {
+    return "(" + childValue(N, 0) + " * " + childValue(N, 1) + ")";
+  }
+  std::string emitURem(const CoreNode &N) {
+    return "(" + childValue(N, 0) + " % " + childValue(N, 1) + ")";
+  }
+  std::string emitPow2Ceil(const CoreNode &N) {
+    return "llvm::PowerOf2Ceil(" + childValue(N, 0) + ")";
   }
   std::string emitIn(const CoreNode &N);
   std::string emitCompare(const CoreNode &N);
@@ -2736,7 +2751,11 @@ std::string CoreCxxEmitter::value(const CoreNode &N) {
       {"slot", &CoreCxxEmitter::emitSlot},
       {"memSlot", &CoreCxxEmitter::emitMemSlot},
       {"elemOf", &CoreCxxEmitter::emitElemOf},
+      {"scalarOf", &CoreCxxEmitter::emitScalarOf},
       {"numElems", &CoreCxxEmitter::emitNumElems},
+      {"pow2Ceil", &CoreCxxEmitter::emitPow2Ceil},
+      {"mul", &CoreCxxEmitter::emitMul},
+      {"urem", &CoreCxxEmitter::emitURem},
       {"bitsOf", &CoreCxxEmitter::emitBitsOf},
       {"sizeOf", &CoreCxxEmitter::emitSizeOf},
       {"alignOf", &CoreCxxEmitter::emitAlignOf},
@@ -2768,6 +2787,7 @@ std::string CoreCxxEmitter::boolean(const CoreNode &N) {
       {"any", &CoreCxxEmitter::emitAny},
       {"not", &CoreCxxEmitter::emitNot},
       {"isPow2", &CoreCxxEmitter::emitIsPow2},
+      {"isBFloat16", &CoreCxxEmitter::emitIsBFloat16},
       {"in", &CoreCxxEmitter::emitIn},
       {"eq", &CoreCxxEmitter::emitCompare},
       {"ne", &CoreCxxEmitter::emitCompare},
@@ -4693,6 +4713,59 @@ class LegalizerTableEmitterImpl {
     return Found;
   }
 
+  /// Apply \p Pred to a core rule's observation and guard, stopping at the
+  /// first node it accepts.  The metadata walks below read the C++ text a
+  /// legacy predicate carries; a core rule has a tree instead, and both of its
+  /// dag fields are part of what the rule reads.  A visitor that only collects
+  /// information returns false throughout.
+  static bool anyCoreNode(const Record &Rule,
+                          const std::function<bool(const CoreNode &)> &Pred) {
+    for (StringRef Field : {"CoreExpr", "CoreGuard"}) {
+      const Init *I = Rule.getValueInit(Field);
+      if (!I || isa<UnsetInit>(I))
+        continue;
+      std::unique_ptr<CoreNode> N = parseCoreNode(*I, Rule);
+      if (Pred(*N))
+        return true;
+    }
+    return false;
+  }
+
+  /// Slots a core rule reads.  The observation names one too (`Scalarize`'s
+  /// slot is the only record of what it rewrites), and `SameAs(k)` indexes
+  /// `Types[k]` without spelling a `Slot`.
+  static void scanCoreSlots(const CoreNode &N, unsigned &Arity) {
+    if (N.Kind != CoreNode::OpNode)
+      return;
+    StringRef Tag = coreTag(*N.Op);
+    if ((Tag == "slot" || Tag == "sameAs") && !N.Kids.empty() &&
+        N.Kids[0]->Kind == CoreNode::IntNode)
+      Arity = std::max(Arity, unsigned(N.Kids[0]->IntValue + 1));
+    for (const auto &K : N.Kids)
+      scanCoreSlots(*K, Arity);
+  }
+
+  static void scanCoreRuleSlots(const Record &Rule, unsigned &Arity) {
+    anyCoreNode(Rule, [&](const CoreNode &N) {
+      scanCoreSlots(N, Arity);
+      return false;
+    });
+  }
+
+  /// True when a core rule reads the memory descriptor.  `(MemTy (MemSlot 0))`
+  /// is a guard, but the walk covers the observation as well so that a future
+  /// memdesc-observing operator does not silently drop the descriptor axis.
+  static bool coreReadsMemDesc(const CoreNode &N) {
+    if (N.Kind != CoreNode::OpNode)
+      return false;
+    if (coreTag(*N.Op) == "memSlot")
+      return true;
+    for (const auto &K : N.Kids)
+      if (coreReadsMemDesc(*K))
+        return true;
+    return false;
+  }
+
   /// True when the rule set's key needs the memory descriptor: either a rule
   /// names one, or a guard reads one.
   static bool needsMemDesc(const Record &RuleSet) {
@@ -4703,6 +4776,8 @@ class LegalizerTableEmitterImpl {
       if (Rule->getValueAsString("OpaqueArgs").contains("MMODescrs"))
         return true;
       if (predicateReadsMemDesc(Rule->getValueAsOptionalDef("Pred")))
+        return true;
+      if (isCoreRule(*Rule) && anyCoreNode(*Rule, coreReadsMemDesc))
         return true;
     }
     return false;
@@ -6459,8 +6534,10 @@ public:
   unsigned arityOf(const Record &RuleSet) {
     unsigned Arity = 1;
     for (const Record *Rule : RuleSet.getValueAsListOfDefs("Rules")) {
-      if (isCoreRule(*Rule))
+      if (isCoreRule(*Rule)) {
+        scanCoreRuleSlots(*Rule, Arity);
         continue;
+      }
       const std::vector<const Record *> Args =
           Rule->getValueAsListOfDefs("Args");
       // Every *ForCartesianProduct builder takes one type slot per list, so a
@@ -6551,8 +6628,10 @@ public:
   static unsigned testArityOf(const Record &RuleSet) {
     unsigned Arity = 1;
     for (const Record *Rule : RuleSet.getValueAsListOfDefs("Rules")) {
-      if (isCoreRule(*Rule))
+      if (isCoreRule(*Rule)) {
+        scanCoreRuleSlots(*Rule, Arity);
         continue;
+      }
       const std::vector<const Record *> Args =
           Rule->getValueAsListOfDefs("Args");
       // legalForCartesianProduct gives one type slot per type-list argument,

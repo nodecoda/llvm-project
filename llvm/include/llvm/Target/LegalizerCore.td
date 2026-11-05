@@ -29,11 +29,11 @@
 //                 Legal, Custom, Lower, Unsupported (terminal), Scalarize,
 //                 IsPow2
 //   constructors  Pow2, Pow2Min(n), MultipleOf(n), Ty(t), SameAs(k),
-//                 MinVectorSize(n), Clamp(l,h)
-//   observers     Slot, ElemOf, NumElems, BitsOf, SizeOf, AlignOf, AddrSpace,
-//                 SortOf, MemSlot, MemTy, MemOrdering, MemFailureOrdering,
-//                 Feature
-//   combinators   all/any/not, select, eq/ne/lt/le/gt/ge, in
+//                 MinVectorSize(n), Clamp(l,h), Pow2Ceil(n)
+//   observers     Slot, ElemOf, ScalarOf, NumElems, BitsOf, SizeOf, AlignOf,
+//                 AddrSpace, SortOf, MemSlot, MemTy, MemOrdering,
+//                 MemFailureOrdering, Feature, IsBFloat16
+//   combinators   all/any/not, select, eq/ne/lt/le/gt/ge, in, mul, urem
 //
 // This is not a shape checker.  `More` on a scalar is sort-correct: that it
 // also needs a vector at run time is the guard's business, not the sort's.
@@ -156,6 +156,11 @@ def Slot      : LegalizeCoreExpr<"slot", [SortInt], SortType>;
 /// The element type of a vector slot.  ElemOf on a scalar is sort-correct;
 /// the guard decides whether the slot really is a vector.
 def ElemOf    : LegalizeCoreExpr<"elemOf", [SortType], SortType>;
+/// The scalar type of a slot: the element type of a vector, and the type
+/// itself otherwise.  This is `LLT::getScalarType()`, which unlike `ElemOf`
+/// is defined for every type; a rule that asks "is the *element* bf16?" needs
+/// it for both halves of the answer to be expressible.
+def ScalarOf  : LegalizeCoreExpr<"scalarOf", [SortType], SortType>;
 def NumElems  : LegalizeCoreExpr<"numElems", [SortType], SortInt>;
 def BitsOf    : LegalizeCoreExpr<"bitsOf", [SortType], SortInt>;
 def SizeOf    : LegalizeCoreExpr<"sizeOf", [SortTypeOrMemDesc], SortInt>;
@@ -181,6 +186,13 @@ def MemFailureOrdering
 
 /// A cached per-subtarget boolean, written as its C++ condition.
 def Feature   : LegalizeCoreExpr<"feature", [SortString], SortBool>;
+
+/// A type property: is this the bfloat16 scalar type?  It cannot be written as
+/// `(CoreEq (ScalarOf s) (Ty bf16))` because `LLT::operator==` falls back to
+/// comparing size and scalar-ness when either side is a plain scalar, and
+/// `LLT::scalar(16)` is one: under that fallback `s16 == bfloat16`.  The
+/// property has to be asked for by the method that answers it.
+def IsBFloat16 : LegalizeCoreExpr<"isBFloat16", [SortType], SortBool>;
 
 /// The sort of a slot, as a first-class value.  These are the tags SortOf
 /// compares against.
@@ -210,6 +222,11 @@ def Pow2            : LegalizeCoreExpr<"pow2", [], SortInt>;
 def Pow2Min         : LegalizeCoreExpr<"pow2Min", [SortInt], SortInt>;
 /// The next multiple of `n`.
 def MultipleOf      : LegalizeCoreExpr<"multipleOf", [SortInt], SortInt>;
+/// `1 << Log2_32_Ceil(n)`, the value form of what `Pow2Min` asks a mutation
+/// for.  The two are separate records because the mutation's argument is a
+/// literal size baked into the emitted call, while a rule computing an
+/// element count passes an expression.
+def Pow2Ceil        : LegalizeCoreExpr<"pow2Ceil", [SortInt], SortInt>;
 /// A clamp to [lo, hi].
 def Clamp           : LegalizeCoreExpr<"clamp", [SortInt, SortInt], SortInt>;
 /// A literal type.  The argument is a LegalizeNamedType def.
@@ -253,6 +270,13 @@ def CoreIsPow2 : LegalizeCoreExpr<"isPow2", [SortInt], SortBool>;
 
 /// Set membership: `(CoreIn (SortOf (Slot 0)) MyKindSet)`.
 def CoreIn : LegalizeCoreExpr<"in", [], SortBool> { let SetMembership = 1; }
+
+/// Integer arithmetic.  These are the two a legalizer guard needs to compare
+/// a type against a multiple or a residue of another type's size; there is no
+/// intent to grow an expression language, so the shims are the C++ operators
+/// themselves and nothing else is added without a rule that needs it.
+def CoreMul  : LegalizeCoreExpr<"mul", [SortInt, SortInt], SortInt>;
+def CoreURem : LegalizeCoreExpr<"urem", [SortInt, SortInt], SortInt>;
 
 /// An integer choice: `(CoreSelect cond, then, else)`.  The condition is a
 /// cached subtarget feature, which is why the branches must be Int and the
