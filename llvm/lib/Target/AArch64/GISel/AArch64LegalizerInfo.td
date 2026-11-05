@@ -134,7 +134,7 @@ def AArch64_Pred_15859522 : LegalizeQueryPredicate<"[=](const LegalityQuery &Que
 def AArch64_Pred_1671daba : LegalizeQueryPredicate<"[](const LegalityQuery &Q) { LLT DstTy = Q.Types[0]; LLT SrcTy = Q.Types[1]; return SrcTy.getScalarSizeInBits() == 64 && DstTy.getScalarSizeInBits() == 16; }">;
 def AArch64_Pred_1a80c04b : LegalizeQueryPredicate<"typeInSet(0, {AArch64_v8s8, AArch64_v16s8, AArch64_v4s16, AArch64_v8s16, AArch64_v2s32, AArch64_v4s32, AArch64_v2s64, AArch64_v2p0})">;
 def AArch64_Pred_1f3dc25d : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { return Query.Types[0].isVector(); }">;
-def AArch64_Pred_20db2dd3 : LegalizeQueryPredicate<"::any(scalarWiderThan(0, 64), scalarWiderThan(1, 64)), 0">;
+def AArch64_Pred_20db2dd3 : LegalizeQueryPredicate<"::any(scalarWiderThan(0, 64), scalarWiderThan(1, 64))">;
 def AArch64_Pred_2ac0a068 : LegalizeQueryPredicate<"atomicOrderingAtLeastOrStrongerThan(0, AtomicOrdering::Unordered)">;
 def AArch64_Pred_2b954739 : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { LLT LdTy = Query.Types[0]; LLT PtrTy = Query.Types[1]; if (!llvm::is_contained({AArch64_v16s8, AArch64_v8s16, AArch64_v4s32, AArch64_v2s64, AArch64_v2p0, AArch64_v8s8, AArch64_v4s16, AArch64_v2s32}, LdTy) && !llvm::is_contained({AArch64_s8, AArch64_s16, AArch64_s32, AArch64_s64, AArch64_p0}, LdTy) && LdTy != AArch64_s128) return false; if (PtrTy != AArch64_p0) return false; return true; }">;
 def AArch64_Pred_2bd673a4 : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { return AArch64_HasRCPC3 && Query.Types[0] == AArch64_s128 && Query.MMODescrs[0].Ordering == AtomicOrdering::Release; }">;
