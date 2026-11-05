@@ -1166,6 +1166,7 @@ public:
   /// Widen the scalar or element to match the scalar size of another.
   LegalizeRuleSet &minScalarSameAs(unsigned TypeIdx, unsigned LargeTypeIdx) {
     typeIdx(TypeIdx);
+    typeIdx(LargeTypeIdx);
     return actionIf(
         LegalizeAction::WidenScalar,
         [=](const LegalityQuery &Query) {
@@ -1178,6 +1179,7 @@ public:
   /// Narrow the scalar or element to match the scalar size of another.
   LegalizeRuleSet &maxScalarSameAs(unsigned TypeIdx, unsigned NarrowTypeIdx) {
     typeIdx(TypeIdx);
+    typeIdx(NarrowTypeIdx);
     return actionIf(
         LegalizeAction::NarrowScalar,
         [=](const LegalityQuery &Query) {
