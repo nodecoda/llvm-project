@@ -1510,6 +1510,21 @@ public:
     return bitcastIf(P, changeElementTo(TypeIdx, Ty));
   }
 
+  /// Terminal actions.  There is nothing to mutate, so the guard is the whole
+  /// rule; the `core*` spelling keeps a core rule and a hand-written chain
+  /// reading the same way.
+  LegalizeRuleSet &coreLegalIf(LegalityPredicate P) { return legalIf(P); }
+  LegalizeRuleSet &coreCustomIf(LegalityPredicate P) { return customIf(P); }
+  LegalizeRuleSet &coreLowerIf(LegalityPredicate P) { return lowerIf(P); }
+  LegalizeRuleSet &coreUnsupportedIf(LegalityPredicate P) {
+    return unsupportedIf(P);
+  }
+  /// Scalarize, like the action it names, requires the slot to be a vector;
+  /// that is part of the action rather than of the guard.
+  LegalizeRuleSet &coreScalarizeIf(LegalityPredicate P, unsigned TypeIdx) {
+    return scalarizeIf(P, TypeIdx);
+  }
+
   /// Check if there is no type index which is obviously not handled by the
   /// LegalizeRuleSet in any way at all.
   /// \pre Type indices of the opcode form a dense [0, \p NumTypeIdxs) set.

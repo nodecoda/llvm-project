@@ -256,6 +256,27 @@ target must be one the operator accepts.  The action is not written by the
 rule: it is a total function of (operator, target sort), so a rule cannot
 perform a direction its operator does not imply.
 
+The terminal actions are operators too, and they take no target because there
+is nothing to construct: the action is the answer.  Their rule is the operator
+plus a `CoreGuard`, and the guard is the whole condition.
+
+```tablegen
+def AlreadyLegal : CoreLegal<(CoreIn (Slot 0), PackedVectors)>;
+def FoldByHand   : CoreCustom<(CoreAll HasFP16,
+                                      (CoreEq (BitsOf (Slot 1)), 64))>;
+def Unsupported : CoreUnsupported<(CoreNot HasNEON)>;
+def DropLanes   : CoreScalarize<(Slot 0)>;
+```
+
+`Scalarize` observes the slot it drops the lanes of but still writes no
+target: the result type follows from the action.  `(CoreTrue)` states an
+unconditional action; the guard is otherwise never optional, so a terminal
+rule always says when it applies.  The shims are `coreLegalIf`, `coreCustomIf`,
+`coreLowerIf`, `coreUnsupportedIf`, and `coreScalarizeIf`, all of which compose
+the corresponding `LegalizeRuleSet` factory.  The table backends translate
+them as a guarded action with no mutation, which is exactly what the chain
+does.
+
 The checker runs in every legalizer backend, including `-gen-legalizer`, and is
 exposed as `-gen-legalizer-check`.  It rejects a rule whose observation or
 target has the wrong sort, an operator applied to a sort it does not accept, a
@@ -276,11 +297,12 @@ translation; a primitive without one is a build error, not a silent fallback
 to the chain.
 
 `-gen-legalizer-core` carries both views.  Rows with the primitive vocabulary
-emit `op`/`on`/`to` and are tagged `"schema": "0.4"`; legacy rows keep the 0.3
-`action`/`type_idx`/`mutation` fields byte-for-byte and carry no tag, because
-0.3 is the default.  The file-level `version` is the highest schema any entry
-requires, so a target that does not use the primitives still emits 0.3 and its
-artifacts stay byte-identical.
+emit `op`/`on`/`to` and are tagged `"schema": "0.4"`; a terminal rule emits
+`op` and the guard predicate and omits both `on` and `to`, because it has
+neither.  Legacy rows keep the 0.3 `action`/`type_idx`/`mutation` fields
+byte-for-byte and carry no tag, because 0.3 is the default.  The file-level
+`version` is the highest schema any entry requires, so a target that does not
+use the primitives still emits 0.3 and its artifacts stay byte-identical.
 
 A primitive row carries no `mutation`.  Its mutation is not a second thing to
 maintain: it is derived from `to`, which is the only place the target

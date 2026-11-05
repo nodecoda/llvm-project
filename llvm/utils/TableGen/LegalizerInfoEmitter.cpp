@@ -2217,10 +2217,20 @@ struct CoreActionRow {
 /// C5: the action is a total function of (operator, target sort).  The
 /// observation chooses the guard; the target chooses the mutation payload.
 static const CoreActionRow CoreActionTable[] = {
-    {"widen", "Type", "WidenScalar"},   {"widen", "Int", "WidenScalar"},
-    {"narrow", "Type", "NarrowScalar"}, {"narrow", "Int", "NarrowScalar"},
-    {"more", "Int", "MoreElements"},    {"fewer", "Int", "FewerElements"},
-    {"fewer", "Type", "FewerElements"}, {"bitcast", "Type", "Bitcast"},
+    {"widen", "Type", "WidenScalar"},
+    {"widen", "Int", "WidenScalar"},
+    {"narrow", "Type", "NarrowScalar"},
+    {"narrow", "Int", "NarrowScalar"},
+    {"more", "Int", "MoreElements"},
+    {"fewer", "Int", "FewerElements"},
+    {"fewer", "Type", "FewerElements"},
+    {"bitcast", "Type", "Bitcast"},
+    // A terminal operator has no target, so the empty sort keys its action.
+    {"legal", "", "Legal"},
+    {"custom", "", "Custom"},
+    {"lower", "", "Lower"},
+    {"unsupported", "", "Unsupported"},
+    {"scalarize", "", "FewerElements"},
 };
 
 static const Record *findCoreAction(const RecordKeeper &Records,
@@ -2304,39 +2314,51 @@ static CheckedCoreRule checkCoreRule(const Record &Rule,
       !Root->Op->isSubClassOf("LegalizeCoreOperator"))
     PrintFatalError(Rule.getLoc(),
                     "core rule: the rule body is not a lattice operator");
-  if (Root->Kids.size() != 2)
-    PrintFatalError(Rule.getLoc(), "core rule: operator '" +
-                                       Root->Op->getName() +
-                                       "' expects an observation and a target");
-
-  const Record *Domain = Root->Op->getValueAsDef("Domain");
-  const Record *OnSort = coreSortOf(*Root->Kids[0], Records, Rule);
-  if (OnSort != Domain)
-    PrintFatalError(Rule.getLoc(),
-                    "core rule: operator '" + Root->Op->getName() +
-                        "' expects an observation of sort " +
-                        Domain->getValueAsString("Name") + ", got " +
-                        OnSort->getValueAsString("Name"));
-
-  const Record *ToSort = coreSortOf(*Root->Kids[1], Records, Rule);
+  // A terminal operator has no target; four of them also have no
+  // observation, so their rule is `(Op)` and the guard is the whole rule.
+  const bool HasObs = Root->Op->getValueAsBit("HasObservation");
   const std::vector<const Record *> Targets =
       Root->Op->getValueAsListOfDefs("Targets");
-  bool TargetOk =
-      llvm::any_of(Targets, [&](const Record *T) { return T == ToSort; });
-  if (!TargetOk)
-    PrintFatalError(Rule.getLoc(),
-                    "core rule: operator '" + Root->Op->getName() +
-                        "' does not accept a target of sort " +
-                        ToSort->getValueAsString("Name") + "; expected " +
-                        coreSortListText(Targets));
+  const bool HasTarget = !Targets.empty();
+  if (Root->Kids.size() != (HasObs ? 1u : 0u) + (HasTarget ? 1u : 0u))
+    PrintFatalError(
+        Rule.getLoc(),
+        "core rule: operator '" + Root->Op->getName() + "' expects " +
+            std::to_string((HasObs ? 1 : 0) + (HasTarget ? 1 : 0)) +
+            " operand(s), got " + std::to_string(Root->Kids.size()));
 
-  const CoreActionRow *Row = lookupCoreAction(
-      coreTag(*Root->Op), ToSort->getValueAsString("Name"));
+  if (HasObs) {
+    const Record *Domain = Root->Op->getValueAsDef("Domain");
+    const Record *OnSort = coreSortOf(*Root->Kids[0], Records, Rule);
+    if (OnSort != Domain)
+      PrintFatalError(Rule.getLoc(),
+                      "core rule: operator '" + Root->Op->getName() +
+                          "' expects an observation of sort " +
+                          Domain->getValueAsString("Name") + ", got " +
+                          OnSort->getValueAsString("Name"));
+  }
+
+  const Record *ToSort = nullptr;
+  if (HasTarget) {
+    ToSort = coreSortOf(*Root->Kids[1], Records, Rule);
+    bool TargetOk =
+        llvm::any_of(Targets, [&](const Record *T) { return T == ToSort; });
+    if (!TargetOk)
+      PrintFatalError(Rule.getLoc(),
+                      "core rule: operator '" + Root->Op->getName() +
+                          "' does not accept a target of sort " +
+                          ToSort->getValueAsString("Name") + "; expected " +
+                          coreSortListText(Targets));
+  }
+
+  StringRef TargetSort =
+      HasTarget ? ToSort->getValueAsString("Name") : StringRef();
+  const CoreActionRow *Row = lookupCoreAction(coreTag(*Root->Op), TargetSort);
   if (!Row)
-    PrintFatalError(Rule.getLoc(), "core rule: no action for operator '" +
-                                       Root->Op->getName() +
-                                       "' with target sort " +
-                                       ToSort->getValueAsString("Name"));
+    PrintFatalError(
+        Rule.getLoc(),
+        "core rule: no action for operator '" + Root->Op->getName() + "'" +
+            (HasTarget ? " with target sort " + TargetSort.str() : Twine("")));
 
   // The guard, when present, is a Bool expression.  Pred and CoreGuard are
   // two spellings of the same slot and cannot both be set.
@@ -2359,12 +2381,14 @@ static CheckedCoreRule checkCoreRule(const Record &Rule,
     PrintFatalError(Rule.getLoc(), "core rule: action table names '" +
                                        Row->Action +
                                        "', which is not a LegalizeAction");
-  C.Obs = Root->Kids[0].get();
-  C.Target = Root->Kids[1].get();
+  C.Obs = HasObs ? Root->Kids[0].get() : nullptr;
+  C.Target = HasTarget ? Root->Kids[1].get() : nullptr;
   C.Root = std::move(Root);
   // The type_idx projection is checked, not guessed: the only observations a
-  // shim can execute are a slot and one element of a slot.
-  C.TypeIdx = coreTypeIdxOf(*C.Obs, Rule);
+  // shim can execute are a slot and one element of a slot.  A guard-only
+  // terminal has none.
+  if (C.Obs)
+    C.TypeIdx = coreTypeIdxOf(*C.Obs, Rule);
   return C;
 }
 
@@ -2391,6 +2415,11 @@ enum class CoreTableTranslation {
   WidenVectorMinSize,
   WidenPow2OrMinSize,
   MinScalarOrElt,
+  /// The guard alone selects the action; there is no mutation.
+  GuardedAction,
+  /// `scalarize`: the action is FewerElements and the mutation drops the
+  /// lanes, so the evaluator needs both the guard and the vector test.
+  Scalarize,
 };
 
 struct CoreShimRow {
@@ -2400,6 +2429,9 @@ struct CoreShimRow {
   StringRef Method;
   unsigned Payload;
   CoreTableTranslation Table;
+  /// False for a terminal action whose C++ takes only the guard: there is no
+  /// type index because there is no mutation.
+  bool TakesTypeIdx = true;
 };
 
 /// One row per primitive the C++ layer can execute.  The checker rejects a
@@ -2412,8 +2444,7 @@ static const CoreShimRow CoreShimTable[] = {
      CoreTableTranslation::None},
     {"widen", "slot", "multipleOf", "coreWidenScalarToNextMultipleOf", 1,
      CoreTableTranslation::None},
-    {"widen", "slot", "ty", "coreMinScalar", 1,
-     CoreTableTranslation::None},
+    {"widen", "slot", "ty", "coreMinScalar", 1, CoreTableTranslation::None},
     {"widen", "slot", "sameAs", "coreMinScalarSameAs", 1,
      CoreTableTranslation::None},
     {"widen", "elem", "pow2", "coreWidenScalarOrEltToNextPow2", 0,
@@ -2430,8 +2461,7 @@ static const CoreShimRow CoreShimTable[] = {
      CoreTableTranslation::WidenVectorMinSize},
     {"widen", "slot", "select", "coreWidenScalarOrEltToNextPow2OrMinSize", 1,
      CoreTableTranslation::WidenPow2OrMinSize},
-    {"narrow", "slot", "ty", "coreMaxScalar", 1,
-     CoreTableTranslation::None},
+    {"narrow", "slot", "ty", "coreMaxScalar", 1, CoreTableTranslation::None},
     {"narrow", "slot", "sameAs", "coreMaxScalarSameAs", 1,
      CoreTableTranslation::None},
     {"narrow", "elem", "ty", "coreMaxScalarOrElt", 1,
@@ -2440,8 +2470,17 @@ static const CoreShimRow CoreShimTable[] = {
      CoreTableTranslation::None},
     {"fewer", "slot", "ty", "coreFewerElementsToType", 1,
      CoreTableTranslation::None},
-    {"bitcast", "slot", "ty", "coreBitcastTo", 1,
-     CoreTableTranslation::None},
+    {"bitcast", "slot", "ty", "coreBitcastTo", 1, CoreTableTranslation::None},
+    {"legal", "", "", "coreLegalIf", 0, CoreTableTranslation::GuardedAction,
+     /*TakesTypeIdx=*/false},
+    {"custom", "", "", "coreCustomIf", 0, CoreTableTranslation::GuardedAction,
+     /*TakesTypeIdx=*/false},
+    {"lower", "", "", "coreLowerIf", 0, CoreTableTranslation::GuardedAction,
+     /*TakesTypeIdx=*/false},
+    {"unsupported", "", "", "coreUnsupportedIf", 0,
+     CoreTableTranslation::GuardedAction, /*TakesTypeIdx=*/false},
+    {"scalarize", "slot", "", "coreScalarizeIf", 0,
+     CoreTableTranslation::Scalarize},
 };
 
 static const CoreShimRow *lookupCoreShim(StringRef Operator, StringRef On,
@@ -2852,8 +2891,10 @@ static void expandCoreRule(const RecordKeeper &Records, const Record &Rule,
       coreNodeJson(*Guard, Records, CR.Predicate);
     }
   CR.Op = coreTag(*C.Operator).str();
-  coreNodeJson(*C.Obs, Records, CR.On);
-  coreNodeJson(*C.Target, Records, CR.To);
+  if (C.Obs)
+    coreNodeJson(*C.Obs, Records, CR.On);
+  if (C.Target)
+    coreNodeJson(*C.Target, Records, CR.To);
   Out.push_back(std::move(CR));
 }
 
@@ -2880,6 +2921,16 @@ static const Record *findCoreSort(const RecordKeeper &Records, StringRef Name) {
 static void verifyCoreTables(const RecordKeeper &Records) {
   for (const Record *Op :
        Records.getAllDerivedDefinitions("LegalizeCoreOperator")) {
+    if (Op->getValueAsListOfDefs("Targets").empty()) {
+      // A terminal operator's action does not depend on a target sort, so the
+      // empty sort keys it.  Without this check a new terminal would parse and
+      // then fail in every rule that used it.
+      if (!lookupCoreAction(coreTag(*Op), ""))
+        PrintFatalError(Op->getLoc(),
+                        "core action table has no row for terminal operator '" +
+                            Op->getName() + "'");
+      continue;
+    }
     for (const Record *T : Op->getValueAsListOfDefs("Targets"))
       if (!lookupCoreAction(coreTag(*Op), T->getValueAsString("Name")))
         PrintFatalError(Op->getLoc(),
@@ -2888,9 +2939,18 @@ static void verifyCoreTables(const RecordKeeper &Records) {
                             T->getValueAsString("Name"));
   }
   for (const CoreActionRow &Row : CoreActionTable) {
-    if (!findCoreOperator(Records, Row.Operator))
+    const Record *Op = findCoreOperator(Records, Row.Operator);
+    if (!Op)
       PrintFatalError("core action table names '" + Row.Operator +
                       "', which is not a LegalizeCoreOperator");
+    if (Row.TargetSort.empty()) {
+      // A terminal row: the empty sort is the key, so it must not name a sort
+      // and the operator must not accept one.
+      if (!Op->getValueAsListOfDefs("Targets").empty())
+        PrintFatalError("core action table gives operator '" + Row.Operator +
+                        "' an empty target sort, but the operator has targets");
+      continue;
+    }
     if (!findCoreSort(Records, Row.TargetSort))
       PrintFatalError("core action table names '" + Row.TargetSort +
                       "', which is not a LegalizeSort");
@@ -2907,9 +2967,11 @@ static void verifyCoreTables(const RecordKeeper &Records) {
 
 static void verifyCoreRule(const RecordKeeper &Records, const Record &Rule) {
   CheckedCoreRule C = checkCoreRule(Rule, Records);
-  StringRef On = coreObservationForm(*C.Obs);
-  StringRef To = coreTag(*C.Target->Op);
-  if (On.empty())
+  StringRef On = C.Obs ? coreObservationForm(*C.Obs) : StringRef();
+  StringRef To = C.Target ? coreTag(*C.Target->Op) : StringRef();
+  // A terminal rule has no observation to project; only an observation that
+  // exists but is not a slot or ElemOf is an error.
+  if (C.Obs && On.empty())
     PrintFatalError(Rule.getLoc(),
                     "core rule: no C++ shim for an observation that is neither "
                     "a slot nor ElemOf");
@@ -2922,8 +2984,8 @@ static void verifyCoreRule(const RecordKeeper &Records, const Record &Rule) {
 void LegalizerInfoEmitter::emitCoreRule(const Record &Rule, raw_ostream &OS) {
   CheckedCoreRule C = checkCoreRule(Rule, Records);
   CoreCxxEmitter Cxx(Records, Rule);
-  StringRef On = coreObservationForm(*C.Obs);
-  StringRef To = coreTag(*C.Target->Op);
+  StringRef On = C.Obs ? coreObservationForm(*C.Obs) : StringRef();
+  StringRef To = C.Target ? coreTag(*C.Target->Op) : StringRef();
   const CoreShimRow *Shim = lookupCoreShim(coreTag(*C.Operator), On, To);
   if (!Shim)
     PrintFatalError(Rule.getLoc(), "core rule: no C++ shim for operator '" +
@@ -2944,7 +3006,8 @@ void LegalizerInfoEmitter::emitCoreRule(const Record &Rule, raw_ostream &OS) {
   } else {
     OS << "[](const LegalityQuery &) { return true; }";
   }
-  OS << ", " << C.TypeIdx;
+  if (Shim->TakesTypeIdx)
+    OS << ", " << C.TypeIdx;
   if (Shim->Payload) {
     OS << ", ";
     const CoreNode &T = *C.Target;
@@ -4102,8 +4165,12 @@ void LegalizerInfoEmitter::runCore(raw_ostream &OS) {
           S += ", \"schema\": \"0.4\"";
           S += ", \"op\": ";
           S += jsonStringValue(CR.Op);
-          S += ", \"on\": " + CR.On;
-          S += ", \"to\": " + CR.To;
+          // A terminal operator has neither an observation nor a target, and
+          // writing an empty node for either would invent one.
+          if (!CR.On.empty())
+            S += ", \"on\": " + CR.On;
+          if (!CR.To.empty())
+            S += ", \"to\": " + CR.To;
         }
         S += ", \"ruleset\": ";
         S += jsonEscaped(RuleSetName);
@@ -5678,8 +5745,8 @@ class LegalizerTableEmitterImpl {
                          const unsigned *RuleIdx, bool GuardOnly) {
     CheckedCoreRule C = checkCoreRule(Rule, Records);
     CoreCxxEmitter Cxx(Records, Rule, "Q");
-    StringRef On = coreObservationForm(*C.Obs);
-    StringRef To = coreTag(*C.Target->Op);
+    StringRef On = C.Obs ? coreObservationForm(*C.Obs) : StringRef();
+    StringRef To = C.Target ? coreTag(*C.Target->Op) : StringRef();
     StringRef Op = coreTag(*C.Operator);
     const CoreShimRow *Shim = lookupCoreShim(Op, On, To);
     if (!Shim)
@@ -5710,6 +5777,16 @@ class LegalizerTableEmitterImpl {
             "VecTy.getElementType().changeElementSize(MinSize))); }";
       break;
     }
+    case CoreTableTranslation::GuardedAction:
+      // The guard is the whole rule: the action needs no type index and no
+      // mutation, so both stay empty and emitStep() writes the return.
+      break;
+    case CoreTableTranslation::Scalarize:
+      // Same condition and mutation as the chain's scalarizeIf(): the vector
+      // test is part of the action, not of the guard.
+      Cond = "isVector(" + Idx + ")(Q)";
+      Mut = "LegalizeMutations::scalarize(" + Idx + ")";
+      break;
     case CoreTableTranslation::MinScalarOrElt: {
       const std::string Ty = Cxx.value(*C.Target);
       Cond = "scalarOrEltNarrowerThan(" + Idx + ", (" + Ty +
@@ -5731,6 +5808,24 @@ class LegalizerTableEmitterImpl {
     Cond = conjunction(P, Cond);
     std::string Buf;
     raw_string_ostream OS(Buf);
+    if (Cond.empty()) {
+      // The rule always matches, so there is nothing to test.  An action with
+      // no mutation still has to be returned, and emitStep() does that.
+      if (GuardOnly) {
+        OS << "  return true;\n";
+      } else {
+        const std::string RuleIdxText =
+            RuleIdx ? std::to_string(*RuleIdx) : std::string();
+        const std::string MutationsFlag =
+            RuleIdx ? (std::string(TablePrefix) + "EvalRuleIndexMutations")
+                    : std::string();
+        emitStep(OS, C.Action->getValueAsString("Name"), "  ", Mut, RuleIdxText,
+                 MutationsFlag);
+      }
+      OS.flush();
+      Out = std::move(Buf);
+      return true;
+    }
     OS << "  if (" << Cond << ") {\n";
     if (GuardOnly) {
       OS << "    return true;\n";
@@ -6688,9 +6783,16 @@ public:
        << "  \"rule_sets_without_table_translation\": "
        << S.RuleSetsWithoutTable << ",\n"
        << "  \"core_rules\": " << S.CoreRules << ",\n"
-       << "  \"core_operators\": [\"widen\", \"narrow\", \"more\", "
-          "\"fewer\", \"bitcast\"]\n"
-       << "}\n";
+       << "  \"core_operators\": [";
+    bool First = true;
+    for (const Record *Op :
+         Records.getAllDerivedDefinitions("LegalizeCoreOperator")) {
+      if (!First)
+        OS << ", ";
+      First = false;
+      OS << "\"" << coreTag(*Op) << "\"";
+    }
+    OS << "]\n}\n";
   }
 };
 

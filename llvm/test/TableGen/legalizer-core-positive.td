@@ -80,7 +80,7 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
 }
 
 // CHECK:       "core_rules": 35,
-// CHECK:       "core_operators": ["widen", "narrow", "more", "fewer", "bitcast"]
+// CHECK:       "core_operators": ["bitcast", "custom", "fewer", "legal", "lower", "more", "narrow", "scalarize", "unsupported", "widen"]
 
 // CXX:       .coreWidenScalarToNextPow2([](const LegalityQuery &) { return true; }, 0)
 // CXX:       .coreWidenScalarToNextPow2([](const LegalityQuery &) { return true; }, 0, 64)

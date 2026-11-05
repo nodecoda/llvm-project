@@ -114,6 +114,12 @@ def AArch64_PackedVectorAllTypes : LegalizeNamedTypeList<
 def AArch64_ScalarAndPtrTypes : LegalizeNamedTypeList<
     [AArch64_s8, AArch64_s16, AArch64_s32, AArch64_s64, AArch64_p0]>;
 
+/// The packed vectors G_INSERT_VECTOR_ELT accepts as its destination: the same
+/// list the old `typeInSet(0, {...})` predicate spelled out.
+def AArch64_InsertEltLegalSet : LegalizeCoreTypeSet<
+    [AArch64_v8s8, AArch64_v16s8, AArch64_v4s16, AArch64_v8s16,
+     AArch64_v2s32, AArch64_v4s32, AArch64_v2s64, AArch64_v2p0]>;
+
 
 //===----------------------------------------------------------------------===//
 // Predicates
@@ -130,8 +136,6 @@ def AArch64_Pred_11e45701 : LegalizeQueryPredicate<"[](const LegalityQuery &Q) {
 def AArch64_Pred_125bf639 : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { return Query.Types[0].isVector() != Query.Types[1].isVector(); }">;
 def AArch64_Pred_12d65c07 : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { return Query.Types[1].isVector() && Query.Types[1].getElementType() != AArch64_s8 && Query.Types[1].getNumElements() & 1; }">;
 def AArch64_Pred_131ecb96 : LegalizeQueryPredicate<"[=](const LegalityQuery &Q) { LLT SrcTy = Q.Types[1]; if (SrcTy.isScalar()) return false; if (!isPowerOf2_32(SrcTy.getNumElements())) return false; return SrcTy.getSizeInBits() > 64; }">;
-def AArch64_Pred_1671daba : LegalizeQueryPredicate<"[](const LegalityQuery &Q) { LLT DstTy = Q.Types[0]; LLT SrcTy = Q.Types[1]; return SrcTy.getScalarSizeInBits() == 64 && DstTy.getScalarSizeInBits() == 16; }">;
-def AArch64_Pred_1a80c04b : LegalizeTypePredicate<"typeInSet(0, {AArch64_v8s8, AArch64_v16s8, AArch64_v4s16, AArch64_v8s16, AArch64_v2s32, AArch64_v4s32, AArch64_v2s64, AArch64_v2p0})">;
 def AArch64_Pred_1f3dc25d : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { return Query.Types[0].isVector(); }">;
 def AArch64_Pred_20db2dd3 : LegalizeQueryPredicate<"::any(scalarWiderThan(0, 64), scalarWiderThan(1, 64))">;
 def AArch64_Pred_2ac0a068 : LegalizeQueryPredicate<"atomicOrderingAtLeastOrStrongerThan(0, AtomicOrdering::Unordered)">;
@@ -827,7 +831,8 @@ def AArch64_FPTRUNC : LegalizeRuleSet<["G_FPTRUNC"]> {
     LegalForPairsIf<AArch64_HasBF16, [LegalizeTypePair<AArch64_bf16, AArch64_f32>, LegalizeTypePair<AArch64_v4bf16, AArch64_v4f32>]>,
     LibcallForPairs<[LegalizeTypePair<AArch64_f16, AArch64_f128>, LegalizeTypePair<AArch64_f32, AArch64_f128>, LegalizeTypePair<AArch64_f64, AArch64_f128>]>,
     MoreElementsToNextPow2<1>,
-    CustomIf<AArch64_Pred_1671daba>,
+    CoreCustom<(CoreAll (CoreEq (BitsOf (Slot 1)), 64),
+                       (CoreEq (BitsOf (Slot 0)), 16))>,
     LowerForPairs<[LegalizeTypePair<AArch64_bf16, AArch64_f32>, LegalizeTypePair<AArch64_v4bf16, AArch64_v4f32>]>,
     ClampNumElements<1, AArch64_v4s32, AArch64_v4s32>,
     ClampNumElements<1, AArch64_v2s64, AArch64_v2s64>,
@@ -1068,7 +1073,7 @@ def AArch64_EXTRACT_VECTOR_ELT : LegalizeRuleSet<["G_EXTRACT_VECTOR_ELT"]> {
 
 def AArch64_INSERT_VECTOR_ELT : LegalizeRuleSet<["G_INSERT_VECTOR_ELT"]> {
   let Rules = [
-    LegalIf<AArch64_Pred_1a80c04b>,
+    CoreLegal<(CoreIn (Slot 0), AArch64_InsertEltLegalSet)>,
     LegalForTriplesIf<AArch64_HasSVE, [LegalizeTypeTriple<AArch64_nxv16s8, AArch64_s32, AArch64_s64>, LegalizeTypeTriple<AArch64_nxv8s16, AArch64_s32, AArch64_s64>, LegalizeTypeTriple<AArch64_nxv4s32, AArch64_s32, AArch64_s64>, LegalizeTypeTriple<AArch64_nxv2s64, AArch64_s64, AArch64_s64>]>,
     MoreElementsToNextPow2<0>,
     CoreWiden<(ElemOf (Slot 0)), (MinVectorSize 64)>,

@@ -25,7 +25,8 @@
 // The vocabulary is deliberately small:
 //
 //   sorts         Type, Int, Bool, MemDesc, Opcode, Kind, Ordering, String
-//   operators     Widen, Narrow, More, Fewer, Bitcast
+//   operators     Widen, Narrow, More, Fewer, Bitcast,
+//                 Legal, Custom, Lower, Unsupported (terminal), Scalarize
 //   constructors  Pow2, Pow2Min(n), MultipleOf(n), Ty(t), SameAs(k),
 //                 MinVectorSize(n), Clamp(l,h)
 //   observers     Slot, ElemOf, NumElems, BitsOf, SizeOf, AlignOf, AddrSpace,
@@ -92,13 +93,23 @@ class LegalizeCoreExpr<string name, list<LegalizeSort> argSorts,
   bit SetMembership = 0;
 }
 
-/// A lattice operator.  The target sorts are the second operand's admissible
-/// sorts; the action table turns each pair into a LegalizeAction.
+/// An operator.  The target sorts are the second operand's admissible sorts;
+/// the action table turns each pair into a LegalizeAction.
+///
+/// A terminal operator has no target at all: the rule is `(Op)` plus a
+/// `CoreGuard`, and the action is keyed by the operator alone.  `Legal`,
+/// `Custom`, `Lower` and `Unsupported` are terminal because there is nothing
+/// to mutate -- the action *is* the answer.  `Scalarize` keeps an observation
+/// (the slot it rewrites) but still has no target, because the type it
+/// produces is implied by the action rather than written by the rule.
 class LegalizeCoreOperator<string name, LegalizeSort domain,
                            list<LegalizeSort> targets> : LegalizeCoreNode {
   string Name = name;
   LegalizeSort Domain = domain;
   list<LegalizeSort> Targets = targets;
+
+  /// False for a terminal action, whose rule carries no observation.
+  bit HasObservation = 1;
 }
 
 def Widen   : LegalizeCoreOperator<"widen", SortType, [SortType, SortInt]>;
@@ -106,6 +117,32 @@ def Narrow  : LegalizeCoreOperator<"narrow", SortType, [SortType, SortInt]>;
 def More    : LegalizeCoreOperator<"more", SortType, [SortInt]>;
 def Fewer   : LegalizeCoreOperator<"fewer", SortType, [SortInt, SortType]>;
 def Bitcast : LegalizeCoreOperator<"bitcast", SortType, [SortType]>;
+
+/// Terminal actions.  A terminal rule is `(LegalOp)` plus a `CoreGuard`: the
+/// guard is the condition under which the action is the answer, and there is
+/// nothing else for the rule to write.  `CoreLegal<(CoreTrue)>` states an
+/// unconditional `Legal` when one is really wanted.
+///
+/// The record names carry an `Op` suffix because `LegalizerInfo.td` already
+/// defines `Custom`, `Lower` and `Unsupported` as builder sugar for chains, and
+/// this file is included after it.  The schema name in the string argument is
+/// what the IR and the frontend see; it stays unprefixed.
+class LegalizeCoreTerminal<string name, LegalizeSort domain>
+    : LegalizeCoreOperator<name, domain, []> {
+  let HasObservation = 0;
+}
+
+def LegalOp       : LegalizeCoreTerminal<"legal", SortBool>;
+def CustomOp      : LegalizeCoreTerminal<"custom", SortBool>;
+def LowerOp       : LegalizeCoreTerminal<"lower", SortBool>;
+def UnsupportedOp : LegalizeCoreTerminal<"unsupported", SortBool>;
+
+/// Drop the lanes of a vector slot.  The observation is the slot; the vector
+/// requirement and the result type are part of the action, so the rule writes
+/// neither, exactly as `scalarize` does.
+def ScalarizeOp : LegalizeCoreOperator<"scalarize", SortType, []> {
+  // HasObservation stays set: the slot is the observation.
+}
 
 //===----------------------------------------------------------------------===//
 // Observers
@@ -254,6 +291,28 @@ class CoreNarrow<dag on, dag to>  : LegalizeCoreRule<(Narrow on, to)>;
 class CoreMore<dag on, dag to>    : LegalizeCoreRule<(More on, to)>;
 class CoreFewer<dag on, dag to>   : LegalizeCoreRule<(Fewer on, to)>;
 class CoreBitcast<dag on, dag to> : LegalizeCoreRule<(Bitcast on, to)>;
+
+/// Terminal rules.  The guard is the whole condition; there is no observation
+/// and no target, so a rule cannot disagree with its action about what it
+/// produces.
+class CoreLegal<dag guard>       : LegalizeCoreRule<(LegalOp)> {
+  let CoreGuard = guard;
+}
+class CoreCustom<dag guard>      : LegalizeCoreRule<(CustomOp)> {
+  let CoreGuard = guard;
+}
+class CoreLower<dag guard>       : LegalizeCoreRule<(LowerOp)> {
+  let CoreGuard = guard;
+}
+class CoreUnsupported<dag guard> : LegalizeCoreRule<(UnsupportedOp)> {
+  let CoreGuard = guard;
+}
+
+class CoreScalarize<dag on> : LegalizeCoreRule<(ScalarizeOp on)>;
+class CoreScalarizeIf<dag on, dag guard>
+    : LegalizeCoreRule<(ScalarizeOp on)> {
+  let CoreGuard = guard;
+}
 
 class CoreWidenIf<dag on, dag to, dag guard>
     : LegalizeCoreRule<(Widen on, to)> {
