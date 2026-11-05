@@ -1510,6 +1510,37 @@ public:
     return bitcastIf(P, changeElementTo(TypeIdx, Ty));
   }
 
+  /// Assign the slot a whole type the rule names, instead of resizing its
+  /// element.  The type is an arbitrary expression (`SameAs`, `VecOf`,
+  /// `DivLanes`, ...), so the shim is handed the mutation rather than a
+  /// literal; the rule's guard is the entire condition, exactly as it is for
+  /// the free-form builders these replace.
+  LegalizeRuleSet &coreWidenTo(LegalityPredicate P, unsigned TypeIdx,
+                               LegalizeMutation M) {
+    markAllIdxsAsCovered();
+    return actionIf(LegalizeAction::WidenScalar, P, M);
+  }
+  LegalizeRuleSet &coreNarrowTo(LegalityPredicate P, unsigned TypeIdx,
+                                LegalizeMutation M) {
+    markAllIdxsAsCovered();
+    return actionIf(LegalizeAction::NarrowScalar, P, M);
+  }
+  LegalizeRuleSet &coreMoreTo(LegalityPredicate P, unsigned TypeIdx,
+                              LegalizeMutation M) {
+    markAllIdxsAsCovered();
+    return actionIf(LegalizeAction::MoreElements, P, M);
+  }
+  LegalizeRuleSet &coreFewerTo(LegalityPredicate P, unsigned TypeIdx,
+                               LegalizeMutation M) {
+    markAllIdxsAsCovered();
+    return actionIf(LegalizeAction::FewerElements, P, M);
+  }
+  LegalizeRuleSet &coreBitcastToType(LegalityPredicate P, unsigned TypeIdx,
+                                     LegalizeMutation M) {
+    markAllIdxsAsCovered();
+    return actionIf(LegalizeAction::Bitcast, P, M);
+  }
+
   /// Terminal actions.  There is nothing to mutate, so the guard is the whole
   /// rule; the `core*` spelling keeps a core rule and a hand-written chain
   /// reading the same way.
@@ -1519,6 +1550,7 @@ public:
   LegalizeRuleSet &coreUnsupportedIf(LegalityPredicate P) {
     return unsupportedIf(P);
   }
+  LegalizeRuleSet &coreLibcallIf(LegalityPredicate P) { return libcallIf(P); }
   /// Scalarize, like the action it names, requires the slot to be a vector;
   /// that is part of the action rather than of the guard.
   LegalizeRuleSet &coreScalarizeIf(LegalityPredicate P, unsigned TypeIdx) {

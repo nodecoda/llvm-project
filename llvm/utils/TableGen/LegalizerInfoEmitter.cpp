@@ -2222,6 +2222,7 @@ static const CoreActionRow CoreActionTable[] = {
     {"narrow", "Type", "NarrowScalar"},
     {"narrow", "Int", "NarrowScalar"},
     {"more", "Int", "MoreElements"},
+    {"more", "Type", "MoreElements"},
     {"fewer", "Int", "FewerElements"},
     {"fewer", "Type", "FewerElements"},
     {"bitcast", "Type", "Bitcast"},
@@ -2230,6 +2231,7 @@ static const CoreActionRow CoreActionTable[] = {
     {"custom", "", "Custom"},
     {"lower", "", "Lower"},
     {"unsupported", "", "Unsupported"},
+    {"libcall", "", "Libcall"},
     {"scalarize", "", "FewerElements"},
 };
 
@@ -2406,6 +2408,14 @@ static StringRef coreObservationForm(const CoreNode &N) {
   return "";
 }
 
+/// The type a `replace` target assigns.  The wrapper is the "assign the whole
+/// type" marker; the operand is the type expression it assigns.
+static const CoreNode &coreReplacementType(const CoreNode &T) {
+  assert(coreTag(*T.Op) == "replace" && T.Kids.size() == 1 &&
+         "replace takes exactly one type");
+  return *T.Kids[0];
+}
+
 /// Which table-evaluator translation a shim has.  The C++ shim is always
 /// available (the row exists for it); this field is the capability the table
 /// backends must check before translating a rule.  A new shim starts at
@@ -2420,6 +2430,23 @@ enum class CoreTableTranslation {
   /// `scalarize`: the action is FewerElements and the mutation drops the
   /// lanes, so the evaluator needs both the guard and the vector test.
   Scalarize,
+  /// The mutation is the rule's own type expression, so the evaluator builds
+  /// it the same way the chain does: the guard is the whole condition.
+  WholeTypeMutation,
+  /// The scalar-size widen/narrow families.  Their condition is the size test
+  /// the shim adds, so the evaluator writes that test itself rather than
+  /// repeating it in the rule.
+  ScalarPow2,
+  ScalarOrEltPow2,
+  ScalarMultipleOf,
+  MinScalar,
+  MinScalarSameAs,
+  MaxScalar,
+  MaxScalarOrElt,
+  MaxScalarSameAs,
+  MorePow2,
+  FewerToType,
+  BitcastToType,
 };
 
 struct CoreShimRow {
@@ -2437,6 +2464,10 @@ struct CoreShimRow {
   /// unguarded form is named here rather than spelled as an always-true
   /// lambda.  Empty when the action has no unconditional method.
   StringRef Unguarded = "";
+  /// The payload is the rule's type expression, emitted as a mutation lambda,
+  /// rather than an integer or a named type.  A rule cannot name a prebuilt
+  /// mutation factory any more than it can name a prebuilt predicate.
+  bool TypePayload = false;
 };
 
 /// One row per primitive the C++ layer can execute.  The checker rejects a
@@ -2444,38 +2475,56 @@ struct CoreShimRow {
 /// construct cannot silently degrade into a rule that emits nothing.
 static const CoreShimRow CoreShimTable[] = {
     {"widen", "slot", "pow2", "coreWidenScalarToNextPow2", 0,
-     CoreTableTranslation::None},
+     CoreTableTranslation::ScalarPow2},
     {"widen", "slot", "pow2Min", "coreWidenScalarToNextPow2", 1,
-     CoreTableTranslation::None},
+     CoreTableTranslation::ScalarPow2},
     {"widen", "slot", "multipleOf", "coreWidenScalarToNextMultipleOf", 1,
-     CoreTableTranslation::None},
-    {"widen", "slot", "ty", "coreMinScalar", 1, CoreTableTranslation::None},
+     CoreTableTranslation::ScalarMultipleOf},
+    {"widen", "slot", "ty", "coreMinScalar", 1,
+     CoreTableTranslation::MinScalar},
     {"widen", "slot", "sameAs", "coreMinScalarSameAs", 1,
-     CoreTableTranslation::None},
+     CoreTableTranslation::MinScalarSameAs},
     {"widen", "elem", "pow2", "coreWidenScalarOrEltToNextPow2", 0,
-     CoreTableTranslation::None},
+     CoreTableTranslation::ScalarOrEltPow2},
     {"widen", "elem", "pow2Min", "coreWidenScalarOrEltToNextPow2", 1,
-     CoreTableTranslation::None},
+     CoreTableTranslation::ScalarOrEltPow2},
     {"widen", "elem", "multipleOf", "coreWidenScalarOrEltToNextMultipleOf", 1,
-     CoreTableTranslation::None},
+     CoreTableTranslation::ScalarMultipleOf},
     {"widen", "elem", "ty", "coreMinScalarOrElt", 1,
      CoreTableTranslation::MinScalarOrElt},
     {"widen", "elem", "sameAs", "coreMinScalarSameAs", 1,
-     CoreTableTranslation::None},
+     CoreTableTranslation::MinScalarSameAs},
     {"widen", "elem", "minVectorSize", "coreWidenVectorEltsToVectorMinSize", 1,
      CoreTableTranslation::WidenVectorMinSize},
     {"widen", "slot", "select", "coreWidenScalarOrEltToNextPow2OrMinSize", 1,
      CoreTableTranslation::WidenPow2OrMinSize},
-    {"narrow", "slot", "ty", "coreMaxScalar", 1, CoreTableTranslation::None},
+    {"narrow", "slot", "ty", "coreMaxScalar", 1,
+     CoreTableTranslation::MaxScalar},
     {"narrow", "slot", "sameAs", "coreMaxScalarSameAs", 1,
-     CoreTableTranslation::None},
+     CoreTableTranslation::MaxScalarSameAs},
     {"narrow", "elem", "ty", "coreMaxScalarOrElt", 1,
-     CoreTableTranslation::None},
+     CoreTableTranslation::MaxScalarOrElt},
     {"more", "slot", "pow2", "coreMoreElementsToNextPow2", 0,
-     CoreTableTranslation::None},
+     CoreTableTranslation::MorePow2},
     {"fewer", "slot", "ty", "coreFewerElementsToType", 1,
-     CoreTableTranslation::None},
-    {"bitcast", "slot", "ty", "coreBitcastTo", 1, CoreTableTranslation::None},
+     CoreTableTranslation::FewerToType},
+    {"bitcast", "slot", "ty", "coreBitcastTo", 1,
+     CoreTableTranslation::BitcastToType},
+    {"widen", "slot", "replace", "coreWidenTo", 1,
+     CoreTableTranslation::WholeTypeMutation, /*TakesTypeIdx=*/true,
+     /*Unguarded=*/"", /*TypePayload=*/true},
+    {"narrow", "slot", "replace", "coreNarrowTo", 1,
+     CoreTableTranslation::WholeTypeMutation, /*TakesTypeIdx=*/true,
+     /*Unguarded=*/"", /*TypePayload=*/true},
+    {"more", "slot", "replace", "coreMoreTo", 1,
+     CoreTableTranslation::WholeTypeMutation, /*TakesTypeIdx=*/true,
+     /*Unguarded=*/"", /*TypePayload=*/true},
+    {"fewer", "slot", "replace", "coreFewerTo", 1,
+     CoreTableTranslation::WholeTypeMutation, /*TakesTypeIdx=*/true,
+     /*Unguarded=*/"", /*TypePayload=*/true},
+    {"bitcast", "slot", "replace", "coreBitcastToType", 1,
+     CoreTableTranslation::WholeTypeMutation, /*TakesTypeIdx=*/true,
+     /*Unguarded=*/"", /*TypePayload=*/true},
     {"legal", "", "", "coreLegalIf", 0, CoreTableTranslation::GuardedAction,
      /*TakesTypeIdx=*/false, /*Unguarded=*/"alwaysLegal"},
     {"custom", "", "", "coreCustomIf", 0, CoreTableTranslation::GuardedAction,
@@ -2485,6 +2534,9 @@ static const CoreShimRow CoreShimTable[] = {
     {"unsupported", "", "", "coreUnsupportedIf", 0,
      CoreTableTranslation::GuardedAction, /*TakesTypeIdx=*/false,
      /*Unguarded=*/"unsupported"},
+    {"libcall", "", "", "coreLibcallIf", 0, CoreTableTranslation::GuardedAction,
+     /*TakesTypeIdx=*/false,
+     /*Unguarded=*/"libcall"},
     {"scalarize", "slot", "", "coreScalarizeIf", 0,
      CoreTableTranslation::Scalarize, /*TakesTypeIdx=*/true,
      /*Unguarded=*/"scalarize"},
@@ -2719,6 +2771,33 @@ private:
   std::string emitIsBFloat16(const CoreNode &N) {
     return "(" + childValue(N, 0) + ").isBFloat16()";
   }
+  std::string emitIsFloat16(const CoreNode &N) {
+    return "(" + childValue(N, 0) + ").isFloat16()";
+  }
+  std::string emitIntOfSize(const CoreNode &N) {
+    return "LLT::integer(" + childValue(N, 0) + ")";
+  }
+  std::string emitVecOf(const CoreNode &N) {
+    return "LLT::fixed_vector(" + childValue(N, 0) + ", " + childValue(N, 1) +
+           ")";
+  }
+  std::string emitEltTypeTo(const CoreNode &N) {
+    return "(" + childValue(N, 0) + ").changeElementType(" + childValue(N, 1) +
+           ")";
+  }
+  std::string emitEltSizeTo(const CoreNode &N) {
+    return "(" + childValue(N, 0) + ").changeElementSize(" + childValue(N, 1) +
+           ")";
+  }
+  std::string emitDivLanes(const CoreNode &N) {
+    std::string Ty = childValue(N, 0);
+    return "(" + Ty + ").changeElementCount((" + Ty +
+           ").getElementCount().divideCoefficientBy(" + childValue(N, 1) + "))";
+  }
+  std::string emitReplace(const CoreNode &N) { return childValue(N, 0); }
+  std::string emitUDiv(const CoreNode &N) {
+    return "(" + childValue(N, 0) + " / " + childValue(N, 1) + ")";
+  }
   std::string emitIsPow2(const CoreNode &N) {
     return "llvm::isPowerOf2_32(" + childValue(N, 0) + ")";
   }
@@ -2756,6 +2835,13 @@ std::string CoreCxxEmitter::value(const CoreNode &N) {
       {"pow2Ceil", &CoreCxxEmitter::emitPow2Ceil},
       {"mul", &CoreCxxEmitter::emitMul},
       {"urem", &CoreCxxEmitter::emitURem},
+      {"udiv", &CoreCxxEmitter::emitUDiv},
+      {"intOfSize", &CoreCxxEmitter::emitIntOfSize},
+      {"vecOf", &CoreCxxEmitter::emitVecOf},
+      {"eltTypeTo", &CoreCxxEmitter::emitEltTypeTo},
+      {"eltSizeTo", &CoreCxxEmitter::emitEltSizeTo},
+      {"divLanes", &CoreCxxEmitter::emitDivLanes},
+      {"replace", &CoreCxxEmitter::emitReplace},
       {"bitsOf", &CoreCxxEmitter::emitBitsOf},
       {"sizeOf", &CoreCxxEmitter::emitSizeOf},
       {"alignOf", &CoreCxxEmitter::emitAlignOf},
@@ -2788,6 +2874,7 @@ std::string CoreCxxEmitter::boolean(const CoreNode &N) {
       {"not", &CoreCxxEmitter::emitNot},
       {"isPow2", &CoreCxxEmitter::emitIsPow2},
       {"isBFloat16", &CoreCxxEmitter::emitIsBFloat16},
+      {"isFloat16", &CoreCxxEmitter::emitIsFloat16},
       {"in", &CoreCxxEmitter::emitIn},
       {"eq", &CoreCxxEmitter::emitCompare},
       {"ne", &CoreCxxEmitter::emitCompare},
@@ -3053,7 +3140,13 @@ void LegalizerInfoEmitter::emitCoreRule(const Record &Rule, raw_ostream &OS) {
   if (Shim->Payload) {
     OS << ", ";
     const CoreNode &T = *C.Target;
-    if (To == "ty") {
+    if (Shim->TypePayload) {
+      // The mutation is the type expression the rule wrote.  It is emitted as
+      // the same lambda a hand-written rule would have spelled, so the chain
+      // sees one shape and the .td still contains no C++.
+      OS << "[=](const LegalityQuery &Query) { return std::make_pair("
+         << C.TypeIdx << ", " << Cxx.value(coreReplacementType(T)) << "); }";
+    } else if (To == "ty") {
       if (T.Kids[0]->Kind != CoreNode::DefNode ||
           !T.Kids[0]->Op->isSubClassOf("LegalizeNamedType"))
         PrintFatalError(Rule.getLoc(),
@@ -4873,9 +4966,48 @@ class LegalizerTableEmitterImpl {
   /// Type tuples a rule names as a complete query shape.  A builder that takes
   /// two separate type arguments (ClampScalar's bounds) names bounds, not a
   /// query, so only list/pair/memdesc arguments are used.
-  void collectRuleTuples(const Record &Rule, std::vector<RuleTuple> &Out) {
-    if (isCoreRule(Rule))
+  /// The query shapes a core rule names.  A guard that tests slot 0 against a
+  /// type set names every member of the set, the same way a `typeInSet`
+  /// predicate did; the caller drops tuples whose width is not the rule set's
+  /// arity, so only unary sets can contribute.
+  void collectCoreRuleTuples(const Record &Rule, std::vector<RuleTuple> &Out) {
+    const Init *G = Rule.getValueInit("CoreGuard");
+    if (!G || isa<UnsetInit>(G))
       return;
+    std::unique_ptr<CoreNode> Guard = parseCoreNode(*G, Rule);
+    std::function<void(const CoreNode &)> Walk = [&](const CoreNode &N) {
+      if (N.Kind != CoreNode::OpNode)
+        return;
+      if (coreTag(*N.Op) == "in" && N.Kids.size() == 2) {
+        const CoreNode &Lhs = *N.Kids[0];
+        const CoreNode &Rhs = *N.Kids[1];
+        if (Lhs.Kind == CoreNode::OpNode && coreTag(*Lhs.Op) == "slot" &&
+            Lhs.Kids[0]->IntValue == 0 && Rhs.Kind == CoreNode::DefNode &&
+            Rhs.Op->isSubClassOf("LegalizeCoreTypeSet")) {
+          for (const Record *E : Rhs.Op->getValueAsListOfDefs("Elems")) {
+            SmallVector<TableType, 2> Resolved;
+            if (!resolve(E->getValueAsString("Expr"), E->getName(), Resolved,
+                         0))
+              continue;
+            if (Resolved.size() != 1)
+              continue;
+            RuleTuple T;
+            T.Types.push_back(Resolved[0]);
+            Out.push_back(std::move(T));
+          }
+        }
+      }
+      for (const auto &K : N.Kids)
+        Walk(*K);
+    };
+    Walk(*Guard);
+  }
+
+  void collectRuleTuples(const Record &Rule, std::vector<RuleTuple> &Out) {
+    if (isCoreRule(Rule)) {
+      collectCoreRuleTuples(Rule, Out);
+      return;
+    }
     std::vector<const Record *> Args = Rule.getValueAsListOfDefs("Args");
     // A builder that takes a slot index treats its type arguments as bounds
     // (ClampScalar<0, s8, sMaxScalar>), not as a query shape.  Without an
@@ -5891,6 +6023,89 @@ class LegalizerTableEmitterImpl {
       Mut = "LegalizeMutations::changeElementSizeTo(" + Idx + ", " + Ty + ")";
       break;
     }
+    case CoreTableTranslation::ScalarPow2: {
+      const std::string Min = C.Target->Kids.empty()
+                                  ? "0"
+                                  : std::to_string(C.Target->Kids[0]->IntValue);
+      Cond = "sizeNotPow2(" + Idx + ")(Q)";
+      Mut = "LegalizeMutations::widenScalarOrEltToNextPow2(" + Idx + ", " +
+            Min + ")";
+      break;
+    }
+    case CoreTableTranslation::ScalarOrEltPow2: {
+      const std::string Min = C.Target->Kids.empty()
+                                  ? "0"
+                                  : std::to_string(C.Target->Kids[0]->IntValue);
+      Cond = "scalarOrEltSizeNotPow2(" + Idx + ")(Q)";
+      Mut = "LegalizeMutations::widenScalarOrEltToNextPow2(" + Idx + ", " +
+            Min + ")";
+      break;
+    }
+    case CoreTableTranslation::ScalarMultipleOf: {
+      const std::string Size = std::to_string(C.Target->Kids[0]->IntValue);
+      Cond = "(Q.Types[" + Idx + "].getScalarSizeInBits() % " + Size + " != 0)";
+      Mut = "LegalizeMutations::widenScalarOrEltToNextMultipleOf(" + Idx +
+            ", " + Size + ")";
+      break;
+    }
+    case CoreTableTranslation::MinScalar: {
+      const std::string Ty = Cxx.value(*C.Target);
+      Cond = "scalarNarrowerThan(" + Idx + ", (" + Ty + ").getSizeInBits())(Q)";
+      Mut = "LegalizeMutations::changeElementSizeTo(" + Idx + ", " + Ty + ")";
+      break;
+    }
+    case CoreTableTranslation::MinScalarSameAs: {
+      const std::string Other = std::to_string(C.Target->Kids[0]->IntValue);
+      Cond = "(Q.Types[" + Other + "].getScalarSizeInBits() > Q.Types[" + Idx +
+             "].getScalarSizeInBits())";
+      Mut =
+          "LegalizeMutations::changeElementSizeTo(" + Idx + ", " + Other + ")";
+      break;
+    }
+    case CoreTableTranslation::MaxScalar: {
+      const std::string Ty = Cxx.value(*C.Target);
+      Cond = "scalarWiderThan(" + Idx + ", (" + Ty + ").getSizeInBits())(Q)";
+      Mut = "LegalizeMutations::changeElementSizeTo(" + Idx + ", " + Ty + ")";
+      break;
+    }
+    case CoreTableTranslation::MaxScalarOrElt: {
+      const std::string Ty = Cxx.value(*C.Target);
+      Cond = "scalarOrEltWiderThan(" + Idx + ", (" + Ty +
+             ").getScalarSizeInBits())(Q)";
+      Mut = "LegalizeMutations::changeElementSizeTo(" + Idx + ", " + Ty + ")";
+      break;
+    }
+    case CoreTableTranslation::MaxScalarSameAs: {
+      const std::string Other = std::to_string(C.Target->Kids[0]->IntValue);
+      Cond = "(Q.Types[" + Other + "].getScalarSizeInBits() < Q.Types[" + Idx +
+             "].getScalarSizeInBits())";
+      Mut =
+          "LegalizeMutations::changeElementSizeTo(" + Idx + ", " + Other + ")";
+      break;
+    }
+    case CoreTableTranslation::MorePow2: {
+      Cond = "numElementsNotPow2(" + Idx + ")(Q)";
+      Mut = "LegalizeMutations::moreElementsToNextPow2(" + Idx + ")";
+      break;
+    }
+    case CoreTableTranslation::FewerToType: {
+      const std::string Ty = Cxx.value(*C.Target);
+      Cond = "(" + V + ".isVector() && " + V + ".getSizeInBits() > (" + Ty +
+             ").getSizeInBits())";
+      Mut = "LegalizeMutations::changeElementTo(" + Idx + ", " + Ty + ")";
+      break;
+    }
+    case CoreTableTranslation::BitcastToType: {
+      const std::string Ty = Cxx.value(*C.Target);
+      Mut = "LegalizeMutations::changeElementTo(" + Idx + ", " + Ty + ")";
+      break;
+    }
+    case CoreTableTranslation::WholeTypeMutation: {
+      Cond.clear();
+      Mut = "[=](const LegalityQuery &Q) { return std::make_pair(unsigned(" +
+            Idx + "), " + Cxx.value(coreReplacementType(*C.Target)) + "); }";
+      break;
+    }
     case CoreTableTranslation::WidenPow2OrMinSize: {
       const std::string Min = Cxx.value(*C.Target);
       Cond = "(scalarOrEltNarrowerThan(" + Idx + ", " + Min +
@@ -5916,8 +6131,19 @@ class LegalizerTableEmitterImpl {
         const std::string MutationsFlag =
             RuleIdx ? (std::string(TablePrefix) + "EvalRuleIndexMutations")
                     : std::string();
-        emitStep(OS, C.Action->getValueAsString("Name"), "  ", Mut, RuleIdxText,
-                 MutationsFlag);
+        // An unconditional step makes every later rule dead, but the loop
+        // still emits them.  A terminal step is a bare `return`, which can
+        // repeat; a mutation declares `auto M`, which cannot, so that one is
+        // scoped.
+        if (Mut.empty()) {
+          emitStep(OS, C.Action->getValueAsString("Name"), "  ", Mut,
+                   RuleIdxText, MutationsFlag);
+        } else {
+          OS << "  {\n";
+          emitStep(OS, C.Action->getValueAsString("Name"), "    ", Mut,
+                   RuleIdxText, MutationsFlag);
+          OS << "  }\n";
+        }
       }
       OS.flush();
       Out = std::move(Buf);

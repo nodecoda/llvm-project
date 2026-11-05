@@ -46,7 +46,7 @@ def Unconditional : LegalizeRuleSet<["G_ALWAYS"]> {
 }
 
 // CHECK:       "core_rules": 10,
-// CHECK:       "core_operators": ["bitcast", "custom", "fewer", "legal", "lower", "more", "narrow", "scalarize", "unsupported", "widen"]
+// CHECK:       "core_operators": ["bitcast", "custom", "fewer", "legal", "libcall", "lower", "more", "narrow", "scalarize", "unsupported", "widen"]
 
 // CXX:       .coreLegalIf([=](const LegalityQuery &Query) { return (Query.Types[0] == s32 || Query.Types[0] == s64); })
 // CXX:       .coreCustomIf([=](const LegalityQuery &Query) { return (Is32) && (((Query.Types[0]).getScalarSizeInBits() == 32)); })

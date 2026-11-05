@@ -115,7 +115,7 @@ class LegalizeCoreOperator<string name, LegalizeSort domain,
 
 def Widen   : LegalizeCoreOperator<"widen", SortType, [SortType, SortInt]>;
 def Narrow  : LegalizeCoreOperator<"narrow", SortType, [SortType, SortInt]>;
-def More    : LegalizeCoreOperator<"more", SortType, [SortInt]>;
+def More    : LegalizeCoreOperator<"more", SortType, [SortInt, SortType]>;
 def Fewer   : LegalizeCoreOperator<"fewer", SortType, [SortInt, SortType]>;
 def Bitcast : LegalizeCoreOperator<"bitcast", SortType, [SortType]>;
 
@@ -137,6 +137,9 @@ def LegalOp       : LegalizeCoreTerminal<"legal", SortBool>;
 def CustomOp      : LegalizeCoreTerminal<"custom", SortBool>;
 def LowerOp       : LegalizeCoreTerminal<"lower", SortBool>;
 def UnsupportedOp : LegalizeCoreTerminal<"unsupported", SortBool>;
+/// `Libcall` is terminal in the same sense as `Lower`: the action is the whole
+/// answer and the rule has nothing to mutate.
+def LibcallOp     : LegalizeCoreTerminal<"libcall", SortBool>;
 
 /// Drop the lanes of a vector slot.  The observation is the slot; the vector
 /// requirement and the result type are part of the action, so the rule writes
@@ -194,6 +197,12 @@ def Feature   : LegalizeCoreExpr<"feature", [SortString], SortBool>;
 /// property has to be asked for by the method that answers it.
 def IsBFloat16 : LegalizeCoreExpr<"isBFloat16", [SortType], SortBool>;
 
+/// The same question for float16, and for the same reason.  `isFloat16()` and
+/// `LLT::operator==` disagree on a plain scalar: `s16 == f16` is true under
+/// the fallback, so a rule that means "is *this* the f16 type" must say so
+/// with the method that answers it.
+def IsFloat16 : LegalizeCoreExpr<"isFloat16", [SortType], SortBool>;
+
 /// The sort of a slot, as a first-class value.  These are the tags SortOf
 /// compares against.
 def KindScalar         : LegalizeCoreExpr<"kindScalar", [], SortKind>;
@@ -239,6 +248,27 @@ def SameAs          : LegalizeCoreExpr<"sameAs", [SortInt], SortType>;
 /// slot's lane count.
 def MinVectorSize   : LegalizeCoreExpr<"minVectorSize", [SortInt], SortType>;
 
+/// Type constructors.  A rule that cannot say its new type as "the same type
+/// with a different element size" writes the type itself: an integer of some
+/// size, a vector of some lane count, an element type, or a lane count.
+def IntOfSize       : LegalizeCoreExpr<"intOfSize", [SortInt], SortType>;
+def VecOf           : LegalizeCoreExpr<"vecOf", [SortInt, SortType], SortType>;
+def EltTypeTo       : LegalizeCoreExpr<"eltTypeTo", [SortType, SortType],
+                                       SortType>;
+def EltSizeTo       : LegalizeCoreExpr<"eltSizeTo", [SortType, SortInt],
+                                       SortType>;
+/// `changeElementCount(getElementCount().divideCoefficientBy(n))`, which keeps
+/// the scalable flag: a rule that halves a scalable vector wants half its
+/// minimum lane count, not a fixed vector.
+def DivLanes        : LegalizeCoreExpr<"divLanes", [SortType, SortInt],
+                                       SortType>;
+
+/// Assign this whole type to the slot.  `Widen` and `Narrow` over a `Ty`
+/// target change the *element size*; `Replace` says the new type outright.
+/// The two cannot share a spelling: `changeElementSizeTo(f32)` on `<4 x s16>`
+/// is `<4 x s32>`, while `changeTo(f32)` is `f32`.
+def Replace         : LegalizeCoreExpr<"replace", [SortType], SortType>;
+
 //===----------------------------------------------------------------------===//
 // Boolean combinators and comparisons
 //===----------------------------------------------------------------------===//
@@ -277,6 +307,7 @@ def CoreIn : LegalizeCoreExpr<"in", [], SortBool> { let SetMembership = 1; }
 /// themselves and nothing else is added without a rule that needs it.
 def CoreMul  : LegalizeCoreExpr<"mul", [SortInt, SortInt], SortInt>;
 def CoreURem : LegalizeCoreExpr<"urem", [SortInt, SortInt], SortInt>;
+def CoreUDiv : LegalizeCoreExpr<"udiv", [SortInt, SortInt], SortInt>;
 
 /// An integer choice: `(CoreSelect cond, then, else)`.  The condition is a
 /// cached subtarget feature, which is why the branches must be Int and the
@@ -338,6 +369,9 @@ class CoreLower<dag guard>       : LegalizeCoreRule<(LowerOp)> {
 class CoreUnsupported<dag guard> : LegalizeCoreRule<(UnsupportedOp)> {
   let CoreGuard = guard;
 }
+class CoreLibcall<dag guard> : LegalizeCoreRule<(LibcallOp)> {
+  let CoreGuard = guard;
+}
 
 /// The unconditional form: no guard, so the C++ is the predicate-free method
 /// (`alwaysLegal`, `custom`, `lower`, `unsupported`) rather than an `*If` with
@@ -346,6 +380,7 @@ def CoreAlwaysLegal       : LegalizeCoreRule<(LegalOp)>;
 def CoreAlwaysCustom      : LegalizeCoreRule<(CustomOp)>;
 def CoreAlwaysLower       : LegalizeCoreRule<(LowerOp)>;
 def CoreAlwaysUnsupported : LegalizeCoreRule<(UnsupportedOp)>;
+def CoreAlwaysLibcall     : LegalizeCoreRule<(LibcallOp)>;
 
 class CoreScalarize<dag on> : LegalizeCoreRule<(ScalarizeOp on)>;
 class CoreScalarizeIf<dag on, dag guard>
