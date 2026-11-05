@@ -52,9 +52,18 @@ struct LoweringStats {
   unsigned Rules = 0;
   unsigned RuleSets = 0;
   unsigned Escapes = 0;
+  /// Rules that are not core: the legacy lowering path handles them.  A rule
+  /// that cannot be translated is also counted in `Escapes`; the two are not
+  /// exclusive, so `Rules == CoreRules + Legacy + Coverage` and
+  /// `Escapes <= Legacy`.
+  unsigned Legacy = 0;
   unsigned EntriesWithoutTable = 0;
   unsigned RuleSetsWithoutTable = 0;
   unsigned CoreRules = 0;
+  /// Rules the emitter counts but neither lowers nor escapes: today only
+  /// `immIdx`, which marks a covered immediate index and is not a legalize
+  /// action at all.
+  unsigned Coverage = 0;
   unsigned CorePrimitives = 0;
 };
 
@@ -4298,9 +4307,13 @@ static LoweringStats verifyLoweringRegistry(const RecordKeeper &Records) {
         WithoutTable = true;
 
       // immIdx is a coverage marker: runCore emits neither a row nor an escape
-      // for it, so the registry check must not count one either.
-      if (B->getName() == "BuilderImmIdx")
+      // for it, so the registry check must not count one either.  It still has
+      // to be counted somewhere, or the rule totals stop adding up.
+      if (B->getName() == "BuilderImmIdx") {
+        ++S.Coverage;
         continue;
+      }
+      ++S.Legacy;
 
       StringRef ExpName =
           L->getValueAsDef("Expansion")->getValueAsString("Name");
@@ -4347,6 +4360,17 @@ static LoweringStats verifyLoweringRegistry(const RecordKeeper &Records) {
     if (WithoutTable)
       ++S.RuleSetsWithoutTable;
   }
+  // Every rule in a rule set is exactly one of three things: a core rule, a
+  // legacy rule that lowers to a row, or one that escapes.  `immIdx` is the
+  // one marker that is neither an action nor an escape, so it gets its own
+  // count.  If a new category appears, this fires instead of letting the
+  // core-rule fraction drift.
+  if (S.CoreRules + S.Legacy + S.Coverage != S.Rules)
+    PrintFatalError(
+        "rule accounting is incomplete: " + std::to_string(S.CoreRules) +
+        " core + " + std::to_string(S.Legacy) + " legacy + " +
+        std::to_string(S.Coverage) + " coverage != " + std::to_string(S.Rules) +
+        " rules");
   return S;
 }
 
@@ -7527,7 +7551,8 @@ public:
        << "  \"rule_sets_without_table_translation\": "
        << S.RuleSetsWithoutTable << ",\n"
        << "  \"core_rules\": " << S.CoreRules << ",\n"
-
+       << "  \"legacy_rules\": " << S.Legacy << ",\n"
+       << "  \"coverage\": " << S.Coverage << ",\n"
        << "  \"core_operators\": [";
     bool First = true;
     for (const Record *Op :

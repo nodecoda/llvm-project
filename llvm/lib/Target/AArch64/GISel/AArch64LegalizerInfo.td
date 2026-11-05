@@ -22,6 +22,8 @@
 //
 // The only builder left is `immIdx`, which is not a rule: it marks a covered
 // immediate index and the emitter gives it neither a row nor an escape.
+// `-gen-legalizer-check` therefore reports `rules == core_rules + coverage`
+// with `escapes == 0`, and the three `immIdx` markers are the coverage.
 //
 //===----------------------------------------------------------------------===//
 
