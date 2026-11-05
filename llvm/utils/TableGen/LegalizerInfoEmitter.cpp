@@ -3863,97 +3863,108 @@ class LegalizerTableEmitterImpl {
     OS << Indent << "return true;\n";
   }
 
-  /// Translate one rule into the statements an evaluator runs.  Returns false
-  /// when the builder has no table translation; the whole rule set is then
-  /// opaque and the reader falls back to the chain for it.
-  /// With RuleIdx set the emitted statements store the step and the rule's
-  /// position instead of returning it, for -gen-legalizer-rule-index.
-  /// With GuardOnly set the emitted statements test the rule's guard and
-  /// return true on a match instead of applying the step.  That is the
-  /// condition the chain tests before it commits to the rule, with no
-  /// mutation, for the rule-index backend's per-rule guard evaluators.
-  bool translateRule(const Record &Rule, std::string &Out, std::string &Why,
-                     const unsigned *RuleIdx = nullptr,
-                     bool GuardOnly = false) {
-    const std::string RuleIdxText = RuleIdx ? std::to_string(*RuleIdx) : "";
-    const std::string MutationsFlag =
-        RuleIdx ? TablePrefix + "EvalRuleIndexMutations" : "";
-    StringRef Name = builderName(Rule);
-    std::vector<const Record *> Args = Rule.getValueAsListOfDefs("Args");
-    const Record *B = Rule.getValueAsDef("Builder");
-    StringRef Action = B->getValueAsDef("Action")->getValueAsString("Name");
-    const std::string Guard = guardText(Rule);
+  /// One rule being translated into evaluator statements.
+  ///
+  /// The arms of translateRule() are member functions of this struct and the
+  /// dispatch is RuleTranslators.  Everything the arms shared while they were
+  /// inline -- the rule, its arguments, the output buffer, the guard and the
+  /// Fail()/Finish() pair -- is a member here, so each body reads as before.
+  struct RuleTranslation {
+    const Record &Rule;
+    StringRef Name;
+    StringRef Action;
+    std::vector<const Record *> Args;
+    std::string Guard;
+    const unsigned *RuleIdx;
+    bool GuardOnly;
+    std::string RuleIdxText;
+    std::string MutationsFlag;
+    std::string Buf;
+    raw_string_ostream OS;
+    std::string &Out;
+    std::string &Why;
 
-    // An opaque body is a query predicate, and the rule builder takes it as a
-    // guard.  The table evaluator has the query, so it can call the body the
-    // same way the chain does: `if ((<body>)(Q))`.  Only guard-only builders
-    // qualify; one whose action needs a mutation would lose it here.
-    if (StringRef Body = Rule.getValueAsString("OpaqueArgs"); !Body.empty()) {
-      if (!B->getValueAsDef("Action")->getValueAsString("Mutation").empty()) {
-        Why = "'" + Name.str() + "' carries an opaque body and a mutation";
-        return false;
-      }
-      std::string Text;
-      raw_string_ostream BOS(Text);
-      emitOpaqueBody(BOS, Body);
-      BOS.flush();
-      std::string Buf;
-      raw_string_ostream OS(Buf);
-      OS << "  if ((" << Text << ")(Q)) {\n";
-      if (GuardOnly)
-        OS << "    return true;\n";
-      else
-        emitStep(OS, Action, "    ", "", RuleIdxText);
-      OS << "  }\n";
-      OS.flush();
-      Out = std::move(Buf);
-      return true;
-    }
+    RuleTranslation(const Record &Rule, StringRef Prefix, std::string &Out,
+                    std::string &Why, const unsigned *RuleIdx, bool GuardOnly)
+        : Rule(Rule), Name(builderName(Rule)),
+          Action(Rule.getValueAsDef("Builder")
+                     ->getValueAsDef("Action")
+                     ->getValueAsString("Name")),
+          Args(Rule.getValueAsListOfDefs("Args")), Guard(guardText(Rule)),
+          RuleIdx(RuleIdx), GuardOnly(GuardOnly),
+          RuleIdxText(RuleIdx ? std::to_string(*RuleIdx) : ""),
+          MutationsFlag(RuleIdx ? (Prefix + "EvalRuleIndexMutations").str()
+                                : std::string()),
+          OS(Buf), Out(Out), Why(Why) {}
 
-    auto Fail = [&]() {
+    bool Fail() {
       Why = "'" + Name.str() + "' has no table translation";
       return false;
-    };
-    auto IdxOf = [&](size_t I) {
+    }
+
+    std::string IdxOf(size_t I) {
       return std::to_string(Args[I]->getValueAsInt("Value"));
-    };
-    auto NeedArgs = [&](size_t N) {
+    }
+
+    void NeedArgs(size_t N) {
       if (Args.size() != N)
         PrintFatalError(Rule.getLoc(), "legalizer builder '" + Name + "' has " +
                                            std::to_string(Args.size()) +
                                            " arguments; the table evaluator "
                                            "expected " +
                                            std::to_string(N));
-    };
+    }
 
-    std::string Buf;
-    raw_string_ostream OS(Buf);
-    auto EmitIf = [&](StringRef Cond, StringRef Act, StringRef Mut = "") {
+    void EmitIf(StringRef Cond, StringRef Act, StringRef Mut = "") {
       OS << "  if (" << Cond << ") {\n";
       if (GuardOnly)
         OS << "    return true;\n";
       else
         emitStep(OS, Act, "    ", Mut, RuleIdxText, MutationsFlag);
       OS << "  }\n";
-    };
-    auto EmitTypedIf = [&](StringRef Cond, StringRef Act, StringRef Idx,
-                           StringRef Ty) {
+    }
+
+    void EmitTypedIf(StringRef Cond, StringRef Act, StringRef Idx,
+                     StringRef Ty) {
       OS << "  if (" << Cond << ") {\n";
       if (GuardOnly)
         OS << "    return true;\n";
       else
         emitTypedStep(OS, Act, "    ", Idx, Ty, RuleIdxText);
       OS << "  }\n";
-    };
-    auto Finish = [&]() {
+    }
+
+    bool Finish() {
       OS.flush();
       Out = std::move(Buf);
       return true;
-    };
+    }
+
+    /// An opaque body is a query predicate, and the rule builder takes it as a
+    /// guard.  The table evaluator has the query, so it can call the body the
+    /// same way the chain does: `if ((<body>)(Q))`.  Only guard-only builders
+    /// qualify; one whose action needs a mutation would lose it here.
+    bool translateOpaqueBody() {
+      const Record *B = Rule.getValueAsDef("Builder");
+      if (!B->getValueAsDef("Action")->getValueAsString("Mutation").empty()) {
+        Why = "'" + Name.str() + "' carries an opaque body and a mutation";
+        return false;
+      }
+      std::string Text;
+      raw_string_ostream BOS(Text);
+      emitOpaqueBody(BOS, Rule.getValueAsString("OpaqueArgs"));
+      BOS.flush();
+      OS << "  if ((" << Text << ")(Q)) {\n";
+      if (GuardOnly)
+        OS << "    return true;\n";
+      else
+        emitStep(OS, Action, "    ", "", RuleIdxText);
+      OS << "  }\n";
+      return Finish();
+    }
 
     // An action with no guard, no arguments and no mutation.
-    if (Name == "alwaysLegal" || Name == "lower" || Name == "libcall" ||
-        Name == "custom" || Name == "unsupported") {
+    bool translateBareAction() {
       if (!Args.empty() || !Guard.empty())
         return Fail();
       if (GuardOnly)
@@ -3964,10 +3975,7 @@ class LegalizerTableEmitterImpl {
     }
 
     // An action whose only guard is a query predicate (legalIf, lowerIf, ...).
-    if (Name == "legalIf" || Name == "lowerIf" || Name == "customIf" ||
-        Name == "widenScalarIf" || Name == "narrowScalarIf" ||
-        Name == "libcallIf" || Name == "fewerElementsIf" ||
-        Name == "moreElementsIf" || Name == "unsupportedIf") {
+    bool translateGuardedAction() {
       if (!Args.empty() || Guard.empty())
         return Fail();
       EmitIf(Guard, Action);
@@ -3976,11 +3984,12 @@ class LegalizerTableEmitterImpl {
 
     // legalFor / lowerFor / libcallFor / customFor: one type in slot 0, or a
     // list of pairs, depending on the arguments.
-    if (Name == "legalFor" || Name == "lowerFor" || Name == "libcallFor" ||
-        Name == "customFor") {
+    bool translateActionFor() {
       if (Args.empty())
         return Fail();
-      const bool Pairs = Args.front()->isSubClassOf("LegalizeTypePair");
+      const Record *Front = Args.front();
+      const bool Pairs = Front->isSubClassOf("LegalizeTypePair");
+      const bool Triples = Front->isSubClassOf("LegalizeTypeTriple");
       std::string Cond;
       StringRef Sep;
       for (const Record *A : Args) {
@@ -3990,6 +3999,14 @@ class LegalizerTableEmitterImpl {
             return Fail();
           Cond += "(" + typeIsAt("0", *A->getValueAsDef("Type0")) + " && " +
                   typeIsAt("1", *A->getValueAsDef("Type1")) + ")";
+        } else if (Triples) {
+          // legalFor with triples tests all three slots, exactly like the
+          // expander's one-row-per-triple form.
+          if (!A->isSubClassOf("LegalizeTypeTriple"))
+            return Fail();
+          Cond += "(" + typeIsAt("0", *A->getValueAsDef("Type0")) + " && " +
+                  typeIsAt("1", *A->getValueAsDef("Type1")) + " && " +
+                  typeIsAt("2", *A->getValueAsDef("Type2")) + ")";
         } else if (A->isSubClassOf("LegalizeNamedTypeList") ||
                    A->isSubClassOf("LegalizeInlineTypeList")) {
           std::string Or;
@@ -4010,27 +4027,38 @@ class LegalizerTableEmitterImpl {
     }
 
     // The cartesian-product builders: one nested loop per list, so the answer
-    // is per query type rather than per class pair.
-    if (Name == "legalForCartesianProduct" ||
-        Name == "customForCartesianProduct") {
-      NeedArgs(2);
-      OS << "  for (const LLT T0 : " << typeListText(*Args[0]) << ")\n";
-      OS << "    for (const LLT T1 : " << typeListText(*Args[1]) << ")\n";
-      OS << "      if ("
-         << conjunction(Guard, "typeIs(0, T0)(Q) && typeIs(1, T1)(Q)")
-         << ") {\n";
+    // is per query type rather than per class pair.  The number of lists is the
+    // builder's overload (1 to 3); a one-list rule used to abort the backend
+    // because the translation demanded exactly two.
+    bool translateCartesian() {
+      if (Args.empty() || Args.size() > 3)
+        return Fail();
+      const size_t N = Args.size();
+      std::string Cond;
+      StringRef Sep;
+      for (size_t I = 0; I != N; ++I) {
+        Cond += Sep.str();
+        Cond +=
+            "typeIs(" + std::to_string(I) + ", T" + std::to_string(I) + ")(Q)";
+        Sep = " && ";
+      }
+      for (size_t I = 0; I != N; ++I)
+        OS << std::string(2 * I + 2, ' ') << "for (const LLT T" << I << " : "
+           << typeListText(*Args[I]) << ")\n";
+      const std::string Indent(2 * N + 2, ' ');
+      OS << Indent << "if (" << conjunction(Guard, Cond) << ") {\n";
       if (GuardOnly)
-        OS << "        return true;\n";
+        OS << Indent << "  return true;\n";
       else
-        emitStep(OS, Action, "        ", "", RuleIdxText);
-      OS << "      }\n";
+        emitStep(OS, Action, Indent + "  ", "", RuleIdxText, MutationsFlag);
+      OS << Indent << "}\n";
       return Finish();
     }
 
     // legalForTypesWithMemDesc: the chain's guard is exactly the factory call
     // this rule set would have made, and the evaluator receives the query, so
     // the descriptor is compared rather than approximated by the key.
-    if (Name == "legalForTypesWithMemDesc") {
+    bool translateMemDesc() {
       if (Args.empty() || !all_of(Args, [](const Record *A) {
             return A->isSubClassOf("LegalizeMemDesc");
           }))
@@ -4053,7 +4081,7 @@ class LegalizerTableEmitterImpl {
 
     // clampScalar expands to minScalar + maxScalar; clampScalarOrElt to the
     // scalar-or-element pair.  Both directions share one mutation.
-    if (Name == "clampScalar" || Name == "clampScalarOrElt") {
+    bool translateClampScalar() {
       NeedArgs(3);
       const bool OrElt = Name == "clampScalarOrElt";
       const std::string Idx = IdxOf(0);
@@ -4080,7 +4108,7 @@ class LegalizerTableEmitterImpl {
 
     // minScalarIf / maxScalarIf: the builder's lambda adds the scalar and
     // the direction check on top of the query guard.
-    if (Name == "minScalarIf" || Name == "maxScalarIf") {
+    bool translateScalarIf() {
       NeedArgs(2);
       const bool Min = Name == "minScalarIf";
       const std::string Idx = IdxOf(0);
@@ -4094,7 +4122,7 @@ class LegalizerTableEmitterImpl {
       return Finish();
     }
 
-    if (Name == "minScalar" || Name == "maxScalar") {
+    bool translateMinMaxScalar() {
       NeedArgs(2);
       const bool Min = Name == "minScalar";
       const std::string Idx = IdxOf(0);
@@ -4109,7 +4137,7 @@ class LegalizerTableEmitterImpl {
     }
 
     // scalarSameSizeAs expands to minScalarSameAs + maxScalarSameAs.
-    if (Name == "scalarSameSizeAs") {
+    bool translateScalarSameSizeAs() {
       NeedArgs(2);
       const std::string Idx = IdxOf(0);
       const std::string Other = IdxOf(1);
@@ -4122,7 +4150,7 @@ class LegalizerTableEmitterImpl {
       return Finish();
     }
 
-    if (Name == "scalarize" || Name == "scalarizeIf") {
+    bool translateScalarize() {
       NeedArgs(1);
       const std::string Idx = IdxOf(0);
       EmitIf(conjunction(Guard, "isVector(" + Idx + ")(Q)"), "FewerElements",
@@ -4130,7 +4158,7 @@ class LegalizerTableEmitterImpl {
       return Finish();
     }
 
-    if (Name == "moreElementsToNextPow2") {
+    bool translateMoreElementsToNextPow2() {
       NeedArgs(1);
       const std::string Idx = IdxOf(0);
       EmitIf(conjunction(Guard, "numElementsNotPow2(" + Idx + ")(Q)"),
@@ -4139,8 +4167,7 @@ class LegalizerTableEmitterImpl {
       return Finish();
     }
 
-    if (Name == "widenScalarToNextPow2" ||
-        Name == "widenScalarOrEltToNextPow2") {
+    bool translateWidenScalarToNextPow2() {
       if (Args.empty() || Args.size() > 2)
         return Fail();
       const std::string Idx = IdxOf(0);
@@ -4158,7 +4185,7 @@ class LegalizerTableEmitterImpl {
     }
 
     // clampNumElements expands to clampMinNumElements + clampMaxNumElements.
-    if (Name == "clampNumElements") {
+    bool translateClampNumElements() {
       NeedArgs(3);
       const std::string Idx = IdxOf(0);
       const std::string Min = typeText(*Args[1]);
@@ -4183,7 +4210,7 @@ class LegalizerTableEmitterImpl {
       return Finish();
     }
 
-    if (Name == "clampMinNumElements" || Name == "clampMaxNumElements") {
+    bool translateClampMinMaxNumElements() {
       NeedArgs(3);
       const bool MinSide = Name == "clampMinNumElements";
       const std::string Idx = IdxOf(0);
@@ -4201,8 +4228,86 @@ class LegalizerTableEmitterImpl {
                                 Lanes + "), " + V + ".getElementType())");
       return Finish();
     }
+  };
 
-    return Fail();
+  /// One builder name the table evaluator can translate, and how.
+  struct RuleTranslator {
+    StringLiteral Builder;
+    bool (RuleTranslation::*Translate)();
+  };
+
+  /// Keys are builderName() spellings.  A name that no builder declares would
+  /// be dead code, so run() rejects it next to the registry check.
+  static constexpr RuleTranslator RuleTranslators[] = {
+      {"alwaysLegal", &RuleTranslation::translateBareAction},
+      {"lower", &RuleTranslation::translateBareAction},
+      {"libcall", &RuleTranslation::translateBareAction},
+      {"custom", &RuleTranslation::translateBareAction},
+      {"unsupported", &RuleTranslation::translateBareAction},
+      {"legalIf", &RuleTranslation::translateGuardedAction},
+      {"lowerIf", &RuleTranslation::translateGuardedAction},
+      {"customIf", &RuleTranslation::translateGuardedAction},
+      {"widenScalarIf", &RuleTranslation::translateGuardedAction},
+      {"narrowScalarIf", &RuleTranslation::translateGuardedAction},
+      {"libcallIf", &RuleTranslation::translateGuardedAction},
+      {"fewerElementsIf", &RuleTranslation::translateGuardedAction},
+      {"moreElementsIf", &RuleTranslation::translateGuardedAction},
+      {"unsupportedIf", &RuleTranslation::translateGuardedAction},
+      {"legalFor", &RuleTranslation::translateActionFor},
+      {"lowerFor", &RuleTranslation::translateActionFor},
+      {"libcallFor", &RuleTranslation::translateActionFor},
+      {"customFor", &RuleTranslation::translateActionFor},
+      {"legalForCartesianProduct", &RuleTranslation::translateCartesian},
+      {"customForCartesianProduct", &RuleTranslation::translateCartesian},
+      {"legalForTypesWithMemDesc", &RuleTranslation::translateMemDesc},
+      {"clampScalar", &RuleTranslation::translateClampScalar},
+      {"clampScalarOrElt", &RuleTranslation::translateClampScalar},
+      {"minScalarIf", &RuleTranslation::translateScalarIf},
+      {"maxScalarIf", &RuleTranslation::translateScalarIf},
+      {"minScalar", &RuleTranslation::translateMinMaxScalar},
+      {"maxScalar", &RuleTranslation::translateMinMaxScalar},
+      {"scalarSameSizeAs", &RuleTranslation::translateScalarSameSizeAs},
+      {"scalarize", &RuleTranslation::translateScalarize},
+      {"scalarizeIf", &RuleTranslation::translateScalarize},
+      {"moreElementsToNextPow2",
+       &RuleTranslation::translateMoreElementsToNextPow2},
+      {"widenScalarToNextPow2",
+       &RuleTranslation::translateWidenScalarToNextPow2},
+      {"widenScalarOrEltToNextPow2",
+       &RuleTranslation::translateWidenScalarToNextPow2},
+      {"clampNumElements", &RuleTranslation::translateClampNumElements},
+      {"clampMinNumElements",
+       &RuleTranslation::translateClampMinMaxNumElements},
+      {"clampMaxNumElements",
+       &RuleTranslation::translateClampMinMaxNumElements},
+  };
+
+  static const RuleTranslator *lookupRuleTranslator(StringRef Name) {
+    for (const RuleTranslator &T : RuleTranslators)
+      if (T.Builder == Name)
+        return &T;
+    return nullptr;
+  }
+
+  /// Translate one rule into the statements an evaluator runs.  Returns false
+  /// when the builder has no table translation; the whole rule set is then
+  /// opaque and the reader falls back to the chain for it.
+  /// With RuleIdx set the emitted statements store the step and the rule's
+  /// position instead of returning it, for -gen-legalizer-rule-index.
+  /// With GuardOnly set the emitted statements test the rule's guard and
+  /// return true on a match instead of applying the step.  That is the
+  /// condition the chain tests before it commits to the rule, with no
+  /// mutation, for the rule-index backend's per-rule guard evaluators.
+  bool translateRule(const Record &Rule, std::string &Out, std::string &Why,
+                     const unsigned *RuleIdx = nullptr,
+                     bool GuardOnly = false) {
+    RuleTranslation T(Rule, TablePrefix, Out, Why, RuleIdx, GuardOnly);
+    if (!Rule.getValueAsString("OpaqueArgs").empty())
+      return T.translateOpaqueBody();
+    const RuleTranslator *H = lookupRuleTranslator(T.Name);
+    if (!H)
+      return T.Fail();
+    return (T.*H->Translate)();
   }
 
   /// True when the rule set's last rule always matches.  The evaluator's final
@@ -4230,6 +4335,19 @@ public:
 
   void run(raw_ostream &OS) {
     verifyLoweringRegistry(Records);
+    // The translation table is keyed by builder name.  A duplicate key, or a
+    // key no LegalizeBuilder declares, is dead code that the reader would
+    // silently never reach, so reject it before emitting anything.
+    std::set<StringRef> UnusedTranslators;
+    for (const RuleTranslator &T : RuleTranslators)
+      if (!UnusedTranslators.insert(T.Builder).second)
+        PrintFatalError("duplicate table translation for builder '" +
+                        StringRef(T.Builder) + "'");
+    for (const Record *B : Records.getAllDerivedDefinitions("LegalizeBuilder"))
+      UnusedTranslators.erase(B->getValueAsString("Name"));
+    for (const StringRef &Name : UnusedTranslators)
+      PrintFatalError("table translation for unknown builder '" + Name + "'");
+
     collectClasses();
     collectMemClasses();
 
