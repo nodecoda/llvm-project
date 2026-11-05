@@ -1021,3 +1021,140 @@ class LegalizeRuleSet<list<string> opcodes> {
   list<LegalizeRule> Rules = [];
   list<string> Comments = [];
 }
+
+//===----------------------------------------------------------------------===//
+// Lowering registry: one entry per (builder, overload).
+//
+// A builder's expansion is not a function of its action alone: `legalFor` has
+// four overloads and `legalForCartesianProduct` three, and they differ in how
+// many Core IR rows one rule produces, not in which node kind it produces.
+// Keying a registry by node kind therefore cannot describe them.  Each entry
+// below names the expansion algorithm, the actions it may emit, and (when the
+// overload can produce no row at all) the escape reasons it is allowed to
+// report.
+//
+// `TableTranslation` records whether the C++ rule table can answer for this
+// overload today.  A zero means the table evaluator falls back to the rule
+// chain for the whole rule set; it is data so that the fallback is counted
+// rather than silent.  P1 flips the remaining zeroes to one.
+//
+// The emitter checks, for every target and before emitting anything:
+//   1. builder defs <-> entries, one entry per declared overload;
+//   2. every emitted action is declared by the entry;
+//   3. the union of declared actions covers every LegalizeAction def;
+//   4. every LegalizeExpansion def is known to the expander;
+//   5. a rule that escapes names a reason the entry declares (global
+//      argument-shape reasons excepted);
+//   6. no shim is named unless the shim table declares it.
+//===----------------------------------------------------------------------===//
+
+class LegalizeExpansion<string name> {
+  /// Spelling used in diagnostics and in the -gen-legalizer-check report.
+  string Name = name;
+}
+
+/// Exactly one Core IR row per rule.
+def ExOne : LegalizeExpansion<"ExOne">;
+/// One row per type, per pair, or per triple in the argument list.
+def ExPerType : LegalizeExpansion<"ExPerType">;
+/// One row per point of a cartesian product.
+def ExPerPoint : LegalizeExpansion<"ExPerPoint">;
+/// Two rows, one per direction (min + max).
+def ExClamp2 : LegalizeExpansion<"ExClamp2">;
+/// Always zero rows: the payload is C++ the schema cannot literalize.
+def ExRawMutation : LegalizeExpansion<"ExRawMutation">;
+/// Always zero rows: a coverage marker, not a legalization step.
+def ExCoverage : LegalizeExpansion<"ExCoverage">;
+/// One row, or zero when the bit width is itself a feature-dependent select.
+def ExSelectBits : LegalizeExpansion<"ExSelectBits">;
+
+class LegalizeLowering<LegalizeBuilder builder, int overload,
+                       LegalizeExpansion expansion,
+                       list<LegalizeAction> actions,
+                       list<string> escapes = [],
+                       bit tableTranslation = 1,
+                       string shim = ""> {
+  LegalizeBuilder Builder = builder;
+  int Overload = overload;
+  LegalizeExpansion Expansion = expansion;
+
+  /// Actions this overload may emit.  Empty only for the two zero-row
+  /// expansions; otherwise the emitter rejects a row with an undeclared action.
+  list<LegalizeAction> Actions = actions;
+
+  /// Reasons this overload may report zero rows.  A zero-row result whose
+  /// reason is not listed (and is not a global argument-shape reason) is fatal.
+  list<string> Escapes = escapes;
+
+  /// False when -gen-legalizer-rule-index cannot answer for this overload and
+  /// the reader falls back to the rule chain.
+  bit TableTranslation = tableTranslation;
+
+  /// C++ shim this primitive owns, if any.  Empty in P1; P2 adds the primitives.
+  string Shim = shim;
+}
+
+def LoweringLegalFor0 : LegalizeLowering<BuilderLegalFor, 0, ExPerType, [ActionLegal]>;
+def LoweringLegalFor1 : LegalizeLowering<BuilderLegalFor, 1, ExPerType, [ActionLegal]>;
+def LoweringLegalFor2 : LegalizeLowering<BuilderLegalFor, 2, ExPerType, [ActionLegal]>;
+def LoweringLegalFor3 : LegalizeLowering<BuilderLegalFor, 3, ExPerType, [ActionLegal]>;
+def LoweringLegalForCartesianProduct0 : LegalizeLowering<BuilderLegalForCartesianProduct, 0, ExPerPoint, [ActionLegal], [], 0>;
+def LoweringLegalForCartesianProduct1 : LegalizeLowering<BuilderLegalForCartesianProduct, 1, ExPerPoint, [ActionLegal]>;
+def LoweringLegalForCartesianProduct2 : LegalizeLowering<BuilderLegalForCartesianProduct, 2, ExPerPoint, [ActionLegal], [], 0>;
+def LoweringLegalForTypesWithMemDesc0 : LegalizeLowering<BuilderLegalForTypesWithMemDesc, 0, ExPerType, [ActionLegal]>;
+def LoweringLower0 : LegalizeLowering<BuilderLower, 0, ExOne, [ActionLower]>;
+def LoweringLowerFor0 : LegalizeLowering<BuilderLowerFor, 0, ExPerType, [ActionLower]>;
+def LoweringLowerFor1 : LegalizeLowering<BuilderLowerFor, 1, ExPerType, [ActionLower]>;
+def LoweringLibcall0 : LegalizeLowering<BuilderLibcall, 0, ExOne, [ActionLibcall]>;
+def LoweringLibcallFor0 : LegalizeLowering<BuilderLibcallFor, 0, ExPerType, [ActionLibcall]>;
+def LoweringLibcallFor1 : LegalizeLowering<BuilderLibcallFor, 1, ExPerType, [ActionLibcall]>;
+def LoweringCustomFor0 : LegalizeLowering<BuilderCustomFor, 0, ExPerType, [ActionCustom]>;
+def LoweringCustomFor1 : LegalizeLowering<BuilderCustomFor, 1, ExPerType, [ActionCustom]>;
+def LoweringCustomForCartesianProduct0 : LegalizeLowering<BuilderCustomForCartesianProduct, 0, ExPerPoint, [ActionCustom], [], 0>;
+def LoweringCustomForCartesianProduct1 : LegalizeLowering<BuilderCustomForCartesianProduct, 1, ExPerPoint, [ActionCustom]>;
+def LoweringCustomForCartesianProduct2 : LegalizeLowering<BuilderCustomForCartesianProduct, 2, ExPerPoint, [ActionCustom], [], 0>;
+def LoweringCustom0 : LegalizeLowering<BuilderCustom, 0, ExOne, [ActionCustom]>;
+def LoweringBitcastIf0 : LegalizeLowering<BuilderBitcastIf, 0, ExRawMutation, [], ["raw_mutation"], 0>;
+def LoweringWidenScalarFor0 : LegalizeLowering<BuilderWidenScalarFor, 0, ExRawMutation, [], ["raw_mutation"], 0>;
+def LoweringWidenScalarOrEltToNextPow2OrMinSize0 : LegalizeLowering<BuilderWidenScalarOrEltToNextPow2OrMinSize, 0, ExOne, [ActionWidenScalar], [], 0>;
+def LoweringWidenScalarOrEltToNextPow2OrMinSize1 : LegalizeLowering<BuilderWidenScalarOrEltToNextPow2OrMinSize, 1, ExSelectBits, [ActionWidenScalar], ["nonliteral_bits"], 0>;
+def LoweringWidenVectorEltsToVectorMinSize0 : LegalizeLowering<BuilderWidenVectorEltsToVectorMinSize, 0, ExOne, [ActionWidenScalar], ["no_core_expansion"], 0>;
+def LoweringMinScalarOrElt0 : LegalizeLowering<BuilderMinScalarOrElt, 0, ExOne, [ActionWidenScalar], [], 0>;
+def LoweringMinScalarOrEltIf0 : LegalizeLowering<BuilderMinScalarOrEltIf, 0, ExOne, [ActionWidenScalar], [], 0>;
+def LoweringMinScalarSameAs0 : LegalizeLowering<BuilderMinScalarSameAs, 0, ExOne, [ActionWidenScalar], [], 0>;
+def LoweringMinScalarEltSameAsIf0 : LegalizeLowering<BuilderMinScalarEltSameAsIf, 0, ExOne, [ActionWidenScalar], [], 0>;
+def LoweringMaxScalarEltSameAsIf0 : LegalizeLowering<BuilderMaxScalarEltSameAsIf, 0, ExOne, [ActionNarrowScalar], [], 0>;
+def LoweringUnsupportedIfMemSizeNotPow20 : LegalizeLowering<BuilderUnsupportedIfMemSizeNotPow2, 0, ExOne, [ActionUnsupported], [], 0>;
+def LoweringLowerIfMemSizeNotPow20 : LegalizeLowering<BuilderLowerIfMemSizeNotPow2, 0, ExOne, [ActionLower], [], 0>;
+def LoweringLowerIfMemSizeNotByteSizePow20 : LegalizeLowering<BuilderLowerIfMemSizeNotByteSizePow2, 0, ExOne, [ActionLower], [], 0>;
+def LoweringImmIdx0 : LegalizeLowering<BuilderImmIdx, 0, ExCoverage, [], ["coverage_marker"], 0>;
+def LoweringAlwaysLegal0 : LegalizeLowering<BuilderAlwaysLegal, 0, ExOne, [ActionLegal]>;
+def LoweringClampScalar0 : LegalizeLowering<BuilderClampScalar, 0, ExClamp2, [ActionWidenScalar, ActionNarrowScalar]>;
+def LoweringClampScalarOrElt0 : LegalizeLowering<BuilderClampScalarOrElt, 0, ExClamp2, [ActionWidenScalar, ActionNarrowScalar]>;
+def LoweringWidenScalarToNextPow20 : LegalizeLowering<BuilderWidenScalarToNextPow2, 0, ExOne, [ActionWidenScalar]>;
+def LoweringWidenScalarToNextPow21 : LegalizeLowering<BuilderWidenScalarToNextPow2, 1, ExOne, [ActionWidenScalar]>;
+def LoweringWidenScalarOrEltToNextPow20 : LegalizeLowering<BuilderWidenScalarOrEltToNextPow2, 0, ExOne, [ActionWidenScalar]>;
+def LoweringWidenScalarOrEltToNextPow21 : LegalizeLowering<BuilderWidenScalarOrEltToNextPow2, 1, ExOne, [ActionWidenScalar]>;
+def LoweringMinScalar0 : LegalizeLowering<BuilderMinScalar, 0, ExOne, [ActionWidenScalar]>;
+def LoweringMaxScalar0 : LegalizeLowering<BuilderMaxScalar, 0, ExOne, [ActionNarrowScalar]>;
+def LoweringScalarSameSizeAs0 : LegalizeLowering<BuilderScalarSameSizeAs, 0, ExClamp2, [ActionWidenScalar, ActionNarrowScalar]>;
+def LoweringScalarize0 : LegalizeLowering<BuilderScalarize, 0, ExOne, [ActionFewerElements]>;
+def LoweringMoreElementsToNextPow20 : LegalizeLowering<BuilderMoreElementsToNextPow2, 0, ExOne, [ActionMoreElements]>;
+def LoweringClampNumElements0 : LegalizeLowering<BuilderClampNumElements, 0, ExClamp2, [ActionMoreElements, ActionFewerElements]>;
+def LoweringClampMinNumElements0 : LegalizeLowering<BuilderClampMinNumElements, 0, ExOne, [ActionMoreElements]>;
+def LoweringClampMaxNumElements0 : LegalizeLowering<BuilderClampMaxNumElements, 0, ExOne, [ActionFewerElements]>;
+def LoweringLegalIf0 : LegalizeLowering<BuilderLegalIf, 0, ExOne, [ActionLegal]>;
+def LoweringLowerIf0 : LegalizeLowering<BuilderLowerIf, 0, ExOne, [ActionLower]>;
+def LoweringLowerIf1 : LegalizeLowering<BuilderLowerIf, 1, ExRawMutation, [], ["raw_mutation"], 0>;
+def LoweringCustomIf0 : LegalizeLowering<BuilderCustomIf, 0, ExOne, [ActionCustom]>;
+def LoweringWidenScalarIf0 : LegalizeLowering<BuilderWidenScalarIf, 0, ExRawMutation, [], ["raw_mutation"], 0>;
+def LoweringNarrowScalarIf0 : LegalizeLowering<BuilderNarrowScalarIf, 0, ExRawMutation, [], ["raw_mutation"], 0>;
+def LoweringLibcallIf0 : LegalizeLowering<BuilderLibcallIf, 0, ExOne, [ActionLibcall]>;
+def LoweringFewerElementsIf0 : LegalizeLowering<BuilderFewerElementsIf, 0, ExRawMutation, [], ["raw_mutation"], 0>;
+def LoweringMoreElementsIf0 : LegalizeLowering<BuilderMoreElementsIf, 0, ExRawMutation, [], ["raw_mutation"], 0>;
+def LoweringMinScalarIf0 : LegalizeLowering<BuilderMinScalarIf, 0, ExOne, [ActionWidenScalar]>;
+def LoweringMaxScalarIf0 : LegalizeLowering<BuilderMaxScalarIf, 0, ExOne, [ActionNarrowScalar]>;
+def LoweringScalarizeIf0 : LegalizeLowering<BuilderScalarizeIf, 0, ExOne, [ActionFewerElements]>;
+def LoweringUnsupported0 : LegalizeLowering<BuilderUnsupported, 0, ExOne, [ActionUnsupported]>;
+def LoweringUnsupportedFor0 : LegalizeLowering<BuilderUnsupportedFor, 0, ExOne, [ActionUnsupported], [], 0>;
+def LoweringUnsupportedIf0 : LegalizeLowering<BuilderUnsupportedIf, 0, ExOne, [ActionUnsupported]>;

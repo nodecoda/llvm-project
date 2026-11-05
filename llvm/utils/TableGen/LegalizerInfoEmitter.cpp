@@ -44,6 +44,21 @@
 using namespace llvm;
 
 namespace {
+struct LoweringStats {
+  unsigned Builders = 0;
+  unsigned Overloads = 0;
+  unsigned Entries = 0;
+  unsigned Rules = 0;
+  unsigned RuleSets = 0;
+  unsigned Escapes = 0;
+  unsigned EntriesWithoutTable = 0;
+  unsigned RuleSetsWithoutTable = 0;
+};
+
+/// Defined after expandRule(); the -gen-legalizer emitter above it needs the
+/// declaration.  Returns the counts the -gen-legalizer-check report prints.
+static LoweringStats verifyLoweringRegistry(const RecordKeeper &Records);
+
 
 static void skipSpaces(StringRef S, size_t &I) {
   while (I != S.size() && isSpace(S[I]))
@@ -486,6 +501,63 @@ static StringRef shapeOf(const Record &Arg) {
   return "";
 }
 
+/// The shapes a rule supplies, position by position.
+///
+/// A run of types, pairs, triples or memdesc tuples is one braced group in C++,
+/// so it is compared as one position rather than element by element.
+static std::vector<StringRef> suppliedShapes(const Record &Rule) {
+  std::vector<const Record *> Args = Rule.getValueAsListOfDefs("Args");
+  std::vector<StringRef> Supplied;
+  if (isBracedGroup(Args)) {
+    bool AllPairs = llvm::all_of(Args, [](const Record *A) {
+      return A->isSubClassOf("LegalizeTypePair");
+    });
+    bool AllTriples = llvm::all_of(Args, [](const Record *A) {
+      return A->isSubClassOf("LegalizeTypeTriple");
+    });
+    bool AllMemDesc = llvm::all_of(Args, [](const Record *A) {
+      return A->isSubClassOf("LegalizeMemDesc");
+    });
+    Supplied.push_back(AllPairs     ? "ShapeTypePairList"
+                       : AllTriples ? "ShapeTypeTripleList"
+                       : AllMemDesc ? "ShapeMemDescList"
+                                    : "ShapeType");
+    return Supplied;
+  }
+  for (const Record *A : Args) {
+    StringRef Got = shapeOf(*A);
+    if (Got.empty())
+      PrintFatalError(A, "unknown legalizer argument shape");
+    Supplied.push_back(Got);
+  }
+  return Supplied;
+}
+
+/// The index in `Builder.Formals` that this rule's arguments match, or -1.
+///
+/// This is the key the lowering registry uses: a builder is not one entry but
+/// one per overload, because the overloads differ in how many rows a rule
+/// produces (`legalFor` takes four shapes, `legalForCartesianProduct` three).
+static int matchedOverloadIndex(const Record &Rule) {
+  const Record *B = Rule.getValueAsDef("Builder");
+  std::vector<StringRef> Supplied = suppliedShapes(Rule);
+  const ListInit *Overloads = B->getValueAsListInit("Formals");
+  int Index = 0;
+  for (const Init *O : Overloads->getElements()) {
+    const auto *Inner = dyn_cast<ListInit>(O);
+    if (Inner) {
+      std::vector<StringRef> Names;
+      for (const Init *E : Inner->getElements())
+        if (const auto *DI = dyn_cast<DefInit>(E))
+          Names.push_back(DI->getDef()->getName());
+      if (Names == Supplied)
+        return Index;
+    }
+    ++Index;
+  }
+  return -1;
+}
+
 void LegalizerInfoEmitter::verifyRule(const Record &Rule) {
   StringRef Method = builderName(Rule);
   const Record *B = Rule.getValueAsDef("Builder");
@@ -529,33 +601,7 @@ void LegalizerInfoEmitter::verifyRule(const Record &Rule) {
   // `.lower({s32})` (one argument, none declared) from being written at all:
   // both used to be emitted and only failed when the target was compiled.
   if (Rule.getValueAsString("OpaqueArgs").empty()) {
-    std::vector<const Record *> Args = Rule.getValueAsListOfDefs("Args");
-    bool Braced = isBracedGroup(Args);
-
-    // The shape the rule supplies, position by position.
-    std::vector<StringRef> Supplied;
-    if (Braced) {
-      bool AllPairs = llvm::all_of(Args, [](const Record *A) {
-        return A->isSubClassOf("LegalizeTypePair");
-      });
-      bool AllTriples = llvm::all_of(Args, [](const Record *A) {
-        return A->isSubClassOf("LegalizeTypeTriple");
-      });
-      bool AllMemDesc = llvm::all_of(Args, [](const Record *A) {
-        return A->isSubClassOf("LegalizeMemDesc");
-      });
-      Supplied.push_back(AllPairs     ? "ShapeTypePairList"
-                         : AllTriples ? "ShapeTypeTripleList"
-                         : AllMemDesc ? "ShapeMemDescList"
-                                      : "ShapeType");
-    } else {
-      for (const Record *A : Args) {
-        StringRef Got = shapeOf(*A);
-        if (Got.empty())
-          PrintFatalError(A, "unknown legalizer argument shape");
-        Supplied.push_back(Got);
-      }
-    }
+    std::vector<StringRef> Supplied = suppliedShapes(Rule);
 
     // Formals is list<list<LegalizeArgShape>>, so each overload is itself a
     // ListInit; the inner elements are still records.
@@ -800,6 +846,8 @@ void LegalizerInfoEmitter::emitRuleSet(raw_ostream &OS, const Record &RuleSet) {
 }
 
 void LegalizerInfoEmitter::run(raw_ostream &OS) {
+  verifyLoweringRegistry(Records);
+
   emitSourceFileHeader("GlobalISel legalizer rule fragments", OS);
 
   // A feature leaf that names something the .td never defined is rejected by
@@ -2400,9 +2448,254 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
                                      "first");
 }
 
+//===----------------------------------------------------------------------===//
+// Lowering registry verification
+//===----------------------------------------------------------------------===//
+
+/// Cardinality class of every expansion algorithm.
+///
+/// This is the C++ half of the `LegalizeExpansion` defs.  The checker requires
+/// the two sets to be equal, so adding an algorithm to the .td without teaching
+/// the expander about it (or the reverse) is a tablegen error, not a fallback.
+struct ExpansionInfo {
+  StringLiteral Name;
+  /// 0 = always zero rows, 1 = exactly one, 2 = exactly two, 3 = one or more.
+  int Cardinality;
+};
+
+static constexpr ExpansionInfo Expansions[] = {
+    {"ExOne", 1},        {"ExPerType", 3},     {"ExPerPoint", 3},
+    {"ExClamp2", 2},     {"ExRawMutation", 0}, {"ExCoverage", 0},
+    {"ExSelectBits", 1},
+};
+
+static const ExpansionInfo *lookupExpansion(StringRef Name) {
+  for (const ExpansionInfo &E : Expansions)
+    if (E.Name == Name)
+      return &E;
+  return nullptr;
+}
+
+/// Escape reasons that depend only on an argument record, not on the builder.
+/// No entry needs to declare them, because no builder can literalize the
+/// argument that produced them.
+static bool isGlobalEscapeReason(StringRef Why) {
+  return Why == "opaque_rule" || Why == "nonliteral_type" ||
+         Why == "inline_type_expr" || Why == "raw_argument";
+}
+
+/// Check the lowering registry declared in LegalizerInfo.td.
+///
+/// Runs once per llvm-tblgen invocation, before anything is emitted, so a
+/// builder no target uses is checked too.  Every failure is fatal: the point of
+/// the registry is that a missing overload, an undeclared escape and an
+/// unhandled algorithm cannot degrade into a fallback.
+static LoweringStats verifyLoweringRegistry(const RecordKeeper &Records) {
+  LoweringStats S;
+  std::vector<const Record *> Builders =
+      Records.getAllDerivedDefinitions("LegalizeBuilder");
+  std::vector<const Record *> Lowerings =
+      Records.getAllDerivedDefinitions("LegalizeLowering");
+  std::vector<const Record *> ExpansionDefs =
+      Records.getAllDerivedDefinitions("LegalizeExpansion");
+  std::vector<const Record *> ActionDefs =
+      Records.getAllDerivedDefinitions("LegalizeAction");
+
+  S.Builders = Builders.size();
+  S.Entries = Lowerings.size();
+
+  // Assertion 4 (declaration half): the TD defs and the C++ table agree.
+  std::set<std::string> DeclaredExpansions;
+  for (const Record *E : ExpansionDefs)
+    DeclaredExpansions.insert(E->getValueAsString("Name").str());
+  for (const ExpansionInfo &E : Expansions) {
+    if (!DeclaredExpansions.erase(E.Name.str()))
+      PrintFatalError("legalizer expansion '" + E.Name.str() +
+                      "' is handled by the emitter but is not a "
+                      "LegalizeExpansion def");
+  }
+  for (const std::string &Name : DeclaredExpansions)
+    PrintFatalError("legalizer expansion '" + Name +
+                    "' has no emitter handling");
+
+  // Assertion 1: one entry per (builder, overload), and no extras.
+  std::map<std::pair<const Record *, int>, const Record *> Entries;
+  for (const Record *L : Lowerings) {
+    const Record *B = L->getValueAsDef("Builder");
+    if (!B->isSubClassOf("LegalizeBuilder"))
+      PrintFatalError(L->getLoc(), "lowering '" + L->getName() +
+                                       "' does not name a builder");
+    int Overload = (int)L->getValueAsInt("Overload");
+    if (!Entries.emplace(std::make_pair(B, Overload), L).second)
+      PrintFatalError(L->getLoc(), "duplicate lowering for builder '" +
+                                       B->getName() + "' overload " +
+                                       std::to_string(Overload));
+  }
+  for (const Record *B : Builders) {
+    unsigned N = B->getValueAsListInit("Formals")->size();
+    S.Overloads += N;
+    for (unsigned O = 0; O != N; ++O)
+      if (!Entries.count(std::make_pair(B, (int)O)))
+        PrintFatalError(B->getLoc(),
+                        "builder '" + B->getName() + "' declares overload " +
+                            std::to_string(O) + " but has no lowering for it");
+  }
+  if (Entries.size() != S.Overloads)
+    PrintFatalError("lowering registry has " + std::to_string(Entries.size()) +
+                    " entries for " + std::to_string(S.Overloads) +
+                    " declared overloads");
+
+  // Assertions 2, 3, 6: actions, coverage, and the (still empty) shim table.
+  //
+  // The actions a Core IR row can carry.  Composite actions (clampScalar and
+  // friends) are directions rather than rows, and Coverage never reaches the
+  // Core IR: it marks an immediate operand as handled.
+  std::map<std::string, std::vector<const Record *>> BuildersByAction;
+  for (const Record *B : Builders)
+    BuildersByAction[B->getValueAsDef("Action")->getValueAsString("Name").str()]
+        .push_back(B);
+
+  std::set<std::string> CoveredActions;
+  for (const Record *L : Lowerings) {
+    StringRef ExpName = L->getValueAsDef("Expansion")->getValueAsString("Name");
+    const ExpansionInfo *Info = lookupExpansion(ExpName);
+    if (!Info)
+      PrintFatalError(L->getLoc(), "unknown expansion '" + ExpName + "'");
+    std::vector<const Record *> Actions = L->getValueAsListOfDefs("Actions");
+    std::vector<StringRef> Escapes = L->getValueAsListOfStrings("Escapes");
+    if (Info->Cardinality == 0) {
+      if (!Actions.empty())
+        PrintFatalError(L->getLoc(), "zero-row expansion '" + ExpName +
+                                         "' declares actions");
+      if (Escapes.empty())
+        PrintFatalError(L->getLoc(), "zero-row expansion '" + ExpName +
+                                         "' declares no escape reason");
+    } else if (Actions.empty()) {
+      PrintFatalError(L->getLoc(),
+                      "expansion '" + ExpName + "' declares no action");
+    }
+    for (const Record *A : Actions) {
+      if (!A->isSubClassOf("LegalizeAction"))
+        PrintFatalError(L->getLoc(),
+                        "'" + A->getName() + "' is not a LegalizeAction");
+      CoveredActions.insert(A->getValueAsString("Name").str());
+    }
+    if (!L->getValueAsString("Shim").empty())
+      PrintFatalError(L->getLoc(), "lowering names shim '" +
+                                       L->getValueAsString("Shim") +
+                                       "' but no shim table is declared yet");
+    if (!L->getValueAsBit("TableTranslation"))
+      ++S.EntriesWithoutTable;
+  }
+  // Assertion 3: every action a rule could emit is named by an entry.  An
+  // action with no emitting entry is allowed only when every builder that
+  // declares it has a zero-row expansion -- today that is Bitcast, whose only
+  // builder carries a raw mutation.
+  for (const Record *A : ActionDefs) {
+    std::string Name = A->getValueAsString("Name").str();
+    if (Name == "Coverage" || Name == "ClampScalar" ||
+        Name == "ScalarSameSizeAs" || Name == "ClampNumElements")
+      continue;
+    if (CoveredActions.count(Name))
+      continue;
+    bool Reachable = false;
+    for (const Record *B : BuildersByAction[Name]) {
+      auto It = Entries.find(std::make_pair(B, 0));
+      if (It == Entries.end())
+        continue;
+      StringRef ExpName =
+          It->second->getValueAsDef("Expansion")->getValueAsString("Name");
+      if (lookupExpansion(ExpName)->Cardinality != 0)
+        Reachable = true;
+    }
+    if (Reachable)
+      PrintFatalError("action '" + Name +
+                      "' is reachable but no lowering emits it");
+  }
+
+  // Assertions 2 and 5 (per rule): the registry must describe what the
+  // existing expander actually produces, and a zero-row result must name a
+  // reason its entry declares.
+  std::vector<const Record *> RuleSets =
+      Records.getAllDerivedDefinitions("LegalizeRuleSet");
+  S.RuleSets = RuleSets.size();
+  for (const Record *RS : RuleSets) {
+    bool WithoutTable = false;
+    for (const Record *Rule : RS->getValueAsListOfDefs("Rules")) {
+      ++S.Rules;
+      const Record *B = Rule->getValueAsDef("Builder");
+      int Overload = matchedOverloadIndex(*Rule);
+      if (Overload < 0)
+        PrintFatalError(Rule->getLoc(),
+                        "rule uses builder '" + B->getName() +
+                            "' with arguments no declared overload accepts");
+      auto It = Entries.find(std::make_pair(B, Overload));
+      if (It == Entries.end())
+        PrintFatalError(Rule->getLoc(), "no lowering for builder '" +
+                                            B->getName() + "' overload " +
+                                            std::to_string(Overload));
+      const Record *L = It->second;
+      if (!L->getValueAsBit("TableTranslation"))
+        WithoutTable = true;
+
+      // immIdx is a coverage marker: runCore emits neither a row nor an escape
+      // for it, so the registry check must not count one either.
+      if (B->getName() == "BuilderImmIdx")
+        continue;
+
+      StringRef ExpName =
+          L->getValueAsDef("Expansion")->getValueAsString("Name");
+      int Cardinality = lookupExpansion(ExpName)->Cardinality;
+
+      std::vector<CoreRule> Out;
+      std::string Why;
+      expandRule(Records, *Rule, Out, Why);
+
+      if (!Why.empty()) {
+        ++S.Escapes;
+        std::vector<StringRef> Escapes = L->getValueAsListOfStrings("Escapes");
+        if (!isGlobalEscapeReason(Why) && !llvm::is_contained(Escapes, Why))
+          PrintFatalError(Rule->getLoc(), "rule escapes with '" + Why +
+                                              "' but " + B->getName() +
+                                              " overload " +
+                                              std::to_string(Overload) +
+                                              " does not declare it");
+        continue;
+      }
+      if (Cardinality == 0)
+        PrintFatalError(Rule->getLoc(),
+                        "zero-row expansion '" + ExpName + "' produced rows");
+      if ((Cardinality == 1 || Cardinality == 2) &&
+          Out.size() != (size_t)Cardinality)
+        PrintFatalError(Rule->getLoc(), "expansion '" + ExpName + "' expects " +
+                                            std::to_string(Cardinality) +
+                                            " row(s), got " +
+                                            std::to_string(Out.size()));
+      if (Out.empty())
+        PrintFatalError(Rule->getLoc(),
+                        "rule produced no rows and reported no escape");
+      std::set<std::string> Allowed;
+      for (const Record *A : L->getValueAsListOfDefs("Actions"))
+        Allowed.insert(A->getValueAsString("Name").str());
+      for (const CoreRule &R : Out)
+        if (!Allowed.count(R.Action))
+          PrintFatalError(Rule->getLoc(), "rule emits action '" + R.Action +
+                                              "' but " + B->getName() +
+                                              " overload " +
+                                              std::to_string(Overload) +
+                                              " does not declare it");
+    }
+    if (WithoutTable)
+      ++S.RuleSetsWithoutTable;
+  }
+  return S;
+}
+
 } // namespace
 
 void LegalizerInfoEmitter::runCore(raw_ostream &OS) {
+  verifyLoweringRegistry(Records);
+
   std::vector<const Record *> RuleSets =
       Records.getAllDerivedDefinitions("LegalizeRuleSet");
   if (RuleSets.empty())
@@ -3805,6 +4098,7 @@ public:
   }
 
   void run(raw_ostream &OS) {
+    verifyLoweringRegistry(Records);
     collectClasses();
     collectMemClasses();
 
@@ -3975,6 +4269,7 @@ public:
   /// Nothing here is part of the table reader: no production TU includes this
   /// file, and the table the target builds is the one run() emits.
   void runRuleIndex(raw_ostream &OS) {
+    verifyLoweringRegistry(Records);
     collectClasses();
     collectMemClasses();
 
@@ -4476,6 +4771,7 @@ public:
   }
 
   void runPoints(raw_ostream &OS) {
+    verifyLoweringRegistry(Records);
     std::vector<const Record *> RuleSets =
         Records.getAllDerivedDefinitions("LegalizeRuleSet");
     llvm::sort(RuleSets, LessRecordByID());
@@ -4676,3 +4972,33 @@ public:
 static TableGen::Emitter::OptClass<LegalizerCoreEmitter>
     XCore("gen-legalizer-core",
           "Emit GlobalISel legalizer rules as Core IR JSON");
+
+/// Report what the lowering registry covers.  The check itself runs in every
+/// backend; this one exists so a test can assert the counts without parsing a
+/// generated .inc.
+class LegalizerCheckEmitter {
+  const RecordKeeper &Records;
+
+public:
+  explicit LegalizerCheckEmitter(const RecordKeeper &RK) : Records(RK) {}
+  void run(raw_ostream &OS) {
+    LoweringStats S = verifyLoweringRegistry(Records);
+    OS << "{\n"
+       << "  \"builders\": " << S.Builders << ",\n"
+       << "  \"overloads\": " << S.Overloads << ",\n"
+       << "  \"entries\": " << S.Entries << ",\n"
+       << "  \"rule_sets\": " << S.RuleSets << ",\n"
+       << "  \"rules\": " << S.Rules << ",\n"
+       << "  \"escapes\": " << S.Escapes << ",\n"
+       << "  \"entries_without_table_translation\": " << S.EntriesWithoutTable
+       << ",\n"
+       << "  \"rule_sets_without_table_translation\": "
+       << S.RuleSetsWithoutTable << "\n"
+       << "}\n";
+  }
+};
+
+static TableGen::Emitter::OptClass<LegalizerCheckEmitter>
+    XCheck("gen-legalizer-check",
+           "Verify the GlobalISel legalizer lowering registry");
+
