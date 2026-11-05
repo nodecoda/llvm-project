@@ -16,10 +16,10 @@ def s32 : LegalizeNamedType<"LLT::scalar(32)">;
 def IsS32 : LegalizeTypePredicate<"typeIs(0, s32)">;
 
 // !HasSSE1 && typeIs(0, s32)
-def Custom : LegalizeQueryPredicateDag<(all_of (not HasSSE1), IsS32)>;
+def CustomQuery : LegalizeQueryPredicateDag<(all_of (not HasSSE1), IsS32)>;
 
 def Set : LegalizeRuleSet<["G_ADD"]> {
-  let Rules = [LegalizeQueryGuardedCall<BuilderCustomIf, Custom, []>];
+  let Rules = [LegalizeQueryGuardedCall<BuilderCustomIf, CustomQuery, []>];
 }
 
 // CHECK: bool HasSSE1 = Subtarget.hasSSE1();

@@ -566,6 +566,79 @@ static int matchedOverloadIndex(const Record &Rule) {
   return -1;
 }
 
+/// The builder declares which guard overloads it has, and the guard the rule
+/// carries has to be one of them.  Without this a rule could hand a cached
+/// bool to a builder that takes a callable (or to one with no overload at all)
+/// and the fragment would only fail when the target was compiled.
+static void verifyGuardKind(const Record &Rule, StringRef Method,
+                            const Record *B) {
+  std::vector<const Record *> Guards = B->getValueAsListOfDefs("Guards");
+  bool TakesBoolGuard = llvm::any_of(
+      Guards, [](const Record *G) { return G->getName() == "GuardBool"; });
+  bool TakesQueryGuard = llvm::any_of(
+      Guards, [](const Record *G) { return G->getName() == "GuardQuery"; });
+  const Record *P = Rule.getValueAsOptionalDef("Pred");
+  if (!P)
+    return;
+  bool IsQuery = P->isSubClassOf("LegalizeQueryPredicateBase");
+  if (IsQuery ? !TakesQueryGuard : !TakesBoolGuard) {
+    StringRef What = Guards.empty() ? "no guard" : "a different kind of guard";
+    PrintFatalError(Rule.getLoc(),
+                    "legalizer builder '" + Method + "' takes " + What);
+  }
+}
+
+/// The arguments have to line up with a signature the builder declares.
+///
+/// Formals is a list of overloads, so the rule matches if any one of them lines
+/// up.  Args is a flat record list and a run of types becomes one braced group
+/// in C++ (a type list, or a list of pairs/memdesc tuples), so a group is
+/// compared as a whole position rather than element by element.
+///
+/// This is what stops `.clampScalar({s32})` (one argument, three declared) and
+/// `.lower({s32})` (one argument, none declared) from being written at all:
+/// both used to be emitted and only failed when the target was compiled.
+static void verifyArgumentShape(const Record &Rule, StringRef Method,
+                                const Record *B) {
+  if (!Rule.getValueAsString("OpaqueArgs").empty())
+    return;
+  std::vector<StringRef> Supplied = suppliedShapes(Rule);
+
+  // Formals is list<list<LegalizeArgShape>>, so each overload is itself a
+  // ListInit; the inner elements are still records.
+  const ListInit *Overloads = B->getValueAsListInit("Formals");
+  std::string Want;
+  for (const Init *O : Overloads->getElements()) {
+    const auto *Inner = dyn_cast<ListInit>(O);
+    if (!Inner)
+      continue;
+    if (!Want.empty())
+      Want += " or ";
+    Want += "(";
+
+    std::vector<StringRef> Names;
+    StringRef Sep;
+    for (const Init *E : Inner->getElements()) {
+      const auto *DI = dyn_cast<DefInit>(E);
+      if (!DI)
+        continue;
+      Names.push_back(DI->getDef()->getName());
+      Want += Sep.str();
+      Want += Names.back().str();
+      Sep = ", ";
+    }
+    Want += ")";
+
+    if (Names == Supplied)
+      return;
+  }
+
+  PrintFatalError(Rule.getLoc(), "legalizer builder '" + Method +
+                                     "' does not take these arguments; "
+                                     "declared " +
+                                     Want);
+}
+
 /// The one place that decides whether a LegalizeRule record was written in the
 /// typed core IR.  Consumers should not spell the schema class name: it is a
 /// lowering detail, and a second spelling is exactly how a new consumer comes
@@ -598,76 +671,9 @@ void LegalizerInfoEmitter::verifyRule(const Record &Rule) {
     PrintFatalError(B->getLoc(),
                     "'" + Action->getName() + "' is not a LegalizeAction");
 
-  // The builder declares which guard overloads it has, and the guard the rule
-  // carries has to be one of them.  Without this a rule could hand a cached
-  // bool to a builder that takes a callable (or to one with no overload at
-  // all) and the fragment would only fail when the target was compiled.
-  std::vector<const Record *> Guards = B->getValueAsListOfDefs("Guards");
-  bool TakesBoolGuard = llvm::any_of(
-      Guards, [](const Record *G) { return G->getName() == "GuardBool"; });
-  bool TakesQueryGuard = llvm::any_of(
-      Guards, [](const Record *G) { return G->getName() == "GuardQuery"; });
-  if (const Record *P = Rule.getValueAsOptionalDef("Pred")) {
-    bool IsQuery = P->isSubClassOf("LegalizeQueryPredicateBase");
-    if (IsQuery ? !TakesQueryGuard : !TakesBoolGuard) {
-      StringRef What =
-          Guards.empty() ? "no guard" : "a different kind of guard";
-      PrintFatalError(Rule.getLoc(),
-                      "legalizer builder '" + Method + "' takes " + What);
-    }
-  }
+  verifyGuardKind(Rule, Method, B);
 
-  // The arguments have to line up with a signature the builder declares.
-  //
-  // Formals is a list of overloads, so the rule matches if any one of them
-  // lines up.  Args is a flat record list and a run of types becomes one braced
-  // group in C++ (a type list, or a list of pairs/memdesc tuples), so a group
-  // is compared as a whole position rather than element by element.
-  //
-  // This is what stops `.clampScalar({s32})` (one argument, three declared) and
-  // `.lower({s32})` (one argument, none declared) from being written at all:
-  // both used to be emitted and only failed when the target was compiled.
-  if (Rule.getValueAsString("OpaqueArgs").empty()) {
-    std::vector<StringRef> Supplied = suppliedShapes(Rule);
-
-    // Formals is list<list<LegalizeArgShape>>, so each overload is itself a
-    // ListInit; the inner elements are still records.
-    const ListInit *Overloads = B->getValueAsListInit("Formals");
-    bool Matched = false;
-    std::string Want;
-    for (const Init *O : Overloads->getElements()) {
-      const auto *Inner = dyn_cast<ListInit>(O);
-      if (!Inner)
-        continue;
-      if (!Want.empty())
-        Want += " or ";
-      Want += "(";
-
-      std::vector<StringRef> Names;
-      StringRef Sep;
-      for (const Init *E : Inner->getElements()) {
-        const auto *DI = dyn_cast<DefInit>(E);
-        if (!DI)
-          continue;
-        Names.push_back(DI->getDef()->getName());
-        Want += Sep.str();
-        Want += Names.back().str();
-        Sep = ", ";
-      }
-      Want += ")";
-
-      if (Names != Supplied)
-        continue;
-      Matched = true;
-      break;
-    }
-
-    if (!Matched)
-      PrintFatalError(Rule.getLoc(), "legalizer builder '" + Method +
-                                         "' does not take these "
-                                         "arguments; declared " +
-                                         Want);
-  }
+  verifyArgumentShape(Rule, Method, B);
 
   StringRef Mutation = Rule.getValueAsString("Mutation");
   if (!isKnownMutation(Mutation))
@@ -693,7 +699,8 @@ void LegalizerInfoEmitter::verifyRule(const Record &Rule) {
 
   // An opaque body is the guard, so the builder must be one that takes a
   // guard: `.lower({...})` has no overload.
-  if (!Rule.getValueAsString("OpaqueArgs").empty() && Guards.empty())
+  if (!Rule.getValueAsString("OpaqueArgs").empty() &&
+      B->getValueAsListOfDefs("Guards").empty())
     PrintFatalError(Rule.getLoc(), "legalizer builder '" + Method +
                                        "' takes no guard; it cannot carry an "
                                        "opaque body");
@@ -1849,6 +1856,12 @@ void predicateJson(const RecordKeeper &Records, const Record &P,
                                          "' is not a LegalizeFeature or a "
                                          "LegalizeTypePredicate");
       }
+      // A quoted string is the shape a misspelled record name takes, so name
+      // it rather than reporting a generic unsupported node.
+      if (const auto *SI = dyn_cast<StringInit>(&Node))
+        PrintFatalError(P.getLoc(), "predicate dag leaf '" +
+                                        SI->getAsString() +
+                                        "' is not a record");
       const auto *N = dyn_cast<DagInit>(&Node);
       if (!N)
         PrintFatalError(P.getLoc(), "unsupported predicate dag node");
@@ -3842,10 +3855,17 @@ static LoweringStats verifyLoweringRegistry(const RecordKeeper &Records) {
       }
       const Record *B = Rule->getValueAsDef("Builder");
       int Overload = matchedOverloadIndex(*Rule);
-      if (Overload < 0)
+      if (Overload < 0) {
+        // This check runs before verifyRule(), so a rule that no overload
+        // accepts would otherwise stop here with a message that names neither
+        // the guard kind nor the declared signatures.  Report it the way
+        // verifyRule() would, then fall back if it somehow passes.
+        verifyGuardKind(*Rule, builderName(*Rule), B);
+        verifyArgumentShape(*Rule, builderName(*Rule), B);
         PrintFatalError(Rule->getLoc(),
                         "rule uses builder '" + B->getName() +
                             "' with arguments no declared overload accepts");
+      }
       auto It = Entries.find(std::make_pair(B, Overload));
       if (It == Entries.end())
         PrintFatalError(Rule->getLoc(), "no lowering for builder '" +

@@ -6,12 +6,17 @@
 
 include "llvm/Target/LegalizerInfo.td"
 
-def BadRule : LegalizeOpaqueRule<BuilderLegalIf, [{ typeIs(0, s8) }]> {
-  let Args = [LegalizeArgInt<0>];
+def s32 : LegalizeNamedType<"LLT::scalar(32)">;
+
+// legalFor's bool guard matches the opaque body and its ShapeType overload
+// matches the argument, so both halves of the rule parse; the rule is still
+// wrong because the body would be printed and the argument dropped.
+def BadRule : LegalizeOpaqueRule<BuilderLegalFor, [{ true }]> {
+  let Args = [s32];
 }
 
 def Bad : LegalizeRuleSet<["G_ADD"]> {
   let Rules = [BadRule];
 }
 
-// CHECK: error: legalizer rule 'legalIf' has both Args and an opaque body; the arguments would be dropped
+// CHECK: error: legalizer rule 'legalFor' has both Args and an opaque body; the arguments would be dropped
