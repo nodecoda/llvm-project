@@ -1997,6 +1997,9 @@ static std::string coreSortListText(ArrayRef<const Record *> Sorts) {
   return Out;
 }
 
+static int64_t coreIntLiteral(const CoreNode &N, const Record &Owner,
+                              StringRef What);
+
 /// The sort of one node, after checking every operand against its declared
 /// signature.  `Owner` is the rule, so every diagnostic points at the .td line.
 static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
@@ -2072,6 +2075,8 @@ static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
         if (coreSortOf(*K, Records, Owner) != Records.getDef("SortInt"))
           PrintFatalError(Owner.getLoc(),
                           "core rule: 'Clamp' operands must be Int");
+      coreIntLiteral(*RhsNode.Kids[0], Owner, "'Clamp' lower bound");
+      coreIntLiteral(*RhsNode.Kids[1], Owner, "'Clamp' upper bound");
       return Op->getValueAsDef("Result");
     }
     PrintFatalError(Owner.getLoc(),
@@ -2093,10 +2098,20 @@ static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
                           "; both operands must have the same sort");
     static constexpr StringLiteral Comparable[] = {"Int", "Ordering", "Kind",
                                                    "Type"};
-    if (!llvm::is_contained(Comparable, L->getValueAsString("Name")))
+    StringRef SortName = L->getValueAsString("Name");
+    if (!llvm::is_contained(Comparable, SortName))
       PrintFatalError(Owner.getLoc(), "core rule: '" + Name +
                                           "' cannot compare values of sort " +
-                                          L->getValueAsString("Name"));
+                                          SortName);
+    // LLT has equality but no total order, and a Kind is a tag rather than a
+    // number.  Before this check `lt` over Kind emitted `isVector()` (i.e.
+    // `==`) and `lt` over Type emitted `LLT < LLT`, which does not compile.
+    StringRef OpName = Op->getValueAsString("Name");
+    if ((SortName == "Kind" || SortName == "Type") && OpName != "eq" &&
+        OpName != "ne")
+      PrintFatalError(Owner.getLoc(),
+                      "core rule: '" + Name + "' cannot order values of sort " +
+                          SortName + "; only eq/ne are defined");
     return Op->getValueAsDef("Result");
   }
 
@@ -2133,16 +2148,19 @@ static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
 
   // Payload checks the sort signature cannot express: these operators carry
   // literal numbers, a type name, or a feature condition, not a general
-  // expression of that sort.
-  if (Name == "Slot" || Name == "MemSlot" || Name == "SameAs") {
-    if (N.Kids[0]->Kind != CoreNode::IntNode)
-      PrintFatalError(Owner.getLoc(),
-                      "core rule: '" + Name + "' expects a literal slot index");
+  // expression of that sort.  The literal checks also reject negative slot
+  // indices: the shims index Query.Types and Query.MMODescrs directly.
+  if (Name == "Slot" || Name == "MemSlot" || Name == "SameAs")
+    coreIntLiteral(*N.Kids[0], Owner, ("'" + Name + "' index").str());
+  if (Name == "Pow2Min" || Name == "MultipleOf" || Name == "MinVectorSize")
+    coreIntLiteral(*N.Kids[0], Owner, ("'" + Name + "' operand").str());
+  if (Name == "Clamp") {
+    coreIntLiteral(*N.Kids[0], Owner, "'Clamp' lower bound");
+    coreIntLiteral(*N.Kids[1], Owner, "'Clamp' upper bound");
   }
-  if (Name == "Pow2Min" || Name == "MultipleOf" || Name == "MinVectorSize") {
-    if (N.Kids[0]->Kind != CoreNode::IntNode)
-      PrintFatalError(Owner.getLoc(),
-                      "core rule: '" + Name + "' expects a literal integer");
+  if (Name == "CoreSelect") {
+    coreIntLiteral(*N.Kids[1], Owner, "'Select' true branch");
+    coreIntLiteral(*N.Kids[2], Owner, "'Select' false branch");
   }
   if (Name == "Feature" && N.Kids[0]->Kind != CoreNode::StringNode)
     PrintFatalError(Owner.getLoc(),
@@ -2184,6 +2202,49 @@ static const CoreActionRow *lookupCoreAction(StringRef Operator,
     if (Row.Operator == Operator && Row.TargetSort == TargetSort)
       return &Row;
   return nullptr;
+}
+
+/// A non-negative integer literal, or a diagnostic naming what was expected.
+/// Several shims pass an operand straight into `Query.Types[...]` or into a
+/// generated C++ expression; a non-literal there used to default to zero.
+static int64_t coreIntLiteral(const CoreNode &N, const Record &Owner,
+                              StringRef What) {
+  if (N.Kind != CoreNode::IntNode)
+    PrintFatalError(Owner.getLoc(),
+                    "core rule: " + What + " must be an integer literal");
+  if (N.IntValue < 0)
+    PrintFatalError(Owner.getLoc(),
+                    "core rule: " + What + " must not be negative");
+  return N.IntValue;
+}
+
+/// The type slot an observation projects to.  A shim takes an unsigned
+/// TypeIdx, so a missing projection is an error, not a default of zero: the
+/// old fall-through silently turned `(ElemOf (ElemOf (Slot 1)))` into slot 0.
+static unsigned coreTypeIdxOf(const CoreNode &N, const Record &Owner) {
+  if (N.Kind == CoreNode::OpNode && N.Op->getName() == "ElemOf") {
+    if (N.Kids.size() != 1)
+      PrintFatalError(Owner.getLoc(), "core rule: 'ElemOf' expects 1 operand");
+    const CoreNode &Inner = *N.Kids[0];
+    if (Inner.Kind == CoreNode::OpNode && Inner.Op->getName() == "ElemOf")
+      PrintFatalError(Owner.getLoc(),
+                      "core rule: nested 'ElemOf' has no type-index "
+                      "projection; a shim observes a slot or one element of a "
+                      "slot");
+    return coreTypeIdxOf(Inner, Owner);
+  }
+  if (N.Kind == CoreNode::IntNode)
+    return static_cast<unsigned>(coreIntLiteral(N, Owner, "type slot index"));
+  if (N.Kind == CoreNode::OpNode && N.Op->getName() == "Slot") {
+    if (N.Kids.size() != 1)
+      PrintFatalError(Owner.getLoc(), "core rule: 'Slot' expects 1 operand");
+    return static_cast<unsigned>(
+        coreIntLiteral(*N.Kids[0], Owner, "type slot index"));
+  }
+  PrintFatalError(Owner.getLoc(),
+                  "core rule: the observation cannot be projected to a type "
+                  "slot; expected a slot or one element of a slot");
+  return 0;
 }
 
 /// One core rule, checked.  `Action` is derived, never written by the rule.
@@ -2266,16 +2327,9 @@ static CheckedCoreRule checkCoreRule(const Record &Rule,
   C.Obs = Root->Kids[0].get();
   C.Target = Root->Kids[1].get();
   C.Root = std::move(Root);
-  // The legacy type_idx projection: a bare slot, or ElemOf(slot).
-  const CoreNode *On = C.Obs;
-  if (On->Kind == CoreNode::IntNode)
-    C.TypeIdx = On->IntValue;
-  else if (On->Kind == CoreNode::OpNode && On->Op->getName() == "Slot")
-    C.TypeIdx = On->Kids[0]->IntValue;
-  else if (On->Kind == CoreNode::OpNode && On->Op->getName() == "ElemOf" &&
-           On->Kids[0]->Kind == CoreNode::OpNode &&
-           On->Kids[0]->Op->getName() == "Slot")
-    C.TypeIdx = On->Kids[0]->Kids[0]->IntValue;
+  // The type_idx projection is checked, not guessed: the only observations a
+  // shim can execute are a slot and one element of a slot.
+  C.TypeIdx = coreTypeIdxOf(*C.Obs, Rule);
   return C;
 }
 
@@ -2436,9 +2490,11 @@ static std::string coreCxxValue(const CoreNode &N, const RecordKeeper &Records,
   if (Name == "bitsOf")
     return "(" + Kid(0) + ").getScalarSizeInBits()";
   if (Name == "sizeOf") {
+    // MemDesc::AlignInBits is an alignment, not a size.  SizeOf(memSlot) is
+    // the size of the memory type; alignment needs its own observer.
     if (N.Kids[0]->Kind == CoreNode::OpNode &&
         N.Kids[0]->Op->getValueAsString("Name") == "memSlot")
-      return "(" + Kid(0) + ").AlignInBits";
+      return "(" + Kid(0) + ").MemoryTy.getSizeInBits()";
     return "(" + Kid(0) + ").getSizeInBits()";
   }
   if (Name == "addrSpace")
@@ -2622,9 +2678,11 @@ static std::string coreCxxBool(const CoreNode &N, const RecordKeeper &Records,
 /// mutation vocabulary it already understands; a 0.4 reader uses op/on/to.
 static std::string coreMutationJson(const CoreNode &To,
                                     const RecordKeeper &Records,
-                                    unsigned TypeIdx) {
+                                    unsigned TypeIdx,
+                                    const Record &Owner) {
   if (To.Kind != CoreNode::OpNode)
-    return "";
+    PrintFatalError(Owner.getLoc(),
+                    "core rule: a core target must be a constructor dag");
   StringRef Name = To.Op->getValueAsString("Name");
   if (Name == "pow2")
     return mutationJson(TypeIdx, "set_elem_bits", "nextPow2");
@@ -2658,6 +2716,12 @@ static std::string coreMutationJson(const CoreNode &To,
                     "," + std::to_string(To.Kids[1]->IntValue) + "]}";
     return mutationJsonValue(TypeIdx, "set_elem_bits", V);
   }
+  // A new shim must also define its 0.3 projection.  Returning "" here made
+  // the mutation a JSON null, which a reader cannot distinguish from a rule
+  // that intentionally mutates nothing.
+  PrintFatalError(Owner.getLoc(),
+                  "core rule: no 0.3 mutation projection for target '" + Name +
+                      "'");
   return "";
 }
 
@@ -2677,7 +2741,7 @@ static void expandCoreRule(const RecordKeeper &Records, const Record &Rule,
   CR.Op = C.Operator->getValueAsString("Name").str();
   coreNodeJson(*C.Obs, Records, CR.On);
   coreNodeJson(*C.Target, Records, CR.To);
-  CR.Mutation = coreMutationJson(*C.Target, Records, C.TypeIdx);
+  CR.Mutation = coreMutationJson(*C.Target, Records, C.TypeIdx, Rule);
   Out.push_back(std::move(CR));
 }
 

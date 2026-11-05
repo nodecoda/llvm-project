@@ -1370,6 +1370,7 @@ public:
                                        unsigned LargeTypeIdx) {
     using namespace LegalizeMutations;
     typeIdx(TypeIdx);
+    typeIdx(LargeTypeIdx);
     return actionIf(
         LegalizeAction::WidenScalar,
         [=](const LegalityQuery &Query) {
@@ -1460,6 +1461,7 @@ public:
                                        unsigned NarrowTypeIdx) {
     using namespace LegalizeMutations;
     typeIdx(TypeIdx);
+    typeIdx(NarrowTypeIdx);
     return actionIf(
         LegalizeAction::NarrowScalar,
         [=](const LegalityQuery &Query) {

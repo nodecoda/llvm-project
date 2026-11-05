@@ -52,6 +52,7 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
     CoreWidenIf<(Slot 0), (Pow2),
                 (CoreIn (NumElems (Slot 0)), (Clamp 2, 16))>,
     CoreWidenIf<(Slot 0), (Pow2), (CoreGe (SizeOf (Slot 0)), 8)>,
+    CoreWidenIf<(Slot 0), (Pow2), (CoreGe (SizeOf (MemSlot 0)), 8)>,
     CoreWidenIf<(Slot 0), (Pow2), (CoreEq (AddrSpace (Slot 0)), 0)>,
     CoreWidenIf<(Slot 0), (Pow2),
                 (CoreIn (SortOf (Slot 0)), KindSet)>,
@@ -73,7 +74,7 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
   ];
 }
 
-// CHECK:       "core_rules": 31,
+// CHECK:       "core_rules": 32,
 // CHECK:       "core_operators": ["widen", "narrow", "more", "fewer", "bitcast"]
 
 // CXX:       .coreWidenScalarToNextPow2([](const LegalityQuery &) { return true; }, 0)
@@ -98,6 +99,7 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
 // CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return (((Query.Types[0]).getElementType()).getScalarSizeInBits() > 8); }, 0)
 // CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.Types[0]).getNumElements() >= 2 && (Query.Types[0]).getNumElements() <= 16); }, 0)
 // CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.Types[0]).getSizeInBits() >= 8); }, 0)
+// CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.MMODescrs[0]).MemoryTy.getSizeInBits() >= 8); }, 0)
 // CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.Types[0]).getAddressSpace() == 0); }, 0)
 // CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return (Query.Types[0].isScalar() || Query.Types[0].isVector()); }, 0)
 // CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.MMODescrs[0]).MemoryTy == s32); }, 0)
