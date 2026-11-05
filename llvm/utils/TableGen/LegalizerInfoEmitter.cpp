@@ -975,12 +975,14 @@ void LegalizerInfoEmitter::run(raw_ostream &OS) {
     if (const Record *Pred = P->getValueAsOptionalDef("Pred"))
       collectPredicateFeatures(Pred, UsedFeatures);
   }
-  // A core guard names features as ordinary leaves; the emitted fragment has
-  // to declare them just like a legacy predicate dag does.
+  // A core guard or a Select target names features as ordinary DefInit
+  // leaves; the emitted fragment has to declare them just like a legacy
+  // predicate dag does.
   for (const Record *R : Records.getAllDerivedDefinitions("LegalizeCoreRule")) {
     const Init *G = R->getValueInit("CoreGuard");
     if (G && !isa<UnsetInit>(G))
       collectFeatureLeaves(G, UsedFeatures);
+    collectFeatureLeaves(R->getValueInit("CoreExpr"), UsedFeatures);
   }
 
   for (const Record *E : Records.getAllDerivedDefinitions("LegalizeOpaqueBool"))
@@ -1016,6 +1018,25 @@ void LegalizerInfoEmitter::run(raw_ostream &OS) {
       collectPredicateFeatures(Cond, UsedFeatures);
   for (const Record *X : Records.getAllDerivedDefinitions("LegalizeRawArg"))
     CollectUsed(X->getValueAsString("Text"));
+  for (const Record *X :
+       Records.getAllDerivedDefinitions("LegalizeRawMutation"))
+    CollectUsed(X->getValueAsString("Text"));
+
+  // An inline `LegalizeSelectBits<...>` (or SelectType/SelectLanes) is an
+  // anonymous record, so the getAllDerivedDefinitions() loops above do not
+  // see it.  Walk the call arguments: a feature referenced only from one of
+  // these selects must still be declared, or the generated fragment does not
+  // compile.
+  for (const Record *C : Records.getAllDerivedDefinitions("LegalizeCall"))
+    for (const Record *A : C->getValueAsListOfDefs("Args")) {
+      if (!A->isSubClassOf("LegalizeSelectBits") &&
+          !A->isSubClassOf("LegalizeSelectType") &&
+          !A->isSubClassOf("LegalizeSelectTypeList") &&
+          !A->isSubClassOf("LegalizeSelectLanes"))
+        continue;
+      for (const Record *Cond : A->getValueAsListOfDefs("Conds"))
+        collectPredicateFeatures(Cond, UsedFeatures);
+    }
 
   for (const Record *F : Records.getAllDerivedDefinitions("LegalizeFeature"))
     if (!UsedFeatures.contains(F->getName()))
