@@ -1956,6 +1956,11 @@ struct CoreNode {
   SmallVector<std::unique_ptr<CoreNode>, 2> Kids;
 };
 
+/// The stable name a core node carries in the serialized IR (e.g. "elemOf").
+/// Dispatch on this field, not on the TableGen record name: the schema's Name
+/// is the contract, and diagnostics can still use Record::getName().
+static StringRef coreTag(const Record &R) { return R.getValueAsString("Name"); }
+
 static std::unique_ptr<CoreNode> parseCoreNode(const Init &I,
                                                const Record &Owner) {
   auto N = std::make_unique<CoreNode>();
@@ -2053,6 +2058,7 @@ static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
                                         "observer, constructor, or combinator");
 
   StringRef Name = Op->getName();
+  StringRef Tag = coreTag(*Op);
   const std::vector<const Record *> ArgSorts =
       Op->getValueAsListOfDefs("ArgSorts");
 
@@ -2077,7 +2083,8 @@ static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
     }
     // A Clamp is an integer range, so `(in x, (clamp lo, hi))` is membership
     // in an interval rather than in an enumerated set.
-    if (RhsNode.Kind == CoreNode::OpNode && RhsNode.Op->getName() == "Clamp") {
+    if (RhsNode.Kind == CoreNode::OpNode &&
+        coreTag(*RhsNode.Op) == "clamp") {
       if (Lhs != Records.getDef("SortInt"))
         PrintFatalError(Owner.getLoc(),
                         "core rule: a Clamp range can only be tested against "
@@ -2121,7 +2128,7 @@ static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
     // LLT has equality but no total order, and a Kind is a tag rather than a
     // number.  Before this check `lt` over Kind emitted `isVector()` (i.e.
     // `==`) and `lt` over Type emitted `LLT < LLT`, which does not compile.
-    StringRef OpName = Op->getValueAsString("Name");
+    StringRef OpName = coreTag(*Op);
     if ((SortName == "Kind" || SortName == "Type") && OpName != "eq" &&
         OpName != "ne")
       PrintFatalError(Owner.getLoc(),
@@ -2165,23 +2172,23 @@ static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
   // literal numbers, a type name, or a feature condition, not a general
   // expression of that sort.  The literal checks also reject negative slot
   // indices: the shims index Query.Types and Query.MMODescrs directly.
-  if (Name == "Slot" || Name == "MemSlot" || Name == "SameAs")
+  if (Tag == "slot" || Tag == "memSlot" || Tag == "sameAs")
     coreIntLiteral(*N.Kids[0], Owner, ("'" + Name + "' index").str());
-  if (Name == "Pow2Min" || Name == "MultipleOf" || Name == "MinVectorSize")
+  if (Tag == "pow2Min" || Tag == "multipleOf" || Tag == "minVectorSize")
     coreIntLiteral(*N.Kids[0], Owner, ("'" + Name + "' operand").str());
-  if (Name == "Clamp") {
+  if (Tag == "clamp") {
     coreIntLiteral(*N.Kids[0], Owner, "'Clamp' lower bound");
     coreIntLiteral(*N.Kids[1], Owner, "'Clamp' upper bound");
   }
-  if (Name == "CoreSelect") {
+  if (Tag == "select") {
     coreIntLiteral(*N.Kids[1], Owner, "'Select' true branch");
     coreIntLiteral(*N.Kids[2], Owner, "'Select' false branch");
   }
-  if (Name == "Feature" && N.Kids[0]->Kind != CoreNode::StringNode)
+  if (Tag == "feature" && N.Kids[0]->Kind != CoreNode::StringNode)
     PrintFatalError(Owner.getLoc(),
                     "core rule: 'Feature' expects a string condition");
-  if (Name == "Ty" && (N.Kids[0]->Kind != CoreNode::DefNode ||
-                       !N.Kids[0]->Op->isSubClassOf("LegalizeNamedType")))
+  if (Tag == "ty" && (N.Kids[0]->Kind != CoreNode::DefNode ||
+                      !N.Kids[0]->Op->isSubClassOf("LegalizeNamedType")))
     PrintFatalError(Owner.getLoc(),
                     "core rule: 'Ty' expects a LegalizeNamedType record");
 
@@ -2237,11 +2244,11 @@ static int64_t coreIntLiteral(const CoreNode &N, const Record &Owner,
 /// TypeIdx, so a missing projection is an error, not a default of zero: the
 /// old fall-through silently turned `(ElemOf (ElemOf (Slot 1)))` into slot 0.
 static unsigned coreTypeIdxOf(const CoreNode &N, const Record &Owner) {
-  if (N.Kind == CoreNode::OpNode && N.Op->getName() == "ElemOf") {
+  if (N.Kind == CoreNode::OpNode && coreTag(*N.Op) == "elemOf") {
     if (N.Kids.size() != 1)
       PrintFatalError(Owner.getLoc(), "core rule: 'ElemOf' expects 1 operand");
     const CoreNode &Inner = *N.Kids[0];
-    if (Inner.Kind == CoreNode::OpNode && Inner.Op->getName() == "ElemOf")
+    if (Inner.Kind == CoreNode::OpNode && coreTag(*Inner.Op) == "elemOf")
       PrintFatalError(Owner.getLoc(),
                       "core rule: nested 'ElemOf' has no type-index "
                       "projection; a shim observes a slot or one element of a "
@@ -2250,7 +2257,7 @@ static unsigned coreTypeIdxOf(const CoreNode &N, const Record &Owner) {
   }
   if (N.Kind == CoreNode::IntNode)
     return static_cast<unsigned>(coreIntLiteral(N, Owner, "type slot index"));
-  if (N.Kind == CoreNode::OpNode && N.Op->getName() == "Slot") {
+  if (N.Kind == CoreNode::OpNode && coreTag(*N.Op) == "slot") {
     if (N.Kids.size() != 1)
       PrintFatalError(Owner.getLoc(), "core rule: 'Slot' expects 1 operand");
     return static_cast<unsigned>(
@@ -2311,7 +2318,7 @@ static CheckedCoreRule checkCoreRule(const Record &Rule,
                         coreSortListText(Targets));
 
   const CoreActionRow *Row = lookupCoreAction(
-      Root->Op->getValueAsString("Name"), ToSort->getValueAsString("Name"));
+      coreTag(*Root->Op), ToSort->getValueAsString("Name"));
   if (!Row)
     PrintFatalError(Rule.getLoc(), "core rule: no action for operator '" +
                                        Root->Op->getName() +
@@ -2354,9 +2361,9 @@ static StringRef coreObservationForm(const CoreNode &N) {
   if (N.Kind == CoreNode::IntNode)
     return "slot";
   if (N.Kind == CoreNode::OpNode) {
-    if (N.Op->getValueAsString("Name") == "slot")
+    if (coreTag(*N.Op) == "slot")
       return "slot";
-    if (N.Op->getValueAsString("Name") == "elemOf")
+    if (coreTag(*N.Op) == "elemOf")
       return "elem";
   }
   return "";
@@ -2463,17 +2470,17 @@ static void coreNodeJson(const CoreNode &N, const RecordKeeper &Records,
         if (R->isSubClassOf("LegalizeCoreTypeSet"))
           Out += coreTypeValue(Records, *E);
         else
-          Out += jsonStringValue(E->getName());
+          Out += jsonStringValue(coreTag(*E));
         Sep = ",";
       }
       Out += "]}";
       return;
     }
-    Out = "{\"kind\":\"" + R->getName().lower() + "\"}";
+    Out = "{\"kind\":\"" + coreTag(*R).str() + "\"}";
     return;
   }
 
-  StringRef Name = N.Op->getValueAsString("Name");
+  StringRef Name = coreTag(*N.Op);
   if (Name == "slot") {
     Out =
         "{\"kind\":\"slot\",\"index\":" + std::to_string(N.Kids[0]->IntValue) +
@@ -2515,7 +2522,7 @@ static std::string coreCxxValue(const CoreNode &N, const RecordKeeper &Records,
   if (N.Kind != CoreNode::OpNode)
     PrintFatalError(Owner.getLoc(), "core rule: operand has no C++ value");
 
-  StringRef Name = N.Op->getValueAsString("Name");
+  StringRef Name = coreTag(*N.Op);
   auto Kid = [&](size_t I) {
     if (I >= N.Kids.size())
       PrintFatalError(Owner.getLoc(), "core rule: '" + Name +
@@ -2537,7 +2544,7 @@ static std::string coreCxxValue(const CoreNode &N, const RecordKeeper &Records,
     // MemDesc::AlignInBits is an alignment, not a size.  SizeOf(memSlot) is
     // the size of the memory type; alignment needs its own observer.
     if (N.Kids[0]->Kind == CoreNode::OpNode &&
-        N.Kids[0]->Op->getValueAsString("Name") == "memSlot")
+        coreTag(*N.Kids[0]->Op) == "memSlot")
       return "(" + Kid(0) + ").MemoryTy.getSizeInBits()";
     return "(" + Kid(0) + ").getSizeInBits()";
   }
@@ -2593,7 +2600,7 @@ static std::string coreCxxBool(const CoreNode &N, const RecordKeeper &Records,
     return N.Op->getName().str();
   if (N.Kind != CoreNode::OpNode)
     PrintFatalError(Owner.getLoc(), "core rule: guard is not a Bool node");
-  StringRef Name = N.Op->getValueAsString("Name");
+  StringRef Name = coreTag(*N.Op);
   if (Name == "true")
     return "true";
   if (Name == "feature")
@@ -2614,22 +2621,20 @@ static std::string coreCxxBool(const CoreNode &N, const RecordKeeper &Records,
   if (Name == "in") {
     const CoreNode &Lhs = *N.Kids[0];
     const CoreNode &Rhs = *N.Kids[1];
-    if (Rhs.Kind == CoreNode::OpNode &&
-        Rhs.Op->getValueAsString("Name") == "clamp") {
+    if (Rhs.Kind == CoreNode::OpNode && coreTag(*Rhs.Op) == "clamp") {
       std::string V = coreCxxValue(Lhs, Records, Owner);
       return "(" + V + " >= " + std::to_string(Rhs.Kids[0]->IntValue) + " && " +
              V + " <= " + std::to_string(Rhs.Kids[1]->IntValue) + ")";
     }
     if (Rhs.Kind == CoreNode::DefNode &&
         Rhs.Op->isSubClassOf("LegalizeCoreKindSet")) {
-      if (Lhs.Kind != CoreNode::OpNode ||
-          Lhs.Op->getValueAsString("Name") != "sortOf")
+      if (Lhs.Kind != CoreNode::OpNode || coreTag(*Lhs.Op) != "sortOf")
         PrintFatalError(Owner.getLoc(),
                         "core rule: a Kind set can only test SortOf");
       std::string V = coreCxxValue(*Lhs.Kids[0], Records, Owner);
       std::string Out;
       for (const Record *E : Rhs.Op->getValueAsListOfDefs("Elems")) {
-        StringRef Pred = coreKindPredicate(E->getValueAsString("Name"));
+        StringRef Pred = coreKindPredicate(coreTag(*E));
         if (Pred.empty())
           PrintFatalError(Owner.getLoc(),
                           "core rule: '" + E->getName() + "' is not a kind");
@@ -2674,25 +2679,22 @@ static std::string coreCxxBool(const CoreNode &N, const RecordKeeper &Records,
   const CoreNode &Rhs = *N.Kids[1];
   // SortOf and MemOrdering are tags, not values: compare them with their
   // predicates/atomic-order enumerators instead of spelling a Value.
-  if (Lhs.Kind == CoreNode::OpNode &&
-      Lhs.Op->getValueAsString("Name") == "sortOf") {
+  if (Lhs.Kind == CoreNode::OpNode && coreTag(*Lhs.Op) == "sortOf") {
     std::string V = coreCxxValue(*Lhs.Kids[0], Records, Owner);
     if (Rhs.Kind != CoreNode::OpNode)
       PrintFatalError(Owner.getLoc(),
                       "core rule: SortOf compares against a kind tag");
-    StringRef Pred = coreKindPredicate(Rhs.Op->getValueAsString("Name"));
+    StringRef Pred = coreKindPredicate(coreTag(*Rhs.Op));
     if (Pred.empty())
-      PrintFatalError(Owner.getLoc(), "core rule: '" +
-                                          Rhs.Op->getValueAsString("Name") +
-                                          "' is not a kind");
+      PrintFatalError(Owner.getLoc(),
+                      "core rule: '" + Rhs.Op->getName() + "' is not a kind");
     bool Not = Name == "ne";
     return std::string(Not ? "!(" : "") + V + "." + Pred.str() + "()" +
            (Not ? ")" : "");
   }
-  if (Lhs.Kind == CoreNode::OpNode &&
-      Lhs.Op->getValueAsString("Name") == "memOrdering") {
+  if (Lhs.Kind == CoreNode::OpNode && coreTag(*Lhs.Op) == "memOrdering") {
     std::string V = coreCxxValue(Lhs, Records, Owner);
-    StringRef O = coreOrderingCxx(Rhs.Op->getValueAsString("Name"));
+    StringRef O = coreOrderingCxx(coreTag(*Rhs.Op));
     if (O.empty())
       PrintFatalError(Owner.getLoc(),
                       "core rule: MemOrdering compares against an ordering");
@@ -2727,7 +2729,7 @@ static std::string coreMutationJson(const CoreNode &To,
   if (To.Kind != CoreNode::OpNode)
     PrintFatalError(Owner.getLoc(),
                     "core rule: a core target must be a constructor dag");
-  StringRef Name = To.Op->getValueAsString("Name");
+  StringRef Name = coreTag(*To.Op);
   if (Name == "pow2")
     return mutationJson(TypeIdx, "set_elem_bits", "nextPow2");
   if (Name == "pow2Min")
@@ -2782,7 +2784,7 @@ static void expandCoreRule(const RecordKeeper &Records, const Record &Rule,
       std::unique_ptr<CoreNode> Guard = parseCoreNode(*G, Rule);
       coreNodeJson(*Guard, Records, CR.Predicate);
     }
-  CR.Op = C.Operator->getValueAsString("Name").str();
+  CR.Op = coreTag(*C.Operator).str();
   coreNodeJson(*C.Obs, Records, CR.On);
   coreNodeJson(*C.Target, Records, CR.To);
   CR.Mutation = coreMutationJson(*C.Target, Records, C.TypeIdx, Rule);
@@ -2797,7 +2799,7 @@ static const Record *findCoreOperator(const RecordKeeper &Records,
                                       StringRef Name) {
   for (const Record *Op :
        Records.getAllDerivedDefinitions("LegalizeCoreOperator"))
-    if (Op->getValueAsString("Name") == Name)
+    if (coreTag(*Op) == Name)
       return Op;
   return nullptr;
 }
@@ -2813,8 +2815,7 @@ static void verifyCoreTables(const RecordKeeper &Records) {
   for (const Record *Op :
        Records.getAllDerivedDefinitions("LegalizeCoreOperator")) {
     for (const Record *T : Op->getValueAsListOfDefs("Targets"))
-      if (!lookupCoreAction(Op->getValueAsString("Name"),
-                            T->getValueAsString("Name")))
+      if (!lookupCoreAction(coreTag(*Op), T->getValueAsString("Name")))
         PrintFatalError(Op->getLoc(),
                         "core action table has no row for operator '" +
                             Op->getName() + "' with target sort " +
@@ -2841,12 +2842,12 @@ static void verifyCoreTables(const RecordKeeper &Records) {
 static void verifyCoreRule(const RecordKeeper &Records, const Record &Rule) {
   CheckedCoreRule C = checkCoreRule(Rule, Records);
   StringRef On = coreObservationForm(*C.Obs);
-  StringRef To = C.Target->Op->getValueAsString("Name");
+  StringRef To = coreTag(*C.Target->Op);
   if (On.empty())
     PrintFatalError(Rule.getLoc(),
                     "core rule: no C++ shim for an observation that is neither "
                     "a slot nor ElemOf");
-  if (!lookupCoreShim(C.Operator->getValueAsString("Name"), On, To))
+  if (!lookupCoreShim(coreTag(*C.Operator), On, To))
     PrintFatalError(Rule.getLoc(), "core rule: no C++ shim for operator '" +
                                        C.Operator->getName() + "' over '" + On +
                                        "' to '" + To + "'");
@@ -2855,9 +2856,8 @@ static void verifyCoreRule(const RecordKeeper &Records, const Record &Rule) {
 void LegalizerInfoEmitter::emitCoreRule(const Record &Rule, raw_ostream &OS) {
   CheckedCoreRule C = checkCoreRule(Rule, Records);
   StringRef On = coreObservationForm(*C.Obs);
-  StringRef To = C.Target->Op->getValueAsString("Name");
-  const CoreShimRow *Shim =
-      lookupCoreShim(C.Operator->getValueAsString("Name"), On, To);
+  StringRef To = coreTag(*C.Target->Op);
+  const CoreShimRow *Shim = lookupCoreShim(coreTag(*C.Operator), On, To);
   if (!Shim)
     PrintFatalError(Rule.getLoc(), "core rule: no C++ shim for operator '" +
                                        C.Operator->getName() + "' over '" + On +
@@ -5596,8 +5596,8 @@ class LegalizerTableEmitterImpl {
                          const unsigned *RuleIdx, bool GuardOnly) {
     CheckedCoreRule C = checkCoreRule(Rule, Records);
     StringRef On = coreObservationForm(*C.Obs);
-    StringRef To = C.Target->Op->getValueAsString("Name");
-    StringRef Op = C.Operator->getValueAsString("Name");
+    StringRef To = coreTag(*C.Target->Op);
+    StringRef Op = coreTag(*C.Operator);
     const CoreShimRow *Shim = lookupCoreShim(Op, On, To);
     if (!Shim)
       PrintFatalError(Rule.getLoc(),

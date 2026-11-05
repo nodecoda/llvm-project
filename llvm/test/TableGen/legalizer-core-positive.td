@@ -57,6 +57,8 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
     CoreWidenIf<(Slot 0), (Pow2),
                 (CoreIn (SortOf (Slot 0)), KindSet)>,
     CoreWidenIf<(Slot 0), (Pow2),
+                (CoreEq (SortOf (Slot 0)), KindVector)>,
+    CoreWidenIf<(Slot 0), (Pow2),
                 (CoreEq (MemTy (MemSlot 0)), s32)>,
     CoreWidenIf<(Slot 0), (Pow2),
                 (CoreGe (MemOrdering (MemSlot 0)), OrderingAcquire)>,
@@ -74,7 +76,7 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
   ];
 }
 
-// CHECK:       "core_rules": 32,
+// CHECK:       "core_rules": 33,
 // CHECK:       "core_operators": ["widen", "narrow", "more", "fewer", "bitcast"]
 
 // CXX:       .coreWidenScalarToNextPow2([](const LegalityQuery &) { return true; }, 0)
@@ -102,6 +104,7 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
 // CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.MMODescrs[0]).MemoryTy.getSizeInBits() >= 8); }, 0)
 // CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.Types[0]).getAddressSpace() == 0); }, 0)
 // CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return (Query.Types[0].isScalar() || Query.Types[0].isVector()); }, 0)
+// CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return (Query.Types[0].isVector()); }, 0)
 // CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.MMODescrs[0]).MemoryTy == s32); }, 0)
 // CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return isAtLeastOrStrongerThan((Query.MMODescrs[0]).Ordering, AtomicOrdering::Acquire); }, 0)
 // CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return (Is32) && (IsVector) && (!(((Query.Types[0]).getScalarSizeInBits() == 8))); }, 0)
@@ -119,4 +122,5 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
 // CORE:       "op": "more", "on": {"kind":"slot","index":0}, "to": {"kind":"pow2"}
 // CORE:       "op": "fewer", "on": {"kind":"slot","index":0}, "to": {"kind":"ty","args":[{"kind":"type","value":"s32"}]}
 // CORE:       "op": "bitcast", "on": {"kind":"slot","index":0}, "to": {"kind":"ty","args":[{"kind":"type","value":"s32"}]}
-// CORE:       "predicate":{"kind":"in","args":[{"kind":"sortOf","args":[{"kind":"slot","index":0}]},{"kind":"set","of":"Kind","elems":["KindScalar","KindVector"]}]}
+// CORE:       "predicate":{"kind":"in","args":[{"kind":"sortOf","args":[{"kind":"slot","index":0}]},{"kind":"set","of":"Kind","elems":["kindScalar","kindVector"]}]}
+// CORE:       "predicate":{"kind":"eq","args":[{"kind":"sortOf","args":[{"kind":"slot","index":0}]},{"kind":"kindVector"}]}
