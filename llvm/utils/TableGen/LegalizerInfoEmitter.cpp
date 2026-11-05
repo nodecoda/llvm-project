@@ -4971,43 +4971,128 @@ class LegalizerTableEmitterImpl {
   /// Type tuples a rule names as a complete query shape.  A builder that takes
   /// two separate type arguments (ClampScalar's bounds) names bounds, not a
   /// query, so only list/pair/memdesc arguments are used.
-  /// The query shapes a core rule names.  A guard that tests slot 0 against a
-  /// type set names every member of the set, the same way a `typeInSet`
-  /// predicate did; the caller drops tuples whose width is not the rule set's
-  /// arity, so only unary sets can contribute.
+  ///
+  /// A core rule names its shape in the guard: a conjunct `(Slot 0) == p0`
+  /// pins a slot to one type, and `(Slot 0) in Set` names every member of the
+  /// set.  Only positive conjuncts are read; `not` and `any` exclude or
+  /// broaden a shape rather than naming one, and a guard that leaves a slot
+  /// unconstrained does not name a tuple of the rule set's width.
   void collectCoreRuleTuples(const Record &Rule, std::vector<RuleTuple> &Out) {
     const Init *G = Rule.getValueInit("CoreGuard");
     if (!G || isa<UnsetInit>(G))
       return;
     std::unique_ptr<CoreNode> Guard = parseCoreNode(*G, Rule);
+
+    std::map<unsigned, std::vector<TableType>> Slots;
+    auto AddType = [&](unsigned Idx, TableType T) {
+      std::vector<TableType> &V = Slots[Idx];
+      for (const TableType &E : V)
+        if (E.Kind == T.Kind && E.ElemBits == T.ElemBits && E.Lanes == T.Lanes)
+          return;
+      V.push_back(T);
+    };
+    // The record a type operand names, if it names one.  A rule writes the
+    // type either as `(Ty T)` or as the bare `T`.
+    auto NamedTypeOf = [](const CoreNode &N) -> const Record * {
+      if (N.Kind == CoreNode::DefNode &&
+          N.Op->isSubClassOf("LegalizeNamedType"))
+        return N.Op;
+      if (N.Kind == CoreNode::OpNode && coreTag(*N.Op) == "ty" &&
+          N.Kids.size() == 1 && N.Kids[0]->Kind == CoreNode::DefNode &&
+          N.Kids[0]->Op->isSubClassOf("LegalizeNamedType"))
+        return N.Kids[0]->Op;
+      return nullptr;
+    };
     std::function<void(const CoreNode &)> Walk = [&](const CoreNode &N) {
       if (N.Kind != CoreNode::OpNode)
         return;
-      if (coreTag(*N.Op) == "in" && N.Kids.size() == 2) {
-        const CoreNode &Lhs = *N.Kids[0];
-        const CoreNode &Rhs = *N.Kids[1];
-        if (Lhs.Kind == CoreNode::OpNode && coreTag(*Lhs.Op) == "slot" &&
-            Lhs.Kids[0]->IntValue == 0 && Rhs.Kind == CoreNode::DefNode &&
-            Rhs.Op->isSubClassOf("LegalizeCoreTypeSet")) {
-          for (const Record *E : Rhs.Op->getValueAsListOfDefs("Elems")) {
-            SmallVector<TableType, 2> Resolved;
-            if (!resolve(E->getValueAsString("Expr"), E->getName(), Resolved,
-                         0))
-              continue;
-            if (Resolved.size() != 1)
-              continue;
-            RuleTuple T;
-            T.Types.push_back(Resolved[0]);
-            Out.push_back(std::move(T));
-          }
+      StringRef Tag = coreTag(*N.Op);
+      if (Tag == "all") {
+        for (const auto &K : N.Kids)
+          Walk(*K);
+        return;
+      }
+      auto SlotOf = [](const CoreNode &S, unsigned &Idx) {
+        if (S.Kind != CoreNode::OpNode || coreTag(*S.Op) != "slot" ||
+            S.Kids.empty() || S.Kids[0]->Kind != CoreNode::IntNode)
+          return false;
+        Idx = unsigned(S.Kids[0]->IntValue);
+        return true;
+      };
+      if (Tag == "eq" && N.Kids.size() == 2) {
+        unsigned Idx;
+        const CoreNode *Ty = nullptr;
+        if (SlotOf(*N.Kids[0], Idx))
+          Ty = N.Kids[1].get();
+        else if (SlotOf(*N.Kids[1], Idx))
+          Ty = N.Kids[0].get();
+        if (!Ty)
+          return;
+        const Record *T = NamedTypeOf(*Ty);
+        if (!T)
+          return;
+        SmallVector<TableType, 2> Resolved;
+        if (!resolve(T->getValueAsString("Expr"), T->getName(), Resolved, 0))
+          return;
+        for (const TableType &R : Resolved)
+          AddType(Idx, R);
+        return;
+      }
+      if (Tag == "in" && N.Kids.size() == 2) {
+        unsigned Idx;
+        if (!SlotOf(*N.Kids[0], Idx))
+          return;
+        if (N.Kids[1]->Kind != CoreNode::DefNode ||
+            !N.Kids[1]->Op->isSubClassOf("LegalizeCoreTypeSet"))
+          return;
+        for (const Record *E : N.Kids[1]->Op->getValueAsListOfDefs("Elems")) {
+          SmallVector<TableType, 2> Resolved;
+          if (!resolve(E->getValueAsString("Expr"), E->getName(), Resolved, 0))
+            continue;
+          for (const TableType &R : Resolved)
+            AddType(Idx, R);
         }
       }
-      for (const auto &K : N.Kids)
-        Walk(*K);
     };
     Walk(*Guard);
+    if (Slots.empty())
+      return;
+
+    // A tuple is positional, so the constrained slots have to be a prefix.
+    unsigned Width = 0;
+    for (const auto &S : Slots) {
+      if (S.first >= 3)
+        return;
+      Width = std::max(Width, S.first + 1);
+    }
+    if (Slots.size() != Width)
+      return;
+
+    std::vector<RuleTuple> Acc(1);
+    for (unsigned I = 0; I != Width; ++I) {
+      auto It = Slots.find(I);
+      if (It == Slots.end())
+        return;
+      std::vector<RuleTuple> Next;
+      for (const RuleTuple &T : Acc)
+        for (const TableType &Ty : It->second) {
+          // A guard naming hundreds of shapes is a set, not a query; the
+          // members are already in the domain through other rules.
+          if (Next.size() >= 64)
+            break;
+          RuleTuple N = T;
+          N.Types.push_back(Ty);
+          Next.push_back(std::move(N));
+        }
+      Acc = std::move(Next);
+    }
+    Out.insert(Out.end(), Acc.begin(), Acc.end());
   }
 
+  /// Type tuples a legacy rule names as a complete query shape, taken from its
+  /// arguments.  A builder that takes two separate type arguments
+  /// (ClampScalar's bounds) names bounds, not a query, so only
+  /// list/pair/memdesc arguments are used.
   void collectRuleTuples(const Record &Rule, std::vector<RuleTuple> &Out) {
     if (isCoreRule(Rule)) {
       collectCoreRuleTuples(Rule, Out);
@@ -6979,8 +7064,18 @@ public:
         if (!TableTuplesOnly)
           Add(Probe);
         for (const RuleTuple &Tuple : Tuples)
-          if (Tuple.Types.size() == Arity)
-            Add(Tuple);
+          if (Tuple.Types.size() == Arity) {
+            // A memdesc rule set's chain reads MMODescr[0] no matter which
+            // rule matches, so a tuple that names only types still needs the
+            // descriptor the probe carries.
+            RuleTuple T = Tuple;
+            if (HasMem && !T.HasMem) {
+              T.HasMem = true;
+              T.MemTy = Ptr;
+              T.Align = 1;
+            }
+            Add(T);
+          }
         if (TableTuplesOnly)
           continue;
 

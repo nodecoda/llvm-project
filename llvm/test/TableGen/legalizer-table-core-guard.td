@@ -27,6 +27,15 @@ def MemDescGuard : LegalizeRuleSet<["G_MEM"]> {
   ];
 }
 
+// A conjunction pins more than one slot; the tuple it names is the shape the
+// table has to be able to answer, not just the slots' classes.
+def PairShape : LegalizeRuleSet<["G_PAIR"]> {
+  let Rules = [
+    CoreLegal<(CoreAll (CoreEq (Slot 0), (Ty s32)),
+                       (CoreEq (Slot 1), (Ty p0)))>
+  ];
+}
+
 // The two class counts are the arity: one per type slot the rule set reads.
 // CHECK: 0, 1}, {2, 2}, kNoMemDesc, 0}, // TwoSlots
 // The last field counts memdesc classes; zero means the key has no descriptor
@@ -39,3 +48,7 @@ def MemDescGuard : LegalizeRuleSet<["G_MEM"]> {
 // second slot has to widen it as well; a one-type probe would let the
 // evaluator index Types[1] of a query that has none.
 // POINTS: {TargetOpcode::G_TWO, "G_TWO", 2, {LLT::pointer(0, PointerBits), LLT::pointer(0, PointerBits), LLT()
+// A guard that names a type names a shape: `(Slot 0) == s32` has to put s32 in
+// the domain, or the rule can never be asked about the type it is about.
+// POINTS: {TargetOpcode::G_MEM, "G_MEM", 1, {LLT::scalar(32), LLT(), LLT()
+// POINTS: {TargetOpcode::G_PAIR, "G_PAIR", 2, {LLT::scalar(32), LLT::pointer(0, PointerBits), LLT()
