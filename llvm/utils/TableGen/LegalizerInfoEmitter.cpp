@@ -2790,57 +2790,6 @@ std::string CoreCxxEmitter::emitCompare(const CoreNode &N) {
   return "(" + value(Lhs) + " " + Op.str() + " " + value(Rhs) + ")";
 }
 
-/// The 0.3 projection of a core target.  A legacy reader sees the same
-/// mutation vocabulary it already understands; a 0.4 reader uses op/on/to.
-static std::string coreMutationJson(const CoreNode &To,
-                                    const RecordKeeper &Records,
-                                    unsigned TypeIdx,
-                                    const Record &Owner) {
-  if (To.Kind != CoreNode::OpNode)
-    PrintFatalError(Owner.getLoc(),
-                    "core rule: a core target must be a constructor dag");
-  StringRef Name = coreTag(*To.Op);
-  if (Name == "pow2")
-    return mutationJson(TypeIdx, "set_elem_bits", "nextPow2");
-  if (Name == "pow2Min")
-    return mutationJson(TypeIdx, "set_elem_bits",
-                        "nextPow2OrMin" + std::to_string(To.Kids[0]->IntValue));
-  if (Name == "multipleOf")
-    return mutationJson(TypeIdx, "set_elem_bits",
-                        "nextMultipleOf" +
-                            std::to_string(To.Kids[0]->IntValue));
-  if (Name == "ty")
-    return mutationJsonValue(TypeIdx, "set_elem_type",
-                             coreTypeValue(Records, *To.Kids[0]->Op));
-  if (Name == "sameAs")
-    return mutationJson(TypeIdx, "set_elem_bits",
-                        "sameAsSlot" + std::to_string(To.Kids[0]->IntValue));
-  if (Name == "minVectorSize")
-    return mutationJsonValue(
-        TypeIdx, "set_elem_bits",
-        "{\"min_vector_size\":" + std::to_string(To.Kids[0]->IntValue) + "}");
-  if (Name == "select") {
-    std::string Cond;
-    coreNodeJson(*To.Kids[0], Records, Cond);
-    return mutationJsonValue(TypeIdx, "set_elem_bits",
-                             "{\"select\":[" + Cond + "," +
-                                 std::to_string(To.Kids[1]->IntValue) + "," +
-                                 std::to_string(To.Kids[2]->IntValue) + "]}");
-  }
-  if (Name == "clamp") {
-    std::string V = "{\"clamp\":[" + std::to_string(To.Kids[0]->IntValue) +
-                    "," + std::to_string(To.Kids[1]->IntValue) + "]}";
-    return mutationJsonValue(TypeIdx, "set_elem_bits", V);
-  }
-  // A new shim must also define its 0.3 projection.  Returning "" here made
-  // the mutation a JSON null, which a reader cannot distinguish from a rule
-  // that intentionally mutates nothing.
-  PrintFatalError(Owner.getLoc(),
-                  "core rule: no 0.3 mutation projection for target '" + Name +
-                      "'");
-  return "";
-}
-
 static void expandCoreRule(const RecordKeeper &Records, const Record &Rule,
                            std::vector<CoreRule> &Out) {
   CheckedCoreRule C = checkCoreRule(Rule, Records);
@@ -2857,7 +2806,6 @@ static void expandCoreRule(const RecordKeeper &Records, const Record &Rule,
   CR.Op = coreTag(*C.Operator).str();
   coreNodeJson(*C.Obs, Records, CR.On);
   coreNodeJson(*C.Target, Records, CR.To);
-  CR.Mutation = coreMutationJson(*C.Target, Records, C.TypeIdx, Rule);
   Out.push_back(std::move(CR));
 }
 
@@ -4028,9 +3976,11 @@ void LegalizerInfoEmitter::runCore(raw_ostream &OS) {
     S += "}}";
     Escapes.push_back(S);
   };
-  // The surface stays 0.3 until a rule opts into the primitive vocabulary.
-  // That keeps the frozen X86 artifacts byte-identical while a target that
-  // uses op/on/to declares the version its readers need.
+  // The file version is the highest schema any entry requires, so a target
+  // that has not adopted the primitive vocabulary stays 0.3 and keeps its
+  // frozen artifacts byte-identical.  Entries that do need 0.4 carry their
+  // own `schema` tag; the file version is what tells a reader whether it can
+  // skip the file, the tag is what tells it which entries it may lower.
   bool HasCoreRule = llvm::any_of(RuleSets, [](const Record *RS) {
     return llvm::any_of(RS->getValueAsListOfDefs("Rules"), [](const Record *R) {
       return isCoreRule(*R);
@@ -4090,6 +4040,11 @@ void LegalizerInfoEmitter::runCore(raw_ostream &OS) {
         if (!CR.Mutation.empty())
           S += ", \"mutation\":" + CR.Mutation;
         if (!CR.Op.empty()) {
+          // A primitive entry is readable only by a 0.4 reader.  Tag it so a
+          // reader can tell it apart from a legacy entry without inferring
+          // the version from the presence of `op`; entries without the tag
+          // are 0.3, which is why a 0.3-only target stays byte-identical.
+          S += ", \"schema\": \"0.4\"";
           S += ", \"op\": ";
           S += jsonStringValue(CR.Op);
           S += ", \"on\": " + CR.On;

@@ -276,12 +276,21 @@ translation; a primitive without one is a build error, not a silent fallback
 to the chain.
 
 `-gen-legalizer-core` carries both views.  Rows with the primitive vocabulary
-emit `op`/`on`/`to` and declare schema version 0.4; legacy rows keep the 0.3
-`action`/`type_idx`/`mutation` fields byte-for-byte.  A target that does not
-use the primitives still emits 0.3.  The 0.3 projection of a primitive is the
-closest legacy mutation: `MinVectorSize(64)` becomes
-`{"min_vector_size":64}` and `CoreSelect` becomes `{"select":[...]}` under
-`set_elem_bits`.
+emit `op`/`on`/`to` and are tagged `"schema": "0.4"`; legacy rows keep the 0.3
+`action`/`type_idx`/`mutation` fields byte-for-byte and carry no tag, because
+0.3 is the default.  The file-level `version` is the highest schema any entry
+requires, so a target that does not use the primitives still emits 0.3 and its
+artifacts stay byte-identical.
+
+A primitive row carries no `mutation`.  Its mutation is not a second thing to
+maintain: it is derived from `to`, which is the only place the target
+constructor is written.  Earlier revisions projected `MinVectorSize(64)` to
+`{"min_vector_size":64}` and `CoreSelect` to `{"select":[...]}` under
+`set_elem_bits`; those were new spellings wearing a 0.3 label, and a 0.3 reader
+would have parsed a recognized `kind` with a value it cannot interpret.  A
+reader that understands the `"schema": "0.4"` tag lowers the entry from
+`op`/`on`/`to`; a reader that does not skips it.  Both failure modes are
+visible, which is the property the projection did not have.
 
 The checker is a sort checker, not a shape checker.  `More` on a scalar is
 sort-correct because the slot's sort is always `Type`; that the slot is a
