@@ -305,7 +305,21 @@ def CoreGe : LegalizeCoreCompare<"ge">;
 def CoreIsPow2 : LegalizeCoreExpr<"isPow2", [SortInt], SortBool>;
 
 /// Set membership: `(CoreIn (SortOf (Slot 0)) MyKindSet)`.
+///
+/// The tuple forms name one type slot per element of the set:
+///
+///   (CoreInPairs (Slot 0), (Slot 1), MyPairSet)
+///   (CoreInTriples (Slot 0), (Slot 1), (Slot 2), MyTripleSet)
+///
+/// which is `typePairInSet(0, 1, {...})` and `typeTupleInSet(0, 1, 2, {...})`.
+/// The slots are written out because the C++ predicate takes indices, not
+/// query values; the set itself is a table, which is why it is not spelled as
+/// a disjunction of equalities the way a one-slot set is.
 def CoreIn : LegalizeCoreExpr<"in", [], SortBool> { let SetMembership = 1; }
+def CoreInPairs
+    : LegalizeCoreExpr<"inPairs", [], SortBool> { let SetMembership = 1; }
+def CoreInTriples
+    : LegalizeCoreExpr<"inTriples", [], SortBool> { let SetMembership = 1; }
 
 /// Integer arithmetic.  These are the two a legalizer guard needs to compare
 /// a type against a multiple or a residue of another type's size; there is no
@@ -323,15 +337,39 @@ def CoreSelect
 
 /// A set literal.  A type set names LegalizeNamedType defs; a kind set names
 /// SortOf tags.
+///
+/// `Arity` is the number of type slots one element occupies.  A one-slot set
+/// is a set of types and tests a type expression (`(CoreIn (Slot 0), Set)`);
+/// an n-slot set is a set of tuples and is tested by the matching
+/// `CoreInPairs`/`CoreInTriples`, which names the slots.  Keeping the arity on
+/// the set rather than on the operator is what makes a pair set unusable where
+/// a type is expected, and the other way round.
 class LegalizeCoreSet<string name, LegalizeSort elemSort>
     : LegalizeCoreNode {
   string Name = name;
   LegalizeSort ElemSort = elemSort;
+  int Arity = 1;
 }
 
 class LegalizeCoreTypeSet<list<LegalizeNamedType> elems>
     : LegalizeCoreSet<"typeSet", SortType> {
   list<LegalizeNamedType> Elems = elems;
+}
+
+/// A set of type pairs, the table form of
+/// `typePairInSet(0, 1, {{p0, i64}, {v2p0, v2i64}})`.
+class LegalizeCoreTypePairSet<list<LegalizeTypePair> elems>
+    : LegalizeCoreSet<"typePairSet", SortType> {
+  list<LegalizeTypePair> Elems = elems;
+  let Arity = 2;
+}
+
+/// A set of type triples, the table form of
+/// `typeTupleInSet(0, 1, 2, {{s16, nxv16s8, s64}})`.
+class LegalizeCoreTypeTripleSet<list<LegalizeTypeTriple> elems>
+    : LegalizeCoreSet<"typeTripleSet", SortType> {
+  list<LegalizeTypeTriple> Elems = elems;
+  let Arity = 3;
 }
 
 class LegalizeCoreKindSet<list<LegalizeCoreNode> elems>

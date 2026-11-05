@@ -14,11 +14,12 @@
 //
 // Every rule whose condition is an expression is a core rule: no rule carries
 // a C++ predicate and no rule carries a raw mutation, the lane clamp is two
-// core rules (a guard plus a whole-type assignment), and a unary type list is
-// a named type set, so the rule says `(CoreIn (Slot 0), Set)`.  What remains
-// names a *tuple* -- legalForPairs*, customForPairs*, libcallForPairs*,
-// legalForTypesWithMemDesc -- or is an annotation (immIdx) or a two-slot size
-// relation (scalarSameSizeAs); the core IR has no set-of-tuples terminal yet.
+// core rules (a guard plus a whole-type assignment), a unary type list is a
+// named type set (`(CoreIn (Slot 0), Set)`), and a list of type pairs or
+// triples is a named tuple set (`(CoreInPairs ...)`, `(CoreInTriples ...)`),
+// which lowers to `typePairInSet`/`typeTupleInSet`.  What remains is
+// `legalForTypesWithMemDesc` (the memory descriptor is a separate axis, not a
+// type slot), the `immIdx` annotation, and the two-slot size relations.
 //
 //===----------------------------------------------------------------------===//
 
@@ -194,6 +195,295 @@ def AArch64_SVEIntVecSet : LegalizeCoreTypeSet<
 def AArch64_F16OrV4V8F16Set : LegalizeCoreTypeSet<
     [AArch64_f16, AArch64_v4f16, AArch64_v8f16]>;
 
+/// The type tuples the rules name.  A pair set is a table, not a condition:
+/// the rule says `(CoreInPairs (Slot 0), (Slot 1), Set)`, which lowers to
+/// `typePairInSet`, so the pairs stay one datum instead of a disjunction of
+/// slot comparisons.
+def AArch64_SHLPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_i32, AArch64_i32>,
+     LegalizeTypePair<AArch64_i32, AArch64_i64>,
+     LegalizeTypePair<AArch64_i64, AArch64_i64>,
+     LegalizeTypePair<AArch64_v8i8, AArch64_v8i8>,
+     LegalizeTypePair<AArch64_v16i8, AArch64_v16i8>,
+     LegalizeTypePair<AArch64_v4i16, AArch64_v4i16>,
+     LegalizeTypePair<AArch64_v8i16, AArch64_v8i16>,
+     LegalizeTypePair<AArch64_v2i32, AArch64_v2i32>,
+     LegalizeTypePair<AArch64_v4i32, AArch64_v4i32>,
+     LegalizeTypePair<AArch64_v2i64, AArch64_v2i64>]>;
+def AArch64_PTR_ADDPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_p0, AArch64_i64>,
+     LegalizeTypePair<AArch64_v2p0, AArch64_v2i64>]>;
+def AArch64_PTRMASKPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_p0, AArch64_s64>]>;
+def AArch64_SADDEPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_i32, AArch64_i32>,
+     LegalizeTypePair<AArch64_i64, AArch64_i32>]>;
+def AArch64_FSHLPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_i32, AArch64_i32>,
+     LegalizeTypePair<AArch64_i32, AArch64_i64>,
+     LegalizeTypePair<AArch64_i64, AArch64_i64>]>;
+def AArch64_ROTRPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_i32, AArch64_i64>,
+     LegalizeTypePair<AArch64_i64, AArch64_i64>]>;
+def AArch64_SBFXPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_s32, AArch64_s32>,
+     LegalizeTypePair<AArch64_s64, AArch64_s64>]>;
+def AArch64_CTPOPPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_i32, AArch64_i32>,
+     LegalizeTypePair<AArch64_i64, AArch64_i64>]>;
+def AArch64_CTPOPPairSet2 : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_v8i8, AArch64_v8i8>,
+     LegalizeTypePair<AArch64_v16i8, AArch64_v16i8>]>;
+def AArch64_CTPOPPairSet3 : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_s32, AArch64_s32>,
+     LegalizeTypePair<AArch64_s64, AArch64_s64>]>;
+def AArch64_CTPOPPairSet4 : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_s128, AArch64_s128>,
+     LegalizeTypePair<AArch64_v4s16, AArch64_v4s16>,
+     LegalizeTypePair<AArch64_v8s16, AArch64_v8s16>,
+     LegalizeTypePair<AArch64_v2s32, AArch64_v2s32>,
+     LegalizeTypePair<AArch64_v4s32, AArch64_v4s32>,
+     LegalizeTypePair<AArch64_v2s64, AArch64_v2s64>]>;
+def AArch64_CTLZPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_i32, AArch64_i32>,
+     LegalizeTypePair<AArch64_i64, AArch64_i64>,
+     LegalizeTypePair<AArch64_v8i8, AArch64_v8i8>,
+     LegalizeTypePair<AArch64_v16i8, AArch64_v16i8>,
+     LegalizeTypePair<AArch64_v4i16, AArch64_v4i16>,
+     LegalizeTypePair<AArch64_v8i16, AArch64_v8i16>,
+     LegalizeTypePair<AArch64_v2i32, AArch64_v2i32>,
+     LegalizeTypePair<AArch64_v4i32, AArch64_v4i32>]>;
+def AArch64_FPOWIPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_f32, AArch64_i32>,
+     LegalizeTypePair<AArch64_f64, AArch64_i32>,
+     LegalizeTypePair<AArch64_f128, AArch64_i32>]>;
+def AArch64_LROUNDPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_i32, AArch64_f32>,
+     LegalizeTypePair<AArch64_i32, AArch64_f64>,
+     LegalizeTypePair<AArch64_i64, AArch64_f32>,
+     LegalizeTypePair<AArch64_i64, AArch64_f64>]>;
+def AArch64_LROUNDPairSet2 : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_i32, AArch64_f16>,
+     LegalizeTypePair<AArch64_i64, AArch64_f16>]>;
+def AArch64_LROUNDPairSet3 : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_s64, AArch64_s128>]>;
+def AArch64_LLROUNDPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_i64, AArch64_f32>,
+     LegalizeTypePair<AArch64_i64, AArch64_f64>]>;
+def AArch64_LLROUNDPairSet2 : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_i64, AArch64_f16>]>;
+def AArch64_LLROUNDPairSet3 : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_s64, AArch64_s128>]>;
+def AArch64_ICMPPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_i32, AArch64_i32>,
+     LegalizeTypePair<AArch64_i32, AArch64_i64>,
+     LegalizeTypePair<AArch64_i32, AArch64_p0>]>;
+def AArch64_FCMPPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_i32, AArch64_f32>,
+     LegalizeTypePair<AArch64_i32, AArch64_f64>,
+     LegalizeTypePair<AArch64_v4i32, AArch64_v4f32>,
+     LegalizeTypePair<AArch64_v2i32, AArch64_v2f32>,
+     LegalizeTypePair<AArch64_v2i64, AArch64_v2f64>]>;
+def AArch64_FCMPPairSet2 : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_i32, AArch64_f16>,
+     LegalizeTypePair<AArch64_v4i16, AArch64_v4f16>,
+     LegalizeTypePair<AArch64_v8i16, AArch64_v8f16>]>;
+def AArch64_FCMPPairSet3 : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_s32, AArch64_s128>]>;
+def AArch64_ZEXTPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_v8s16, AArch64_v8s8>,
+     LegalizeTypePair<AArch64_v4s32, AArch64_v4s16>,
+     LegalizeTypePair<AArch64_v2s64, AArch64_v2s32>]>;
+def AArch64_TRUNCPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_v8s8, AArch64_v8s16>,
+     LegalizeTypePair<AArch64_v4s16, AArch64_v4s32>,
+     LegalizeTypePair<AArch64_v2s32, AArch64_v2s64>]>;
+def AArch64_TRUNC_SSAT_SPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_v8i8, AArch64_v8i16>,
+     LegalizeTypePair<AArch64_v4i16, AArch64_v4i32>,
+     LegalizeTypePair<AArch64_v2i32, AArch64_v2i64>]>;
+def AArch64_FPTRUNCPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_f16, AArch64_f32>,
+     LegalizeTypePair<AArch64_f16, AArch64_f64>,
+     LegalizeTypePair<AArch64_f32, AArch64_f64>,
+     LegalizeTypePair<AArch64_v4f16, AArch64_v4f32>,
+     LegalizeTypePair<AArch64_v2f32, AArch64_v2f64>]>;
+def AArch64_FPTRUNCPairSet2 : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_bf16, AArch64_f32>,
+     LegalizeTypePair<AArch64_v4bf16, AArch64_v4f32>]>;
+def AArch64_FPTRUNCPairSet3 : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_f16, AArch64_f128>,
+     LegalizeTypePair<AArch64_f32, AArch64_f128>,
+     LegalizeTypePair<AArch64_f64, AArch64_f128>]>;
+def AArch64_FPEXTPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_f32, AArch64_f16>,
+     LegalizeTypePair<AArch64_f64, AArch64_f16>,
+     LegalizeTypePair<AArch64_f32, AArch64_bf16>,
+     LegalizeTypePair<AArch64_f64, AArch64_f32>,
+     LegalizeTypePair<AArch64_v4f32, AArch64_v4f16>,
+     LegalizeTypePair<AArch64_v4f32, AArch64_v4bf16>,
+     LegalizeTypePair<AArch64_v2f64, AArch64_v2f32>]>;
+def AArch64_FPEXTPairSet2 : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_f128, AArch64_f64>,
+     LegalizeTypePair<AArch64_f128, AArch64_f32>,
+     LegalizeTypePair<AArch64_f128, AArch64_f16>]>;
+def AArch64_FPTOSIPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_i32, AArch64_f32>,
+     LegalizeTypePair<AArch64_i64, AArch64_f32>,
+     LegalizeTypePair<AArch64_i32, AArch64_f64>,
+     LegalizeTypePair<AArch64_i64, AArch64_f64>,
+     LegalizeTypePair<AArch64_v2i32, AArch64_v2f32>,
+     LegalizeTypePair<AArch64_v4i32, AArch64_v4f32>,
+     LegalizeTypePair<AArch64_v2i64, AArch64_v2f64>]>;
+def AArch64_FPTOSIPairSet2 : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_i32, AArch64_f16>,
+     LegalizeTypePair<AArch64_i64, AArch64_f16>,
+     LegalizeTypePair<AArch64_v4i16, AArch64_v4f16>,
+     LegalizeTypePair<AArch64_v8i16, AArch64_v8f16>]>;
+def AArch64_FPTOSIPairSet3 : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_i32, AArch64_f128>,
+     LegalizeTypePair<AArch64_i64, AArch64_f128>,
+     LegalizeTypePair<AArch64_i128, AArch64_f128>,
+     LegalizeTypePair<AArch64_i128, AArch64_f32>,
+     LegalizeTypePair<AArch64_i128, AArch64_f64>]>;
+def AArch64_FPTOSI_SATPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_i32, AArch64_f32>,
+     LegalizeTypePair<AArch64_i64, AArch64_f32>,
+     LegalizeTypePair<AArch64_i32, AArch64_f64>,
+     LegalizeTypePair<AArch64_i64, AArch64_f64>,
+     LegalizeTypePair<AArch64_v2i32, AArch64_v2f32>,
+     LegalizeTypePair<AArch64_v4i32, AArch64_v4f32>,
+     LegalizeTypePair<AArch64_v2i64, AArch64_v2f64>]>;
+def AArch64_FPTOSI_SATPairSet2 : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_i16, AArch64_f16>,
+     LegalizeTypePair<AArch64_i32, AArch64_f16>,
+     LegalizeTypePair<AArch64_i64, AArch64_f16>,
+     LegalizeTypePair<AArch64_v4i16, AArch64_v4f16>,
+     LegalizeTypePair<AArch64_v8i16, AArch64_v8f16>]>;
+def AArch64_SITOFPPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_f32, AArch64_i32>,
+     LegalizeTypePair<AArch64_f64, AArch64_i32>,
+     LegalizeTypePair<AArch64_f32, AArch64_i64>,
+     LegalizeTypePair<AArch64_f64, AArch64_i64>,
+     LegalizeTypePair<AArch64_v2f32, AArch64_v2i32>,
+     LegalizeTypePair<AArch64_v4f32, AArch64_v4i32>,
+     LegalizeTypePair<AArch64_v2f64, AArch64_v2i64>]>;
+def AArch64_SITOFPPairSet2 : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_f16, AArch64_i32>,
+     LegalizeTypePair<AArch64_f16, AArch64_i64>,
+     LegalizeTypePair<AArch64_v4f16, AArch64_v4i16>,
+     LegalizeTypePair<AArch64_v8f16, AArch64_v8i16>]>;
+def AArch64_SITOFPPairSet3 : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_f16, AArch64_i128>,
+     LegalizeTypePair<AArch64_f32, AArch64_i128>,
+     LegalizeTypePair<AArch64_f64, AArch64_i128>,
+     LegalizeTypePair<AArch64_f128, AArch64_i128>,
+     LegalizeTypePair<AArch64_f128, AArch64_i32>,
+     LegalizeTypePair<AArch64_f128, AArch64_i64>]>;
+def AArch64_SELECTPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_s32, AArch64_s32>,
+     LegalizeTypePair<AArch64_s64, AArch64_s32>,
+     LegalizeTypePair<AArch64_p0, AArch64_s32>]>;
+def AArch64_PTRTOINTPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_i64, AArch64_p0>,
+     LegalizeTypePair<AArch64_v2i64, AArch64_v2p0>]>;
+def AArch64_INTTOPTRPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_p0, AArch64_i64>,
+     LegalizeTypePair<AArch64_v2p0, AArch64_v2i64>]>;
+def AArch64_ATOMIC_CMPXCHGPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_s32, AArch64_p0>,
+     LegalizeTypePair<AArch64_s64, AArch64_p0>]>;
+def AArch64_ATOMIC_CMPXCHGPairSet2 : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_s128, AArch64_p0>]>;
+def AArch64_ATOMIC_CMPXCHGPairSet3 : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_s8, AArch64_p0>,
+     LegalizeTypePair<AArch64_s16, AArch64_p0>,
+     LegalizeTypePair<AArch64_s32, AArch64_p0>,
+     LegalizeTypePair<AArch64_s64, AArch64_p0>,
+     LegalizeTypePair<AArch64_s128, AArch64_p0>]>;
+def AArch64_ATOMICRMW_XCHGPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_s32, AArch64_p0>,
+     LegalizeTypePair<AArch64_s64, AArch64_p0>]>;
+def AArch64_ATOMICRMW_XCHGPairSet2 : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_s8, AArch64_p0>,
+     LegalizeTypePair<AArch64_s16, AArch64_p0>,
+     LegalizeTypePair<AArch64_s32, AArch64_p0>,
+     LegalizeTypePair<AArch64_s64, AArch64_p0>]>;
+def AArch64_EXTRACT_VECTOR_ELTTripleSet : LegalizeCoreTypeTripleSet<
+    [LegalizeTypeTriple<AArch64_s16, AArch64_nxv16s8, AArch64_s64>,
+     LegalizeTypeTriple<AArch64_s16, AArch64_nxv8s16, AArch64_s64>,
+     LegalizeTypeTriple<AArch64_s32, AArch64_nxv4s32, AArch64_s64>,
+     LegalizeTypeTriple<AArch64_s64, AArch64_nxv2s64, AArch64_s64>]>;
+def AArch64_INSERT_VECTOR_ELTTripleSet : LegalizeCoreTypeTripleSet<
+    [LegalizeTypeTriple<AArch64_nxv16s8, AArch64_s32, AArch64_s64>,
+     LegalizeTypeTriple<AArch64_nxv8s16, AArch64_s32, AArch64_s64>,
+     LegalizeTypeTriple<AArch64_nxv4s32, AArch64_s32, AArch64_s64>,
+     LegalizeTypeTriple<AArch64_nxv2s64, AArch64_s64, AArch64_s64>]>;
+def AArch64_BUILD_VECTORPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_v8s8, AArch64_s8>,
+     LegalizeTypePair<AArch64_v16s8, AArch64_s8>,
+     LegalizeTypePair<AArch64_v4s16, AArch64_s16>,
+     LegalizeTypePair<AArch64_v8s16, AArch64_s16>,
+     LegalizeTypePair<AArch64_v2s32, AArch64_s32>,
+     LegalizeTypePair<AArch64_v4s32, AArch64_s32>,
+     LegalizeTypePair<AArch64_v2s64, AArch64_s64>,
+     LegalizeTypePair<AArch64_v2p0, AArch64_p0>]>;
+def AArch64_SPLAT_VECTORPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_v8s8, AArch64_s8>,
+     LegalizeTypePair<AArch64_v8s8, AArch64_s32>,
+     LegalizeTypePair<AArch64_v16s8, AArch64_s8>,
+     LegalizeTypePair<AArch64_v16s8, AArch64_s32>,
+     LegalizeTypePair<AArch64_v4s16, AArch64_s16>,
+     LegalizeTypePair<AArch64_v4s16, AArch64_s32>,
+     LegalizeTypePair<AArch64_v8s16, AArch64_s16>,
+     LegalizeTypePair<AArch64_v8s16, AArch64_s32>,
+     LegalizeTypePair<AArch64_v2s32, AArch64_s32>,
+     LegalizeTypePair<AArch64_v4s32, AArch64_s32>,
+     LegalizeTypePair<AArch64_v2s64, AArch64_s64>,
+     LegalizeTypePair<AArch64_v2p0, AArch64_p0>]>;
+def AArch64_SPLAT_VECTORPairSet2 : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_nxv4s32, AArch64_s32>,
+     LegalizeTypePair<AArch64_nxv2s64, AArch64_s64>]>;
+def AArch64_CONCAT_VECTORSPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_v16s8, AArch64_v8s8>,
+     LegalizeTypePair<AArch64_v8s16, AArch64_v4s16>,
+     LegalizeTypePair<AArch64_v4s32, AArch64_v2s32>]>;
+def AArch64_EXTRACT_SUBVECTORPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_v8s8, AArch64_v16s8>,
+     LegalizeTypePair<AArch64_v4s16, AArch64_v8s16>,
+     LegalizeTypePair<AArch64_v2s32, AArch64_v4s32>]>;
+def AArch64_BRJTPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_p0, AArch64_s64>]>;
+def AArch64_VECREDUCE_FADDPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_f32, AArch64_v2f32>,
+     LegalizeTypePair<AArch64_f32, AArch64_v4f32>,
+     LegalizeTypePair<AArch64_f64, AArch64_v2f64>]>;
+def AArch64_VECREDUCE_FADDPairSet2 : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_f16, AArch64_v4f16>,
+     LegalizeTypePair<AArch64_f16, AArch64_v8f16>]>;
+def AArch64_VECREDUCE_ADDPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_i8, AArch64_v8i8>,
+     LegalizeTypePair<AArch64_i8, AArch64_v16i8>,
+     LegalizeTypePair<AArch64_i16, AArch64_v4i16>,
+     LegalizeTypePair<AArch64_i16, AArch64_v8i16>,
+     LegalizeTypePair<AArch64_i32, AArch64_v2i32>,
+     LegalizeTypePair<AArch64_i32, AArch64_v4i32>,
+     LegalizeTypePair<AArch64_i64, AArch64_v2i64>]>;
+def AArch64_VECREDUCE_FMINPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_f32, AArch64_v2f32>,
+     LegalizeTypePair<AArch64_f32, AArch64_v4f32>,
+     LegalizeTypePair<AArch64_f64, AArch64_v2f64>]>;
+def AArch64_VECREDUCE_FMINPairSet2 : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_f16, AArch64_v4f16>,
+     LegalizeTypePair<AArch64_f16, AArch64_v8f16>]>;
+def AArch64_VECREDUCE_SMINPairSet : LegalizeCoreTypePairSet<
+    [LegalizeTypePair<AArch64_i8, AArch64_v8i8>,
+     LegalizeTypePair<AArch64_i8, AArch64_v16i8>,
+     LegalizeTypePair<AArch64_i16, AArch64_v4i16>,
+     LegalizeTypePair<AArch64_i16, AArch64_v8i16>,
+     LegalizeTypePair<AArch64_i32, AArch64_v2i32>,
+     LegalizeTypePair<AArch64_i32, AArch64_v4i32>]>;
+
 //===----------------------------------------------------------------------===//
 // Rule sets
 //===----------------------------------------------------------------------===//
@@ -327,7 +617,7 @@ def AArch64_SHL : LegalizeRuleSet<["G_SHL", "G_ASHR", "G_LSHR"]> {
     CoreCustom<(CoreAll (CoreNot (CoreEq (SortOf (Slot 0)), KindVector)),
                         (CoreEq (SizeOf (Slot 0)), 32),
                         (CoreEq (SizeOf (Slot 1)), 32))>,
-    LegalForPairs<[LegalizeTypePair<AArch64_i32, AArch64_i32>, LegalizeTypePair<AArch64_i32, AArch64_i64>, LegalizeTypePair<AArch64_i64, AArch64_i64>, LegalizeTypePair<AArch64_v8i8, AArch64_v8i8>, LegalizeTypePair<AArch64_v16i8, AArch64_v16i8>, LegalizeTypePair<AArch64_v4i16, AArch64_v4i16>, LegalizeTypePair<AArch64_v8i16, AArch64_v8i16>, LegalizeTypePair<AArch64_v2i32, AArch64_v2i32>, LegalizeTypePair<AArch64_v4i32, AArch64_v4i32>, LegalizeTypePair<AArch64_v2i64, AArch64_v2i64>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_SHLPairSet)>,
     CoreWiden<(Slot 1), (Pow2)>,
     CoreWiden<(Slot 0), (Pow2)>,
     CoreWiden<(Slot 1), (Ty AArch64_s32)>,
@@ -355,7 +645,7 @@ def AArch64_SHL : LegalizeRuleSet<["G_SHL", "G_ASHR", "G_LSHR"]> {
 
 def AArch64_PTR_ADD : LegalizeRuleSet<["G_PTR_ADD"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_p0, AArch64_i64>, LegalizeTypePair<AArch64_v2p0, AArch64_v2i64>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_PTR_ADDPairSet)>,
     CoreWiden<(ElemOf (Slot 1)), (Ty AArch64_s64)>,
     CoreNarrow<(ElemOf (Slot 1)), (Ty AArch64_s64)>,
     CoreClampMinNumElements<0, AArch64_p0, 2>,
@@ -365,7 +655,7 @@ def AArch64_PTR_ADD : LegalizeRuleSet<["G_PTR_ADD"]> {
 
 def AArch64_PTRMASK : LegalizeRuleSet<["G_PTRMASK"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_p0, AArch64_s64>]>
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_PTRMASKPairSet)>
   ];
 }
 
@@ -468,7 +758,7 @@ def AArch64_ABDS : LegalizeRuleSet<["G_ABDS", "G_ABDU", "G_UAVGFLOOR", "G_UAVGCE
 
 def AArch64_SADDE : LegalizeRuleSet<["G_SADDE", "G_SSUBE", "G_UADDE", "G_USUBE", "G_SADDO", "G_SSUBO", "G_UADDO", "G_USUBO"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_i32, AArch64_i32>, LegalizeTypePair<AArch64_i64, AArch64_i32>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_SADDEPairSet)>,
     CoreWiden<(Slot 0), (Ty AArch64_s32)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s64)>,
     CoreWiden<(Slot 1), (Ty AArch64_s32)>,
@@ -480,14 +770,14 @@ def AArch64_SADDE : LegalizeRuleSet<["G_SADDE", "G_SSUBE", "G_UADDE", "G_USUBE",
 
 def AArch64_FSHL : LegalizeRuleSet<["G_FSHL", "G_FSHR"]> {
   let Rules = [
-    CustomForPairs<[LegalizeTypePair<AArch64_i32, AArch64_i32>, LegalizeTypePair<AArch64_i32, AArch64_i64>, LegalizeTypePair<AArch64_i64, AArch64_i64>]>,
+    CoreCustom<(CoreInPairs (Slot 0), (Slot 1), AArch64_FSHLPairSet)>,
     CoreAlwaysLower
   ];
 }
 
 def AArch64_ROTR : LegalizeRuleSet<["G_ROTR"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_i32, AArch64_i64>, LegalizeTypePair<AArch64_i64, AArch64_i64>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_ROTRPairSet)>,
     CoreCustom<(CoreAll (CoreEq (SortOf (Slot 0)), KindScalar),
                         (CoreLt (BitsOf (Slot 1)), 64))>,
     CoreAlwaysLower
@@ -502,16 +792,16 @@ def AArch64_ROTL : LegalizeRuleSet<["G_ROTL"]> {
 
 def AArch64_SBFX : LegalizeRuleSet<["G_SBFX", "G_UBFX"]> {
   let Rules = [
-    CustomForPairs<[LegalizeTypePair<AArch64_s32, AArch64_s32>, LegalizeTypePair<AArch64_s64, AArch64_s64>]>
+    CoreCustom<(CoreInPairs (Slot 0), (Slot 1), AArch64_SBFXPairSet)>
   ];
 }
 
 def AArch64_CTPOP : LegalizeRuleSet<["G_CTPOP"]> {
   let Rules = [
-    LegalForPairsIf<AArch64_HasCSSC, [LegalizeTypePair<AArch64_i32, AArch64_i32>, LegalizeTypePair<AArch64_i64, AArch64_i64>]>,
-    LegalForPairs<[LegalizeTypePair<AArch64_v8i8, AArch64_v8i8>, LegalizeTypePair<AArch64_v16i8, AArch64_v16i8>]>,
-    CustomForPairsIf<AArch64_NotHasCSSC, [LegalizeTypePair<AArch64_s32, AArch64_s32>, LegalizeTypePair<AArch64_s64, AArch64_s64>]>,
-    CustomForPairs<[LegalizeTypePair<AArch64_s128, AArch64_s128>, LegalizeTypePair<AArch64_v4s16, AArch64_v4s16>, LegalizeTypePair<AArch64_v8s16, AArch64_v8s16>, LegalizeTypePair<AArch64_v2s32, AArch64_v2s32>, LegalizeTypePair<AArch64_v4s32, AArch64_v4s32>, LegalizeTypePair<AArch64_v2s64, AArch64_v2s64>]>,
+    CoreLegal<(CoreAll AArch64_HasCSSC, (CoreInPairs (Slot 0), (Slot 1), AArch64_CTPOPPairSet))>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_CTPOPPairSet2)>,
+    CoreCustom<(CoreAll (CoreNot AArch64_HasCSSC), (CoreInPairs (Slot 0), (Slot 1), AArch64_CTPOPPairSet3))>,
+    CoreCustom<(CoreInPairs (Slot 0), (Slot 1), AArch64_CTPOPPairSet4)>,
     CoreWiden<(Slot 0), (Ty AArch64_s32)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s128)>,
     CoreWiden<(Slot 0), (Pow2)>,
@@ -534,7 +824,7 @@ def AArch64_CTPOP : LegalizeRuleSet<["G_CTPOP"]> {
 
 def AArch64_CTLZ : LegalizeRuleSet<["G_CTLZ", "G_CTLS"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_i32, AArch64_i32>, LegalizeTypePair<AArch64_i64, AArch64_i64>, LegalizeTypePair<AArch64_v8i8, AArch64_v8i8>, LegalizeTypePair<AArch64_v16i8, AArch64_v16i8>, LegalizeTypePair<AArch64_v4i16, AArch64_v4i16>, LegalizeTypePair<AArch64_v8i16, AArch64_v8i16>, LegalizeTypePair<AArch64_v2i32, AArch64_v2i32>, LegalizeTypePair<AArch64_v4i32, AArch64_v4i32>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_CTLZPairSet)>,
     CoreWiden<(Slot 1), (Pow2Min 32)>,
     CoreWiden<(Slot 1), (Ty AArch64_s32)>,
     CoreNarrow<(Slot 1), (Ty AArch64_s64)>,
@@ -694,7 +984,7 @@ def AArch64_FREM : LegalizeRuleSet<["G_FREM", "G_FCOS", "G_FSIN", "G_FPOW", "G_F
 
 def AArch64_FPOWI : LegalizeRuleSet<["G_FPOWI", "G_FLDEXP"]> {
   let Rules = [
-    LibcallForPairs<[LegalizeTypePair<AArch64_f32, AArch64_i32>, LegalizeTypePair<AArch64_f64, AArch64_i32>, LegalizeTypePair<AArch64_f128, AArch64_i32>]>,
+    CoreLibcall<(CoreInPairs (Slot 0), (Slot 1), AArch64_FPOWIPairSet)>,
     CoreWidenIf<(Slot 0), (Replace (EltTypeTo (Slot 0), (Ty AArch64_f32))),
                 (CoreIn (Slot 0), AArch64_F16OrBF16Set)>,
     CoreScalarize<(Slot 0)>
@@ -703,21 +993,21 @@ def AArch64_FPOWI : LegalizeRuleSet<["G_FPOWI", "G_FLDEXP"]> {
 
 def AArch64_LROUND : LegalizeRuleSet<["G_LROUND", "G_INTRINSIC_LRINT"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_i32, AArch64_f32>, LegalizeTypePair<AArch64_i32, AArch64_f64>, LegalizeTypePair<AArch64_i64, AArch64_f32>, LegalizeTypePair<AArch64_i64, AArch64_f64>]>,
-    LegalForPairsIf<AArch64_HasFP16, [LegalizeTypePair<AArch64_i32, AArch64_f16>, LegalizeTypePair<AArch64_i64, AArch64_f16>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_LROUNDPairSet)>,
+    CoreLegal<(CoreAll AArch64_HasFP16, (CoreInPairs (Slot 0), (Slot 1), AArch64_LROUNDPairSet2))>,
     CoreWiden<(Slot 1), (Ty AArch64_s32)>,
-    LibcallForPairs<[LegalizeTypePair<AArch64_s64, AArch64_s128>]>,
+    CoreLibcall<(CoreInPairs (Slot 0), (Slot 1), AArch64_LROUNDPairSet3)>,
     CoreAlwaysLower
   ];
 }
 
 def AArch64_LLROUND : LegalizeRuleSet<["G_LLROUND", "G_INTRINSIC_LLRINT"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_i64, AArch64_f32>, LegalizeTypePair<AArch64_i64, AArch64_f64>]>,
-    LegalForPairsIf<AArch64_HasFP16, [LegalizeTypePair<AArch64_i64, AArch64_f16>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_LLROUNDPairSet)>,
+    CoreLegal<(CoreAll AArch64_HasFP16, (CoreInPairs (Slot 0), (Slot 1), AArch64_LLROUNDPairSet2))>,
     CoreWiden<(Slot 0), (Ty AArch64_s64)>,
     CoreWiden<(Slot 1), (Ty AArch64_s32)>,
-    LibcallForPairs<[LegalizeTypePair<AArch64_s64, AArch64_s128>]>,
+    CoreLibcall<(CoreInPairs (Slot 0), (Slot 1), AArch64_LLROUNDPairSet3)>,
     CoreAlwaysLower
   ];
 }
@@ -864,7 +1154,7 @@ def AArch64_FCONSTANT : LegalizeRuleSet<["G_FCONSTANT"]> {
 
 def AArch64_ICMP : LegalizeRuleSet<["G_ICMP"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_i32, AArch64_i32>, LegalizeTypePair<AArch64_i32, AArch64_i64>, LegalizeTypePair<AArch64_i32, AArch64_p0>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_ICMPPairSet)>,
     CoreWiden<(ElemOf (Slot 1)), (Pow2)>,
     CoreWiden<(ElemOf (Slot 1)), (Ty AArch64_s8)>,
     CoreWiden<(Slot 1), (Ty AArch64_s32)>,
@@ -897,8 +1187,8 @@ def AArch64_ICMP : LegalizeRuleSet<["G_ICMP"]> {
 
 def AArch64_FCMP : LegalizeRuleSet<["G_FCMP"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_i32, AArch64_f32>, LegalizeTypePair<AArch64_i32, AArch64_f64>, LegalizeTypePair<AArch64_v4i32, AArch64_v4f32>, LegalizeTypePair<AArch64_v2i32, AArch64_v2f32>, LegalizeTypePair<AArch64_v2i64, AArch64_v2f64>]>,
-    LegalForPairsIf<AArch64_HasFP16, [LegalizeTypePair<AArch64_i32, AArch64_f16>, LegalizeTypePair<AArch64_v4i16, AArch64_v4f16>, LegalizeTypePair<AArch64_v8i16, AArch64_v8f16>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_FCMPPairSet)>,
+    CoreLegal<(CoreAll AArch64_HasFP16, (CoreInPairs (Slot 0), (Slot 1), AArch64_FCMPPairSet2))>,
     CoreWiden<(ElemOf (Slot 1)), (Pow2)>,
     CoreWiden<(Slot 0), (Ty AArch64_s32)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s32)>,
@@ -917,7 +1207,7 @@ def AArch64_FCMP : LegalizeRuleSet<["G_FCMP"]> {
     CoreClampMaxNumElements<1, AArch64_s32, 4>,
     CoreClampMaxNumElements<1, AArch64_s64, 2>,
     CoreMore<(Slot 1), (Pow2)>,
-    LibcallForPairs<[LegalizeTypePair<AArch64_s32, AArch64_s128>]>
+    CoreLibcall<(CoreInPairs (Slot 0), (Slot 1), AArch64_FCMPPairSet3)>
   ];
 }
 
@@ -929,7 +1219,7 @@ def AArch64_ZEXT : LegalizeRuleSet<["G_ZEXT", "G_SEXT", "G_ANYEXT"]> {
                        (CoreIsPow2 (SizeOf (Slot 0))),
                        (CoreGe (SizeOf (Slot 1)), 8),
                        (CoreIsPow2 (SizeOf (Slot 1))))>,
-    LegalForPairs<[LegalizeTypePair<AArch64_v8s16, AArch64_v8s8>, LegalizeTypePair<AArch64_v4s32, AArch64_v4s16>, LegalizeTypePair<AArch64_v2s64, AArch64_v2s32>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_ZEXTPairSet)>,
     CoreWiden<(Slot 0), (Ty AArch64_s64)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s64)>,
     CoreMore<(Slot 0), (Pow2)>,
@@ -949,7 +1239,7 @@ def AArch64_ZEXT : LegalizeRuleSet<["G_ZEXT", "G_SEXT", "G_ANYEXT"]> {
 
 def AArch64_TRUNC : LegalizeRuleSet<["G_TRUNC"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_v8s8, AArch64_v8s16>, LegalizeTypePair<AArch64_v4s16, AArch64_v4s32>, LegalizeTypePair<AArch64_v2s32, AArch64_v2s64>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_TRUNCPairSet)>,
     CoreMore<(Slot 0), (Pow2)>,
     CoreClampMaxNumElements<0, AArch64_s8, 8>,
     CoreClampMaxNumElements<0, AArch64_s16, 4>,
@@ -968,7 +1258,7 @@ def AArch64_TRUNC : LegalizeRuleSet<["G_TRUNC"]> {
 
 def AArch64_TRUNC_SSAT_S : LegalizeRuleSet<["G_TRUNC_SSAT_S", "G_TRUNC_SSAT_U", "G_TRUNC_USAT_U"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_v8i8, AArch64_v8i16>, LegalizeTypePair<AArch64_v4i16, AArch64_v4i32>, LegalizeTypePair<AArch64_v2i32, AArch64_v2i64>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_TRUNC_SSAT_SPairSet)>,
     CoreClampMinNumElements<0, AArch64_s8, 8>,
     CoreClampMaxNumElements<0, AArch64_s8, 8>,
     CoreClampMinNumElements<0, AArch64_s16, 4>,
@@ -996,13 +1286,13 @@ def AArch64_SEXT_INREG : LegalizeRuleSet<["G_SEXT_INREG"]> {
 
 def AArch64_FPTRUNC : LegalizeRuleSet<["G_FPTRUNC"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_f16, AArch64_f32>, LegalizeTypePair<AArch64_f16, AArch64_f64>, LegalizeTypePair<AArch64_f32, AArch64_f64>, LegalizeTypePair<AArch64_v4f16, AArch64_v4f32>, LegalizeTypePair<AArch64_v2f32, AArch64_v2f64>]>,
-    LegalForPairsIf<AArch64_HasBF16, [LegalizeTypePair<AArch64_bf16, AArch64_f32>, LegalizeTypePair<AArch64_v4bf16, AArch64_v4f32>]>,
-    LibcallForPairs<[LegalizeTypePair<AArch64_f16, AArch64_f128>, LegalizeTypePair<AArch64_f32, AArch64_f128>, LegalizeTypePair<AArch64_f64, AArch64_f128>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_FPTRUNCPairSet)>,
+    CoreLegal<(CoreAll AArch64_HasBF16, (CoreInPairs (Slot 0), (Slot 1), AArch64_FPTRUNCPairSet2))>,
+    CoreLibcall<(CoreInPairs (Slot 0), (Slot 1), AArch64_FPTRUNCPairSet3)>,
     CoreMore<(Slot 1), (Pow2)>,
     CoreCustom<(CoreAll (CoreEq (BitsOf (Slot 1)), 64),
                        (CoreEq (BitsOf (Slot 0)), 16))>,
-    LowerForPairs<[LegalizeTypePair<AArch64_bf16, AArch64_f32>, LegalizeTypePair<AArch64_v4bf16, AArch64_v4f32>]>,
+    CoreLower<(CoreInPairs (Slot 0), (Slot 1), AArch64_FPTRUNCPairSet2)>,
     CoreClampMinNumElements<1, AArch64_s32, 4>,
     CoreClampMaxNumElements<1, AArch64_s32, 4>,
     CoreClampMinNumElements<1, AArch64_s64, 2>,
@@ -1013,8 +1303,8 @@ def AArch64_FPTRUNC : LegalizeRuleSet<["G_FPTRUNC"]> {
 
 def AArch64_FPEXT : LegalizeRuleSet<["G_FPEXT"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_f32, AArch64_f16>, LegalizeTypePair<AArch64_f64, AArch64_f16>, LegalizeTypePair<AArch64_f32, AArch64_bf16>, LegalizeTypePair<AArch64_f64, AArch64_f32>, LegalizeTypePair<AArch64_v4f32, AArch64_v4f16>, LegalizeTypePair<AArch64_v4f32, AArch64_v4bf16>, LegalizeTypePair<AArch64_v2f64, AArch64_v2f32>]>,
-    LibcallForPairs<[LegalizeTypePair<AArch64_f128, AArch64_f64>, LegalizeTypePair<AArch64_f128, AArch64_f32>, LegalizeTypePair<AArch64_f128, AArch64_f16>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_FPEXTPairSet)>,
+    CoreLibcall<(CoreInPairs (Slot 0), (Slot 1), AArch64_FPEXTPairSet2)>,
     CoreMore<(Slot 0), (Pow2)>,
     CoreWidenIf<(Slot 1), (Replace (EltTypeTo (Slot 1), (Ty AArch64_f32))),
                 (CoreAll (CoreEq (SortOf (Slot 1)), KindVector),
@@ -1031,8 +1321,8 @@ def AArch64_FPEXT : LegalizeRuleSet<["G_FPEXT"]> {
 
 def AArch64_FPTOSI : LegalizeRuleSet<["G_FPTOSI", "G_FPTOUI"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_i32, AArch64_f32>, LegalizeTypePair<AArch64_i64, AArch64_f32>, LegalizeTypePair<AArch64_i32, AArch64_f64>, LegalizeTypePair<AArch64_i64, AArch64_f64>, LegalizeTypePair<AArch64_v2i32, AArch64_v2f32>, LegalizeTypePair<AArch64_v4i32, AArch64_v4f32>, LegalizeTypePair<AArch64_v2i64, AArch64_v2f64>]>,
-    LegalForPairsIf<AArch64_HasFP16, [LegalizeTypePair<AArch64_i32, AArch64_f16>, LegalizeTypePair<AArch64_i64, AArch64_f16>, LegalizeTypePair<AArch64_v4i16, AArch64_v4f16>, LegalizeTypePair<AArch64_v8i16, AArch64_v8f16>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_FPTOSIPairSet)>,
+    CoreLegal<(CoreAll AArch64_HasFP16, (CoreInPairs (Slot 0), (Slot 1), AArch64_FPTOSIPairSet2))>,
     CoreScalarizeIf<(Slot 0), (CoreGt (BitsOf (Slot 0)), 64)>,
     CoreScalarizeIf<(Slot 1), (CoreGt (BitsOf (Slot 1)), 64)>,
     CoreNarrowIf<(Slot 0), (Replace (Ty AArch64_i64)),
@@ -1052,14 +1342,14 @@ def AArch64_FPTOSI : LegalizeRuleSet<["G_FPTOSI", "G_FPTOUI"]> {
     CoreClampMinNumElements<0, AArch64_s32, 2>,
     CoreClampMaxNumElements<0, AArch64_s32, 4>,
     CoreClampMaxNumElements<0, AArch64_s64, 2>,
-    LibcallForPairs<[LegalizeTypePair<AArch64_i32, AArch64_f128>, LegalizeTypePair<AArch64_i64, AArch64_f128>, LegalizeTypePair<AArch64_i128, AArch64_f128>, LegalizeTypePair<AArch64_i128, AArch64_f32>, LegalizeTypePair<AArch64_i128, AArch64_f64>]>
+    CoreLibcall<(CoreInPairs (Slot 0), (Slot 1), AArch64_FPTOSIPairSet3)>
   ];
 }
 
 def AArch64_FPTOSI_SAT : LegalizeRuleSet<["G_FPTOSI_SAT", "G_FPTOUI_SAT"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_i32, AArch64_f32>, LegalizeTypePair<AArch64_i64, AArch64_f32>, LegalizeTypePair<AArch64_i32, AArch64_f64>, LegalizeTypePair<AArch64_i64, AArch64_f64>, LegalizeTypePair<AArch64_v2i32, AArch64_v2f32>, LegalizeTypePair<AArch64_v4i32, AArch64_v4f32>, LegalizeTypePair<AArch64_v2i64, AArch64_v2f64>]>,
-    LegalForPairsIf<AArch64_HasFP16, [LegalizeTypePair<AArch64_i16, AArch64_f16>, LegalizeTypePair<AArch64_i32, AArch64_f16>, LegalizeTypePair<AArch64_i64, AArch64_f16>, LegalizeTypePair<AArch64_v4i16, AArch64_v4f16>, LegalizeTypePair<AArch64_v8i16, AArch64_v8f16>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_FPTOSI_SATPairSet)>,
+    CoreLegal<(CoreAll AArch64_HasFP16, (CoreInPairs (Slot 0), (Slot 1), AArch64_FPTOSI_SATPairSet2))>,
     CoreScalarizeIf<(Slot 0), (CoreGt (BitsOf (Slot 0)), 64)>,
     CoreScalarizeIf<(Slot 1), (CoreGt (BitsOf (Slot 1)), 64)>,
     CoreNarrowIf<(Slot 0), (Replace (Ty AArch64_i64)),
@@ -1095,8 +1385,8 @@ def AArch64_FPTOSI_SAT : LegalizeRuleSet<["G_FPTOSI_SAT", "G_FPTOUI_SAT"]> {
 
 def AArch64_SITOFP : LegalizeRuleSet<["G_SITOFP", "G_UITOFP"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_f32, AArch64_i32>, LegalizeTypePair<AArch64_f64, AArch64_i32>, LegalizeTypePair<AArch64_f32, AArch64_i64>, LegalizeTypePair<AArch64_f64, AArch64_i64>, LegalizeTypePair<AArch64_v2f32, AArch64_v2i32>, LegalizeTypePair<AArch64_v4f32, AArch64_v4i32>, LegalizeTypePair<AArch64_v2f64, AArch64_v2i64>]>,
-    LegalForPairsIf<AArch64_HasFP16, [LegalizeTypePair<AArch64_f16, AArch64_i32>, LegalizeTypePair<AArch64_f16, AArch64_i64>, LegalizeTypePair<AArch64_v4f16, AArch64_v4i16>, LegalizeTypePair<AArch64_v8f16, AArch64_v8i16>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_SITOFPPairSet)>,
+    CoreLegal<(CoreAll AArch64_HasFP16, (CoreInPairs (Slot 0), (Slot 1), AArch64_SITOFPPairSet2))>,
     CoreUnsupported<(IsBFloat16 (ScalarOf (Slot 0)))>,
     CoreScalarizeIf<(Slot 1), (CoreGt (BitsOf (Slot 1)), 64)>,
     CoreScalarizeIf<(Slot 0), (CoreGt (BitsOf (Slot 0)), 64)>,
@@ -1116,7 +1406,7 @@ def AArch64_SITOFP : LegalizeRuleSet<["G_SITOFP", "G_UITOFP"]> {
     CoreClampMinNumElements<0, AArch64_s32, 2>,
     CoreClampMaxNumElements<0, AArch64_s32, 4>,
     CoreClampMaxNumElements<0, AArch64_s64, 2>,
-    LibcallForPairs<[LegalizeTypePair<AArch64_f16, AArch64_i128>, LegalizeTypePair<AArch64_f32, AArch64_i128>, LegalizeTypePair<AArch64_f64, AArch64_i128>, LegalizeTypePair<AArch64_f128, AArch64_i128>, LegalizeTypePair<AArch64_f128, AArch64_i32>, LegalizeTypePair<AArch64_f128, AArch64_i64>]>
+    CoreLibcall<(CoreInPairs (Slot 0), (Slot 1), AArch64_SITOFPPairSet3)>
   ];
 }
 
@@ -1142,7 +1432,7 @@ def AArch64_BRINDIRECT : LegalizeRuleSet<["G_BRINDIRECT"]> {
 
 def AArch64_SELECT : LegalizeRuleSet<["G_SELECT"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_s32, AArch64_s32>, LegalizeTypePair<AArch64_s64, AArch64_s32>, LegalizeTypePair<AArch64_p0, AArch64_s32>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_SELECTPairSet)>,
     CoreWiden<(Slot 0), (Pow2)>,
     CoreWiden<(Slot 0), (Ty AArch64_s32)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s64)>,
@@ -1178,7 +1468,7 @@ def AArch64_PTRAUTH_GLOBAL_VALUE : LegalizeRuleSet<["G_PTRAUTH_GLOBAL_VALUE"]> {
 
 def AArch64_PTRTOINT : LegalizeRuleSet<["G_PTRTOINT"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_i64, AArch64_p0>, LegalizeTypePair<AArch64_v2i64, AArch64_v2p0>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_PTRTOINTPairSet)>,
     CoreWiden<(Slot 0), (Pow2Min 64)>,
     CoreWiden<(Slot 0), (Ty AArch64_s64)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s64)>,
@@ -1189,7 +1479,7 @@ def AArch64_PTRTOINT : LegalizeRuleSet<["G_PTRTOINT"]> {
 def AArch64_INTTOPTR : LegalizeRuleSet<["G_INTTOPTR"]> {
   let Rules = [
     CoreUnsupported<(CoreNe (SizeOf (Slot 0)), (SizeOf (Slot 1)))>,
-    LegalForPairs<[LegalizeTypePair<AArch64_p0, AArch64_i64>, LegalizeTypePair<AArch64_v2p0, AArch64_v2i64>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_INTTOPTRPairSet)>,
     CoreClampMaxNumElements<1, AArch64_s64, 2>
   ];
 }
@@ -1255,9 +1545,9 @@ def AArch64_ATOMIC_CMPXCHG_WITH_SUCCESS : LegalizeRuleSet<["G_ATOMIC_CMPXCHG_WIT
 
 def AArch64_ATOMIC_CMPXCHG : LegalizeRuleSet<["G_ATOMIC_CMPXCHG"]> {
   let Rules = [
-    LegalForPairsIf<AArch64_NotUseOutlineAtomics, [LegalizeTypePair<AArch64_s32, AArch64_p0>, LegalizeTypePair<AArch64_s64, AArch64_p0>]>,
-    CustomForPairsIf<AArch64_NotUseOutlineAtomics, [LegalizeTypePair<AArch64_s128, AArch64_p0>]>,
-    LibcallForPairsIf<AArch64_UseOutlineAtomics, [LegalizeTypePair<AArch64_s8, AArch64_p0>, LegalizeTypePair<AArch64_s16, AArch64_p0>, LegalizeTypePair<AArch64_s32, AArch64_p0>, LegalizeTypePair<AArch64_s64, AArch64_p0>, LegalizeTypePair<AArch64_s128, AArch64_p0>]>,
+    CoreLegal<(CoreAll (CoreNot AArch64_UseOutlineAtomics), (CoreInPairs (Slot 0), (Slot 1), AArch64_ATOMIC_CMPXCHGPairSet))>,
+    CoreCustom<(CoreAll (CoreNot AArch64_UseOutlineAtomics), (CoreInPairs (Slot 0), (Slot 1), AArch64_ATOMIC_CMPXCHGPairSet2))>,
+    CoreLibcall<(CoreAll AArch64_UseOutlineAtomics, (CoreInPairs (Slot 0), (Slot 1), AArch64_ATOMIC_CMPXCHGPairSet3))>,
     CoreWiden<(Slot 0), (Ty AArch64_s32)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s64)>
   ];
@@ -1265,8 +1555,8 @@ def AArch64_ATOMIC_CMPXCHG : LegalizeRuleSet<["G_ATOMIC_CMPXCHG"]> {
 
 def AArch64_ATOMICRMW_XCHG : LegalizeRuleSet<["G_ATOMICRMW_XCHG", "G_ATOMICRMW_ADD", "G_ATOMICRMW_SUB", "G_ATOMICRMW_AND", "G_ATOMICRMW_OR", "G_ATOMICRMW_XOR"]> {
   let Rules = [
-    LegalForPairsIf<AArch64_NotUseOutlineAtomics, [LegalizeTypePair<AArch64_s32, AArch64_p0>, LegalizeTypePair<AArch64_s64, AArch64_p0>]>,
-    LibcallForPairsIf<AArch64_UseOutlineAtomics, [LegalizeTypePair<AArch64_s8, AArch64_p0>, LegalizeTypePair<AArch64_s16, AArch64_p0>, LegalizeTypePair<AArch64_s32, AArch64_p0>, LegalizeTypePair<AArch64_s64, AArch64_p0>]>,
+    CoreLegal<(CoreAll (CoreNot AArch64_UseOutlineAtomics), (CoreInPairs (Slot 0), (Slot 1), AArch64_ATOMICRMW_XCHGPairSet))>,
+    CoreLibcall<(CoreAll AArch64_UseOutlineAtomics, (CoreInPairs (Slot 0), (Slot 1), AArch64_ATOMICRMW_XCHGPairSet2))>,
     CoreWiden<(Slot 0), (Ty AArch64_s32)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s64)>
   ];
@@ -1289,7 +1579,7 @@ def AArch64_BLOCK_ADDR : LegalizeRuleSet<["G_BLOCK_ADDR"]> {
 
 def AArch64_EXTRACT_VECTOR_ELT : LegalizeRuleSet<["G_EXTRACT_VECTOR_ELT"]> {
   let Rules = [
-    LegalForTriplesIf<AArch64_HasSVE, [LegalizeTypeTriple<AArch64_s16, AArch64_nxv16s8, AArch64_s64>, LegalizeTypeTriple<AArch64_s16, AArch64_nxv8s16, AArch64_s64>, LegalizeTypeTriple<AArch64_s32, AArch64_nxv4s32, AArch64_s64>, LegalizeTypeTriple<AArch64_s64, AArch64_nxv2s64, AArch64_s64>]>,
+    CoreLegal<(CoreAll AArch64_HasSVE, (CoreInTriples (Slot 0), (Slot 1), (Slot 2), AArch64_EXTRACT_VECTOR_ELTTripleSet))>,
     CoreUnsupported<(CoreAll (CoreNot (CoreEq (SortOf (Slot 1)),
                                                KindScalableVector)),
                              (CoreNe (Slot 0), (ElemOf (Slot 1))))>,
@@ -1325,7 +1615,7 @@ def AArch64_EXTRACT_VECTOR_ELT : LegalizeRuleSet<["G_EXTRACT_VECTOR_ELT"]> {
 def AArch64_INSERT_VECTOR_ELT : LegalizeRuleSet<["G_INSERT_VECTOR_ELT"]> {
   let Rules = [
     CoreLegal<(CoreIn (Slot 0), AArch64_PackedVectorCoreSet)>,
-    LegalForTriplesIf<AArch64_HasSVE, [LegalizeTypeTriple<AArch64_nxv16s8, AArch64_s32, AArch64_s64>, LegalizeTypeTriple<AArch64_nxv8s16, AArch64_s32, AArch64_s64>, LegalizeTypeTriple<AArch64_nxv4s32, AArch64_s32, AArch64_s64>, LegalizeTypeTriple<AArch64_nxv2s64, AArch64_s64, AArch64_s64>]>,
+    CoreLegal<(CoreAll AArch64_HasSVE, (CoreInTriples (Slot 0), (Slot 1), (Slot 2), AArch64_INSERT_VECTOR_ELTTripleSet))>,
     CoreMore<(Slot 0), (Pow2)>,
     CoreWiden<(ElemOf (Slot 0)), (MinVectorSize 64)>,
     CoreClampMinNumElements<0, AArch64_s8, 8>,
@@ -1342,7 +1632,7 @@ def AArch64_INSERT_VECTOR_ELT : LegalizeRuleSet<["G_INSERT_VECTOR_ELT"]> {
 
 def AArch64_BUILD_VECTOR : LegalizeRuleSet<["G_BUILD_VECTOR"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_v8s8, AArch64_s8>, LegalizeTypePair<AArch64_v16s8, AArch64_s8>, LegalizeTypePair<AArch64_v4s16, AArch64_s16>, LegalizeTypePair<AArch64_v8s16, AArch64_s16>, LegalizeTypePair<AArch64_v2s32, AArch64_s32>, LegalizeTypePair<AArch64_v4s32, AArch64_s32>, LegalizeTypePair<AArch64_v2s64, AArch64_s64>, LegalizeTypePair<AArch64_v2p0, AArch64_p0>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_BUILD_VECTORPairSet)>,
     CoreClampMinNumElements<0, AArch64_s32, 4>,
     CoreClampMaxNumElements<0, AArch64_s32, 4>,
     CoreClampMinNumElements<0, AArch64_s64, 2>,
@@ -1362,8 +1652,8 @@ def AArch64_BUILD_VECTOR_TRUNC : LegalizeRuleSet<["G_BUILD_VECTOR_TRUNC"]> {
 
 def AArch64_SPLAT_VECTOR : LegalizeRuleSet<["G_SPLAT_VECTOR"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_v8s8, AArch64_s8>, LegalizeTypePair<AArch64_v8s8, AArch64_s32>, LegalizeTypePair<AArch64_v16s8, AArch64_s8>, LegalizeTypePair<AArch64_v16s8, AArch64_s32>, LegalizeTypePair<AArch64_v4s16, AArch64_s16>, LegalizeTypePair<AArch64_v4s16, AArch64_s32>, LegalizeTypePair<AArch64_v8s16, AArch64_s16>, LegalizeTypePair<AArch64_v8s16, AArch64_s32>, LegalizeTypePair<AArch64_v2s32, AArch64_s32>, LegalizeTypePair<AArch64_v4s32, AArch64_s32>, LegalizeTypePair<AArch64_v2s64, AArch64_s64>, LegalizeTypePair<AArch64_v2p0, AArch64_p0>]>,
-    LegalForPairsIf<AArch64_HasSVE, [LegalizeTypePair<AArch64_nxv4s32, AArch64_s32>, LegalizeTypePair<AArch64_nxv2s64, AArch64_s64>]>
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_SPLAT_VECTORPairSet)>,
+    CoreLegal<(CoreAll AArch64_HasSVE, (CoreInPairs (Slot 0), (Slot 1), AArch64_SPLAT_VECTORPairSet2))>
   ];
 }
 
@@ -1393,7 +1683,7 @@ def AArch64_SHUFFLE_VECTOR : LegalizeRuleSet<["G_SHUFFLE_VECTOR"]> {
 
 def AArch64_CONCAT_VECTORS : LegalizeRuleSet<["G_CONCAT_VECTORS"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_v16s8, AArch64_v8s8>, LegalizeTypePair<AArch64_v8s16, AArch64_v4s16>, LegalizeTypePair<AArch64_v4s32, AArch64_v2s32>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_CONCAT_VECTORSPairSet)>,
     CoreCustom<(CoreAll (CoreEq (SortOf (Slot 0)), KindVector),
                         (CoreNot (CoreEq (SortOf (Slot 0)),
                                          KindScalableVector)),
@@ -1414,7 +1704,7 @@ def AArch64_CONCAT_VECTORS : LegalizeRuleSet<["G_CONCAT_VECTORS"]> {
 
 def AArch64_EXTRACT_SUBVECTOR : LegalizeRuleSet<["G_EXTRACT_SUBVECTOR"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_v8s8, AArch64_v16s8>, LegalizeTypePair<AArch64_v4s16, AArch64_v8s16>, LegalizeTypePair<AArch64_v2s32, AArch64_v4s32>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_EXTRACT_SUBVECTORPairSet)>,
     CoreWiden<(ElemOf (Slot 0)), (Pow2)>,
     CoreClampMaxNumElements<0, AArch64_s8, 16>,
     CoreClampMaxNumElements<0, AArch64_s16, 8>,
@@ -1438,7 +1728,7 @@ def AArch64_JUMP_TABLE : LegalizeRuleSet<["G_JUMP_TABLE"]> {
 
 def AArch64_BRJT : LegalizeRuleSet<["G_BRJT"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_p0, AArch64_s64>]>
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_BRJTPairSet)>
   ];
 }
 
@@ -1524,8 +1814,8 @@ def AArch64_MEMSET_INLINE : LegalizeRuleSet<["G_MEMSET_INLINE"]> {
 
 def AArch64_VECREDUCE_FADD : LegalizeRuleSet<["G_VECREDUCE_FADD"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_f32, AArch64_v2f32>, LegalizeTypePair<AArch64_f32, AArch64_v4f32>, LegalizeTypePair<AArch64_f64, AArch64_v2f64>]>,
-    LegalForPairsIf<AArch64_HasFP16, [LegalizeTypePair<AArch64_f16, AArch64_v4f16>, LegalizeTypePair<AArch64_f16, AArch64_v8f16>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_VECREDUCE_FADDPairSet)>,
+    CoreLegal<(CoreAll AArch64_HasFP16, (CoreInPairs (Slot 0), (Slot 1), AArch64_VECREDUCE_FADDPairSet2))>,
     CoreWidenIf<(Slot 0), (Replace (EltTypeTo (Slot 0), (Ty AArch64_f32))),
                 (CoreAny (CoreAll (CoreNot AArch64_HasFP16),
                                   (IsFloat16 (ScalarOf (Slot 0)))),
@@ -1564,7 +1854,7 @@ def AArch64_VECREDUCE_SEQ_FADD : LegalizeRuleSet<["G_VECREDUCE_SEQ_FADD", "G_VEC
 
 def AArch64_VECREDUCE_ADD : LegalizeRuleSet<["G_VECREDUCE_ADD"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_i8, AArch64_v8i8>, LegalizeTypePair<AArch64_i8, AArch64_v16i8>, LegalizeTypePair<AArch64_i16, AArch64_v4i16>, LegalizeTypePair<AArch64_i16, AArch64_v8i16>, LegalizeTypePair<AArch64_i32, AArch64_v2i32>, LegalizeTypePair<AArch64_i32, AArch64_v4i32>, LegalizeTypePair<AArch64_i64, AArch64_v2i64>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_VECREDUCE_ADDPairSet)>,
     CoreMore<(Slot 1), (Pow2)>,
     CoreClampMaxNumElements<1, AArch64_s64, 2>,
     CoreClampMaxNumElements<1, AArch64_s32, 4>,
@@ -1577,8 +1867,8 @@ def AArch64_VECREDUCE_ADD : LegalizeRuleSet<["G_VECREDUCE_ADD"]> {
 
 def AArch64_VECREDUCE_FMIN : LegalizeRuleSet<["G_VECREDUCE_FMIN", "G_VECREDUCE_FMAX", "G_VECREDUCE_FMINIMUM", "G_VECREDUCE_FMAXIMUM"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_f32, AArch64_v2f32>, LegalizeTypePair<AArch64_f32, AArch64_v4f32>, LegalizeTypePair<AArch64_f64, AArch64_v2f64>]>,
-    LegalForPairsIf<AArch64_HasFP16, [LegalizeTypePair<AArch64_f16, AArch64_v4f16>, LegalizeTypePair<AArch64_f16, AArch64_v8f16>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_VECREDUCE_FMINPairSet)>,
+    CoreLegal<(CoreAll AArch64_HasFP16, (CoreInPairs (Slot 0), (Slot 1), AArch64_VECREDUCE_FMINPairSet2))>,
     CoreWidenIf<(Slot 0), (Replace (EltTypeTo (Slot 0), (Ty AArch64_f32))),
                 (CoreAny (CoreAll (CoreNot AArch64_HasFP16),
                                   (IsFloat16 (ScalarOf (Slot 0)))),
@@ -1603,7 +1893,7 @@ def AArch64_VECREDUCE_MUL : LegalizeRuleSet<["G_VECREDUCE_MUL"]> {
 
 def AArch64_VECREDUCE_SMIN : LegalizeRuleSet<["G_VECREDUCE_SMIN", "G_VECREDUCE_SMAX", "G_VECREDUCE_UMIN", "G_VECREDUCE_UMAX"]> {
   let Rules = [
-    LegalForPairs<[LegalizeTypePair<AArch64_i8, AArch64_v8i8>, LegalizeTypePair<AArch64_i8, AArch64_v16i8>, LegalizeTypePair<AArch64_i16, AArch64_v4i16>, LegalizeTypePair<AArch64_i16, AArch64_v8i16>, LegalizeTypePair<AArch64_i32, AArch64_v2i32>, LegalizeTypePair<AArch64_i32, AArch64_v4i32>]>,
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), AArch64_VECREDUCE_SMINPairSet)>,
     CoreMoreIf<(Slot 1), (Pow2),
                (CoreAll (CoreEq (SortOf (Slot 1)), KindVector),
                         (CoreNe (ElemOf (Slot 1)), (Ty AArch64_s8)),

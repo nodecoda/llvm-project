@@ -1,6 +1,7 @@
 // RUN: llvm-tblgen -gen-legalizer-check -I %p/../../include %s | FileCheck %s --check-prefix=CHECK
 // RUN: llvm-tblgen -gen-legalizer -I %p/../../include %s | FileCheck %s --check-prefix=CXX
 // RUN: llvm-tblgen -gen-legalizer-core -I %p/../../include %s | FileCheck %s --check-prefix=CORE
+// RUN: llvm-tblgen -gen-legalizer-table-points -I %p/../../include %s | FileCheck %s --check-prefix=POINTS
 
 // One rule per primitive.  The point of the file is that every operator,
 // constructor, observer, and combinator parses, type-checks, serializes, and
@@ -121,7 +122,26 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
   ];
 }
 
-// CHECK:       "core_rules": 57,
+// A tuple set is a table of query shapes, not a disjunction of per-slot
+// comparisons: the rule names the slots and the set names the tuples.
+def PairSet   : LegalizeCoreTypePairSet<[LegalizeTypePair<s32, s64>]>;
+def TripleSet : LegalizeCoreTypeTripleSet<
+    [LegalizeTypeTriple<s32, s64, s32>, LegalizeTypeTriple<s64, s32, s64>]>;
+
+def PairRules : LegalizeRuleSet<["G_PAIR"]> {
+  let Rules = [
+    CoreLegal<(CoreInPairs (Slot 0), (Slot 1), PairSet)>,
+    CoreCustom<(CoreAll Is32, (CoreInPairs (Slot 0), (Slot 1), PairSet))>
+  ];
+}
+
+def TripleRules : LegalizeRuleSet<["G_TRIPLE"]> {
+  let Rules = [
+    CoreLegal<(CoreInTriples (Slot 0), (Slot 1), (Slot 2), TripleSet)>
+  ];
+}
+
+// CHECK:       "core_rules": 60,
 // CHECK:       "core_operators": ["bitcast", "custom", "fewer", "legal", "libcall", "lower", "more", "narrow", "scalarize", "unsupported", "widen"]
 
 // CXX: .coreWidenScalarToNextPow2([](const LegalityQuery &) { return true; }, 0)
@@ -182,6 +202,10 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
 // CXX: .coreFewerTo([](const LegalityQuery &) { return true; }, 0, [=](const LegalityQuery &Query) { return std::make_pair(0, LLT::scalarOrVector(ElementCount::getFixed(4), Query.Types[0])); })
 // CXX: .coreLibcallIf([=](const LegalityQuery &Query) { return !(Is32); });
 
+// CXX: .coreLegalIf([=](const LegalityQuery &Query) { return LegalityPredicates::typePairInSet(0, 1, {{.*}}s32, s64{{.*}})(Query); })
+// CXX: .coreCustomIf([=](const LegalityQuery &Query) { return (Is32) && (LegalityPredicates::typePairInSet(0, 1, {{.*}}s32, s64{{.*}})(Query)); })
+// CXX: .coreLegalIf([=](const LegalityQuery &Query) { return LegalityPredicates::typeTupleInSet(0, 1, 2, {{.*}}s32, s64, s32{{.*}}s64, s32, s64{{.*}}(Query); })
+
 // CORE:       "version": "0.4",
 // CORE:       "op": "widen", "on": {"kind":"slot","index":0}, "to": {"kind":"pow2"}
 // CORE:       "op": "widen", "on": {"kind":"elemOf","args":[{"kind":"slot","index":0}]}, "to": {"kind":"pow2Min","args":[{"kind":"int","value":16}]}
@@ -215,3 +239,9 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
 // CORE:       "op": "fewer", "on": {"kind":"slot","index":0}, "to": {"kind":"replace","args":[{"kind":"scalarOrVecOf","args":[{"kind":"int","value":4},{"kind":"elemOf","args":[{"kind":"slot","index":0}]}]}]}
 // CORE:       "op": "fewer", "on": {"kind":"slot","index":0}, "to": {"kind":"replace","args":[{"kind":"scalarOrVecOf","args":[{"kind":"int","value":4},{"kind":"slot","index":0}]}]}
 // CORE:       "op": "libcall", "ruleset": "AllPrimitives"
+// CORE: "predicate":{"kind":"inPairs","args":[{"kind":"slot","index":0},{"kind":"slot","index":1},{"kind":"set","of":"Type","arity":2,"elems":{{.*}}"s32","s64"{{.*}}
+// CORE: "predicate":{"kind":"all","args":[{"kind":"leaf","name":"hasFeature","args":["Subtarget.is32()"]},{"kind":"inPairs"{{.*}}"arity":2,"elems":{{.*}}"s32","s64"{{.*}}
+// CORE: "predicate":{"kind":"inTriples"{{.*}}"arity":3,"elems":{{.*}}"s32","s64","s32"{{.*}}"s64","s32","s64"{{.*}}
+
+// POINTS: {TargetOpcode::G_PAIR, "G_PAIR", 2, {LLT::scalar(32), LLT::scalar(64), LLT()}
+// POINTS: {TargetOpcode::G_TRIPLE, "G_TRIPLE", 3, {LLT::scalar(32), LLT::scalar(64), LLT::scalar(32)}

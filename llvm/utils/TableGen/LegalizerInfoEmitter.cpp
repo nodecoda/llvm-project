@@ -2046,8 +2046,20 @@ static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
     const Record *R = N.Op;
     if (R->isSubClassOf("LegalizeNamedType"))
       return Records.getDef("SortType");
-    if (R->isSubClassOf("LegalizeCoreSet"))
+    if (R->isSubClassOf("LegalizeCoreSet")) {
+      // A tuple set is a table of query shapes, not a value.  Only the
+      // matching `in`-family operator consumes it, and that operator checks
+      // the arity; using one as a value would silently read it as a set of
+      // its first column.
+      const int Arity = R->getValueAsInt("Arity");
+      if (Arity != 1)
+        PrintFatalError(Owner.getLoc(),
+                        "core rule: '" + R->getName() + "' is a set of " +
+                            std::to_string(Arity) +
+                            "-tuples and can only be the last operand of "
+                            "'inPairs' or 'inTriples'");
       return R->getValueAsDef("ElemSort");
+    }
     if (R->isSubClassOf("LegalizeCoreExpr"))
       return R->getValueAsDef("Result");
     // A cached per-subtarget bool is already a Bool leaf; a rule may name the
@@ -2078,26 +2090,56 @@ static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
   // The set-membership and comparison nodes are polymorphic; their operand
   // sorts are stated as constraints rather than a fixed signature.
   if (Op->getValueAsBit("SetMembership")) {
-    if (N.Kids.size() != 2)
-      PrintFatalError(Owner.getLoc(), "core rule: '" + Name +
-                                          "' expects 2 operands, got " +
-                                          std::to_string(N.Kids.size()));
-    const Record *Lhs = coreSortOf(*N.Kids[0], Records, Owner);
-    const CoreNode &RhsNode = *N.Kids[1];
+    if (N.Kids.size() < 2)
+      PrintFatalError(Owner.getLoc(),
+                      "core rule: '" + Name +
+                          "' expects at least a value and a set, got " +
+                          std::to_string(N.Kids.size()) + " operand(s)");
+    // The last operand is the set; everything before it names one type slot.
+    const unsigned NSlots = N.Kids.size() - 1;
+    const CoreNode &RhsNode = *N.Kids.back();
     if (RhsNode.Kind == CoreNode::DefNode &&
         RhsNode.Op->isSubClassOf("LegalizeCoreSet")) {
-      const Record *Elem = RhsNode.Op->getValueAsDef("ElemSort");
-      if (Lhs != Elem)
-        PrintFatalError(Owner.getLoc(), "core rule: 'in' expects a " +
-                                            Elem->getValueAsString("Name") +
-                                            " on the left, got " +
-                                            Lhs->getValueAsString("Name"));
+      const Record *Set = RhsNode.Op;
+      const unsigned SetArity = Set->getValueAsInt("Arity");
+      if (SetArity != NSlots)
+        PrintFatalError(Owner.getLoc(),
+                        "core rule: '" + Name + "' tests " +
+                            std::to_string(NSlots) + " slot(s) but '" +
+                            Set->getName() + "' holds " +
+                            std::to_string(SetArity) + "-tuples");
+      const Record *Elem = Set->getValueAsDef("ElemSort");
+      for (unsigned I = 0; I != NSlots; ++I) {
+        const CoreNode &Kid = *N.Kids[I];
+        // A tuple set names slots, not values: the C++ predicate is
+        // `typePairInSet(0, 1, ...)` and takes indices.
+        if (NSlots > 1 &&
+            (Kid.Kind != CoreNode::OpNode || coreTag(*Kid.Op) != "slot" ||
+             Kid.Kids.size() != 1 || Kid.Kids[0]->Kind != CoreNode::IntNode))
+          PrintFatalError(Owner.getLoc(),
+                          "core rule: operand " + std::to_string(I) + " of '" +
+                              Name + "' must name a type slot, e.g. (Slot " +
+                              std::to_string(I) + ")");
+        const Record *Lhs = coreSortOf(Kid, Records, Owner);
+        if (Lhs != Elem)
+          PrintFatalError(Owner.getLoc(),
+                          "core rule: '" + Name + "' expects a " +
+                              Elem->getValueAsString("Name") + " operand " +
+                              std::to_string(I) + ", got " +
+                              Lhs->getValueAsString("Name"));
+      }
       return Op->getValueAsDef("Result");
     }
+    if (NSlots != 1)
+      PrintFatalError(Owner.getLoc(),
+                      "core rule: '" + Name +
+                          "' tests type slots, so its last operand must be a "
+                          "set of tuples");
     // A Clamp is an integer range, so `(in x, (clamp lo, hi))` is membership
     // in an interval rather than in an enumerated set.
     if (RhsNode.Kind == CoreNode::OpNode &&
         coreTag(*RhsNode.Op) == "clamp") {
+      const Record *Lhs = coreSortOf(*N.Kids[0], Records, Owner);
       if (Lhs != Records.getDef("SortInt"))
         PrintFatalError(Owner.getLoc(),
                         "core rule: a Clamp range can only be tested against "
@@ -2114,8 +2156,8 @@ static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
       coreIntLiteral(*RhsNode.Kids[1], Owner, "'Clamp' upper bound");
       return Op->getValueAsDef("Result");
     }
-    PrintFatalError(Owner.getLoc(),
-                    "core rule: the right operand of 'in' is not a set");
+    PrintFatalError(Owner.getLoc(), "core rule: the last operand of '" + Name +
+                                        "' is not a set");
   }
 
   if (Op->getValueAsBit("SameSortOperands")) {
@@ -2574,15 +2616,29 @@ static void coreNodeJson(const CoreNode &N, const RecordKeeper &Records,
     }
     if (R->isSubClassOf("LegalizeCoreSet")) {
       const Record *Elem = R->getValueAsDef("ElemSort");
+      const int Arity = R->getValueAsInt("Arity");
       Out = "{\"kind\":\"set\",\"of\":\"" +
-            Elem->getValueAsString("Name").str() + "\",\"elems\":[";
+            Elem->getValueAsString("Name").str() + "\"";
+      // A one-slot set is the common case and its JSON predates tuple sets;
+      // the arity is only written when it changes what the elements mean.
+      if (Arity != 1)
+        Out += ",\"arity\":" + std::to_string(Arity);
+      Out += ",\"elems\":[";
       StringRef Sep;
       for (const Record *E : R->getValueAsListOfDefs("Elems")) {
         Out += Sep.str();
         if (R->isSubClassOf("LegalizeCoreTypeSet"))
           Out += coreTypeValue(Records, *E);
-        else
+        else if (R->isSubClassOf("LegalizeCoreTypePairSet")) {
+          Out += "[" + coreTypeValue(Records, *E->getValueAsDef("Type0")) +
+                 "," + coreTypeValue(Records, *E->getValueAsDef("Type1")) + "]";
+        } else if (R->isSubClassOf("LegalizeCoreTypeTripleSet")) {
+          Out += "[" + coreTypeValue(Records, *E->getValueAsDef("Type0")) +
+                 "," + coreTypeValue(Records, *E->getValueAsDef("Type1")) +
+                 "," + coreTypeValue(Records, *E->getValueAsDef("Type2")) + "]";
+        } else {
           Out += jsonStringValue(coreTag(*E));
+        }
         Sep = ",";
       }
       Out += "]}";
@@ -2881,6 +2937,8 @@ std::string CoreCxxEmitter::boolean(const CoreNode &N) {
       {"isBFloat16", &CoreCxxEmitter::emitIsBFloat16},
       {"isFloat16", &CoreCxxEmitter::emitIsFloat16},
       {"in", &CoreCxxEmitter::emitIn},
+      {"inPairs", &CoreCxxEmitter::emitIn},
+      {"inTriples", &CoreCxxEmitter::emitIn},
       {"eq", &CoreCxxEmitter::emitCompare},
       {"ne", &CoreCxxEmitter::emitCompare},
       {"lt", &CoreCxxEmitter::emitCompare},
@@ -2895,8 +2953,55 @@ std::string CoreCxxEmitter::boolean(const CoreNode &N) {
 }
 
 std::string CoreCxxEmitter::emitIn(const CoreNode &N) {
+  // The tuple forms are registered under their own tags but share this
+  // emitter: `(inPairs (Slot 0), (Slot 1), Set)` is one call, not a
+  // disjunction of `==`, because that is the predicate the C++ API offers and
+  // it compares the pair as a value.
+  const unsigned NSlots = N.Kids.size() - 1;
+  const CoreNode &Rhs = *N.Kids.back();
+  if (NSlots > 1) {
+    if (Rhs.Kind != CoreNode::DefNode ||
+        !Rhs.Op->isSubClassOf("LegalizeCoreSet"))
+      fatal("a tuple membership needs a tuple set");
+    const int SetArity = Rhs.Op->getValueAsInt("Arity");
+    if (unsigned(SetArity) != NSlots)
+      fatal("a tuple membership is testing " + std::to_string(NSlots) +
+            " slots against a " + std::to_string(SetArity) + "-tuple set");
+    std::string Idx;
+    for (unsigned I = 0; I != NSlots; ++I) {
+      const CoreNode &Kid = *N.Kids[I];
+      if (Kid.Kind != CoreNode::OpNode || coreTag(*Kid.Op) != "slot" ||
+          Kid.Kids.size() != 1 || Kid.Kids[0]->Kind != CoreNode::IntNode)
+        fatal("a tuple membership operand must be a literal slot");
+      if (!Idx.empty())
+        Idx += ", ";
+      Idx += std::to_string(Kid.Kids[0]->IntValue);
+    }
+    const bool Pairs = Rhs.Op->isSubClassOf("LegalizeCoreTypePairSet");
+    const bool Triples = Rhs.Op->isSubClassOf("LegalizeCoreTypeTripleSet");
+    if (!Pairs && !Triples)
+      fatal("a tuple membership needs a pair or triple set");
+    std::string Out = "LegalityPredicates::";
+    Out += Pairs ? "typePairInSet(" : "typeTupleInSet(";
+    Out += Idx + ", {";
+    StringRef Sep;
+    for (const Record *E : Rhs.Op->getValueAsListOfDefs("Elems")) {
+      Out += Sep.str();
+      // The member is the C++ name of a LegalizeNamedType, exactly as the
+      // one-slot set emits it; `coreTypeValue` is the table's spelling.
+      Out += "{" + E->getValueAsDef("Type0")->getName().str() + ", " +
+             E->getValueAsDef("Type1")->getName().str();
+      if (Triples)
+        Out += ", " + E->getValueAsDef("Type2")->getName().str();
+      Out += "}";
+      Sep = ", ";
+    }
+    // A single element still has to be written as one pair/triple inside the
+    // outer braces: `{p0, s64}` would be read as a list of two values.
+    Out += "})(" + QueryVar.str() + ")";
+    return Out;
+  }
   const CoreNode &Lhs = *N.Kids[0];
-  const CoreNode &Rhs = *N.Kids[1];
   if (Rhs.Kind == CoreNode::OpNode && coreTag(*Rhs.Op) == "clamp") {
     std::string V = value(Lhs);
     return "(" + V + " >= " + std::to_string(Rhs.Kids[0]->IntValue) + " && " +
@@ -4983,6 +5088,10 @@ class LegalizerTableEmitterImpl {
       return;
     std::unique_ptr<CoreNode> Guard = parseCoreNode(*G, Rule);
 
+    // A tuple set names whole query shapes, not per-slot domains: the pairs
+    // are the points, so they cannot be rebuilt from the per-slot sets (that
+    // would add every cross product the .td never wrote).
+    std::vector<RuleTuple> Exact;
     std::map<unsigned, std::vector<TableType>> Slots;
     auto AddType = [&](unsigned Idx, TableType T) {
       std::vector<TableType> &V = Slots[Idx];
@@ -5038,6 +5147,43 @@ class LegalizerTableEmitterImpl {
           AddType(Idx, R);
         return;
       }
+      if ((Tag == "inPairs" || Tag == "inTriples") && N.Kids.size() >= 3) {
+        const unsigned NSlots = N.Kids.size() - 1;
+        const CoreNode &Set = *N.Kids.back();
+        if (Set.Kind != CoreNode::DefNode ||
+            !Set.Op->isSubClassOf("LegalizeCoreSet"))
+          return;
+        std::vector<unsigned> Idx(NSlots);
+        for (unsigned I = 0; I != NSlots; ++I)
+          if (!SlotOf(*N.Kids[I], Idx[I]))
+            return;
+        for (const Record *E : Set.Op->getValueAsListOfDefs("Elems")) {
+          unsigned Width = 0;
+          for (unsigned I = 0; I != NSlots; ++I)
+            Width = std::max(Width, Idx[I] + 1);
+          // The tuple is positional, so the slots have to be a permutation of
+          // a prefix; `(Slot 0), (Slot 2)` would leave a hole the table cannot
+          // express.
+          if (Width != NSlots)
+            return;
+          RuleTuple T;
+          T.Types.assign(Width, TableType{});
+          for (unsigned I = 0; I != NSlots; ++I) {
+            const Record *Ty = E->getValueAsDef("Type" + std::to_string(I));
+            SmallVector<TableType, 2> Resolved;
+            if (!resolve(Ty->getValueAsString("Expr"), Ty->getName(), Resolved,
+                         0))
+              return;
+            // A slot of a named tuple names one class; a select-bearing type
+            // would not be a literal point.
+            if (Resolved.size() != 1)
+              return;
+            T.Types[Idx[I]] = Resolved.front();
+          }
+          Exact.push_back(std::move(T));
+        }
+        return;
+      }
       if (Tag == "in" && N.Kids.size() == 2) {
         unsigned Idx;
         if (!SlotOf(*N.Kids[0], Idx))
@@ -5055,6 +5201,7 @@ class LegalizerTableEmitterImpl {
       }
     };
     Walk(*Guard);
+    Out.insert(Out.end(), Exact.begin(), Exact.end());
     if (Slots.empty())
       return;
 
