@@ -1867,6 +1867,596 @@ std::string mutationJsonInt(unsigned Target, StringRef Kind, int Value) {
          "\",\"value\":" + std::to_string(Value) + "}";
 }
 
+/// One core-rule expansion in flight.
+///
+/// Each builder handler used to be an `if (Builder == "...")` arm inside
+/// expandRule().  The arms are now member functions of this struct and the
+/// chain is a table (LoweringHandlers): a builder with no handler is a lookup
+/// miss, not an arm that silently falls through the remaining tests.
+struct RuleExpander {
+  const RecordKeeper &Records;
+  const Record &Rule;
+  /// The builder's C++ spelling, e.g. "legalFor".  Used in diagnostics.
+  StringRef Method;
+  /// The builder's TableGen record name, e.g. "BuilderLegalFor".  Handlers
+  /// that serve several builders switch on this.
+  StringRef Builder;
+  ArrayRef<const Record *> Args;
+  std::vector<CoreRule> &Out;
+  std::string &Why;
+  /// The rule's own query predicate, already rendered into Core IR.
+  std::string Pred;
+
+  RuleExpander(const RecordKeeper &Records, const Record &Rule,
+               ArrayRef<const Record *> Args, std::vector<CoreRule> &Out,
+               std::string &Why, std::string PredText)
+      : Records(Records), Rule(Rule), Method(builderName(Rule)),
+        Builder(builderRecordName(Rule)), Args(Args), Out(Out), Why(Why),
+        Pred(std::move(PredText)) {}
+
+  /// The rule's predicate conjoined with a condition the builder adds.  An
+  /// empty condition means "true", which is still rendered as a leaf so the
+  /// Core IR never has to interpret a missing predicate.
+  std::string WithPred(std::string Cond) {
+    if (Pred.empty() && Cond.empty())
+      return "{\"kind\":\"leaf\",\"name\":\"true\",\"args\":[]}";
+    if (Pred.empty())
+      return Cond;
+    if (Cond.empty())
+      return Pred;
+    return allOf({Pred, Cond});
+  }
+
+  int Int(size_t I) {
+    if (I >= Args.size() || !Args[I]->isSubClassOf("LegalizeArgInt"))
+      PrintFatalError(Rule.getLoc(), "rule '" + Method +
+                                         "' expects an integer at "
+                                         "argument " +
+                                         std::to_string(I));
+    return Args[I]->getValueAsInt("Value");
+  }
+
+  std::string TypeValue(size_t I) {
+    if (I >= Args.size() || !Args[I]->isSubClassOf("LegalizeNamedType"))
+      PrintFatalError(Rule.getLoc(), "rule '" + Method +
+                                         "' expects one type at argument " +
+                                         std::to_string(I));
+    std::string V = coreTypeValue(Records, *Args[I]);
+    if (V.empty())
+      PrintFatalError(Rule.getLoc(), "rule '" + Method +
+                                         "' has a type with no Core IR value "
+                                         "at argument " +
+                                         std::to_string(I));
+    return V;
+  }
+
+  std::string TypeBits(size_t I) {
+    if (I >= Args.size() || !Args[I]->isSubClassOf("LegalizeNamedType"))
+      PrintFatalError(Rule.getLoc(), "rule '" + Method +
+                                         "' expects one type at argument " +
+                                         std::to_string(I));
+    std::string V = coreTypeBitsValue(Records, *Args[I]);
+    if (V.empty())
+      PrintFatalError(Rule.getLoc(), "rule '" + Method +
+                                         "' has a type with no static bit "
+                                         "count at argument " +
+                                         std::to_string(I));
+    return V;
+  }
+
+  std::string TypeList(size_t I) {
+    if (I >= Args.size())
+      PrintFatalError(Rule.getLoc(), "rule '" + Method +
+                                         "' is missing argument " +
+                                         std::to_string(I));
+    std::string V = coreTypeListValue(Records, *Args[I]);
+    if (V.empty())
+      PrintFatalError(Rule.getLoc(), "rule '" + Method +
+                                         "' has a type list with no Core IR "
+                                         "value at argument " +
+                                         std::to_string(I));
+    return V;
+  }
+
+  /// The builder has no expansion in this emitter.  The *Expr element counts
+  /// and the raw mutation arguments never reach here: the pre-scan in
+  /// expandRule() turned them into escapes first.
+  [[noreturn]] void noExpansion() {
+    PrintFatalError(Rule.getLoc(), "no Core IR expansion for builder '" +
+                                       Method +
+                                       "'; add it to LegalizerInfo.td first");
+  }
+
+  //===--------------------------------------------------------------------===//
+  // Builder handlers
+  //===--------------------------------------------------------------------===//
+
+  void expandLegalFor() {
+    for (size_t AI = 0; AI != Args.size(); ++AI) {
+      const Record *A = Args[AI];
+      if (A->isSubClassOf("LegalizeTypeTriple")) {
+        std::string T0 = coreTypeValue(Records, *A->getValueAsDef("Type0"));
+        std::string T1 = coreTypeValue(Records, *A->getValueAsDef("Type1"));
+        std::string T2 = coreTypeValue(Records, *A->getValueAsDef("Type2"));
+        Out.push_back({"Legal", 0,
+                       WithPred(allOf({typeIsValue(0, T0), typeIsValue(1, T1),
+                                       typeIsValue(2, T2)})),
+                       ""});
+      } else if (A->isSubClassOf("LegalizeTypePair")) {
+        std::string T0 = coreTypeValue(Records, *A->getValueAsDef("Type0"));
+        std::string T1 = coreTypeValue(Records, *A->getValueAsDef("Type1"));
+        if (T0.empty() || T1.empty())
+          PrintFatalError(A->getLoc(), "legalFor pair has no Core IR value");
+        Out.push_back({"Legal", 0,
+                       WithPred(allOf({typeIsValue(0, T0), typeIsValue(1, T1)})),
+                       ""});
+      } else if (A->isSubClassOf("LegalizeNamedType")) {
+        Out.push_back(
+            {"Legal", 0, WithPred(typeIsValue(0, coreTypeValue(Records, *A))),
+             ""});
+      } else if (isSelectBearingList(*A)) {
+        // A list that chooses between types is one membership test over a
+        // conditional list; expanding its branches would duplicate the rule.
+        Out.push_back(
+            {"Legal", 0, WithPred(typeInValue(0, TypeList(AI))), ""});
+      } else {
+        // A literal list expands to one rule per element, as it always did:
+        // their rule positions are what the witness and mutant artifacts key
+        // on, so collapsing them into one typeIn would move every later rule.
+        for (const Record *E : A->getValueAsListOfDefs("Elems"))
+          Out.push_back({"Legal", 0,
+                         WithPred(typeIsValue(0, coreTypeValue(Records, *E))),
+                         ""});
+      }
+    }
+  }
+
+  void expandLegalForCartesianProduct() {
+    // The C++ builder has one overload per number of type lists (1, 2 and 3);
+    // AArch64 uses all three.  Each list is one type slot of the query, so the
+    // product is the set of tuples that are legal, and a select-bearing list
+    // collapses into a single typeIn predicate on its slot.
+    if (Args.empty() || Args.size() > 3)
+      PrintFatalError(Rule.getLoc(),
+                      "legalForCartesianProduct expects 1 to 3 type lists");
+    const unsigned NumLists = Args.size();
+    bool AnySelect = false;
+    for (unsigned I = 0; I != NumLists; ++I)
+      AnySelect |= isSelectBearingList(*Args[I]);
+    if (AnySelect) {
+      std::vector<std::string> Parts;
+      for (unsigned I = 0; I != NumLists; ++I)
+        Parts.push_back(typeInValue(I, TypeList(I)));
+      Out.push_back({"Legal", 0, WithPred(allOf(Parts)), ""});
+      return;
+    }
+    // Literal lists: one rule per point of the product, leftmost list
+    // outermost.  This order is the emitted rule order, so it is observable.
+    std::vector<const Record *> Point(NumLists);
+    std::function<void(unsigned)> EmitPoint = [&](unsigned I) {
+      if (I == NumLists) {
+        std::vector<std::string> Parts;
+        for (unsigned K = 0; K != NumLists; ++K)
+          Parts.push_back(typeIsValue(K, coreTypeValue(Records, *Point[K])));
+        Out.push_back({"Legal", 0, WithPred(allOf(Parts)), ""});
+        return;
+      }
+      for (const Record *E : Args[I]->getValueAsListOfDefs("Elems")) {
+        Point[I] = E;
+        EmitPoint(I + 1);
+      }
+    };
+    EmitPoint(0);
+  }
+
+  void expandLegalForTypesWithMemDesc() {
+    for (const Record *A : Args) {
+      std::string T0 = coreTypeValue(Records, *A->getValueAsDef("Type0"));
+      std::string T1 = coreTypeValue(Records, *A->getValueAsDef("Type1"));
+      std::string Mem = normalizeLlt(
+          A->getValueAsDef("MemTy")->getValueAsString("Expr"), &Records);
+      if (T0.empty() || T1.empty())
+        PrintFatalError(A->getLoc(), "memdesc value type has no Core IR value");
+      // The memory descriptor is its own query axis; the C++ builder passes
+      // MMOIdx 0, not type index 2.
+      unsigned Align = A->getValueAsInt("Align");
+      unsigned PtrLanes = lltPtrLanes(Mem);
+      std::string MemPred;
+      if (PtrLanes != 0 && Mem.find(":*") != std::string::npos) {
+        MemPred = memSizePtr(0, PtrLanes, Align);
+      } else {
+        StringRef MemElt;
+        bool MemScalable = false;
+        splitLanes(Mem, MemElt, &MemScalable);
+        unsigned MemBits = lltMinBits(Mem);
+        if (MemBits == 0)
+          PrintFatalError(A->getLoc(),
+                          "memdesc memory type '" + Mem + "' has no bit size");
+        MemPred = MemScalable ? memSizeScalable(0, MemBits, Align)
+                              : memSize(0, MemBits, Align);
+      }
+      Out.push_back({"Legal", 0,
+                     WithPred(
+                         allOf({typeIsValue(0, T0), typeIsValue(1, T1), MemPred})),
+                     ""});
+    }
+  }
+
+  void expandAlwaysLegal() { Out.push_back({"Legal", 0, WithPred(""), ""}); }
+
+  // "Unsupported" is not the same observation as "no rule matched": the
+  // evaluator reports the first as a rule with action Unsupported and the
+  // second as no_match, and diff_core.py counts them apart.  Omitting the
+  // builder would have made the explicit form unexpressible.
+  void expandUnsupported() {
+    Out.push_back({"Unsupported", 0, WithPred(""), ""});
+  }
+
+  void expandUnsupportedFor() {
+    for (size_t AI = 0; AI != Args.size(); ++AI) {
+      const Record *A = Args[AI];
+      if (A->isSubClassOf("LegalizeNamedType"))
+        Out.push_back({"Unsupported", 0,
+                       WithPred(typeIsValue(0, coreTypeValue(Records, *A))), ""});
+      else
+        Out.push_back({"Unsupported", 0,
+                       WithPred(typeInValue(0, TypeList(AI))), ""});
+    }
+  }
+
+  // customIf(guard): the guard IS the rule, so it becomes the Core IR
+  // predicate and the action is the builder's.  Before the predicate AST
+  // could hold type leaves this had no literal form, which is why the X86
+  // rules that read the query were all escapes.
+  void expandCustomIf() {
+    if (!Args.empty())
+      noExpansion();
+    Out.push_back({"Custom", 0, WithPred(""), ""});
+  }
+
+  // legalIf(guard) is the "already legal under this guard" form.  It was
+  // missing here while customIf and lowerIf were present, so a rule written
+  // with it had no Core IR form and the whole rule set escaped -- including
+  // the parts of it the vocabulary could describe.
+  void expandLegalIf() {
+    if (!Args.empty())
+      noExpansion();
+    Out.push_back({"Legal", 0, WithPred(""), ""});
+  }
+
+  void expandLowerIf() {
+    if (!Args.empty())
+      noExpansion();
+    Out.push_back({"Lower", 0, WithPred(""), ""});
+  }
+
+  // unsupportedIf(guard): same shape as customIf/legalIf/lowerIf -- the guard
+  // is the rule and the builder names the action.  AArch64 uses it for the
+  // "this shape is illegal outright" rules, so without it those rule sets had
+  // no Core IR form at all.
+  void expandUnsupportedIf() {
+    if (!Args.empty())
+      noExpansion();
+    Out.push_back({"Unsupported", 0, WithPred(""), ""});
+  }
+
+  void expandLibcallIf() {
+    if (!Args.empty())
+      noExpansion();
+    Out.push_back({"Libcall", 0, WithPred(""), ""});
+  }
+
+  void expandLower() { Out.push_back({"Lower", 0, WithPred(""), ""}); }
+
+  void expandLowerFor() {
+    for (const Record *A : Args) {
+      if (A->isSubClassOf("LegalizeNamedType")) {
+        Out.push_back({"Lower", 0,
+                       WithPred(typeIsValue(0, coreTypeValue(Records, *A))),
+                       ""});
+        continue;
+      }
+      std::string T0 = coreTypeValue(Records, *A->getValueAsDef("Type0"));
+      std::string T1 = coreTypeValue(Records, *A->getValueAsDef("Type1"));
+      Out.push_back({"Lower", 0,
+                     WithPred(allOf({typeIsValue(0, T0), typeIsValue(1, T1)})),
+                     ""});
+    }
+  }
+
+  void expandLibcall() { Out.push_back({"Libcall", 0, WithPred(""), ""}); }
+
+  void expandLibcallForOrCustomFor() {
+    StringRef Action = Builder == "BuilderLibcallFor" ? "Libcall" : "Custom";
+    for (size_t AI = 0; AI != Args.size(); ++AI) {
+      const Record *A = Args[AI];
+      if (A->isSubClassOf("LegalizeNamedType"))
+        Out.push_back({Action.str(), 0,
+                       WithPred(typeIsValue(0, coreTypeValue(Records, *A))), ""});
+      else if (A->isSubClassOf("LegalizeTypePair")) {
+        std::string T0 = coreTypeValue(Records, *A->getValueAsDef("Type0"));
+        std::string T1 = coreTypeValue(Records, *A->getValueAsDef("Type1"));
+        Out.push_back(
+            {Action.str(), 0,
+             WithPred(allOf({typeIsValue(0, T0), typeIsValue(1, T1)})), ""});
+      } else
+        Out.push_back({Action.str(), 0, WithPred(typeInValue(0, TypeList(AI))),
+                       ""});
+    }
+  }
+
+  void expandCustomForCartesianProduct() {
+    std::vector<std::string> Parts = {typeInValue(0, TypeList(0)),
+                                      typeInValue(1, TypeList(1))};
+    if (Args.size() > 2)
+      Parts.push_back(typeInValue(2, TypeList(2)));
+    Out.push_back({"Custom", 0, WithPred(allOf(Parts)), ""});
+  }
+
+  void expandClampScalar() {
+    unsigned Idx = Int(0);
+    std::string MinTy = TypeValue(1);
+    std::string MaxTy = TypeValue(2);
+    Out.push_back({"WidenScalar", Idx,
+                   WithPred(scalarNarrowerThanValue(Idx, TypeBits(1))),
+                   mutationJsonValue(Idx, "set_elem_type", MinTy)});
+    Out.push_back({"NarrowScalar", Idx,
+                   WithPred(scalarWiderThanValue(Idx, TypeBits(2))),
+                   mutationJsonValue(Idx, "set_elem_type", MaxTy)});
+  }
+
+  void expandMinScalar() {
+    unsigned Idx = Int(0);
+    std::string Ty0 = TypeValue(1);
+    Out.push_back({"WidenScalar", Idx,
+                   WithPred(scalarNarrowerThanValue(Idx, TypeBits(1))),
+                   mutationJsonValue(Idx, "set_elem_type", Ty0)});
+  }
+
+  void expandMaxScalar() {
+    unsigned Idx = Int(0);
+    std::string Ty0 = TypeValue(1);
+    Out.push_back({"NarrowScalar", Idx,
+                   WithPred(scalarWiderThanValue(Idx, TypeBits(1))),
+                   mutationJsonValue(Idx, "set_elem_type", Ty0)});
+  }
+
+  // The guarded forms are minScalar/maxScalar with the query predicate
+  // conjoined; scalarNarrowerThan/scalarWiderThan already require a scalar,
+  // so the C++ lambda's isScalar() check needs no separate leaf here.
+  void expandMinScalarIfOrMaxScalarIf() {
+    const bool Min = Builder == "BuilderMinScalarIf";
+    unsigned Idx = Int(0);
+    std::string Ty0 = TypeValue(1);
+    Out.push_back({Min ? "WidenScalar" : "NarrowScalar", Idx,
+                   WithPred(Min ? scalarNarrowerThanValue(Idx, TypeBits(1))
+                                : scalarWiderThanValue(Idx, TypeBits(1))),
+                   mutationJsonValue(Idx, "set_elem_type", Ty0)});
+  }
+
+  void expandWidenScalarToNextPow2() {
+    unsigned Idx = Int(0);
+    // The floor is part of the rule: nextPow2OrMin without its Min cannot be
+    // evaluated, so the value carries it.
+    std::string Target = Args.size() > 1
+                             ? "nextPow2OrMin" + std::to_string(Int(1))
+                             : std::string("nextPow2");
+    // The guard is not "true".  The C++ builder fires only when the size is
+    // not a power of two, and the scalar-only builder and the OrElt variant
+    // differ on vectors.
+    std::string Guard = Builder == "BuilderWidenScalarToNextPow2"
+                            ? sizeNotPow2(Idx)
+                            : scalarOrEltSizeNotPow2(Idx);
+    Out.push_back({"WidenScalar", Idx, WithPred(Guard),
+                   mutationJson(Idx, "set_elem_bits", Target)});
+  }
+
+  void expandScalarSameSizeAs() {
+    unsigned Idx = Int(0);
+    unsigned Other = Int(1);
+    std::string Ref = "sameAsSlot" + std::to_string(Other);
+    // minScalarSameAs().maxScalarSameAs(): each direction has its own guard.
+    Out.push_back({"WidenScalar", Idx,
+                   WithPred(scalarSizeLargerThanSlot(Other, Idx)),
+                   mutationJson(Idx, "set_elem_bits", Ref)});
+    Out.push_back({"NarrowScalar", Idx,
+                   WithPred(scalarSizeSmallerThanSlot(Other, Idx)),
+                   mutationJson(Idx, "set_elem_bits", Ref)});
+  }
+
+  void expandScalarize() {
+    unsigned Idx = Int(0);
+    Out.push_back({"FewerElements", Idx, WithPred(isVector(Idx)),
+                   mutationJsonInt(Idx, "set_lanes", 1)});
+  }
+
+  void expandMoreElementsToNextPow2() {
+    unsigned Idx = Int(0);
+    Out.push_back({"MoreElements", Idx, WithPred(numElementsNotPow2(Idx)),
+                   mutationJson(Idx, "set_lanes", "nextPow2")});
+  }
+
+  void expandClampNumElements() {
+    unsigned Idx = Int(0);
+    // clampNumElements(Idx, MinTy, MaxTy) is the pair
+    // clampMinNumElements(Idx, MinTy, lanes(MinTy)).
+    //   clampMaxNumElements(Idx, MaxTy, lanes(MaxTy)),
+    // so each direction names its own lane count instead of "nextPow2".
+    // MinTy names the element type and the lower lane count, so it has to be a
+    // literal vector; MaxTy may be a select vector, whose lane count becomes a
+    // select rather than one rule per branch.
+    std::string MinTy = normalizeLlt(Args[1]->getValueAsString("Expr"), &Records);
+    if (MinTy.empty()) {
+      Why = "nonliteral_type";
+      return;
+    }
+    std::string MaxLanes = coreTypeLanesValue(Records, *Args[2]);
+    if (MaxLanes.empty()) {
+      Why = "nonliteral_type";
+      return;
+    }
+    const unsigned MinLanes = lltLanes(MinTy);
+    std::string Elem = elementTypeIsValue(Idx, jsonStringValue(lltElt(MinTy)));
+    Out.push_back({"MoreElements", Idx,
+                   WithPred(allOf({Elem, fewerElementsThanValue(
+                                             Idx, std::to_string(MinLanes))})),
+                   mutationJsonInt(Idx, "set_lanes", MinLanes)});
+    Out.push_back(
+        {"FewerElements", Idx,
+         WithPred(allOf({Elem, moreElementsThanValue(Idx, MaxLanes)})),
+         mutationJsonValue(Idx, "set_lanes", MaxLanes)});
+  }
+
+  void expandClampMinOrMaxNumElements() {
+    unsigned Idx = Int(0);
+    std::string Elt = TypeValue(1);
+    std::string Lanes = coreLanesValue(Records, *Args[2]);
+    if (Lanes.empty()) {
+      Why = "raw_argument";
+      return;
+    }
+    const bool Min = Builder == "BuilderClampMinNumElements";
+    Out.push_back(
+        {Min ? "MoreElements" : "FewerElements", Idx,
+         WithPred(allOf({elementTypeIsValue(Idx, Elt),
+                         Min ? fewerElementsThanValue(Idx, Lanes)
+                             : moreElementsThanValue(Idx, Lanes)})),
+         mutationJsonValue(Idx, "set_lanes", Lanes)});
+  }
+
+  void expandCustom() { Out.push_back({"Custom", 0, WithPred(""), ""}); }
+
+  void expandWidenScalarOrEltToNextPow2OrMinSize() {
+    unsigned Idx = Int(0);
+    std::string Target = Args.size() > 1
+                             ? "nextPow2OrMin" + std::to_string(Int(1))
+                             : std::string("nextPow2");
+    std::string Guard =
+        Args.size() > 1
+            ? anyOf({scalarOrEltNarrowerThan(Idx, std::to_string(Int(1))),
+                     scalarOrEltSizeNotPow2(Idx)})
+            : scalarOrEltSizeNotPow2(Idx);
+    Out.push_back({"WidenScalar", Idx, WithPred(Guard),
+                   mutationJson(Idx, "set_elem_bits", Target)});
+  }
+
+  void expandMinScalarOrElt() {
+    unsigned Idx = Int(0);
+    std::string Ty = TypeValue(1);
+    Out.push_back({"WidenScalar", Idx,
+                   WithPred(scalarOrEltNarrowerThanValue(Idx, TypeBits(1))),
+                   mutationJsonValue(Idx, "set_elem_type", Ty)});
+  }
+
+  void expandMinScalarSameAs() {
+    unsigned Idx = Int(0);
+    unsigned Other = Int(1);
+    std::string Ref = "sameAsSlot" + std::to_string(Other);
+    Out.push_back({"WidenScalar", Idx,
+                   WithPred(scalarSizeLargerThanSlot(Other, Idx)),
+                   mutationJson(Idx, "set_elem_bits", Ref)});
+  }
+
+  void expandMaxScalarEltSameAsIf() {
+    unsigned Idx = Int(0);
+    unsigned Other = Int(1);
+    std::string Ref = "sameAsSlot" + std::to_string(Other);
+    Out.push_back({"NarrowScalar", Idx,
+                   WithPred(scalarSizeSmallerThanSlot(Other, Idx)),
+                   mutationJson(Idx, "set_elem_bits", Ref)});
+  }
+
+  void expandUnsupportedIfMemSizeNotPow2() {
+    Out.push_back({"Unsupported", 0, WithPred(memSizeNotPow2(0)), ""});
+  }
+
+  void expandLowerIfMemSizeNotPow2() {
+    Out.push_back({"Lower", 0, WithPred(memSizeNotPow2(0)), ""});
+  }
+
+  void expandLowerIfMemSizeNotByteSizePow2() {
+    Out.push_back({"Lower", 0, WithPred(memSizeNotByteSizePow2(0)), ""});
+  }
+
+  void expandWidenVectorEltsToVectorMinSize() { Why = "no_core_expansion"; }
+};
+
+/// A builder name and the handler that expands rules using it.
+struct LoweringHandler {
+  StringLiteral Builder;
+  void (RuleExpander::*Expand)();
+};
+
+/// The dispatch table.  Its keys are LegalizeBuilder record names, so a key
+/// that names no declared builder is a tablegen error (verifyLoweringRegistry
+/// checks it) instead of a string in an if-chain that can silently rot.
+static const LoweringHandler LoweringHandlers[] = {
+    {"BuilderLegalFor", &RuleExpander::expandLegalFor},
+    {"BuilderLegalForCartesianProduct",
+     &RuleExpander::expandLegalForCartesianProduct},
+    {"BuilderLegalForTypesWithMemDesc",
+     &RuleExpander::expandLegalForTypesWithMemDesc},
+    {"BuilderAlwaysLegal", &RuleExpander::expandAlwaysLegal},
+    {"BuilderUnsupported", &RuleExpander::expandUnsupported},
+    {"BuilderUnsupportedFor", &RuleExpander::expandUnsupportedFor},
+    {"BuilderCustomIf", &RuleExpander::expandCustomIf},
+    {"BuilderLegalIf", &RuleExpander::expandLegalIf},
+    {"BuilderLowerIf", &RuleExpander::expandLowerIf},
+    {"BuilderUnsupportedIf", &RuleExpander::expandUnsupportedIf},
+    {"BuilderLibcallIf", &RuleExpander::expandLibcallIf},
+    {"BuilderLower", &RuleExpander::expandLower},
+    {"BuilderLowerFor", &RuleExpander::expandLowerFor},
+    {"BuilderLibcall", &RuleExpander::expandLibcall},
+    {"BuilderLibcallFor", &RuleExpander::expandLibcallForOrCustomFor},
+    {"BuilderCustomFor", &RuleExpander::expandLibcallForOrCustomFor},
+    {"BuilderCustomForCartesianProduct",
+     &RuleExpander::expandCustomForCartesianProduct},
+    {"BuilderClampScalar", &RuleExpander::expandClampScalar},
+    {"BuilderClampScalarOrElt", &RuleExpander::expandClampScalar},
+    {"BuilderMinScalar", &RuleExpander::expandMinScalar},
+    {"BuilderMaxScalar", &RuleExpander::expandMaxScalar},
+    {"BuilderMinScalarIf", &RuleExpander::expandMinScalarIfOrMaxScalarIf},
+    {"BuilderMaxScalarIf", &RuleExpander::expandMinScalarIfOrMaxScalarIf},
+    {"BuilderWidenScalarToNextPow2",
+     &RuleExpander::expandWidenScalarToNextPow2},
+    {"BuilderWidenScalarOrEltToNextPow2",
+     &RuleExpander::expandWidenScalarToNextPow2},
+    {"BuilderScalarSameSizeAs", &RuleExpander::expandScalarSameSizeAs},
+    {"BuilderScalarize", &RuleExpander::expandScalarize},
+    {"BuilderScalarizeIf", &RuleExpander::expandScalarize},
+    {"BuilderMoreElementsToNextPow2",
+     &RuleExpander::expandMoreElementsToNextPow2},
+    {"BuilderClampNumElements", &RuleExpander::expandClampNumElements},
+    {"BuilderClampMinNumElements",
+     &RuleExpander::expandClampMinOrMaxNumElements},
+    {"BuilderClampMaxNumElements",
+     &RuleExpander::expandClampMinOrMaxNumElements},
+    {"BuilderCustom", &RuleExpander::expandCustom},
+    {"BuilderWidenScalarOrEltToNextPow2OrMinSize",
+     &RuleExpander::expandWidenScalarOrEltToNextPow2OrMinSize},
+    {"BuilderMinScalarOrElt", &RuleExpander::expandMinScalarOrElt},
+    {"BuilderMinScalarOrEltIf", &RuleExpander::expandMinScalarOrElt},
+    {"BuilderMinScalarSameAs", &RuleExpander::expandMinScalarSameAs},
+    {"BuilderMinScalarEltSameAsIf", &RuleExpander::expandMinScalarSameAs},
+    {"BuilderMaxScalarEltSameAsIf", &RuleExpander::expandMaxScalarEltSameAsIf},
+    {"BuilderUnsupportedIfMemSizeNotPow2",
+     &RuleExpander::expandUnsupportedIfMemSizeNotPow2},
+    {"BuilderLowerIfMemSizeNotPow2",
+     &RuleExpander::expandLowerIfMemSizeNotPow2},
+    {"BuilderLowerIfMemSizeNotByteSizePow2",
+     &RuleExpander::expandLowerIfMemSizeNotByteSizePow2},
+    {"BuilderWidenVectorEltsToVectorMinSize",
+     &RuleExpander::expandWidenVectorEltsToVectorMinSize},
+};
+
+/// The handler for a builder record, or null when it has no expansion.
+static const LoweringHandler *lookupLoweringHandler(StringRef Builder) {
+  for (const LoweringHandler &H : LoweringHandlers)
+    if (H.Builder == Builder)
+      return &H;
+  return nullptr;
+}
+
 /// Expand one LegalizeRule record into zero or more core rules.
 void expandRule(const RecordKeeper &Records, const Record &Rule,
                 std::vector<CoreRule> &Out, std::string &Why) {
@@ -1878,7 +2468,6 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
     return;
   }
 
-  StringRef Method = builderName(Rule);
   StringRef Builder = builderRecordName(Rule);
   // immIdx() is a coverage marker, not a legalization step: it emits a call
   // that marks an immediate operand as handled and produces no Core IR row.
@@ -1967,485 +2556,11 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
   if (const Record *P = Rule.getValueAsOptionalDef("Pred"))
     predicateJson(Records, *P, Pred);
 
-  auto WithPred = [&](std::string Cond) -> std::string {
-    if (Pred.empty() && Cond.empty())
-      return "{\"kind\":\"leaf\",\"name\":\"true\",\"args\":[]}";
-    if (Pred.empty())
-      return Cond;
-    if (Cond.empty())
-      return Pred;
-    return allOf({Pred, Cond});
-  };
-
-  auto Int = [&](size_t I) {
-    if (I >= Args.size() || !Args[I]->isSubClassOf("LegalizeArgInt"))
-      PrintFatalError(Rule.getLoc(), "rule '" + Method +
-                                         "' expects an integer at "
-                                         "argument " +
-                                         std::to_string(I));
-    return Args[I]->getValueAsInt("Value");
-  };
-  auto TypeValue = [&](size_t I) {
-    if (I >= Args.size() || !Args[I]->isSubClassOf("LegalizeNamedType"))
-      PrintFatalError(Rule.getLoc(), "rule '" + Method +
-                                         "' expects one type at argument " +
-                                         std::to_string(I));
-    std::string V = coreTypeValue(Records, *Args[I]);
-    if (V.empty())
-      PrintFatalError(Rule.getLoc(), "rule '" + Method +
-                                         "' has a type with no Core IR value "
-                                         "at argument " +
-                                         std::to_string(I));
-    return V;
-  };
-  auto TypeBits = [&](size_t I) {
-    if (I >= Args.size() || !Args[I]->isSubClassOf("LegalizeNamedType"))
-      PrintFatalError(Rule.getLoc(), "rule '" + Method +
-                                         "' expects one type at argument " +
-                                         std::to_string(I));
-    std::string V = coreTypeBitsValue(Records, *Args[I]);
-    if (V.empty())
-      PrintFatalError(Rule.getLoc(), "rule '" + Method +
-                                         "' has a type with no static bit "
-                                         "count at argument " +
-                                         std::to_string(I));
-    return V;
-  };
-  auto TypeList = [&](size_t I) {
-    if (I >= Args.size())
-      PrintFatalError(Rule.getLoc(), "rule '" + Method +
-                                         "' is missing argument " +
-                                         std::to_string(I));
-    std::string V = coreTypeListValue(Records, *Args[I]);
-    if (V.empty())
-      PrintFatalError(Rule.getLoc(), "rule '" + Method +
-                                         "' has a type list with no Core IR "
-                                         "value at argument " +
-                                         std::to_string(I));
-    return V;
-  };
-
-  if (Builder == "BuilderLegalFor") {
-    for (size_t AI = 0; AI != Args.size(); ++AI) {
-      const Record *A = Args[AI];
-      if (A->isSubClassOf("LegalizeTypeTriple")) {
-        std::string T0 = coreTypeValue(Records, *A->getValueAsDef("Type0"));
-        std::string T1 = coreTypeValue(Records, *A->getValueAsDef("Type1"));
-        std::string T2 = coreTypeValue(Records, *A->getValueAsDef("Type2"));
-        Out.push_back({"Legal", 0,
-                       WithPred(allOf({typeIsValue(0, T0), typeIsValue(1, T1),
-                                       typeIsValue(2, T2)})),
-                       ""});
-      } else if (A->isSubClassOf("LegalizeTypePair")) {
-        std::string T0 = coreTypeValue(Records, *A->getValueAsDef("Type0"));
-        std::string T1 = coreTypeValue(Records, *A->getValueAsDef("Type1"));
-        if (T0.empty() || T1.empty())
-          PrintFatalError(A->getLoc(), "legalFor pair has no Core IR value");
-        Out.push_back({"Legal", 0,
-                       WithPred(allOf({typeIsValue(0, T0), typeIsValue(1, T1)})),
-                       ""});
-      } else if (A->isSubClassOf("LegalizeNamedType")) {
-        Out.push_back(
-            {"Legal", 0, WithPred(typeIsValue(0, coreTypeValue(Records, *A))),
-             ""});
-      } else if (isSelectBearingList(*A)) {
-        // A list that chooses between types is one membership test over a
-        // conditional list; expanding its branches would duplicate the rule.
-        Out.push_back(
-            {"Legal", 0, WithPred(typeInValue(0, TypeList(AI))), ""});
-      } else {
-        // A literal list expands to one rule per element, as it always did:
-        // their rule positions are what the witness and mutant artifacts key
-        // on, so collapsing them into one typeIn would move every later rule.
-        for (const Record *E : A->getValueAsListOfDefs("Elems"))
-          Out.push_back({"Legal", 0,
-                         WithPred(typeIsValue(0, coreTypeValue(Records, *E))),
-                         ""});
-      }
-    }
-    return;
-  }
-  if (Builder == "BuilderLegalForCartesianProduct") {
-    // The C++ builder has one overload per number of type lists (1, 2 and 3);
-    // AArch64 uses all three.  Each list is one type slot of the query, so the
-    // product is the set of tuples that are legal, and a select-bearing list
-    // collapses into a single typeIn predicate on its slot.
-    if (Args.empty() || Args.size() > 3)
-      PrintFatalError(Rule.getLoc(),
-                      "legalForCartesianProduct expects 1 to 3 type lists");
-    const unsigned NumLists = Args.size();
-    bool AnySelect = false;
-    for (unsigned I = 0; I != NumLists; ++I)
-      AnySelect |= isSelectBearingList(*Args[I]);
-    if (AnySelect) {
-      std::vector<std::string> Parts;
-      for (unsigned I = 0; I != NumLists; ++I)
-        Parts.push_back(typeInValue(I, TypeList(I)));
-      Out.push_back({"Legal", 0, WithPred(allOf(Parts)), ""});
-      return;
-    }
-    // Literal lists: one rule per point of the product, leftmost list
-    // outermost.  This order is the emitted rule order, so it is observable.
-    std::vector<const Record *> Point(NumLists);
-    std::function<void(unsigned)> EmitPoint = [&](unsigned I) {
-      if (I == NumLists) {
-        std::vector<std::string> Parts;
-        for (unsigned K = 0; K != NumLists; ++K)
-          Parts.push_back(typeIsValue(K, coreTypeValue(Records, *Point[K])));
-        Out.push_back({"Legal", 0, WithPred(allOf(Parts)), ""});
-        return;
-      }
-      for (const Record *E : Args[I]->getValueAsListOfDefs("Elems")) {
-        Point[I] = E;
-        EmitPoint(I + 1);
-      }
-    };
-    EmitPoint(0);
-    return;
-  }
-  if (Builder == "BuilderLegalForTypesWithMemDesc") {
-    for (const Record *A : Args) {
-      std::string T0 = coreTypeValue(Records, *A->getValueAsDef("Type0"));
-      std::string T1 = coreTypeValue(Records, *A->getValueAsDef("Type1"));
-      std::string Mem = normalizeLlt(
-          A->getValueAsDef("MemTy")->getValueAsString("Expr"), &Records);
-      if (T0.empty() || T1.empty())
-        PrintFatalError(A->getLoc(), "memdesc value type has no Core IR value");
-      // The memory descriptor is its own query axis; the C++ builder passes
-      // MMOIdx 0, not type index 2.
-      unsigned Align = A->getValueAsInt("Align");
-      unsigned PtrLanes = lltPtrLanes(Mem);
-      std::string MemPred;
-      if (PtrLanes != 0 && Mem.find(":*") != std::string::npos) {
-        MemPred = memSizePtr(0, PtrLanes, Align);
-      } else {
-        StringRef MemElt;
-        bool MemScalable = false;
-        splitLanes(Mem, MemElt, &MemScalable);
-        unsigned MemBits = lltMinBits(Mem);
-        if (MemBits == 0)
-          PrintFatalError(A->getLoc(),
-                          "memdesc memory type '" + Mem + "' has no bit size");
-        MemPred = MemScalable ? memSizeScalable(0, MemBits, Align)
-                              : memSize(0, MemBits, Align);
-      }
-      Out.push_back({"Legal", 0,
-                     WithPred(
-                         allOf({typeIsValue(0, T0), typeIsValue(1, T1), MemPred})),
-                     ""});
-    }
-    return;
-  }
-  if (Builder == "BuilderAlwaysLegal") {
-    Out.push_back({"Legal", 0, WithPred(""), ""});
-    return;
-  }
-  // "Unsupported" is not the same observation as "no rule matched": the
-  // evaluator reports the first as a rule with action Unsupported and the
-  // second as no_match, and diff_core.py counts them apart.  Omitting the
-  // builder would have made the explicit form unexpressible.
-  if (Builder == "BuilderUnsupported") {
-    Out.push_back({"Unsupported", 0, WithPred(""), ""});
-    return;
-  }
-  if (Builder == "BuilderUnsupportedFor") {
-    for (size_t AI = 0; AI != Args.size(); ++AI) {
-      const Record *A = Args[AI];
-      if (A->isSubClassOf("LegalizeNamedType"))
-        Out.push_back({"Unsupported", 0,
-                       WithPred(typeIsValue(0, coreTypeValue(Records, *A))), ""});
-      else
-        Out.push_back({"Unsupported", 0,
-                       WithPred(typeInValue(0, TypeList(AI))), ""});
-    }
-    return;
-  }
-  // customIf(guard): the guard IS the rule, so it becomes the Core IR
-  // predicate and the action is the builder's.  Before the predicate AST
-  // could hold type leaves this had no literal form, which is why the X86
-  // rules that read the query were all escapes.
-  if (Builder == "BuilderCustomIf" && Args.empty()) {
-    Out.push_back({"Custom", 0, WithPred(""), ""});
-    return;
-  }
-  // legalIf(guard) is the "already legal under this guard" form.  It was
-  // missing here while customIf and lowerIf were present, so a rule written
-  // with it had no Core IR form and the whole rule set escaped -- including
-  // the parts of it the vocabulary could describe.
-  if (Builder == "BuilderLegalIf" && Args.empty()) {
-    Out.push_back({"Legal", 0, WithPred(""), ""});
-    return;
-  }
-  if (Builder == "BuilderLowerIf" && Args.empty()) {
-    Out.push_back({"Lower", 0, WithPred(""), ""});
-    return;
-  }
-  // unsupportedIf(guard): same shape as customIf/legalIf/lowerIf -- the guard
-  // is the rule and the builder names the action.  AArch64 uses it for the
-  // "this shape is illegal outright" rules, so without it those rule sets had
-  // no Core IR form at all.
-  if (Builder == "BuilderUnsupportedIf" && Args.empty()) {
-    Out.push_back({"Unsupported", 0, WithPred(""), ""});
-    return;
-  }
-  if (Builder == "BuilderLibcallIf" && Args.empty()) {
-    Out.push_back({"Libcall", 0, WithPred(""), ""});
-    return;
-  }
-
-  if (Builder == "BuilderLower") {
-    Out.push_back({"Lower", 0, WithPred(""), ""});
-    return;
-  }
-  if (Builder == "BuilderLowerFor") {
-    for (const Record *A : Args) {
-      if (A->isSubClassOf("LegalizeNamedType")) {
-        Out.push_back({"Lower", 0,
-                       WithPred(typeIsValue(0, coreTypeValue(Records, *A))),
-                       ""});
-        continue;
-      }
-      std::string T0 = coreTypeValue(Records, *A->getValueAsDef("Type0"));
-      std::string T1 = coreTypeValue(Records, *A->getValueAsDef("Type1"));
-      Out.push_back({"Lower", 0,
-                     WithPred(allOf({typeIsValue(0, T0), typeIsValue(1, T1)})),
-                     ""});
-    }
-    return;
-  }
-  if (Builder == "BuilderLibcall") {
-    Out.push_back({"Libcall", 0, WithPred(""), ""});
-    return;
-  }
-  if (Builder == "BuilderLibcallFor" || Builder == "BuilderCustomFor") {
-    StringRef Action = Builder == "BuilderLibcallFor" ? "Libcall" : "Custom";
-    for (size_t AI = 0; AI != Args.size(); ++AI) {
-      const Record *A = Args[AI];
-      if (A->isSubClassOf("LegalizeNamedType"))
-        Out.push_back({Action.str(), 0,
-                       WithPred(typeIsValue(0, coreTypeValue(Records, *A))), ""});
-      else if (A->isSubClassOf("LegalizeTypePair")) {
-        std::string T0 = coreTypeValue(Records, *A->getValueAsDef("Type0"));
-        std::string T1 = coreTypeValue(Records, *A->getValueAsDef("Type1"));
-        Out.push_back(
-            {Action.str(), 0,
-             WithPred(allOf({typeIsValue(0, T0), typeIsValue(1, T1)})), ""});
-      } else
-        Out.push_back({Action.str(), 0, WithPred(typeInValue(0, TypeList(AI))),
-                       ""});
-    }
-    return;
-  }
-  if (Builder == "BuilderCustomForCartesianProduct") {
-    std::vector<std::string> Parts = {typeInValue(0, TypeList(0)),
-                                      typeInValue(1, TypeList(1))};
-    if (Args.size() > 2)
-      Parts.push_back(typeInValue(2, TypeList(2)));
-    Out.push_back({"Custom", 0, WithPred(allOf(Parts)), ""});
-    return;
-  }
-  if (Builder == "BuilderClampScalar" || Builder == "BuilderClampScalarOrElt") {
-    unsigned Idx = Int(0);
-    std::string MinTy = TypeValue(1);
-    std::string MaxTy = TypeValue(2);
-    Out.push_back({"WidenScalar", Idx,
-                   WithPred(scalarNarrowerThanValue(Idx, TypeBits(1))),
-                   mutationJsonValue(Idx, "set_elem_type", MinTy)});
-    Out.push_back({"NarrowScalar", Idx,
-                   WithPred(scalarWiderThanValue(Idx, TypeBits(2))),
-                   mutationJsonValue(Idx, "set_elem_type", MaxTy)});
-    return;
-  }
-  if (Builder == "BuilderMinScalar") {
-    unsigned Idx = Int(0);
-    std::string Ty0 = TypeValue(1);
-    Out.push_back({"WidenScalar", Idx,
-                   WithPred(scalarNarrowerThanValue(Idx, TypeBits(1))),
-                   mutationJsonValue(Idx, "set_elem_type", Ty0)});
-    return;
-  }
-  if (Builder == "BuilderMaxScalar") {
-    unsigned Idx = Int(0);
-    std::string Ty0 = TypeValue(1);
-    Out.push_back({"NarrowScalar", Idx,
-                   WithPred(scalarWiderThanValue(Idx, TypeBits(1))),
-                   mutationJsonValue(Idx, "set_elem_type", Ty0)});
-    return;
-  }
-  // The guarded forms are minScalar/maxScalar with the query predicate
-  // conjoined; scalarNarrowerThan/scalarWiderThan already require a scalar,
-  // so the C++ lambda's isScalar() check needs no separate leaf here.
-  if (Builder == "BuilderMinScalarIf" || Builder == "BuilderMaxScalarIf") {
-    const bool Min = Builder == "BuilderMinScalarIf";
-    unsigned Idx = Int(0);
-    std::string Ty0 = TypeValue(1);
-    Out.push_back({Min ? "WidenScalar" : "NarrowScalar", Idx,
-                   WithPred(Min ? scalarNarrowerThanValue(Idx, TypeBits(1))
-                                : scalarWiderThanValue(Idx, TypeBits(1))),
-                   mutationJsonValue(Idx, "set_elem_type", Ty0)});
-    return;
-  }
-  if (Builder == "BuilderWidenScalarToNextPow2" ||
-      Builder == "BuilderWidenScalarOrEltToNextPow2") {
-    unsigned Idx = Int(0);
-    // The floor is part of the rule: nextPow2OrMin without its Min cannot be
-    // evaluated, so the value carries it.
-    std::string Target = Args.size() > 1
-                             ? "nextPow2OrMin" + std::to_string(Int(1))
-                             : std::string("nextPow2");
-    // The guard is not "true".  The C++ builder fires only when the size is
-    // not a power of two, and the scalar-only builder and the OrElt variant
-    // differ on vectors.
-    std::string Guard = Builder == "BuilderWidenScalarToNextPow2"
-                            ? sizeNotPow2(Idx)
-                            : scalarOrEltSizeNotPow2(Idx);
-    Out.push_back({"WidenScalar", Idx, WithPred(Guard),
-                   mutationJson(Idx, "set_elem_bits", Target)});
-    return;
-  }
-  if (Builder == "BuilderScalarSameSizeAs") {
-    unsigned Idx = Int(0);
-    unsigned Other = Int(1);
-    std::string Ref = "sameAsSlot" + std::to_string(Other);
-    // minScalarSameAs().maxScalarSameAs(): each direction has its own guard.
-    Out.push_back({"WidenScalar", Idx,
-                   WithPred(scalarSizeLargerThanSlot(Other, Idx)),
-                   mutationJson(Idx, "set_elem_bits", Ref)});
-    Out.push_back({"NarrowScalar", Idx,
-                   WithPred(scalarSizeSmallerThanSlot(Other, Idx)),
-                   mutationJson(Idx, "set_elem_bits", Ref)});
-    return;
-  }
-  if (Builder == "BuilderScalarize" || Builder == "BuilderScalarizeIf") {
-    unsigned Idx = Int(0);
-    Out.push_back({"FewerElements", Idx, WithPred(isVector(Idx)),
-                   mutationJsonInt(Idx, "set_lanes", 1)});
-    return;
-  }
-  if (Builder == "BuilderMoreElementsToNextPow2") {
-    unsigned Idx = Int(0);
-    Out.push_back({"MoreElements", Idx, WithPred(numElementsNotPow2(Idx)),
-                   mutationJson(Idx, "set_lanes", "nextPow2")});
-    return;
-  }
-  if (Builder == "BuilderClampNumElements") {
-    unsigned Idx = Int(0);
-    // clampNumElements(Idx, MinTy, MaxTy) is the pair
-    // clampMinNumElements(Idx, MinTy, lanes(MinTy)).
-    //   clampMaxNumElements(Idx, MaxTy, lanes(MaxTy)),
-    // so each direction names its own lane count instead of "nextPow2".
-    // MinTy names the element type and the lower lane count, so it has to be a
-    // literal vector; MaxTy may be a select vector, whose lane count becomes a
-    // select rather than one rule per branch.
-    std::string MinTy = normalizeLlt(Args[1]->getValueAsString("Expr"), &Records);
-    if (MinTy.empty()) {
-      Why = "nonliteral_type";
-      return;
-    }
-    std::string MaxLanes = coreTypeLanesValue(Records, *Args[2]);
-    if (MaxLanes.empty()) {
-      Why = "nonliteral_type";
-      return;
-    }
-    const unsigned MinLanes = lltLanes(MinTy);
-    std::string Elem = elementTypeIsValue(Idx, jsonStringValue(lltElt(MinTy)));
-    Out.push_back({"MoreElements", Idx,
-                   WithPred(allOf({Elem, fewerElementsThanValue(
-                                             Idx, std::to_string(MinLanes))})),
-                   mutationJsonInt(Idx, "set_lanes", MinLanes)});
-    Out.push_back(
-        {"FewerElements", Idx,
-         WithPred(allOf({Elem, moreElementsThanValue(Idx, MaxLanes)})),
-         mutationJsonValue(Idx, "set_lanes", MaxLanes)});
-    return;
-  }
-  if (Builder == "BuilderClampMinNumElements" ||
-      Builder == "BuilderClampMaxNumElements") {
-    unsigned Idx = Int(0);
-    std::string Elt = TypeValue(1);
-    std::string Lanes = coreLanesValue(Records, *Args[2]);
-    if (Lanes.empty()) {
-      Why = "raw_argument";
-      return;
-    }
-    const bool Min = Builder == "BuilderClampMinNumElements";
-    Out.push_back(
-        {Min ? "MoreElements" : "FewerElements", Idx,
-         WithPred(allOf({elementTypeIsValue(Idx, Elt),
-                         Min ? fewerElementsThanValue(Idx, Lanes)
-                             : moreElementsThanValue(Idx, Lanes)})),
-         mutationJsonValue(Idx, "set_lanes", Lanes)});
-    return;
-  }
-
-  if (Builder == "BuilderCustom") {
-    Out.push_back({"Custom", 0, WithPred(""), ""});
-    return;
-  }
-  if (Builder == "BuilderWidenScalarOrEltToNextPow2OrMinSize") {
-    unsigned Idx = Int(0);
-    std::string Target = Args.size() > 1
-                             ? "nextPow2OrMin" + std::to_string(Int(1))
-                             : std::string("nextPow2");
-    std::string Guard =
-        Args.size() > 1
-            ? anyOf({scalarOrEltNarrowerThan(Idx, std::to_string(Int(1))),
-                     scalarOrEltSizeNotPow2(Idx)})
-            : scalarOrEltSizeNotPow2(Idx);
-    Out.push_back({"WidenScalar", Idx, WithPred(Guard),
-                   mutationJson(Idx, "set_elem_bits", Target)});
-    return;
-  }
-  if (Builder == "BuilderMinScalarOrElt" ||
-      Builder == "BuilderMinScalarOrEltIf") {
-    unsigned Idx = Int(0);
-    std::string Ty = TypeValue(1);
-    Out.push_back({"WidenScalar", Idx,
-                   WithPred(scalarOrEltNarrowerThanValue(Idx, TypeBits(1))),
-                   mutationJsonValue(Idx, "set_elem_type", Ty)});
-    return;
-  }
-  if (Builder == "BuilderMinScalarSameAs" ||
-      Builder == "BuilderMinScalarEltSameAsIf") {
-    unsigned Idx = Int(0);
-    unsigned Other = Int(1);
-    std::string Ref = "sameAsSlot" + std::to_string(Other);
-    Out.push_back({"WidenScalar", Idx,
-                   WithPred(scalarSizeLargerThanSlot(Other, Idx)),
-                   mutationJson(Idx, "set_elem_bits", Ref)});
-    return;
-  }
-  if (Builder == "BuilderMaxScalarEltSameAsIf") {
-    unsigned Idx = Int(0);
-    unsigned Other = Int(1);
-    std::string Ref = "sameAsSlot" + std::to_string(Other);
-    Out.push_back({"NarrowScalar", Idx,
-                   WithPred(scalarSizeSmallerThanSlot(Other, Idx)),
-                   mutationJson(Idx, "set_elem_bits", Ref)});
-    return;
-  }
-  if (Builder == "BuilderUnsupportedIfMemSizeNotPow2") {
-    Out.push_back({"Unsupported", 0, WithPred(memSizeNotPow2(0)), ""});
-    return;
-  }
-  if (Builder == "BuilderLowerIfMemSizeNotPow2") {
-    Out.push_back({"Lower", 0, WithPred(memSizeNotPow2(0)), ""});
-    return;
-  }
-  if (Builder == "BuilderLowerIfMemSizeNotByteSizePow2") {
-    Out.push_back({"Lower", 0, WithPred(memSizeNotByteSizePow2(0)), ""});
-    return;
-  }
-  if (Builder == "BuilderWidenVectorEltsToVectorMinSize") {
-    Why = "no_core_expansion";
-    return;
-  }
-
-  // The remaining gap is the *Expr element counts, which the RawArg check
-  // above already turned into escapes; everything else must have an expansion.
-  PrintFatalError(Rule.getLoc(), "no Core IR expansion for builder '" + Method +
-                                     "'; add it to LegalizerInfo.td "
-                                     "first");
+  RuleExpander E(Records, Rule, Args, Out, Why, std::move(Pred));
+  const LoweringHandler *H = lookupLoweringHandler(Builder);
+  if (!H)
+    E.noExpansion();
+  (E.*H->Expand)();
 }
 
 //===----------------------------------------------------------------------===//
@@ -2503,6 +2618,22 @@ static LoweringStats verifyLoweringRegistry(const RecordKeeper &Records) {
 
   S.Builders = Builders.size();
   S.Entries = Lowerings.size();
+
+  // The dispatch table and the builder declarations must agree on spelling: a
+  // handler keyed by a name no LegalizeBuilder declares would never run, and
+  // two handlers for one builder would shadow each other.
+  std::set<StringRef> HandlerKeys;
+  for (const LoweringHandler &H : LoweringHandlers)
+    if (!HandlerKeys.insert(H.Builder).second)
+      PrintFatalError("duplicate lowering handler for builder '" +
+                      StringRef(H.Builder) + "'");
+  std::set<StringRef> DeclaredBuilders;
+  for (const Record *B : Builders)
+    DeclaredBuilders.insert(B->getName());
+  for (const LoweringHandler &H : LoweringHandlers)
+    if (!DeclaredBuilders.count(H.Builder))
+      PrintFatalError("lowering handler '" + StringRef(H.Builder) +
+                      "' does not name a LegalizeBuilder");
 
   // Assertion 4 (declaration half): the TD defs and the C++ table agree.
   std::set<std::string> DeclaredExpansions;
