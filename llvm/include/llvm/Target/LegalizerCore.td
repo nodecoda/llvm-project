@@ -28,8 +28,9 @@
 //   operators     Widen, Narrow, More, Fewer, Bitcast
 //   constructors  Pow2, Pow2Min(n), MultipleOf(n), Ty(t), SameAs(k),
 //                 MinVectorSize(n), Clamp(l,h)
-//   observers     Slot, ElemOf, NumElems, BitsOf, SizeOf, AddrSpace, SortOf,
-//                 MemSlot, MemTy, MemOrdering, Feature
+//   observers     Slot, ElemOf, NumElems, BitsOf, SizeOf, AlignOf, AddrSpace,
+//                 SortOf, MemSlot, MemTy, MemOrdering, MemFailureOrdering,
+//                 Feature
 //   combinators   all/any/not, select, eq/ne/lt/le/gt/ge, in
 //
 // This is not a shape checker.  `More` on a scalar is sort-correct: that it
@@ -121,13 +122,24 @@ def NumElems  : LegalizeCoreExpr<"numElems", [SortType], SortInt>;
 def BitsOf    : LegalizeCoreExpr<"bitsOf", [SortType], SortInt>;
 def SizeOf    : LegalizeCoreExpr<"sizeOf", [SortTypeOrMemDesc], SortInt>;
 def AddrSpace : LegalizeCoreExpr<"addrSpace", [SortType], SortInt>;
+
+/// The memory descriptor's alignment, in bits, like `SizeOf`.  It is a
+/// property of the descriptor, not of the memory type: a load of `s32` can
+/// be 4- or 16-byte aligned, and the rule that cares about that says so.
+/// `SizeOf(MemSlot)` reads `MemoryTy`, never this field.
+def AlignOf   : LegalizeCoreExpr<"alignOf", [SortMemDesc], SortInt>;
 def SortOf    : LegalizeCoreExpr<"sortOf", [SortType], SortKind>;
 
 /// A memory descriptor, indexed into the query's MMODescs array.  It is a
 /// different axis from Type: MMODescs[0] is not Types[0].
 def MemSlot       : LegalizeCoreExpr<"memSlot", [SortInt], SortMemDesc>;
 def MemTy         : LegalizeCoreExpr<"memTy", [SortMemDesc], SortType>;
+/// Success and failure orderings are separate fields on the descriptor.  A
+/// cmpxchg's failure ordering is weaker than its success ordering, so a rule
+/// that constrains it is not restating the success one.
 def MemOrdering   : LegalizeCoreExpr<"memOrdering", [SortMemDesc], SortOrdering>;
+def MemFailureOrdering
+    : LegalizeCoreExpr<"memFailureOrdering", [SortMemDesc], SortOrdering>;
 
 /// A cached per-subtarget boolean, written as its C++ condition.
 def Feature   : LegalizeCoreExpr<"feature", [SortString], SortBool>;

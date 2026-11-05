@@ -2531,6 +2531,12 @@ static StringRef coreOrderingCxx(StringRef Tag) {
   return "";
 }
 
+/// Sorting values are compared with their predicates rather than with the
+/// relational operators, and the two memory orderings share that treatment.
+static bool coreIsOrderingObserver(StringRef Tag) {
+  return Tag == "memOrdering" || Tag == "memFailureOrdering";
+}
+
 /// Emits the C++ expression for one core rule.  Dispatch is a table keyed by
 /// the schema tag, so a new observer is one row plus one method, and a tag
 /// with no emitter is a diagnostic instead of a silently dropped rule.
@@ -2594,6 +2600,9 @@ private:
       return "(" + childValue(N, 0) + ").MemoryTy.getSizeInBits()";
     return "(" + childValue(N, 0) + ").getSizeInBits()";
   }
+  std::string emitAlignOf(const CoreNode &N) {
+    return "(" + childValue(N, 0) + ").AlignInBits";
+  }
   std::string emitAddrSpace(const CoreNode &N) {
     return "(" + childValue(N, 0) + ").getAddressSpace()";
   }
@@ -2602,6 +2611,9 @@ private:
   }
   std::string emitMemOrdering(const CoreNode &N) {
     return "(" + childValue(N, 0) + ").Ordering";
+  }
+  std::string emitMemFailureOrdering(const CoreNode &N) {
+    return "(" + childValue(N, 0) + ").FailureOrdering";
   }
   std::string emitTy(const CoreNode &N) { return childValue(N, 0); }
   std::string emitSameAs(const CoreNode &N) {
@@ -2654,9 +2666,11 @@ std::string CoreCxxEmitter::value(const CoreNode &N) {
       {"numElems", &CoreCxxEmitter::emitNumElems},
       {"bitsOf", &CoreCxxEmitter::emitBitsOf},
       {"sizeOf", &CoreCxxEmitter::emitSizeOf},
+      {"alignOf", &CoreCxxEmitter::emitAlignOf},
       {"addrSpace", &CoreCxxEmitter::emitAddrSpace},
       {"memTy", &CoreCxxEmitter::emitMemTy},
       {"memOrdering", &CoreCxxEmitter::emitMemOrdering},
+      {"memFailureOrdering", &CoreCxxEmitter::emitMemFailureOrdering},
       {"ty", &CoreCxxEmitter::emitTy},
       {"sameAs", &CoreCxxEmitter::emitSameAs},
       {"select", &CoreCxxEmitter::emitSelect},
@@ -2752,24 +2766,36 @@ std::string CoreCxxEmitter::emitCompare(const CoreNode &N) {
 
   const CoreNode &Lhs = *N.Kids[0];
   const CoreNode &Rhs = *N.Kids[1];
+  // A tag operand may be written bare (`KindVector`) or as a nullary node
+  // (`(KindVector)`); both carry the same record, so read the record rather
+  // than the node kind.  Requiring OpNode here rejected the bare spelling,
+  // which is the one the corpus uses.
+  auto TagRecord = [](const CoreNode &N) -> const Record * {
+    return N.Kind == CoreNode::OpNode || N.Kind == CoreNode::DefNode ? N.Op
+                                                                   : nullptr;
+  };
   // SortOf and MemOrdering are tags, not values: compare them with their
   // predicates/atomic-order enumerators instead of spelling a Value.
   if (Lhs.Kind == CoreNode::OpNode && coreTag(*Lhs.Op) == "sortOf") {
     std::string V = value(*Lhs.Kids[0]);
-    if (Rhs.Kind != CoreNode::OpNode)
+    const Record *Kind = TagRecord(Rhs);
+    if (!Kind)
       fatal("SortOf compares against a kind tag");
-    StringRef Pred = coreKindPredicate(coreTag(*Rhs.Op));
+    StringRef Pred = coreKindPredicate(coreTag(*Kind));
     if (Pred.empty())
-      fatal("'" + Rhs.Op->getName() + "' is not a kind");
+      fatal("'" + Kind->getName() + "' is not a kind");
     bool Not = Name == "ne";
     return std::string(Not ? "!(" : "") + V + "." + Pred.str() + "()" +
            (Not ? ")" : "");
   }
-  if (Lhs.Kind == CoreNode::OpNode && coreTag(*Lhs.Op) == "memOrdering") {
+  if (Lhs.Kind == CoreNode::OpNode && coreIsOrderingObserver(coreTag(*Lhs.Op))) {
     std::string V = value(Lhs);
-    StringRef O = coreOrderingCxx(coreTag(*Rhs.Op));
+    const Record *Ord = TagRecord(Rhs);
+    if (!Ord)
+      fatal("a memory ordering compares against an ordering tag");
+    StringRef O = coreOrderingCxx(coreTag(*Ord));
     if (O.empty())
-      fatal("MemOrdering compares against an ordering");
+      fatal("'" + Ord->getName() + "' is not an atomic ordering");
     // AtomicOrdering deletes its relational operators: the lattice is
     // expressed with the named predicates so the generated code says what it
     // means instead of re-deriving the total order.

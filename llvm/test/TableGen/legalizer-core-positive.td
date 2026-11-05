@@ -62,6 +62,9 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
                 (CoreEq (MemTy (MemSlot 0)), s32)>,
     CoreWidenIf<(Slot 0), (Pow2),
                 (CoreGe (MemOrdering (MemSlot 0)), OrderingAcquire)>,
+    CoreWidenIf<(Slot 0), (Pow2), (CoreGe (AlignOf (MemSlot 0)), 32)>,
+    CoreWidenIf<(Slot 0), (Pow2),
+                (CoreGe (MemFailureOrdering (MemSlot 0)), OrderingAcquire)>,
     CoreWidenIf<(Slot 0), (Pow2),
                 (CoreAll Is32, IsVector, (CoreNot (CoreEq (BitsOf (Slot 0)), 8)))>,
     CoreWidenIf<(Slot 0), (Pow2),
@@ -76,7 +79,7 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
   ];
 }
 
-// CHECK:       "core_rules": 33,
+// CHECK:       "core_rules": 35,
 // CHECK:       "core_operators": ["widen", "narrow", "more", "fewer", "bitcast"]
 
 // CXX:       .coreWidenScalarToNextPow2([](const LegalityQuery &) { return true; }, 0)
@@ -86,11 +89,11 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
 // CXX:       .coreMinScalarSameAs([](const LegalityQuery &) { return true; }, 0, 1)
 // CXX:       .coreWidenScalarOrEltToNextPow2([](const LegalityQuery &) { return true; }, 0)
 // CXX:       .coreWidenScalarOrEltToNextPow2([](const LegalityQuery &) { return true; }, 0, 16)
-// CXX:       .coreWidenVectorEltsToVectorMinSize([](const LegalityQuery &) { return true; }, 0, 64)
-// CXX:       .coreWidenScalarOrEltToNextPow2OrMinSize([](const LegalityQuery &) { return true; }, 0, (Is32 ? 16 : 32))
 // CXX:       .coreWidenScalarOrEltToNextMultipleOf([](const LegalityQuery &) { return true; }, 0, 4)
 // CXX:       .coreMinScalarOrElt([](const LegalityQuery &) { return true; }, 0, s64)
 // CXX:       .coreMinScalarSameAs([](const LegalityQuery &) { return true; }, 0, 1)
+// CXX:       .coreWidenVectorEltsToVectorMinSize([](const LegalityQuery &) { return true; }, 0, 64)
+// CXX:       .coreWidenScalarOrEltToNextPow2OrMinSize([](const LegalityQuery &) { return true; }, 0, (Is32 ? 16 : 32))
 // CXX:       .coreMaxScalar([](const LegalityQuery &) { return true; }, 0, s32)
 // CXX:       .coreMaxScalarSameAs([](const LegalityQuery &) { return true; }, 0, 1)
 // CXX:       .coreMaxScalarOrElt([](const LegalityQuery &) { return true; }, 0, s32)
@@ -104,9 +107,11 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
 // CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.MMODescrs[0]).MemoryTy.getSizeInBits() >= 8); }, 0)
 // CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.Types[0]).getAddressSpace() == 0); }, 0)
 // CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return (Query.Types[0].isScalar() || Query.Types[0].isVector()); }, 0)
-// CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return (Query.Types[0].isVector()); }, 0)
+// CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return Query.Types[0].isVector(); }, 0)
 // CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.MMODescrs[0]).MemoryTy == s32); }, 0)
 // CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return isAtLeastOrStrongerThan((Query.MMODescrs[0]).Ordering, AtomicOrdering::Acquire); }, 0)
+// CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.MMODescrs[0]).AlignInBits >= 32); }, 0)
+// CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return isAtLeastOrStrongerThan((Query.MMODescrs[0]).FailureOrdering, AtomicOrdering::Acquire); }, 0)
 // CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return (Is32) && (IsVector) && (!(((Query.Types[0]).getScalarSizeInBits() == 8))); }, 0)
 // CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return (((Query.Types[0]).getScalarSizeInBits() < 8)) || (((Query.Types[1]).getScalarSizeInBits() != 16)); }, 0)
 // CXX:       .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return (Query.Types[0] == s32 || Query.Types[0] == s64); }, 0)
