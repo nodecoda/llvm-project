@@ -2503,69 +2503,6 @@ static void coreNodeJson(const CoreNode &N, const RecordKeeper &Records,
   Out += "}";
 }
 
-static std::string coreCxxBool(const CoreNode &N, const RecordKeeper &Records,
-                               const Record &Owner);
-
-/// The C++ value one node denotes inside a generated predicate.  Only the
-/// observers that have a query expression are accepted; anything else is a
-/// lowering error, not a guess.
-static std::string coreCxxValue(const CoreNode &N, const RecordKeeper &Records,
-                                const Record &Owner) {
-  if (N.Kind == CoreNode::IntNode)
-    return std::to_string(N.IntValue);
-  if (N.Kind == CoreNode::DefNode) {
-    if (N.Op->isSubClassOf("LegalizeNamedType"))
-      return N.Op->getName().str();
-    PrintFatalError(Owner.getLoc(),
-                    "core rule: '" + N.Op->getName() + "' has no C++ value");
-  }
-  if (N.Kind != CoreNode::OpNode)
-    PrintFatalError(Owner.getLoc(), "core rule: operand has no C++ value");
-
-  StringRef Name = coreTag(*N.Op);
-  auto Kid = [&](size_t I) {
-    if (I >= N.Kids.size())
-      PrintFatalError(Owner.getLoc(), "core rule: '" + Name +
-                                          "' is missing operand " +
-                                          std::to_string(I));
-    return coreCxxValue(*N.Kids[I], Records, Owner);
-  };
-  if (Name == "slot")
-    return "Query.Types[" + std::to_string(N.Kids[0]->IntValue) + "]";
-  if (Name == "memSlot")
-    return "Query.MMODescrs[" + std::to_string(N.Kids[0]->IntValue) + "]";
-  if (Name == "elemOf")
-    return "(" + Kid(0) + ").getElementType()";
-  if (Name == "numElems")
-    return "(" + Kid(0) + ").getNumElements()";
-  if (Name == "bitsOf")
-    return "(" + Kid(0) + ").getScalarSizeInBits()";
-  if (Name == "sizeOf") {
-    // MemDesc::AlignInBits is an alignment, not a size.  SizeOf(memSlot) is
-    // the size of the memory type; alignment needs its own observer.
-    if (N.Kids[0]->Kind == CoreNode::OpNode &&
-        coreTag(*N.Kids[0]->Op) == "memSlot")
-      return "(" + Kid(0) + ").MemoryTy.getSizeInBits()";
-    return "(" + Kid(0) + ").getSizeInBits()";
-  }
-  if (Name == "addrSpace")
-    return "(" + Kid(0) + ").getAddressSpace()";
-  if (Name == "memTy")
-    return "(" + Kid(0) + ").MemoryTy";
-  if (Name == "memOrdering")
-    return "(" + Kid(0) + ").Ordering";
-  if (Name == "ty")
-    return Kid(0);
-  if (Name == "sameAs")
-    return "Query.Types[" + std::to_string(N.Kids[0]->IntValue) + "]";
-  if (Name == "select")
-    return "(" + coreCxxBool(*N.Kids[0], Records, Owner) + " ? " + Kid(1) +
-           " : " + Kid(2) + ")";
-  PrintFatalError(Owner.getLoc(),
-                  "core rule: '" + Name + "' has no C++ value in a guard");
-  return "";
-}
-
 static StringRef coreKindPredicate(StringRef Kind) {
   if (Kind == "kindScalar")
     return "isScalar";
@@ -2594,70 +2531,209 @@ static StringRef coreOrderingCxx(StringRef Tag) {
   return "";
 }
 
-static std::string coreCxxBool(const CoreNode &N, const RecordKeeper &Records,
-                               const Record &Owner) {
-  if (N.Kind == CoreNode::DefNode && N.Op->isSubClassOf("LegalizeFeature"))
-    return N.Op->getName().str();
-  if (N.Kind != CoreNode::OpNode)
-    PrintFatalError(Owner.getLoc(), "core rule: guard is not a Bool node");
-  StringRef Name = coreTag(*N.Op);
-  if (Name == "true")
-    return "true";
-  if (Name == "feature")
+/// Emits the C++ expression for one core rule.  Dispatch is a table keyed by
+/// the schema tag, so a new observer is one row plus one method, and a tag
+/// with no emitter is a diagnostic instead of a silently dropped rule.
+class CoreCxxEmitter {
+public:
+  CoreCxxEmitter(const RecordKeeper &Records, const Record &Owner)
+      : Records(Records), Owner(Owner) {}
+
+  std::string value(const CoreNode &N);
+  std::string boolean(const CoreNode &N);
+
+private:
+  using EmitFn = std::string (CoreCxxEmitter::*)(const CoreNode &);
+  struct Entry {
+    StringRef Tag;
+    EmitFn Fn;
+  };
+
+  const RecordKeeper &Records;
+  const Record &Owner;
+
+  [[noreturn]] void fatal(const Twine &Msg) const {
+    PrintFatalError(Owner.getLoc(), "core rule: " + Msg);
+  }
+
+  std::string childValue(const CoreNode &N, size_t I) {
+    if (I >= N.Kids.size())
+      fatal("'" + coreTag(*N.Op) + "' is missing operand " +
+            std::to_string(I));
+    return value(*N.Kids[I]);
+  }
+
+  std::string childBool(const CoreNode &N, size_t I) {
+    if (I >= N.Kids.size())
+      fatal("'" + coreTag(*N.Op) + "' is missing operand " +
+            std::to_string(I));
+    return boolean(*N.Kids[I]);
+  }
+
+  // Value emitters.
+  std::string emitSlot(const CoreNode &N) {
+    return "Query.Types[" + std::to_string(N.Kids[0]->IntValue) + "]";
+  }
+  std::string emitMemSlot(const CoreNode &N) {
+    return "Query.MMODescrs[" + std::to_string(N.Kids[0]->IntValue) + "]";
+  }
+  std::string emitElemOf(const CoreNode &N) {
+    return "(" + childValue(N, 0) + ").getElementType()";
+  }
+  std::string emitNumElems(const CoreNode &N) {
+    return "(" + childValue(N, 0) + ").getNumElements()";
+  }
+  std::string emitBitsOf(const CoreNode &N) {
+    return "(" + childValue(N, 0) + ").getScalarSizeInBits()";
+  }
+  std::string emitSizeOf(const CoreNode &N) {
+    // MemDesc::AlignInBits is an alignment, not a size.  SizeOf(memSlot) is
+    // the size of the memory type; alignment needs its own observer.
+    if (N.Kids[0]->Kind == CoreNode::OpNode &&
+        coreTag(*N.Kids[0]->Op) == "memSlot")
+      return "(" + childValue(N, 0) + ").MemoryTy.getSizeInBits()";
+    return "(" + childValue(N, 0) + ").getSizeInBits()";
+  }
+  std::string emitAddrSpace(const CoreNode &N) {
+    return "(" + childValue(N, 0) + ").getAddressSpace()";
+  }
+  std::string emitMemTy(const CoreNode &N) {
+    return "(" + childValue(N, 0) + ").MemoryTy";
+  }
+  std::string emitMemOrdering(const CoreNode &N) {
+    return "(" + childValue(N, 0) + ").Ordering";
+  }
+  std::string emitTy(const CoreNode &N) { return childValue(N, 0); }
+  std::string emitSameAs(const CoreNode &N) {
+    return "Query.Types[" + std::to_string(N.Kids[0]->IntValue) + "]";
+  }
+  std::string emitSelect(const CoreNode &N) {
+    return "(" + childBool(N, 0) + " ? " + childValue(N, 1) + " : " +
+           childValue(N, 2) + ")";
+  }
+
+  // Boolean emitters.
+  std::string emitTrue(const CoreNode &) { return "true"; }
+  std::string emitFeature(const CoreNode &N) {
     return "(" + N.Kids[0]->StringValue + ")";
-  if (Name == "all" || Name == "any") {
-    std::string Op = Name == "all" ? " && " : " || ";
+  }
+  std::string junction(const CoreNode &N, StringRef Op) {
     std::string Out;
     for (const auto &K : N.Kids) {
       if (!Out.empty())
         Out += Op;
-      Out += "(" + coreCxxBool(*K, Records, Owner) + ")";
+      Out += "(" + boolean(*K) + ")";
     }
     return Out;
   }
-  if (Name == "not")
-    return "!(" + coreCxxBool(*N.Kids[0], Records, Owner) + ")";
-
-  if (Name == "in") {
-    const CoreNode &Lhs = *N.Kids[0];
-    const CoreNode &Rhs = *N.Kids[1];
-    if (Rhs.Kind == CoreNode::OpNode && coreTag(*Rhs.Op) == "clamp") {
-      std::string V = coreCxxValue(Lhs, Records, Owner);
-      return "(" + V + " >= " + std::to_string(Rhs.Kids[0]->IntValue) + " && " +
-             V + " <= " + std::to_string(Rhs.Kids[1]->IntValue) + ")";
-    }
-    if (Rhs.Kind == CoreNode::DefNode &&
-        Rhs.Op->isSubClassOf("LegalizeCoreKindSet")) {
-      if (Lhs.Kind != CoreNode::OpNode || coreTag(*Lhs.Op) != "sortOf")
-        PrintFatalError(Owner.getLoc(),
-                        "core rule: a Kind set can only test SortOf");
-      std::string V = coreCxxValue(*Lhs.Kids[0], Records, Owner);
-      std::string Out;
-      for (const Record *E : Rhs.Op->getValueAsListOfDefs("Elems")) {
-        StringRef Pred = coreKindPredicate(coreTag(*E));
-        if (Pred.empty())
-          PrintFatalError(Owner.getLoc(),
-                          "core rule: '" + E->getName() + "' is not a kind");
-        if (!Out.empty())
-          Out += " || ";
-        Out += V + "." + Pred.str() + "()";
-      }
-      return "(" + Out + ")";
-    }
-    if (Rhs.Kind == CoreNode::DefNode &&
-        Rhs.Op->isSubClassOf("LegalizeCoreTypeSet")) {
-      std::string V = coreCxxValue(Lhs, Records, Owner);
-      std::string Out;
-      for (const Record *E : Rhs.Op->getValueAsListOfDefs("Elems")) {
-        if (!Out.empty())
-          Out += " || ";
-        Out += V + " == " + E->getName().str();
-      }
-      return "(" + Out + ")";
-    }
-    PrintFatalError(Owner.getLoc(), "core rule: unknown set in 'in'");
+  std::string emitAll(const CoreNode &N) { return junction(N, " && "); }
+  std::string emitAny(const CoreNode &N) { return junction(N, " || "); }
+  std::string emitNot(const CoreNode &N) {
+    return "!(" + childBool(N, 0) + ")";
   }
+  std::string emitIn(const CoreNode &N);
+  std::string emitCompare(const CoreNode &N);
+};
 
+std::string CoreCxxEmitter::value(const CoreNode &N) {
+  if (N.Kind == CoreNode::IntNode)
+    return std::to_string(N.IntValue);
+  if (N.Kind == CoreNode::DefNode) {
+    if (N.Op->isSubClassOf("LegalizeNamedType"))
+      return N.Op->getName().str();
+    fatal("'" + N.Op->getName() + "' has no C++ value");
+  }
+  if (N.Kind != CoreNode::OpNode)
+    fatal("operand has no C++ value");
+
+  StringRef Tag = coreTag(*N.Op);
+  static const Entry Table[] = {
+      {"slot", &CoreCxxEmitter::emitSlot},
+      {"memSlot", &CoreCxxEmitter::emitMemSlot},
+      {"elemOf", &CoreCxxEmitter::emitElemOf},
+      {"numElems", &CoreCxxEmitter::emitNumElems},
+      {"bitsOf", &CoreCxxEmitter::emitBitsOf},
+      {"sizeOf", &CoreCxxEmitter::emitSizeOf},
+      {"addrSpace", &CoreCxxEmitter::emitAddrSpace},
+      {"memTy", &CoreCxxEmitter::emitMemTy},
+      {"memOrdering", &CoreCxxEmitter::emitMemOrdering},
+      {"ty", &CoreCxxEmitter::emitTy},
+      {"sameAs", &CoreCxxEmitter::emitSameAs},
+      {"select", &CoreCxxEmitter::emitSelect},
+  };
+  for (const Entry &E : Table)
+    if (E.Tag == Tag)
+      return (this->*E.Fn)(N);
+  fatal("'" + N.Op->getName() + "' has no C++ value in a guard");
+}
+
+std::string CoreCxxEmitter::boolean(const CoreNode &N) {
+  if (N.Kind == CoreNode::DefNode && N.Op->isSubClassOf("LegalizeFeature"))
+    return N.Op->getName().str();
+  if (N.Kind != CoreNode::OpNode)
+    fatal("guard is not a Bool node");
+
+  StringRef Tag = coreTag(*N.Op);
+  static const Entry Table[] = {
+      {"true", &CoreCxxEmitter::emitTrue},
+      {"feature", &CoreCxxEmitter::emitFeature},
+      {"all", &CoreCxxEmitter::emitAll},
+      {"any", &CoreCxxEmitter::emitAny},
+      {"not", &CoreCxxEmitter::emitNot},
+      {"in", &CoreCxxEmitter::emitIn},
+      {"eq", &CoreCxxEmitter::emitCompare},
+      {"ne", &CoreCxxEmitter::emitCompare},
+      {"lt", &CoreCxxEmitter::emitCompare},
+      {"le", &CoreCxxEmitter::emitCompare},
+      {"gt", &CoreCxxEmitter::emitCompare},
+      {"ge", &CoreCxxEmitter::emitCompare},
+  };
+  for (const Entry &E : Table)
+    if (E.Tag == Tag)
+      return (this->*E.Fn)(N);
+  fatal("'" + N.Op->getName() + "' is not a bool combinator");
+}
+
+std::string CoreCxxEmitter::emitIn(const CoreNode &N) {
+  const CoreNode &Lhs = *N.Kids[0];
+  const CoreNode &Rhs = *N.Kids[1];
+  if (Rhs.Kind == CoreNode::OpNode && coreTag(*Rhs.Op) == "clamp") {
+    std::string V = value(Lhs);
+    return "(" + V + " >= " + std::to_string(Rhs.Kids[0]->IntValue) + " && " +
+           V + " <= " + std::to_string(Rhs.Kids[1]->IntValue) + ")";
+  }
+  if (Rhs.Kind == CoreNode::DefNode &&
+      Rhs.Op->isSubClassOf("LegalizeCoreKindSet")) {
+    if (Lhs.Kind != CoreNode::OpNode || coreTag(*Lhs.Op) != "sortOf")
+      fatal("a Kind set can only test SortOf");
+    std::string V = value(*Lhs.Kids[0]);
+    std::string Out;
+    for (const Record *E : Rhs.Op->getValueAsListOfDefs("Elems")) {
+      StringRef Pred = coreKindPredicate(coreTag(*E));
+      if (Pred.empty())
+        fatal("'" + E->getName() + "' is not a kind");
+      if (!Out.empty())
+        Out += " || ";
+      Out += V + "." + Pred.str() + "()";
+    }
+    return "(" + Out + ")";
+  }
+  if (Rhs.Kind == CoreNode::DefNode &&
+      Rhs.Op->isSubClassOf("LegalizeCoreTypeSet")) {
+    std::string V = value(Lhs);
+    std::string Out;
+    for (const Record *E : Rhs.Op->getValueAsListOfDefs("Elems")) {
+      if (!Out.empty())
+        Out += " || ";
+      Out += V + " == " + E->getName().str();
+    }
+    return "(" + Out + ")";
+  }
+  fatal("unknown set in 'in'");
+}
+
+std::string CoreCxxEmitter::emitCompare(const CoreNode &N) {
+  StringRef Name = coreTag(*N.Op);
   StringRef Op;
   if (Name == "eq")
     Op = "==";
@@ -2672,32 +2748,28 @@ static std::string coreCxxBool(const CoreNode &N, const RecordKeeper &Records,
   else if (Name == "ge")
     Op = ">=";
   else
-    PrintFatalError(Owner.getLoc(),
-                    "core rule: '" + Name + "' is not a bool combinator");
+    fatal("'" + Name + "' is not a bool combinator");
 
   const CoreNode &Lhs = *N.Kids[0];
   const CoreNode &Rhs = *N.Kids[1];
   // SortOf and MemOrdering are tags, not values: compare them with their
   // predicates/atomic-order enumerators instead of spelling a Value.
   if (Lhs.Kind == CoreNode::OpNode && coreTag(*Lhs.Op) == "sortOf") {
-    std::string V = coreCxxValue(*Lhs.Kids[0], Records, Owner);
+    std::string V = value(*Lhs.Kids[0]);
     if (Rhs.Kind != CoreNode::OpNode)
-      PrintFatalError(Owner.getLoc(),
-                      "core rule: SortOf compares against a kind tag");
+      fatal("SortOf compares against a kind tag");
     StringRef Pred = coreKindPredicate(coreTag(*Rhs.Op));
     if (Pred.empty())
-      PrintFatalError(Owner.getLoc(),
-                      "core rule: '" + Rhs.Op->getName() + "' is not a kind");
+      fatal("'" + Rhs.Op->getName() + "' is not a kind");
     bool Not = Name == "ne";
     return std::string(Not ? "!(" : "") + V + "." + Pred.str() + "()" +
            (Not ? ")" : "");
   }
   if (Lhs.Kind == CoreNode::OpNode && coreTag(*Lhs.Op) == "memOrdering") {
-    std::string V = coreCxxValue(Lhs, Records, Owner);
+    std::string V = value(Lhs);
     StringRef O = coreOrderingCxx(coreTag(*Rhs.Op));
     if (O.empty())
-      PrintFatalError(Owner.getLoc(),
-                      "core rule: MemOrdering compares against an ordering");
+      fatal("MemOrdering compares against an ordering");
     // AtomicOrdering deletes its relational operators: the lattice is
     // expressed with the named predicates so the generated code says what it
     // means instead of re-deriving the total order.
@@ -2713,11 +2785,9 @@ static std::string coreCxxBool(const CoreNode &N, const RecordKeeper &Records,
       return "(!isStrongerThan(" + V + ", " + O.str() + "))";
     if (Name == "lt")
       return "(!isAtLeastOrStrongerThan(" + V + ", " + O.str() + "))";
-    PrintFatalError(Owner.getLoc(),
-                    "core rule: unsupported MemOrdering comparison");
+    fatal("unsupported MemOrdering comparison");
   }
-  return "(" + coreCxxValue(Lhs, Records, Owner) + " " + Op.str() + " " +
-         coreCxxValue(Rhs, Records, Owner) + ")";
+  return "(" + value(Lhs) + " " + Op.str() + " " + value(Rhs) + ")";
 }
 
 /// The 0.3 projection of a core target.  A legacy reader sees the same
@@ -2855,6 +2925,7 @@ static void verifyCoreRule(const RecordKeeper &Records, const Record &Rule) {
 
 void LegalizerInfoEmitter::emitCoreRule(const Record &Rule, raw_ostream &OS) {
   CheckedCoreRule C = checkCoreRule(Rule, Records);
+  CoreCxxEmitter Cxx(Records, Rule);
   StringRef On = coreObservationForm(*C.Obs);
   StringRef To = coreTag(*C.Target->Op);
   const CoreShimRow *Shim = lookupCoreShim(coreTag(*C.Operator), On, To);
@@ -2870,7 +2941,7 @@ void LegalizerInfoEmitter::emitCoreRule(const Record &Rule, raw_ostream &OS) {
     if (!isa<UnsetInit>(G)) {
       std::unique_ptr<CoreNode> Guard = parseCoreNode(*G, Rule);
       OS << "[=](const LegalityQuery &Query) { return "
-         << coreCxxBool(*Guard, Records, Rule) << "; }";
+         << Cxx.boolean(*Guard) << "; }";
     } else {
       OS << "[](const LegalityQuery &) { return true; }";
     }
@@ -2888,7 +2959,7 @@ void LegalizerInfoEmitter::emitCoreRule(const Record &Rule, raw_ostream &OS) {
                         "core rule: a Ty target must name a LegalizeNamedType");
       OS << T.Kids[0]->Op->getName();
     } else if (To == "select") {
-      OS << coreCxxValue(T, Records, Rule);
+      OS << Cxx.value(T);
     } else if (T.Kids[0]->Kind != CoreNode::IntNode) {
       PrintFatalError(Rule.getLoc(),
                       "core rule: '" + To + "' payload must be a literal int");
@@ -5583,7 +5654,7 @@ class LegalizerTableEmitterImpl {
     const Init *G = Rule.getValueInit("CoreGuard");
     if (G && !isa<UnsetInit>(G)) {
       std::unique_ptr<CoreNode> N = parseCoreNode(*G, Rule);
-      return coreCxxBool(*N, Records, Rule);
+      return CoreCxxEmitter(Records, Rule).boolean(*N);
     }
     return "";
   }
@@ -5595,6 +5666,7 @@ class LegalizerTableEmitterImpl {
   bool translateCoreRule(const Record &Rule, std::string &Out, std::string &Why,
                          const unsigned *RuleIdx, bool GuardOnly) {
     CheckedCoreRule C = checkCoreRule(Rule, Records);
+    CoreCxxEmitter Cxx(Records, Rule);
     StringRef On = coreObservationForm(*C.Obs);
     StringRef To = coreTag(*C.Target->Op);
     StringRef Op = coreTag(*C.Operator);
@@ -5628,7 +5700,7 @@ class LegalizerTableEmitterImpl {
       break;
     }
     case CoreTableTranslation::WidenPow2OrMinSize: {
-      const std::string Min = coreCxxValue(*C.Target, Records, Rule);
+      const std::string Min = Cxx.value(*C.Target);
       Cond = "(scalarOrEltNarrowerThan(" + Idx + ", " + Min +
              ")(Q) || "
              "scalarOrEltSizeNotPow2(" +
