@@ -177,6 +177,18 @@ def AddrSpace : LegalizeCoreExpr<"addrSpace", [SortType], SortInt>;
 /// be 4- or 16-byte aligned, and the rule that cares about that says so.
 /// `SizeOf(MemSlot)` reads `MemoryTy`, never this field.
 def AlignOf   : LegalizeCoreExpr<"alignOf", [SortMemDesc], SortInt>;
+
+/// The memory type's size in bytes, i.e. its bit size rounded up to whole
+/// bytes.  Two questions need it and `SizeOf` cannot answer either: whether
+/// the access is a whole number of bytes (`IsByteSized`), and whether the
+/// number of bytes is a power of two.
+def SizeInBytesOf
+    : LegalizeCoreExpr<"sizeInBytesOf", [SortType], SortInt>;
+
+/// Whether the type's bit size is a whole number of bytes.  A separate
+/// observation from `SizeInBytesOf` because a 12-bit type is byte-sized and
+/// not a power of two, while a 24-bit type is neither.
+def IsByteSized : LegalizeCoreExpr<"isByteSized", [SortType], SortBool>;
 def SortOf    : LegalizeCoreExpr<"sortOf", [SortType], SortKind>;
 
 /// A memory descriptor, indexed into the query's MMODescs array.  It is a

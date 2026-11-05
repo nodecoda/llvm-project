@@ -120,6 +120,12 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
     CoreClampMaxNumElements<0, s32, 4>,
     CoreFewer<(Slot 0), (Replace (ScalarOrVecOf 4, (Slot 0)))>,
 
+    // The two questions about a memory type's width that a bit size cannot
+    // answer: is it a whole number of bytes, and is that number a power of
+    // two.
+    CoreLower<(CoreNot (CoreIsPow2 (SizeInBytesOf (MemTy (MemSlot 0)))))>,
+    CoreLower<(CoreNot (IsByteSized (MemTy (MemSlot 0))))>,
+
     // Terminal actions.  Libcall is the one that carries no mutation.
     CoreLibcall<(CoreNot Is32)>
   ];
@@ -154,7 +160,7 @@ def MemRules : LegalizeRuleSet<["G_MEM"]> {
   ];
 }
 
-// CHECK:       "core_rules": 62,
+// CHECK:       "core_rules": 64,
 // CHECK:       "core_operators": ["bitcast", "custom", "fewer", "legal", "libcall", "lower", "more", "narrow", "scalarize", "unsupported", "widen"]
 
 // CXX: .coreWidenScalarToNextPow2([](const LegalityQuery &) { return true; }, 0)
@@ -214,6 +220,8 @@ def MemRules : LegalizeRuleSet<["G_MEM"]> {
 // CXX: .coreMoreTo([=](const LegalityQuery &Query) { return (Query.Types[0].isVector()) && (!(Query.Types[0].isScalableVector())) && (((Query.Types[0]).getElementType() == s32)) && (((Query.Types[0]).getNumElements() < 4)); }, 0, [=](const LegalityQuery &Query) { return std::make_pair(0, LLT::fixed_vector(4, (Query.Types[0]).getElementType())); })
 // CXX: .coreFewerTo([=](const LegalityQuery &Query) { return (Query.Types[0].isVector()) && (!(Query.Types[0].isScalableVector())) && (((Query.Types[0]).getElementType() == s32)) && (((Query.Types[0]).getNumElements() > 4)); }, 0, [=](const LegalityQuery &Query) { return std::make_pair(0, LLT::scalarOrVector(ElementCount::getFixed(4), (Query.Types[0]).getElementType())); })
 // CXX: .coreFewerTo([](const LegalityQuery &) { return true; }, 0, [=](const LegalityQuery &Query) { return std::make_pair(0, LLT::scalarOrVector(ElementCount::getFixed(4), Query.Types[0])); })
+// CXX: .coreLowerIf([=](const LegalityQuery &Query) { return !(llvm::isPowerOf2_32(((Query.MMODescrs[0]).MemoryTy).getSizeInBytes())); })
+// CXX: .coreLowerIf([=](const LegalityQuery &Query) { return !(((Query.MMODescrs[0]).MemoryTy).isByteSized()); })
 // CXX: .coreLibcallIf([=](const LegalityQuery &Query) { return !(Is32); });
 
 // CXX: .coreLegalIf([=](const LegalityQuery &Query) { return LegalityPredicates::typePairInSet(0, 1, {{.*}}s32, s64{{.*}})(Query); })

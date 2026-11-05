@@ -12,15 +12,16 @@
 // AArch64LegalizerInfo.cpp, including the constructs X86 did not use
 // (custom(), bitcastIf(), minScalarOrEltIf(), libcallIf(), immIdx()).
 //
-// Every rule whose condition is an expression is a core rule: no rule carries
-// a C++ predicate and no rule carries a raw mutation, the lane clamp is two
-// core rules (a guard plus a whole-type assignment), a unary type list is a
-// named type set (`(CoreIn (Slot 0), Set)`), a list of type pairs or triples
-// is a named tuple set (`(CoreInPairs ...)`, `(CoreInTriples ...)`), and a
-// list of memory descriptors is a named memdesc set
-// (`(CoreInMemDesc ...)`), which lower to `typePairInSet`,
-// `typeTupleInSet` and `typePairAndMemDescInSet`.  What remains is the
-// `immIdx` annotation and the two-slot size relations.
+// Every legalize rule here is a core rule: no rule carries a C++ predicate and
+// no rule carries a raw mutation, the lane clamp is two core rules (a guard
+// plus a whole-type assignment), a unary type list is a named type set
+// (`(CoreIn (Slot 0), Set)`), a list of type pairs or triples is a named tuple
+// set (`(CoreInPairs ...)`, `(CoreInTriples ...)`), and a list of memory
+// descriptors is a named memdesc set (`(CoreInMemDesc ...)`), which lower to
+// `typePairInSet`, `typeTupleInSet` and `typePairAndMemDescInSet`.
+//
+// The only builder left is `immIdx`, which is not a rule: it marks a covered
+// immediate index and the emitter gives it neither a row nor an escape.
 //
 //===----------------------------------------------------------------------===//
 
@@ -1155,7 +1156,9 @@ def AArch64_LOAD : LegalizeRuleSet<["G_LOAD"]> {
     CoreClampMaxNumElements<0, AArch64_s32, 4>,
     CoreClampMaxNumElements<0, AArch64_s64, 2>,
     CoreClampMaxNumElements<0, AArch64_p0, 2>,
-    LowerIfMemSizeNotByteSizePow2,
+    CoreLower<(CoreAny (CoreNot (IsByteSized (MemTy (MemSlot 0)))),
+                       (CoreNot (CoreIsPow2
+                                     (SizeInBytesOf (MemTy (MemSlot 0))))))>,
     CoreWiden<(Slot 0), (Ty AArch64_s8)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s64)>,
     CoreNarrowIf<(Slot 0), (Replace (Ty AArch64_i32)),
@@ -1194,7 +1197,8 @@ def AArch64_STORE : LegalizeRuleSet<["G_STORE"]> {
     CoreClampMaxNumElements<0, AArch64_s32, 4>,
     CoreClampMaxNumElements<0, AArch64_s64, 2>,
     CoreClampMaxNumElements<0, AArch64_p0, 2>,
-    LowerIfMemSizeNotPow2,
+    CoreLower<(CoreNot
+                   (CoreIsPow2 (SizeInBytesOf (MemTy (MemSlot 0)))))>,
     CoreBitcastIf<(Slot 0), (Replace (IntOfSize (SizeOf (Slot 0)))),
                   (CoreAll (CoreEq (Slot 0), (Ty AArch64_v4s8)),
                            (CoreEq (SizeOf (Slot 0)), (SizeOf (MemSlot 0))))>,
@@ -2039,7 +2043,7 @@ def AArch64_VECTOR_COMPRESS : LegalizeRuleSet<["G_VECTOR_COMPRESS"]> {
 
 def AArch64_GET_FPENV : LegalizeRuleSet<["G_GET_FPENV", "G_SET_FPENV", "G_RESET_FPENV", "G_GET_FPMODE", "G_SET_FPMODE", "G_RESET_FPMODE"]> {
   let Rules = [
-    Libcall
+    CoreAlwaysLibcall
   ];
 }
 
@@ -2092,7 +2096,8 @@ def AArch64_SEXTLOAD : LegalizeRuleSet<["G_SEXTLOAD"]> {
     CoreWiden<(Slot 0), (Pow2)>,
     CoreWiden<(Slot 0), (Ty AArch64_s32)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s64)>,
-    UnsupportedIfMemSizeNotPow2,
+    CoreUnsupported<(CoreNot
+                         (CoreIsPow2 (SizeInBytesOf (MemTy (MemSlot 0)))))>,
     CoreAlwaysLower
   ];
 }
@@ -2103,7 +2108,8 @@ def AArch64_ZEXTLOAD : LegalizeRuleSet<["G_ZEXTLOAD"]> {
     CoreWiden<(Slot 0), (Pow2)>,
     CoreWiden<(Slot 0), (Ty AArch64_s32)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s64)>,
-    UnsupportedIfMemSizeNotPow2,
+    CoreUnsupported<(CoreNot
+                         (CoreIsPow2 (SizeInBytesOf (MemTy (MemSlot 0)))))>,
     CoreAlwaysLower
   ];
 }

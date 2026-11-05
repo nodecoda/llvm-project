@@ -2830,6 +2830,12 @@ private:
   std::string emitBitsOf(const CoreNode &N) {
     return "(" + childValue(N, 0) + ").getScalarSizeInBits()";
   }
+  std::string emitSizeInBytesOf(const CoreNode &N) {
+    return "(" + childValue(N, 0) + ").getSizeInBytes()";
+  }
+  std::string emitIsByteSized(const CoreNode &N) {
+    return "(" + childValue(N, 0) + ").isByteSized()";
+  }
   std::string emitSizeOf(const CoreNode &N) {
     // MemDesc::AlignInBits is an alignment, not a size.  SizeOf(memSlot) is
     // the size of the memory type; alignment needs its own observer.
@@ -2963,6 +2969,8 @@ std::string CoreCxxEmitter::value(const CoreNode &N) {
       {"divLanes", &CoreCxxEmitter::emitDivLanes},
       {"replace", &CoreCxxEmitter::emitReplace},
       {"bitsOf", &CoreCxxEmitter::emitBitsOf},
+      {"sizeInBytesOf", &CoreCxxEmitter::emitSizeInBytesOf},
+      {"isByteSized", &CoreCxxEmitter::emitIsByteSized},
       {"sizeOf", &CoreCxxEmitter::emitSizeOf},
       {"alignOf", &CoreCxxEmitter::emitAlignOf},
       {"addrSpace", &CoreCxxEmitter::emitAddrSpace},
@@ -2993,6 +3001,7 @@ std::string CoreCxxEmitter::boolean(const CoreNode &N) {
       {"any", &CoreCxxEmitter::emitAny},
       {"not", &CoreCxxEmitter::emitNot},
       {"isPow2", &CoreCxxEmitter::emitIsPow2},
+      {"isByteSized", &CoreCxxEmitter::emitIsByteSized},
       {"isBFloat16", &CoreCxxEmitter::emitIsBFloat16},
       {"isFloat16", &CoreCxxEmitter::emitIsFloat16},
       {"in", &CoreCxxEmitter::emitIn},
@@ -7518,6 +7527,7 @@ public:
        << "  \"rule_sets_without_table_translation\": "
        << S.RuleSetsWithoutTable << ",\n"
        << "  \"core_rules\": " << S.CoreRules << ",\n"
+
        << "  \"core_operators\": [";
     bool First = true;
     for (const Record *Op :
