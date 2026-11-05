@@ -196,6 +196,18 @@ def AArch64_SVEIntVecSet : LegalizeCoreTypeSet<
 def AArch64_F16OrV4V8F16Set : LegalizeCoreTypeSet<
     [AArch64_f16, AArch64_v4f16, AArch64_v8f16]>;
 
+/// The self-bitcast lists.  `legalForCartesianProduct` with a single list
+/// applies it to both slots, so each of these is the set of types a bitcast of
+/// that width may have on either side.
+def AArch64_Bitcast16Set : LegalizeCoreTypeSet<[AArch64_s16]>;
+def AArch64_Bitcast32Set : LegalizeCoreTypeSet<
+    [AArch64_s32, AArch64_v2s16, AArch64_v4s8]>;
+def AArch64_Bitcast64Set : LegalizeCoreTypeSet<
+    [AArch64_s64, AArch64_v8s8, AArch64_v4s16, AArch64_v2s32]>;
+def AArch64_Bitcast128Set : LegalizeCoreTypeSet<
+    [AArch64_s128, AArch64_v16s8, AArch64_v8s16, AArch64_v4s32, AArch64_v2s64,
+     AArch64_v2p0]>;
+
 /// The type tuples the rules name.  A pair set is a table, not a condition:
 /// the rule says `(CoreInPairs (Slot 0), (Slot 1), Set)`, which lowers to
 /// `typePairInSet`, so the pairs stay one datum instead of a disjunction of
@@ -1582,10 +1594,14 @@ def AArch64_INTTOPTR : LegalizeRuleSet<["G_INTTOPTR"]> {
 
 def AArch64_BITCAST : LegalizeRuleSet<["G_BITCAST"]> {
   let Rules = [
-    LegalForCartesianProduct1<LegalizeInlineTypeList<[AArch64_s16]>>,
-    LegalForCartesianProduct1<LegalizeInlineTypeList<[AArch64_s32, AArch64_v2s16, AArch64_v4s8]>>,
-    LegalForCartesianProduct1<LegalizeInlineTypeList<[AArch64_s64, AArch64_v8s8, AArch64_v4s16, AArch64_v2s32]>>,
-    LegalForCartesianProduct1<LegalizeInlineTypeList<[AArch64_s128, AArch64_v16s8, AArch64_v8s16, AArch64_v4s32, AArch64_v2s64, AArch64_v2p0]>>,
+    CoreLegal<(CoreAll (CoreIn (Slot 0), AArch64_Bitcast16Set),
+                       (CoreIn (Slot 1), AArch64_Bitcast16Set))>,
+    CoreLegal<(CoreAll (CoreIn (Slot 0), AArch64_Bitcast32Set),
+                       (CoreIn (Slot 1), AArch64_Bitcast32Set))>,
+    CoreLegal<(CoreAll (CoreIn (Slot 0), AArch64_Bitcast64Set),
+                       (CoreIn (Slot 1), AArch64_Bitcast64Set))>,
+    CoreLegal<(CoreAll (CoreIn (Slot 0), AArch64_Bitcast128Set),
+                       (CoreIn (Slot 1), AArch64_Bitcast128Set))>,
     CoreCustom<(CoreAll (CoreEq (SortOf (Slot 0)), KindScalar),
                         (CoreEq (SortOf (Slot 1)), KindVector),
                         (CoreEq (BitsOf (Slot 1)), 1))>,
@@ -1625,7 +1641,8 @@ def AArch64_VASTART : LegalizeRuleSet<["G_VASTART"]> {
 
 def AArch64_VAARG : LegalizeRuleSet<["G_VAARG"]> {
   let Rules = [
-    CustomForCartesianProduct<LegalizeInlineTypeList<[AArch64_s8, AArch64_s16, AArch64_s32, AArch64_s64, AArch64_p0]>, LegalizeInlineTypeList<[AArch64_p0]>>,
+    CoreCustom<(CoreAll (CoreIn (Slot 0), AArch64_ScalarAndPtrCoreSet),
+                        (CoreIn (Slot 1), AArch64_PtrSet))>,
     CoreWiden<(Slot 0), (Ty AArch64_s8)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s64)>,
     CoreWiden<(Slot 0), (Pow2Min 8)>

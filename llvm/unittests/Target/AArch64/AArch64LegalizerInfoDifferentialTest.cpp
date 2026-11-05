@@ -285,7 +285,10 @@ protected:
 TEST_F(AArch64LegalizerDifferentialTest, GeneratedTableMatchesReference) {
   SmallVector<AArch64TablePoint, 0> Points;
   aArch64CollectTablePoints(Points, /*PointerBits=*/64);
-  ASSERT_EQ(Points.size(), 1128u) << "the reviewed AArch64 domain changed";
+  // 1128 before the self-bitcast lists became two-slot `CoreIn` guards: the
+  // four `legalForCartesianProduct({...})` rules name both slots, so they add
+  // their 1 + 9 + 16 + 36 = 62 self-products instead of probing slot 0 alone.
+  ASSERT_EQ(Points.size(), 1190u) << "the reviewed AArch64 domain changed";
   ASSERT_EQ(Points.size(), AArch64NumTablePoints);
 
   unsigned Compared = 0;
