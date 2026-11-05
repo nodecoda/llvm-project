@@ -727,7 +727,7 @@ def AArch64_SHL : LegalizeRuleSet<["G_SHL", "G_ASHR", "G_LSHR"]> {
     CoreClampMinNumElements<0, AArch64_s64, 2>,
     CoreClampMaxNumElements<0, AArch64_s64, 2>,
     CoreMore<(Slot 0), (Pow2)>,
-    MinScalarSameAs<1, 0>,
+    CoreWiden<(Slot 1), (SameAs 0)>,
     CoreScalarizeIf<(Slot 0), (CoreGt (BitsOf (Slot 0)), 64)>,
     CoreWidenIf<(Slot 1), (SameAs 0),
                 (CoreEq (SortOf (Slot 0)), KindVector)>,
@@ -1734,7 +1734,7 @@ def AArch64_BUILD_VECTOR : LegalizeRuleSet<["G_BUILD_VECTOR"]> {
     CoreWiden<(ElemOf (Slot 0)), (Ty AArch64_s8)>,
     CoreWiden<(ElemOf (Slot 0)), (MinVectorSize 64)>,
     CoreWiden<(ElemOf (Slot 0)), (Pow2)>,
-    MinScalarSameAs<1, 0>
+    CoreWiden<(Slot 1), (SameAs 0)>
   ];
 }
 
