@@ -45,6 +45,8 @@
 #include <cstdlib>
 #include <iterator>
 #include <memory>
+#include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -96,6 +98,56 @@ struct AArch64TablePoint {
 };
 
 #include "AArch64LegalizerTablePointsForTest.inc"
+
+//===----------------------------------------------------------------------===//
+// Table evaluators (test-only)
+//===----------------------------------------------------------------------===//
+//
+// -gen-legalizer-table emits one evaluator per rule set plus the key
+// descriptors.  No AArch64 reader consumes them yet, so the shapes the emitter
+// expects from one are declared here, mirroring
+// llvm/lib/Target/X86/GISel/X86LegalizerTable.cpp.  The evaluators are the
+// rule chain written out, which is what makes them comparable with it: a rule
+// set the translation cannot answer returns nullopt and is counted, never
+// silently passed.
+
+enum LegalizerTypeClassKind : uint8_t {
+  Kind_Pointer = 0,
+  Kind_Scalar = 1,
+  Kind_Vector = 2,
+  Kind_PtrVector = 3,
+  Kind_Integer = 4,
+  Kind_Float = 5,
+  Kind_BFloat = 6,
+  Kind_ScalableVector = 7,
+};
+
+struct LegalizerTypeClass {
+  uint8_t Kind;
+  uint16_t ElemBits;
+  uint16_t Lanes;
+};
+
+struct LegalizerTableDesc {
+  uint8_t Slots[2];
+  uint8_t Dims[2];
+  uint8_t MemSlot;
+  uint16_t MemDim;
+};
+
+constexpr uint8_t kNoMemDesc = 0xFF;
+
+/// The generated table reads the code model through `TM`, the name the chain's
+/// prologue binds to its machine.  The differential runs one machine per
+/// feature set, so the value is set before each configuration rather than
+/// frozen to one code model.
+struct CodeModelView {
+  CodeModel::Model CM = CodeModel::Large;
+  CodeModel::Model getCodeModel() const { return CM; }
+};
+static CodeModelView TM;
+
+#include "AArch64LegalizerTable.inc"
 
 // LegalizeAction::Lower and Libcall carry no type argument; treating their
 // (unused) NewType as a decision field would compare uninitialized data.
@@ -285,6 +337,79 @@ TEST_F(AArch64LegalizerDifferentialTest, GeneratedTableMatchesReference) {
   llvm::outs() << "AArch64 legalizer differential: " << Points.size()
                << " points x " << std::size(Configs) << " configs, " << Compared
                << " compared, 0 disagreements\n";
+}
+
+/// The table evaluators, not just the chain, answer the same queries.  A rule
+/// set whose translation is missing returns nullopt and is counted: the number
+/// of tabulated tables is what the registry's TableTranslation entries must
+/// eventually make equal to AArch64NumTables.
+TEST_F(AArch64LegalizerDifferentialTest,
+       GeneratedTableEvaluatorsMatchTheChain) {
+  SmallVector<AArch64TablePoint, 0> Points;
+  aArch64CollectTablePoints(Points, /*PointerBits=*/64);
+
+  std::set<unsigned> OpaqueTables;
+  std::set<unsigned> UntabulatedOpcodes;
+  unsigned Compared = 0;
+  unsigned Disagreements = 0;
+  std::string FirstFailure;
+
+  for (const Config &C : Configs) {
+    Sigma S = makeSigma(C);
+    ASSERT_NE(S.STI, nullptr) << C.ID;
+    TM.CM = S.TM->getCodeModel();
+
+    GeneratedAArch64LegalizerInfo Chain(*S.STI, *S.TM);
+    for (const AArch64TablePoint &P : Points) {
+      bool Available = true;
+      for (unsigned I = 0; I != P.NumTypes; ++I)
+        Available &= typeIsAvailable(P.Types[I], C);
+      if (P.HasMem)
+        Available &= typeIsAvailable(P.MemTy, C);
+      if (!Available)
+        continue;
+
+      const int Table = aArch64TableForOpcode(P.Opcode);
+      if (Table < 0) {
+        UntabulatedOpcodes.insert(P.Opcode);
+        continue;
+      }
+
+      SmallVector<LLT, 3> Types(P.Types, P.Types + P.NumTypes);
+      SmallVector<LegalityQuery::MemDesc, 1> MMOs;
+      if (P.HasMem)
+        MMOs.push_back(LegalityQuery::MemDesc(P.MemTy, P.Align,
+                                              AtomicOrdering::NotAtomic,
+                                              AtomicOrdering::NotAtomic));
+      LegalityQuery Q(P.Opcode, Types, MMOs);
+
+      std::optional<LegalizeActionStep> Step =
+          AArch64EvalTable(Table, *S.STI, Q);
+      if (!Step) {
+        OpaqueTables.insert((unsigned)Table);
+        continue;
+      }
+      ++Compared;
+      LegalizeActionStep Expected = Chain.getAction(Q);
+      if (stepsAgree(*Step, Expected))
+        continue;
+      if (Disagreements++ == 0)
+        FirstFailure =
+            (Twine("[") + C.ID + "] " + P.Name + " " + typeList(P) +
+             ": chain " + describe(Expected) + ", table " + describe(*Step))
+                .str();
+    }
+  }
+
+  llvm::outs() << "AArch64 table evaluators: "
+               << AArch64NumTables - OpaqueTables.size() << " of "
+               << AArch64NumTables << " tables answer, " << OpaqueTables.size()
+               << " opaque, " << UntabulatedOpcodes.size()
+               << " opcodes have no table, " << Compared
+               << " compared, 0 disagreements\n";
+  EXPECT_EQ(Disagreements, 0u)
+      << Disagreements << " table answers disagree with the generated chain; "
+      << "first: " << FirstFailure;
 }
 
 } // namespace

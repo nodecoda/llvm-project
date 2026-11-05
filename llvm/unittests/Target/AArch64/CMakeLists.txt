@@ -16,6 +16,8 @@ tablegen(LLVM AArch64LegalizerInfo.inc -gen-legalizer)
 tablegen(LLVM AArch64LegalizerTablePointsForTest.inc
          -gen-legalizer-table-points -legalizer-table-prefix=AArch64
          -legalizer-table-tuples-only)
+tablegen(LLVM AArch64LegalizerTable.inc -gen-legalizer-table
+         -legalizer-table-prefix=AArch64)
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
 
 set(LLVM_LINK_COMPONENTS

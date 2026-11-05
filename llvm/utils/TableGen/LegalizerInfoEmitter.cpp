@@ -3741,34 +3741,49 @@ class LegalizerTableEmitterImpl {
                         Arg.getName() + "'");
   }
 
+  /// A lane count or bit width chosen by a priority list of cached booleans.
+  static std::string selectIntText(const Record &Arg) {
+    std::vector<const Record *> Conds = Arg.getValueAsListOfDefs("Conds");
+    std::vector<int64_t> Values = Arg.getValueAsListOfInts("Values");
+    if (Conds.size() != Values.size())
+      PrintFatalError(Arg.getLoc(),
+                      "'" + Arg.getName() + "' has " +
+                          std::to_string(Conds.size()) + " guards but " +
+                          std::to_string(Values.size()) + " values");
+    std::string Expr = std::to_string(Arg.getValueAsInt("Otherwise"));
+    for (size_t I = Conds.size(); I-- > 0;) {
+      std::string Cond;
+      raw_string_ostream C(Cond);
+      renderPredicate(*Conds[I], C);
+      C.flush();
+      Expr =
+          "(" + Cond + " ? " + std::to_string(Values[I]) + " : " + Expr + ")";
+    }
+    return Expr;
+  }
+
   /// A lane count argument: a literal, a structured select, or the C++ text the
   /// .td carried.
   static std::string laneText(const Record &Arg) {
     if (Arg.isSubClassOf("LegalizeArgLanes"))
       return std::to_string(Arg.getValueAsInt("Value"));
-    if (Arg.isSubClassOf("LegalizeSelectLanes")) {
-      std::vector<const Record *> Conds = Arg.getValueAsListOfDefs("Conds");
-      std::vector<int64_t> Values = Arg.getValueAsListOfInts("Values");
-      if (Conds.size() != Values.size())
-        PrintFatalError(Arg.getLoc(),
-                        "'" + Arg.getName() + "' has " +
-                            std::to_string(Conds.size()) + " guards but " +
-                            std::to_string(Values.size()) + " values");
-      std::string Expr = std::to_string(Arg.getValueAsInt("Otherwise"));
-      for (size_t I = Conds.size(); I-- > 0;) {
-        std::string Cond;
-        raw_string_ostream C(Cond);
-        renderPredicate(*Conds[I], C);
-        C.flush();
-        Expr = "(" + Cond + " ? " + std::to_string(Values[I]) + " : " + Expr +
-               ")";
-      }
-      return Expr;
-    }
+    if (Arg.isSubClassOf("LegalizeSelectLanes"))
+      return selectIntText(Arg);
     if (Arg.isSubClassOf("LegalizeRawArg"))
       return "(" + squashSpace(Arg.getValueAsString("Text")) + ")";
     PrintFatalError(Arg.getLoc(),
                     "the table evaluator cannot read a lane count from '" +
+                        Arg.getName() + "'");
+  }
+
+  /// A bit width argument: a literal or a structured select.
+  static std::string bitsText(const Record &Arg) {
+    if (Arg.isSubClassOf("LegalizeArgInt"))
+      return std::to_string(Arg.getValueAsInt("Value"));
+    if (Arg.isSubClassOf("LegalizeSelectBits"))
+      return selectIntText(Arg);
+    PrintFatalError(Arg.getLoc(),
+                    "the table evaluator cannot read a bit width from '" +
                         Arg.getName() + "'");
   }
 
@@ -4228,6 +4243,170 @@ class LegalizerTableEmitterImpl {
                                 Lanes + "), " + V + ".getElementType())");
       return Finish();
     }
+    /// unsupportedFor(Types): one rule per type, like the C++ builder's
+    /// actionFor.
+    bool translateUnsupportedFor() {
+      if (Args.empty())
+        return Fail();
+      std::string Cond;
+      StringRef Sep;
+      for (const Record *A : Args) {
+        Cond += Sep.str();
+        if (A->isSubClassOf("LegalizeNamedType")) {
+          Cond += "typeIs(0, " + typeText(*A) + ")(Q)";
+        } else if (A->isSubClassOf("LegalizeNamedTypeList") ||
+                   A->isSubClassOf("LegalizeInlineTypeList")) {
+          std::string Or;
+          StringRef Sep2;
+          for (const std::string &E : listElements(*A)) {
+            Or += Sep2.str();
+            Or += "typeIs(0, " + E + ")(Q)";
+            Sep2 = " || ";
+          }
+          Cond += "(" + Or + ")";
+        } else {
+          return Fail();
+        }
+        Sep = " || ";
+      }
+      EmitIf(conjunction(Guard, Cond), Action);
+      return Finish();
+    }
+
+    // minScalarOrElt / minScalarOrEltIf: the guard is the scalar-or-element
+    // narrowness test, the mutation names the type.
+    bool translateMinScalarOrElt() {
+      NeedArgs(2);
+      const std::string Idx = IdxOf(0);
+      const std::string Ty = typeText(*Args[1]);
+      EmitIf(conjunction(Guard, "scalarOrEltNarrowerThan(" + Idx + ", (" + Ty +
+                                    ").getScalarSizeInBits())(Q)"),
+             "WidenScalar",
+             "LegalizeMutations::changeElementSizeTo(" + Idx + ", " + Ty + ")");
+      return Finish();
+    }
+
+    // minScalarSameAs / minScalarEltSameAsIf: widen to the other slot's
+    // scalar size.  changeElementSizeTo(Idx, Other) is exactly the lambda the
+    // builder writes.
+    bool translateMinScalarSameAs() {
+      NeedArgs(2);
+      const std::string Idx = IdxOf(0);
+      const std::string Other = IdxOf(1);
+      EmitIf(conjunction(Guard, "Q.Types[" + Other +
+                                    "].getScalarSizeInBits() > Q.Types[" + Idx +
+                                    "].getScalarSizeInBits()"),
+             "WidenScalar",
+             "LegalizeMutations::changeElementSizeTo(" + Idx + ", " + Other +
+                 ")");
+      return Finish();
+    }
+
+    // maxScalarEltSameAsIf: narrow to the other slot's size.  Unlike the min
+    // form this copies the other slot's type wholesale, not its element size.
+    bool translateMaxScalarSameAs() {
+      NeedArgs(2);
+      const std::string Idx = IdxOf(0);
+      const std::string Other = IdxOf(1);
+      EmitIf(conjunction(Guard, "Q.Types[" + Other +
+                                    "].getScalarSizeInBits() < Q.Types[" + Idx +
+                                    "].getScalarSizeInBits()"),
+             "NarrowScalar",
+             "[](const LegalityQuery &Q) { return std::make_pair(unsigned(" +
+                 Idx + "), Q.Types[" + Other + "]); }");
+      return Finish();
+    }
+
+    // unsupportedIfMemSizeNotPow2 / lowerIfMemSizeNotPow2 /
+    // lowerIfMemSizeNotByteSizePow2: one predicate over the memory descriptor,
+    // with the action the builder declares.
+    bool translateMemSizePredicate() {
+      if (!Args.empty())
+        return Fail();
+      const bool Bytes = Name == "lowerIfMemSizeNotByteSizePow2";
+      EmitIf(conjunction(Guard, std::string(Bytes ? "memSizeNotByteSizePow2"
+                                                  : "memSizeInBytesNotPow2") +
+                                    "(0)(Q)"),
+             Action);
+      return Finish();
+    }
+
+    // widenScalarOrEltToNextPow2OrMinSize: overload 0 has no floor, overload 1
+    // conjoins the narrowness test and passes the floor to the mutation.
+    bool translateWidenScalarToNextPow2OrMinSize() {
+      if (Args.empty() || Args.size() > 2)
+        return Fail();
+      const std::string Idx = IdxOf(0);
+      if (Args.size() == 1) {
+        EmitIf(conjunction(Guard, "scalarOrEltSizeNotPow2(" + Idx + ")(Q)"),
+               "WidenScalar",
+               "LegalizeMutations::widenScalarOrEltToNextPow2(" + Idx + ")");
+        return Finish();
+      }
+      const std::string Min = bitsText(*Args[1]);
+      EmitIf(conjunction(Guard, "(scalarOrEltNarrowerThan(" + Idx + ", " + Min +
+                                    ")(Q) || scalarOrEltSizeNotPow2(" + Idx +
+                                    ")(Q))"),
+             "WidenScalar",
+             "LegalizeMutations::widenScalarOrEltToNextPow2(" + Idx + ", " +
+                 Min + ")");
+      return Finish();
+    }
+
+    // widenVectorEltsToVectorMinSize: guard on the vector's total size, then
+    // promote the element to VectorSize / NumElts.  Both are lambdas over the
+    // query in the C++ builder, so both are written out here.
+    bool translateWidenVectorEltsToVectorMinSize() {
+      NeedArgs(2);
+      const std::string Idx = IdxOf(0);
+      const std::string Size = bitsText(*Args[1]);
+      const std::string V = "Q.Types[" + Idx + "]";
+      EmitIf(conjunction(Guard, V + ".isFixedVector() && " + V +
+                                    ".getSizeInBits() < " + Size),
+             "WidenScalar",
+             "[](const LegalityQuery &Q) { const LLT VecTy = Q.Types[" + Idx +
+                 "]; const unsigned NumElts = VecTy.getNumElements(); "
+                 "const unsigned MinSize = " +
+                 Size + " / NumElts; return std::make_pair(unsigned(" + Idx +
+                 "), LLT::fixed_vector(NumElts, "
+                 "VecTy.getElementType().changeElementSize(MinSize))); }");
+      return Finish();
+    }
+
+    // The *If builders whose mutation is C++ text (bitcastIf, widenScalarIf,
+    // narrowScalarIf, fewerElementsIf, moreElementsIf ...): the evaluator calls
+    // the body on the query exactly as the chain does, so the step stays
+    // concrete.
+    bool translateRawMutationAction() {
+      if (Guard.empty() || Args.size() != 1 ||
+          !Args[0]->isSubClassOf("LegalizeRawMutation"))
+        return Fail();
+      EmitIf(Guard, Action, squashSpace(Args[0]->getValueAsString("Text")));
+      return Finish();
+    }
+
+    /// lowerIf has a guard-only overload and a guard-plus-mutation one.
+    bool translateGuardedOrRawMutation() {
+      if (Args.empty())
+        return translateGuardedAction();
+      return translateRawMutationAction();
+    }
+
+    // widenScalarFor(Types, Mutation): the C++ builder adds one rule per type.
+    bool translateWidenScalarFor() {
+      if (Args.size() != 2 || !Args[1]->isSubClassOf("LegalizeRawMutation") ||
+          (!Args[0]->isSubClassOf("LegalizeNamedTypeList") &&
+           !Args[0]->isSubClassOf("LegalizeInlineTypeList")))
+        return Fail();
+      const std::string Mut = squashSpace(Args[1]->getValueAsString("Text"));
+      for (const std::string &E : listElements(*Args[0]))
+        EmitIf(conjunction(Guard, "typeIs(0, " + E + ")(Q)"), Action, Mut);
+      return Finish();
+    }
+
+    // immIdx is a coverage marker, not a legalization step: the chain records
+    // it at build time and adds no runtime rule, so the evaluator emits none.
+    bool translateImmIdx() { return Finish(); }
   };
 
   /// One builder name the table evaluator can translate, and how.
@@ -4245,13 +4424,13 @@ class LegalizerTableEmitterImpl {
       {"custom", &RuleTranslation::translateBareAction},
       {"unsupported", &RuleTranslation::translateBareAction},
       {"legalIf", &RuleTranslation::translateGuardedAction},
-      {"lowerIf", &RuleTranslation::translateGuardedAction},
+      {"lowerIf", &RuleTranslation::translateGuardedOrRawMutation},
       {"customIf", &RuleTranslation::translateGuardedAction},
-      {"widenScalarIf", &RuleTranslation::translateGuardedAction},
-      {"narrowScalarIf", &RuleTranslation::translateGuardedAction},
+      {"widenScalarIf", &RuleTranslation::translateRawMutationAction},
+      {"narrowScalarIf", &RuleTranslation::translateRawMutationAction},
       {"libcallIf", &RuleTranslation::translateGuardedAction},
-      {"fewerElementsIf", &RuleTranslation::translateGuardedAction},
-      {"moreElementsIf", &RuleTranslation::translateGuardedAction},
+      {"fewerElementsIf", &RuleTranslation::translateRawMutationAction},
+      {"moreElementsIf", &RuleTranslation::translateRawMutationAction},
       {"unsupportedIf", &RuleTranslation::translateGuardedAction},
       {"legalFor", &RuleTranslation::translateActionFor},
       {"lowerFor", &RuleTranslation::translateActionFor},
@@ -4280,6 +4459,24 @@ class LegalizerTableEmitterImpl {
        &RuleTranslation::translateClampMinMaxNumElements},
       {"clampMaxNumElements",
        &RuleTranslation::translateClampMinMaxNumElements},
+      {"bitcastIf", &RuleTranslation::translateRawMutationAction},
+      {"widenScalarFor", &RuleTranslation::translateWidenScalarFor},
+      {"unsupportedFor", &RuleTranslation::translateUnsupportedFor},
+      {"minScalarOrElt", &RuleTranslation::translateMinScalarOrElt},
+      {"minScalarOrEltIf", &RuleTranslation::translateMinScalarOrElt},
+      {"minScalarSameAs", &RuleTranslation::translateMinScalarSameAs},
+      {"minScalarEltSameAsIf", &RuleTranslation::translateMinScalarSameAs},
+      {"maxScalarEltSameAsIf", &RuleTranslation::translateMaxScalarSameAs},
+      {"unsupportedIfMemSizeNotPow2",
+       &RuleTranslation::translateMemSizePredicate},
+      {"lowerIfMemSizeNotPow2", &RuleTranslation::translateMemSizePredicate},
+      {"lowerIfMemSizeNotByteSizePow2",
+       &RuleTranslation::translateMemSizePredicate},
+      {"widenScalarOrEltToNextPow2OrMinSize",
+       &RuleTranslation::translateWidenScalarToNextPow2OrMinSize},
+      {"widenVectorEltsToVectorMinSize",
+       &RuleTranslation::translateWidenVectorEltsToVectorMinSize},
+      {"immIdx", &RuleTranslation::translateImmIdx},
   };
 
   static const RuleTranslator *lookupRuleTranslator(StringRef Name) {
