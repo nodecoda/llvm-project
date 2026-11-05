@@ -418,6 +418,18 @@ class LegalizeCoreRule<dag expr> : LegalizeRule {
 }
 
 class CoreWiden<dag on, dag to>   : LegalizeCoreRule<(Widen on, to)>;
+
+/// `widenScalarOrEltToNextPow2OrMinSize(TypeIdx, Min)`: widen the scalar or
+/// element to the next power of two that is at least `Min`, when it is either
+/// below `Min` *or* not a power of two.  `Min` is a literal here because the
+/// legacy construct bakes it into the emitted call; the feature-dependent form
+/// of the same mutation writes `(CoreSelect Feature, A, B)` in the target of
+/// `CoreWiden` instead, which is `widenScalarOrEltToNextPow2` and therefore
+/// lacks the "below Min" half of the condition.  The two are separate
+/// spellings because they are separate predicates, not because of the
+/// payload.
+class CoreWidenPow2OrMinSize<dag on, int min>
+    : LegalizeCoreRule<(Widen on, min)>;
 class CoreNarrow<dag on, dag to>  : LegalizeCoreRule<(Narrow on, to)>;
 class CoreMore<dag on, dag to>    : LegalizeCoreRule<(More on, to)>;
 class CoreFewer<dag on, dag to>   : LegalizeCoreRule<(Fewer on, to)>;

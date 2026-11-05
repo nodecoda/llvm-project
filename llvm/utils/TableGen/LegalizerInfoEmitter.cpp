@@ -2490,6 +2490,17 @@ static StringRef coreObservationForm(const CoreNode &N) {
   return "";
 }
 
+/// The form tag a target has, for shim lookup.  A literal integer is a form of
+/// its own: it is the constant payload of the size-taking shims, which is how a
+/// rule that is not feature-dependent writes a size inline.
+static StringRef coreTargetForm(const CoreNode &N) {
+  if (N.Kind == CoreNode::IntNode)
+    return "int";
+  if (N.Op)
+    return coreTag(*N.Op);
+  return "";
+}
+
 /// The type a `replace` target assigns.  The wrapper is the "assign the whole
 /// type" marker; the operand is the type expression it assigns.
 static const CoreNode &coreReplacementType(const CoreNode &T) {
@@ -2579,6 +2590,8 @@ static const CoreShimRow CoreShimTable[] = {
     {"widen", "elem", "minVectorSize", "coreWidenVectorEltsToVectorMinSize", 1,
      CoreTableTranslation::WidenVectorMinSize},
     {"widen", "slot", "select", "coreWidenScalarOrEltToNextPow2OrMinSize", 1,
+     CoreTableTranslation::WidenPow2OrMinSize},
+    {"widen", "slot", "int", "coreWidenScalarOrEltToNextPow2OrMinSize", 1,
      CoreTableTranslation::WidenPow2OrMinSize},
     {"narrow", "slot", "ty", "coreMaxScalar", 1,
      CoreTableTranslation::MaxScalar},
@@ -3279,7 +3292,7 @@ static void verifyCoreTables(const RecordKeeper &Records) {
 static void verifyCoreRule(const RecordKeeper &Records, const Record &Rule) {
   CheckedCoreRule C = checkCoreRule(Rule, Records);
   StringRef On = C.Obs ? coreObservationForm(*C.Obs) : StringRef();
-  StringRef To = C.Target ? coreTag(*C.Target->Op) : StringRef();
+  StringRef To = C.Target ? coreTargetForm(*C.Target) : StringRef();
   // A terminal rule has no observation to project; only an observation that
   // exists but is not a slot or ElemOf is an error.
   if (C.Obs && On.empty())
@@ -3296,7 +3309,7 @@ void LegalizerInfoEmitter::emitCoreRule(const Record &Rule, raw_ostream &OS) {
   CheckedCoreRule C = checkCoreRule(Rule, Records);
   CoreCxxEmitter Cxx(Records, Rule);
   StringRef On = C.Obs ? coreObservationForm(*C.Obs) : StringRef();
-  StringRef To = C.Target ? coreTag(*C.Target->Op) : StringRef();
+  StringRef To = C.Target ? coreTargetForm(*C.Target) : StringRef();
   const CoreShimRow *Shim = lookupCoreShim(coreTag(*C.Operator), On, To);
   if (!Shim)
     PrintFatalError(Rule.getLoc(), "core rule: no C++ shim for operator '" +
@@ -3337,6 +3350,8 @@ void LegalizerInfoEmitter::emitCoreRule(const Record &Rule, raw_ostream &OS) {
       // sees one shape and the .td still contains no C++.
       OS << "[=](const LegalityQuery &Query) { return std::make_pair("
          << C.TypeIdx << ", " << Cxx.value(coreReplacementType(T)) << "); }";
+    } else if (T.Kind == CoreNode::IntNode) {
+      OS << T.IntValue;
     } else if (To == "ty") {
       if (T.Kids[0]->Kind != CoreNode::DefNode ||
           !T.Kids[0]->Op->isSubClassOf("LegalizeNamedType"))
@@ -6358,7 +6373,7 @@ class LegalizerTableEmitterImpl {
     CheckedCoreRule C = checkCoreRule(Rule, Records);
     CoreCxxEmitter Cxx(Records, Rule, "Q");
     StringRef On = C.Obs ? coreObservationForm(*C.Obs) : StringRef();
-    StringRef To = C.Target ? coreTag(*C.Target->Op) : StringRef();
+    StringRef To = C.Target ? coreTargetForm(*C.Target) : StringRef();
     StringRef Op = coreTag(*C.Operator);
     const CoreShimRow *Shim = lookupCoreShim(Op, On, To);
     if (!Shim)

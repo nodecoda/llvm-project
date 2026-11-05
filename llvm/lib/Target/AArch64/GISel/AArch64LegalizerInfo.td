@@ -620,7 +620,7 @@ def AArch64_PHI : LegalizeRuleSet<["G_PHI"]> {
     CoreClampMaxNumElements<0, AArch64_s32, 4>,
     CoreClampMaxNumElements<0, AArch64_s64, 2>,
     CoreClampMaxNumElements<0, AArch64_p0, 2>,
-    WidenScalarOrEltToNextPow2OrMinSize<0, 8>
+    CoreWidenPow2OrMinSize<(Slot 0), 8>
   ];
 }
 
@@ -899,7 +899,7 @@ def AArch64_CTPOP : LegalizeRuleSet<["G_CTPOP"]> {
     CoreWiden<(Slot 0), (Ty AArch64_s32)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s128)>,
     CoreWiden<(Slot 0), (Pow2)>,
-    WidenScalarOrEltToNextPow2OrMinSize<0, 8>,
+    CoreWidenPow2OrMinSize<(Slot 0), 8>,
     CoreWiden<(Slot 1), (SameAs 0)>,
     CoreNarrowIf<(Slot 1), (Replace (SameAs 0)),
                  (CoreLt (BitsOf (Slot 0)), (BitsOf (Slot 1)))>,
@@ -922,7 +922,7 @@ def AArch64_CTLZ : LegalizeRuleSet<["G_CTLZ", "G_CTLS"]> {
     CoreWiden<(Slot 1), (Pow2Min 32)>,
     CoreWiden<(Slot 1), (Ty AArch64_s32)>,
     CoreNarrow<(Slot 1), (Ty AArch64_s64)>,
-    WidenScalarOrEltToNextPow2OrMinSize<1, 8>,
+    CoreWidenPow2OrMinSize<(Slot 1), 8>,
     CoreClampMinNumElements<0, AArch64_s8, 8>,
     CoreClampMaxNumElements<0, AArch64_s8, 16>,
     CoreClampMinNumElements<0, AArch64_s16, 4>,
@@ -971,7 +971,7 @@ def AArch64_BITREVERSE : LegalizeRuleSet<["G_BITREVERSE"]> {
   let Rules = [
     CoreLegal<(CoreIn (Slot 0), AArch64_BitreverseTypesSet)>,
     CoreWiden<(Slot 0), (Pow2Min 32)>,
-    WidenScalarOrEltToNextPow2OrMinSize<0, 8>,
+    CoreWidenPow2OrMinSize<(Slot 0), 8>,
     CoreWiden<(Slot 0), (Ty AArch64_s32)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s64)>,
     CoreClampMinNumElements<0, AArch64_s8, 8>,
@@ -1423,7 +1423,7 @@ def AArch64_FPTOSI : LegalizeRuleSet<["G_FPTOSI", "G_FPTOUI"]> {
                  (CoreAll (CoreEq (Slot 1), (Ty AArch64_f16)),
                           (CoreGt (SizeOf (Slot 0)), 64))>,
     CoreMore<(Slot 0), (Pow2)>,
-    WidenScalarOrEltToNextPow2OrMinSize<0>,
+    CoreWidenPow2OrMinSize<(Slot 0), 0>,
     CoreWiden<(Slot 0), (Ty AArch64_s32)>,
     CoreWidenIf<(Slot 1), (Replace (EltTypeTo (Slot 1), (Ty AArch64_f32))),
                 (CoreAny (CoreAll (CoreNot AArch64_HasFP16),
@@ -1485,7 +1485,7 @@ def AArch64_SITOFP : LegalizeRuleSet<["G_SITOFP", "G_UITOFP"]> {
     CoreScalarizeIf<(Slot 1), (CoreGt (BitsOf (Slot 1)), 64)>,
     CoreScalarizeIf<(Slot 0), (CoreGt (BitsOf (Slot 0)), 64)>,
     CoreMore<(Slot 1), (Pow2)>,
-    WidenScalarOrEltToNextPow2OrMinSize<1>,
+    CoreWidenPow2OrMinSize<(Slot 1), 0>,
     CoreWiden<(Slot 1), (Ty AArch64_f32)>,
     CoreLower<(CoreAll (CoreEq (SortOf (Slot 1)), KindVector),
                        (CoreEq (BitsOf (Slot 1)), 64),
@@ -1760,7 +1760,7 @@ def AArch64_SHUFFLE_VECTOR : LegalizeRuleSet<["G_SHUFFLE_VECTOR"]> {
     CoreMore<(Slot 0), (Pow2)>,
     CoreMoreIf<(Slot 0), (Replace (SameAs 1)),
                (CoreLt (NumElems (Slot 0)), (NumElems (Slot 1)))>,
-    WidenScalarOrEltToNextPow2OrMinSize<0, 8>,
+    CoreWidenPow2OrMinSize<(Slot 0), 8>,
     CoreClampMinNumElements<0, AArch64_s8, 8>,
     CoreClampMaxNumElements<0, AArch64_s8, 16>,
     CoreClampMinNumElements<0, AArch64_s16, 4>,

@@ -40,6 +40,9 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
     // An Int target chosen by a cached feature.
     CoreWiden<(Slot 0), (CoreSelect Is32, 16, 32)>,
 
+    // The constant min of the pow2-or-min-size widen.
+    CoreWidenPow2OrMinSize<(Slot 0), 8>,
+
     CoreNarrow<(Slot 0), (Ty s32)>,
     CoreNarrow<(Slot 0), (SameAs 1)>,
     CoreNarrow<(ElemOf (Slot 0)), (Ty s32)>,
@@ -151,7 +154,7 @@ def MemRules : LegalizeRuleSet<["G_MEM"]> {
   ];
 }
 
-// CHECK:       "core_rules": 61,
+// CHECK:       "core_rules": 62,
 // CHECK:       "core_operators": ["bitcast", "custom", "fewer", "legal", "libcall", "lower", "more", "narrow", "scalarize", "unsupported", "widen"]
 
 // CXX: .coreWidenScalarToNextPow2([](const LegalityQuery &) { return true; }, 0)
@@ -166,6 +169,7 @@ def MemRules : LegalizeRuleSet<["G_MEM"]> {
 // CXX: .coreMinScalarSameAs([](const LegalityQuery &) { return true; }, 0, 1)
 // CXX: .coreWidenVectorEltsToVectorMinSize([](const LegalityQuery &) { return true; }, 0, 64)
 // CXX: .coreWidenScalarOrEltToNextPow2OrMinSize([](const LegalityQuery &) { return true; }, 0, (Is32 ? 16 : 32))
+// CXX: .coreWidenScalarOrEltToNextPow2OrMinSize([](const LegalityQuery &) { return true; }, 0, 8)
 // CXX: .coreMaxScalar([](const LegalityQuery &) { return true; }, 0, s32)
 // CXX: .coreMaxScalarSameAs([](const LegalityQuery &) { return true; }, 0, 1)
 // CXX: .coreMaxScalarOrElt([](const LegalityQuery &) { return true; }, 0, s32)
@@ -222,6 +226,7 @@ def MemRules : LegalizeRuleSet<["G_MEM"]> {
 // CORE:       "op": "widen", "on": {"kind":"elemOf","args":[{"kind":"slot","index":0}]}, "to": {"kind":"pow2Min","args":[{"kind":"int","value":16}]}
 // CORE:       "op": "widen", "on": {"kind":"elemOf","args":[{"kind":"slot","index":0}]}, "to": {"kind":"minVectorSize","args":[{"kind":"int","value":64}]}
 // CORE:       "op": "widen", "on": {"kind":"slot","index":0}, "to": {"kind":"select","args":[{"kind":"leaf","name":"hasFeature","args":["Subtarget.is32()"]},{"kind":"int","value":16},{"kind":"int","value":32}]}
+// CORE:       "op": "widen", "on": {"kind":"slot","index":0}, "to": {"kind":"int","value":8}
 // CORE:       "op": "narrow", "on": {"kind":"slot","index":0}, "to": {"kind":"ty","args":[{"kind":"type","value":"s32"}]}
 // CORE:       "op": "more", "on": {"kind":"slot","index":0}, "to": {"kind":"pow2"}
 // CORE:       "op": "fewer", "on": {"kind":"slot","index":0}, "to": {"kind":"ty","args":[{"kind":"type","value":"s32"}]}
