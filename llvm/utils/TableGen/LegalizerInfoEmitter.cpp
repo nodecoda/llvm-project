@@ -2056,8 +2056,9 @@ static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
         PrintFatalError(Owner.getLoc(),
                         "core rule: '" + R->getName() + "' is a set of " +
                             std::to_string(Arity) +
-                            "-tuples and can only be the last operand of "
-                            "'inPairs' or 'inTriples'");
+                            "-tuples and can only be the last operand of a "
+                            "tuple membership ('inPairs', 'inTriples', "
+                            "'inMemDesc')");
       return R->getValueAsDef("ElemSort");
     }
     if (R->isSubClassOf("LegalizeCoreExpr"))
@@ -2086,6 +2087,45 @@ static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
   StringRef Tag = coreTag(*Op);
   const std::vector<const Record *> ArgSorts =
       Op->getValueAsListOfDefs("ArgSorts");
+
+  // A memdesc membership is two type slots, a memory slot, and a set.  It is
+  // not the generic membership: the descriptor is a second axis of the query
+  // and the predicate takes its index like the type indices.
+  if (Op->getValueAsBit("MemDescMembership")) {
+    if (N.Kids.size() != 4)
+      PrintFatalError(Owner.getLoc(),
+                      "core rule: '" + Name +
+                          "' expects two type slots, a memory slot, and a set, "
+                          "got " +
+                          std::to_string(N.Kids.size()) + " operand(s)");
+    auto LiteralSlot = [&](const CoreNode &K, StringRef What) {
+      if (K.Kind != CoreNode::OpNode || K.Kids.size() != 1 ||
+          K.Kids[0]->Kind != CoreNode::IntNode)
+        PrintFatalError(Owner.getLoc(),
+                        "core rule: '" + Name + "' expects a " + What +
+                            " slot, e.g. (" +
+                            (What == "memory" ? "MemSlot" : "Slot") + " 0)");
+    };
+    for (unsigned I = 0; I != 2; ++I) {
+      const CoreNode &Kid = *N.Kids[I];
+      LiteralSlot(Kid, "type");
+      if (coreTag(*Kid.Op) != "slot")
+        PrintFatalError(Owner.getLoc(), "core rule: operand " +
+                                            std::to_string(I) + " of '" + Name +
+                                            "' must be a type slot");
+    }
+    LiteralSlot(*N.Kids[2], "memory");
+    if (coreTag(*N.Kids[2]->Op) != "memSlot")
+      PrintFatalError(Owner.getLoc(), "core rule: the third operand of '" +
+                                          Name + "' must be a memory slot");
+    const CoreNode &SetNode = *N.Kids[3];
+    if (SetNode.Kind != CoreNode::DefNode ||
+        !SetNode.Op->isSubClassOf("LegalizeCoreMemDescSet"))
+      PrintFatalError(Owner.getLoc(), "core rule: the last operand of '" +
+                                          Name +
+                                          "' is not a memory-descriptor set");
+    return Op->getValueAsDef("Result");
+  }
 
   // The set-membership and comparison nodes are polymorphic; their operand
   // sorts are stated as constraints rather than a fixed signature.
@@ -2636,6 +2676,11 @@ static void coreNodeJson(const CoreNode &N, const RecordKeeper &Records,
           Out += "[" + coreTypeValue(Records, *E->getValueAsDef("Type0")) +
                  "," + coreTypeValue(Records, *E->getValueAsDef("Type1")) +
                  "," + coreTypeValue(Records, *E->getValueAsDef("Type2")) + "]";
+        } else if (R->isSubClassOf("LegalizeCoreMemDescSet")) {
+          Out += "[" + coreTypeValue(Records, *E->getValueAsDef("Type0")) +
+                 "," + coreTypeValue(Records, *E->getValueAsDef("Type1")) +
+                 "," + coreTypeValue(Records, *E->getValueAsDef("MemTy")) +
+                 "," + std::to_string(E->getValueAsInt("Align")) + "]";
         } else {
           Out += jsonStringValue(coreTag(*E));
         }
@@ -2871,6 +2916,7 @@ private:
     return "llvm::PowerOf2Ceil(" + childValue(N, 0) + ")";
   }
   std::string emitIn(const CoreNode &N);
+  std::string emitInMemDesc(const CoreNode &N);
   std::string emitCompare(const CoreNode &N);
 };
 
@@ -2939,6 +2985,7 @@ std::string CoreCxxEmitter::boolean(const CoreNode &N) {
       {"in", &CoreCxxEmitter::emitIn},
       {"inPairs", &CoreCxxEmitter::emitIn},
       {"inTriples", &CoreCxxEmitter::emitIn},
+      {"inMemDesc", &CoreCxxEmitter::emitIn},
       {"eq", &CoreCxxEmitter::emitCompare},
       {"ne", &CoreCxxEmitter::emitCompare},
       {"lt", &CoreCxxEmitter::emitCompare},
@@ -2952,7 +2999,41 @@ std::string CoreCxxEmitter::boolean(const CoreNode &N) {
   fatal("'" + N.Op->getName() + "' is not a bool combinator");
 }
 
+std::string CoreCxxEmitter::emitInMemDesc(const CoreNode &N) {
+  auto SlotIndex = [&](const CoreNode &K) {
+    if (K.Kind != CoreNode::OpNode || K.Kids.size() != 1 ||
+        K.Kids[0]->Kind != CoreNode::IntNode)
+      fatal("a memory-descriptor membership operand must be a literal slot");
+    return unsigned(K.Kids[0]->IntValue);
+  };
+  const unsigned I0 = SlotIndex(*N.Kids[0]);
+  const unsigned I1 = SlotIndex(*N.Kids[1]);
+  const CoreNode &Mem = *N.Kids[2];
+  if (Mem.Kind != CoreNode::OpNode || coreTag(*Mem.Op) != "memSlot")
+    fatal("the third operand of 'inMemDesc' must be a memory slot");
+  const unsigned M = SlotIndex(Mem);
+  const Record *Set = N.Kids[3]->Op;
+  std::string Out = "LegalityPredicates::typePairAndMemDescInSet(" +
+                    std::to_string(I0) + ", " + std::to_string(I1) + ", " +
+                    std::to_string(M) + ", {";
+  StringRef Sep;
+  for (const Record *E : Set->getValueAsListOfDefs("Elems")) {
+    Out += Sep.str();
+    Out += "{" + E->getValueAsDef("Type0")->getName().str() + ", " +
+           E->getValueAsDef("Type1")->getName().str() + ", " +
+           E->getValueAsDef("MemTy")->getName().str() + ", " +
+           std::to_string(E->getValueAsInt("Align")) + "}";
+    Sep = ", ";
+  }
+  // One entry still goes inside the outer braces: `{a, b, c, 8}` would be an
+  // aggregate rather than a list of descriptors.
+  Out += "})(" + QueryVar.str() + ")";
+  return Out;
+}
+
 std::string CoreCxxEmitter::emitIn(const CoreNode &N) {
+  if (coreTag(*N.Op) == "inMemDesc")
+    return emitInMemDesc(N);
   // The tuple forms are registered under their own tags but share this
   // emitter: `(inPairs (Slot 0), (Slot 1), Set)` is one call, not a
   // disjunction of `==`, because that is the predicate the C++ API offers and
@@ -4961,7 +5042,7 @@ class LegalizerTableEmitterImpl {
   static bool coreReadsMemDesc(const CoreNode &N) {
     if (N.Kind != CoreNode::OpNode)
       return false;
-    if (coreTag(*N.Op) == "memSlot")
+    if (coreTag(*N.Op) == "memSlot" || coreTag(*N.Op) == "inMemDesc")
       return true;
     for (const auto &K : N.Kids)
       if (coreReadsMemDesc(*K))
@@ -5008,16 +5089,43 @@ class LegalizerTableEmitterImpl {
   /// The alignment thresholds the tabulated memdesc rules name.  A query's
   /// alignment is classified by how many of them it meets; that is enough
   /// because TypePairAndMemDesc::isCompatible only asks Align >= Entry.Align.
+  /// Alignments a core memory-descriptor membership names.  The evaluator
+  /// partitions the descriptor axis by every threshold the rules mention, so a
+  /// core rule has to contribute them exactly like a legacy argument list.
+  static void collectCoreAligns(const CoreNode &N,
+                                std::set<unsigned> &Thresholds) {
+    if (N.Kind != CoreNode::OpNode)
+      return;
+    if (coreTag(*N.Op) == "inMemDesc" && N.Kids.size() == 4) {
+      const CoreNode &Set = *N.Kids[3];
+      if (Set.Kind == CoreNode::DefNode)
+        for (const Record *E : Set.Op->getValueAsListOfDefs("Elems"))
+          Thresholds.insert(E->getValueAsInt("Align"));
+    }
+    for (const auto &K : N.Kids)
+      collectCoreAligns(*K, Thresholds);
+  }
+
   std::vector<unsigned> alignThresholds() {
     std::set<unsigned> Thresholds;
     for (const Record *RS :
          Records.getAllDerivedDefinitions("LegalizeRuleSet")) {
       if (!tabulated(*RS) || !needsMemDesc(*RS))
         continue;
-      for (const Record *Rule : RS->getValueAsListOfDefs("Rules"))
+      for (const Record *Rule : RS->getValueAsListOfDefs("Rules")) {
+        if (isCoreRule(*Rule)) {
+          for (StringRef Field : {"CoreExpr", "CoreGuard"}) {
+            const Init *I = Rule->getValueInit(Field);
+            if (!I || isa<UnsetInit>(I))
+              continue;
+            collectCoreAligns(*parseCoreNode(*I, *Rule), Thresholds);
+          }
+          continue;
+        }
         for (const Record *Arg : Rule->getValueAsListOfDefs("Args"))
           if (Arg->isSubClassOf("LegalizeMemDesc"))
             Thresholds.insert(Arg->getValueAsInt("Align"));
+      }
     }
     return std::vector<unsigned>(Thresholds.begin(), Thresholds.end());
   }
@@ -5145,6 +5253,44 @@ class LegalizerTableEmitterImpl {
           return;
         for (const TableType &R : Resolved)
           AddType(Idx, R);
+        return;
+      }
+      if (Tag == "inMemDesc" && N.Kids.size() == 4) {
+        unsigned I0, I1;
+        if (!SlotOf(*N.Kids[0], I0) || !SlotOf(*N.Kids[1], I1) || I0 == I1)
+          return;
+        const CoreNode &Set = *N.Kids[3];
+        if (Set.Kind != CoreNode::DefNode ||
+            !Set.Op->isSubClassOf("LegalizeCoreMemDescSet"))
+          return;
+        if (std::max(I0, I1) != 1)
+          return;
+        for (const Record *E : Set.Op->getValueAsListOfDefs("Elems")) {
+          RuleTuple T;
+          T.Types.assign(2, TableType{});
+          bool Ok = true;
+          for (unsigned I = 0; I != 2 && Ok; ++I) {
+            const Record *Ty = E->getValueAsDef("Type" + std::to_string(I));
+            SmallVector<TableType, 2> Resolved;
+            Ok = resolve(Ty->getValueAsString("Expr"), Ty->getName(), Resolved,
+                         0) &&
+                 Resolved.size() == 1;
+            if (Ok)
+              T.Types[I ? I1 : I0] = Resolved.front();
+          }
+          const Record *MemTy = E->getValueAsDef("MemTy");
+          SmallVector<TableType, 2> Mem;
+          Ok = Ok &&
+               resolve(MemTy->getValueAsString("Expr"), MemTy->getName(), Mem,
+                       0) &&
+               Mem.size() == 1;
+          if (!Ok)
+            return;
+          T.HasMem = true;
+          T.MemTy = Mem.front();
+          T.Align = E->getValueAsInt("Align");
+          Exact.push_back(std::move(T));
+        }
         return;
       }
       if ((Tag == "inPairs" || Tag == "inTriples") && N.Kids.size() >= 3) {

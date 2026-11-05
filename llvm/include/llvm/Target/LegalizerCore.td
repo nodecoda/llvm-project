@@ -92,6 +92,9 @@ class LegalizeCoreExpr<string name, list<LegalizeSort> argSorts,
 
   /// The second operand is a set and the first must be a member of it.
   bit SetMembership = 0;
+
+  /// The operands are two type slots, a memory slot, and a memdesc set.
+  bit MemDescMembership = 0;
 }
 
 /// An operator.  The target sorts are the second operand's admissible sorts;
@@ -321,6 +324,19 @@ def CoreInPairs
 def CoreInTriples
     : LegalizeCoreExpr<"inTriples", [], SortBool> { let SetMembership = 1; }
 
+/// Memory-descriptor membership:
+///
+///   (CoreInMemDesc (Slot 0), (Slot 1), (MemSlot 0), MyMemDescSet)
+///
+/// is `typePairAndMemDescInSet(0, 1, 0, {{value, pointer, memTy, align},...})`.
+/// The two type slots and the memory slot are written out for the same reason
+/// the pair form writes its slots; the set is a separate axis because the
+/// descriptor is not part of `Query.Types`.  The predicate compares with
+/// `TypePairAndMemDesc::isCompatible`, so an entry is a lower bound on the
+/// alignment and a size for the memory type, not an equality on either.
+def CoreInMemDesc
+    : LegalizeCoreExpr<"inMemDesc", [], SortBool> { let MemDescMembership = 1; }
+
 /// Integer arithmetic.  These are the two a legalizer guard needs to compare
 /// a type against a multiple or a residue of another type's size; there is no
 /// intent to grow an expression language, so the shims are the C++ operators
@@ -370,6 +386,15 @@ class LegalizeCoreTypeTripleSet<list<LegalizeTypeTriple> elems>
     : LegalizeCoreSet<"typeTripleSet", SortType> {
   list<LegalizeTypeTriple> Elems = elems;
   let Arity = 3;
+}
+
+/// A set of memory descriptors: {Type0, Type1, MemTy, Align}.  The arity is
+/// the two type slots; the memory type and alignment belong to the descriptor
+/// the query carries beside `Types`.
+class LegalizeCoreMemDescSet<list<LegalizeMemDesc> elems>
+    : LegalizeCoreSet<"memDescSet", SortType> {
+  list<LegalizeMemDesc> Elems = elems;
+  let Arity = 2;
 }
 
 class LegalizeCoreKindSet<list<LegalizeCoreNode> elems>

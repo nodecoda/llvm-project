@@ -18,4 +18,4 @@ def R : LegalizeRuleSet<["G_PAIR"]> {
   ];
 }
 
-// CHECK: error: core rule: 'PairSet' is a set of 2-tuples and can only be the last operand of 'inPairs' or 'inTriples'
+// CHECK: error: core rule: 'PairSet' is a set of 2-tuples and can only be the last operand of a tuple membership ('inPairs', 'inTriples', 'inMemDesc')

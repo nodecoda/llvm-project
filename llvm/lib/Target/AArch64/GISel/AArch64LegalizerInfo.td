@@ -15,11 +15,12 @@
 // Every rule whose condition is an expression is a core rule: no rule carries
 // a C++ predicate and no rule carries a raw mutation, the lane clamp is two
 // core rules (a guard plus a whole-type assignment), a unary type list is a
-// named type set (`(CoreIn (Slot 0), Set)`), and a list of type pairs or
-// triples is a named tuple set (`(CoreInPairs ...)`, `(CoreInTriples ...)`),
-// which lowers to `typePairInSet`/`typeTupleInSet`.  What remains is
-// `legalForTypesWithMemDesc` (the memory descriptor is a separate axis, not a
-// type slot), the `immIdx` annotation, and the two-slot size relations.
+// named type set (`(CoreIn (Slot 0), Set)`), a list of type pairs or triples
+// is a named tuple set (`(CoreInPairs ...)`, `(CoreInTriples ...)`), and a
+// list of memory descriptors is a named memdesc set
+// (`(CoreInMemDesc ...)`), which lower to `typePairInSet`,
+// `typeTupleInSet` and `typePairAndMemDescInSet`.  What remains is the
+// `immIdx` annotation and the two-slot size relations.
 //
 //===----------------------------------------------------------------------===//
 
@@ -483,6 +484,99 @@ def AArch64_VECREDUCE_SMINPairSet : LegalizeCoreTypePairSet<
      LegalizeTypePair<AArch64_i16, AArch64_v8i16>,
      LegalizeTypePair<AArch64_i32, AArch64_v2i32>,
      LegalizeTypePair<AArch64_i32, AArch64_v4i32>]>;
+
+/// The memory descriptors the load and store rules name.  A descriptor is a
+/// second axis of the query, so the rule says `(CoreInMemDesc (Slot 0),
+/// (Slot 1), (MemSlot 0), Set)`, which lowers to `typePairAndMemDescInSet`.
+/// The predicate compares with `isCompatible`: the alignment is a lower bound
+/// and the memory type is compared by size.
+def AArch64_LOADMemDescSet : LegalizeCoreMemDescSet<
+    [LegalizeMemDesc<AArch64_s8, AArch64_p0, AArch64_s8, 8>,
+     LegalizeMemDesc<AArch64_s16, AArch64_p0, AArch64_s16, 8>,
+     LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s32, 8>,
+     LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s64, 8>,
+     LegalizeMemDesc<AArch64_p0, AArch64_p0, AArch64_s64, 8>,
+     LegalizeMemDesc<AArch64_s128, AArch64_p0, AArch64_s128, 8>,
+     LegalizeMemDesc<AArch64_v8s8, AArch64_p0, AArch64_s64, 8>,
+     LegalizeMemDesc<AArch64_v16s8, AArch64_p0, AArch64_s128, 8>,
+     LegalizeMemDesc<AArch64_v4s16, AArch64_p0, AArch64_s64, 8>,
+     LegalizeMemDesc<AArch64_v8s16, AArch64_p0, AArch64_s128, 8>,
+     LegalizeMemDesc<AArch64_v2s32, AArch64_p0, AArch64_s64, 8>,
+     LegalizeMemDesc<AArch64_v4s32, AArch64_p0, AArch64_s128, 8>,
+     LegalizeMemDesc<AArch64_v2s64, AArch64_p0, AArch64_s128, 8>]>;
+def AArch64_LOADMemDescSet2 : LegalizeCoreMemDescSet<
+    [LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s8, 8>,
+     LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s16, 8>,
+     LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s32, 8>]>;
+def AArch64_LOADMemDescSet3 : LegalizeCoreMemDescSet<
+    [LegalizeMemDesc<AArch64_nxv16s8, AArch64_p0, AArch64_nxv16s8, 8>,
+     LegalizeMemDesc<AArch64_nxv8s16, AArch64_p0, AArch64_nxv8s16, 8>,
+     LegalizeMemDesc<AArch64_nxv4s32, AArch64_p0, AArch64_nxv4s32, 8>,
+     LegalizeMemDesc<AArch64_nxv2s64, AArch64_p0, AArch64_nxv2s64, 8>]>;
+def AArch64_STOREMemDescSet : LegalizeCoreMemDescSet<
+    [LegalizeMemDesc<AArch64_s8, AArch64_p0, AArch64_s8, 8>,
+     LegalizeMemDesc<AArch64_s16, AArch64_p0, AArch64_s8, 8>,
+     LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s8, 8>,
+     LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s8, 8>,
+     LegalizeMemDesc<AArch64_s16, AArch64_p0, AArch64_s16, 8>,
+     LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s16, 8>,
+     LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s16, 8>,
+     LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s8, 8>,
+     LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s16, 8>,
+     LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s32, 8>,
+     LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s64, 8>,
+     LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s32, 8>,
+     LegalizeMemDesc<AArch64_p0, AArch64_p0, AArch64_s64, 8>,
+     LegalizeMemDesc<AArch64_s128, AArch64_p0, AArch64_s128, 8>,
+     LegalizeMemDesc<AArch64_v16s8, AArch64_p0, AArch64_s128, 8>,
+     LegalizeMemDesc<AArch64_v8s8, AArch64_p0, AArch64_s64, 8>,
+     LegalizeMemDesc<AArch64_v4s16, AArch64_p0, AArch64_s64, 8>,
+     LegalizeMemDesc<AArch64_v8s16, AArch64_p0, AArch64_s128, 8>,
+     LegalizeMemDesc<AArch64_v2s32, AArch64_p0, AArch64_s64, 8>,
+     LegalizeMemDesc<AArch64_v4s32, AArch64_p0, AArch64_s128, 8>,
+     LegalizeMemDesc<AArch64_v2s64, AArch64_p0, AArch64_s128, 8>]>;
+def AArch64_STOREMemDescSet2 : LegalizeCoreMemDescSet<
+    [LegalizeMemDesc<AArch64_nxv16s8, AArch64_p0, AArch64_nxv16s8, 8>,
+     LegalizeMemDesc<AArch64_nxv8s16, AArch64_p0, AArch64_nxv8s16, 8>,
+     LegalizeMemDesc<AArch64_nxv4s32, AArch64_p0, AArch64_nxv4s32, 8>,
+     LegalizeMemDesc<AArch64_nxv2s64, AArch64_p0, AArch64_nxv2s64, 8>]>;
+def AArch64_INDEXED_STOREMemDescSet : LegalizeCoreMemDescSet<
+    [LegalizeMemDesc<AArch64_p0, AArch64_s8, AArch64_s8, 8>,
+     LegalizeMemDesc<AArch64_p0, AArch64_s16, AArch64_s16, 8>,
+     LegalizeMemDesc<AArch64_p0, AArch64_s32, AArch64_s8, 8>,
+     LegalizeMemDesc<AArch64_p0, AArch64_s32, AArch64_s16, 8>,
+     LegalizeMemDesc<AArch64_p0, AArch64_s32, AArch64_s32, 8>,
+     LegalizeMemDesc<AArch64_p0, AArch64_s64, AArch64_s64, 8>,
+     LegalizeMemDesc<AArch64_p0, AArch64_p0, AArch64_p0, 8>,
+     LegalizeMemDesc<AArch64_p0, AArch64_v8s8, AArch64_v8s8, 8>,
+     LegalizeMemDesc<AArch64_p0, AArch64_v16s8, AArch64_v16s8, 8>,
+     LegalizeMemDesc<AArch64_p0, AArch64_v4s16, AArch64_v4s16, 8>,
+     LegalizeMemDesc<AArch64_p0, AArch64_v8s16, AArch64_v8s16, 8>,
+     LegalizeMemDesc<AArch64_p0, AArch64_v2s32, AArch64_v2s32, 8>,
+     LegalizeMemDesc<AArch64_p0, AArch64_v4s32, AArch64_v4s32, 8>,
+     LegalizeMemDesc<AArch64_p0, AArch64_v2s64, AArch64_v2s64, 8>,
+     LegalizeMemDesc<AArch64_p0, AArch64_v2p0, AArch64_v2p0, 8>,
+     LegalizeMemDesc<AArch64_p0, AArch64_s128, AArch64_s128, 8>]>;
+def AArch64_SEXTLOADMemDescSet : LegalizeCoreMemDescSet<
+    [LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s8, 8>,
+     LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s16, 8>,
+     LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s32, 8>,
+     LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s8, 2>,
+     LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s16, 2>,
+     LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s32, 4>,
+     LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s64, 8>,
+     LegalizeMemDesc<AArch64_p0, AArch64_p0, AArch64_s64, 8>,
+     LegalizeMemDesc<AArch64_v2s32, AArch64_p0, AArch64_s64, 8>]>;
+def AArch64_ZEXTLOADMemDescSet : LegalizeCoreMemDescSet<
+    [LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s8, 8>,
+     LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s16, 8>,
+     LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s32, 8>,
+     LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s8, 2>,
+     LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s16, 2>,
+     LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s32, 4>,
+     LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s64, 8>,
+     LegalizeMemDesc<AArch64_p0, AArch64_p0, AArch64_s64, 8>,
+     LegalizeMemDesc<AArch64_v2s32, AArch64_p0, AArch64_s64, 8>]>;
 
 //===----------------------------------------------------------------------===//
 // Rule sets
@@ -1038,9 +1132,9 @@ def AArch64_LOAD : LegalizeRuleSet<["G_LOAD"]> {
     CoreCustom<(CoreAll (CoreEq (Slot 0), (Ty AArch64_s128)),
                         (CoreGe (MemOrdering (MemSlot 0)),
                                 OrderingUnordered))>,
-    LegalForMemDesc<[LegalizeMemDesc<AArch64_s8, AArch64_p0, AArch64_s8, 8>, LegalizeMemDesc<AArch64_s16, AArch64_p0, AArch64_s16, 8>, LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s32, 8>, LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s64, 8>, LegalizeMemDesc<AArch64_p0, AArch64_p0, AArch64_s64, 8>, LegalizeMemDesc<AArch64_s128, AArch64_p0, AArch64_s128, 8>, LegalizeMemDesc<AArch64_v8s8, AArch64_p0, AArch64_s64, 8>, LegalizeMemDesc<AArch64_v16s8, AArch64_p0, AArch64_s128, 8>, LegalizeMemDesc<AArch64_v4s16, AArch64_p0, AArch64_s64, 8>, LegalizeMemDesc<AArch64_v8s16, AArch64_p0, AArch64_s128, 8>, LegalizeMemDesc<AArch64_v2s32, AArch64_p0, AArch64_s64, 8>, LegalizeMemDesc<AArch64_v4s32, AArch64_p0, AArch64_s128, 8>, LegalizeMemDesc<AArch64_v2s64, AArch64_p0, AArch64_s128, 8>]>,
-    LegalForMemDesc<[LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s8, 8>, LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s16, 8>, LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s32, 8>]>,
-    LegalForMemDesc<[LegalizeMemDesc<AArch64_nxv16s8, AArch64_p0, AArch64_nxv16s8, 8>, LegalizeMemDesc<AArch64_nxv8s16, AArch64_p0, AArch64_nxv8s16, 8>, LegalizeMemDesc<AArch64_nxv4s32, AArch64_p0, AArch64_nxv4s32, 8>, LegalizeMemDesc<AArch64_nxv2s64, AArch64_p0, AArch64_nxv2s64, 8>]>,
+    CoreLegal<(CoreInMemDesc (Slot 0), (Slot 1), (MemSlot 0), AArch64_LOADMemDescSet)>,
+    CoreLegal<(CoreInMemDesc (Slot 0), (Slot 1), (MemSlot 0), AArch64_LOADMemDescSet2)>,
+    CoreLegal<(CoreInMemDesc (Slot 0), (Slot 1), (MemSlot 0), AArch64_LOADMemDescSet3)>,
     CoreWiden<(Slot 0), (Pow2Min 8)>,
     CoreClampMaxNumElements<0, AArch64_s8, 16>,
     CoreClampMaxNumElements<0, AArch64_s16, 8>,
@@ -1074,8 +1168,8 @@ def AArch64_STORE : LegalizeRuleSet<["G_STORE"]> {
                                 OrderingUnordered))>,
     CoreWidenIf<(Slot 0), (Ty AArch64_s32),
                 (CoreGe (MemOrdering (MemSlot 0)), OrderingRelease)>,
-    LegalForMemDesc<[LegalizeMemDesc<AArch64_s8, AArch64_p0, AArch64_s8, 8>, LegalizeMemDesc<AArch64_s16, AArch64_p0, AArch64_s8, 8>, LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s8, 8>, LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s8, 8>, LegalizeMemDesc<AArch64_s16, AArch64_p0, AArch64_s16, 8>, LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s16, 8>, LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s16, 8>, LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s8, 8>, LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s16, 8>, LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s32, 8>, LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s64, 8>, LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s32, 8>, LegalizeMemDesc<AArch64_p0, AArch64_p0, AArch64_s64, 8>, LegalizeMemDesc<AArch64_s128, AArch64_p0, AArch64_s128, 8>, LegalizeMemDesc<AArch64_v16s8, AArch64_p0, AArch64_s128, 8>, LegalizeMemDesc<AArch64_v8s8, AArch64_p0, AArch64_s64, 8>, LegalizeMemDesc<AArch64_v4s16, AArch64_p0, AArch64_s64, 8>, LegalizeMemDesc<AArch64_v8s16, AArch64_p0, AArch64_s128, 8>, LegalizeMemDesc<AArch64_v2s32, AArch64_p0, AArch64_s64, 8>, LegalizeMemDesc<AArch64_v4s32, AArch64_p0, AArch64_s128, 8>, LegalizeMemDesc<AArch64_v2s64, AArch64_p0, AArch64_s128, 8>]>,
-    LegalForMemDesc<[LegalizeMemDesc<AArch64_nxv16s8, AArch64_p0, AArch64_nxv16s8, 8>, LegalizeMemDesc<AArch64_nxv8s16, AArch64_p0, AArch64_nxv8s16, 8>, LegalizeMemDesc<AArch64_nxv4s32, AArch64_p0, AArch64_nxv4s32, 8>, LegalizeMemDesc<AArch64_nxv2s64, AArch64_p0, AArch64_nxv2s64, 8>]>,
+    CoreLegal<(CoreInMemDesc (Slot 0), (Slot 1), (MemSlot 0), AArch64_STOREMemDescSet)>,
+    CoreLegal<(CoreInMemDesc (Slot 0), (Slot 1), (MemSlot 0), AArch64_STOREMemDescSet2)>,
     CoreWiden<(Slot 0), (Ty AArch64_s8)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s64)>,
     CoreWiden<(ElemOf (Slot 0)), (Ty AArch64_s8)>,
@@ -1100,7 +1194,7 @@ def AArch64_STORE : LegalizeRuleSet<["G_STORE"]> {
 
 def AArch64_INDEXED_STORE : LegalizeRuleSet<["G_INDEXED_STORE"]> {
   let Rules = [
-    LegalForMemDesc<[LegalizeMemDesc<AArch64_p0, AArch64_s8, AArch64_s8, 8>, LegalizeMemDesc<AArch64_p0, AArch64_s16, AArch64_s16, 8>, LegalizeMemDesc<AArch64_p0, AArch64_s32, AArch64_s8, 8>, LegalizeMemDesc<AArch64_p0, AArch64_s32, AArch64_s16, 8>, LegalizeMemDesc<AArch64_p0, AArch64_s32, AArch64_s32, 8>, LegalizeMemDesc<AArch64_p0, AArch64_s64, AArch64_s64, 8>, LegalizeMemDesc<AArch64_p0, AArch64_p0, AArch64_p0, 8>, LegalizeMemDesc<AArch64_p0, AArch64_v8s8, AArch64_v8s8, 8>, LegalizeMemDesc<AArch64_p0, AArch64_v16s8, AArch64_v16s8, 8>, LegalizeMemDesc<AArch64_p0, AArch64_v4s16, AArch64_v4s16, 8>, LegalizeMemDesc<AArch64_p0, AArch64_v8s16, AArch64_v8s16, 8>, LegalizeMemDesc<AArch64_p0, AArch64_v2s32, AArch64_v2s32, 8>, LegalizeMemDesc<AArch64_p0, AArch64_v4s32, AArch64_v4s32, 8>, LegalizeMemDesc<AArch64_p0, AArch64_v2s64, AArch64_v2s64, 8>, LegalizeMemDesc<AArch64_p0, AArch64_v2p0, AArch64_v2p0, 8>, LegalizeMemDesc<AArch64_p0, AArch64_s128, AArch64_s128, 8>]>,
+    CoreLegal<(CoreInMemDesc (Slot 0), (Slot 1), (MemSlot 0), AArch64_INDEXED_STOREMemDescSet)>,
     CoreAlwaysUnsupported
   ];
 }
@@ -1975,7 +2069,7 @@ def AArch64_INVOKE_REGION_START : LegalizeRuleSet<["G_INVOKE_REGION_START"]> {
 def AArch64_SEXTLOAD : LegalizeRuleSet<["G_SEXTLOAD"]> {
   let Rules = [
     CoreLower<(CoreGe (MemOrdering (MemSlot 0)), OrderingUnordered)>,
-    LegalForMemDesc<[LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s8, 8>, LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s16, 8>, LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s32, 8>, LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s8, 2>, LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s16, 2>, LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s32, 4>, LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s64, 8>, LegalizeMemDesc<AArch64_p0, AArch64_p0, AArch64_s64, 8>, LegalizeMemDesc<AArch64_v2s32, AArch64_p0, AArch64_s64, 8>]>,
+    CoreLegal<(CoreInMemDesc (Slot 0), (Slot 1), (MemSlot 0), AArch64_SEXTLOADMemDescSet)>,
     CoreWiden<(Slot 0), (Pow2)>,
     CoreWiden<(Slot 0), (Ty AArch64_s32)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s64)>,
@@ -1986,7 +2080,7 @@ def AArch64_SEXTLOAD : LegalizeRuleSet<["G_SEXTLOAD"]> {
 
 def AArch64_ZEXTLOAD : LegalizeRuleSet<["G_ZEXTLOAD"]> {
   let Rules = [
-    LegalForMemDesc<[LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s8, 8>, LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s16, 8>, LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s32, 8>, LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s8, 2>, LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s16, 2>, LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s32, 4>, LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s64, 8>, LegalizeMemDesc<AArch64_p0, AArch64_p0, AArch64_s64, 8>, LegalizeMemDesc<AArch64_v2s32, AArch64_p0, AArch64_s64, 8>]>,
+    CoreLegal<(CoreInMemDesc (Slot 0), (Slot 1), (MemSlot 0), AArch64_ZEXTLOADMemDescSet)>,
     CoreWiden<(Slot 0), (Pow2)>,
     CoreWiden<(Slot 0), (Ty AArch64_s32)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s64)>,

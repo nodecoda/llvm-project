@@ -127,6 +127,8 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
 def PairSet   : LegalizeCoreTypePairSet<[LegalizeTypePair<s32, s64>]>;
 def TripleSet : LegalizeCoreTypeTripleSet<
     [LegalizeTypeTriple<s32, s64, s32>, LegalizeTypeTriple<s64, s32, s64>]>;
+def MemSet    : LegalizeCoreMemDescSet<
+    [LegalizeMemDesc<s32, s64, s32, 8>, LegalizeMemDesc<s64, s64, s64, 16>]>;
 
 def PairRules : LegalizeRuleSet<["G_PAIR"]> {
   let Rules = [
@@ -141,7 +143,15 @@ def TripleRules : LegalizeRuleSet<["G_TRIPLE"]> {
   ];
 }
 
-// CHECK:       "core_rules": 60,
+// The memory descriptor is a second axis, so the rule names its slot beside
+// the two type slots.
+def MemRules : LegalizeRuleSet<["G_MEM"]> {
+  let Rules = [
+    CoreLegal<(CoreInMemDesc (Slot 0), (Slot 1), (MemSlot 0), MemSet)>
+  ];
+}
+
+// CHECK:       "core_rules": 61,
 // CHECK:       "core_operators": ["bitcast", "custom", "fewer", "legal", "libcall", "lower", "more", "narrow", "scalarize", "unsupported", "widen"]
 
 // CXX: .coreWidenScalarToNextPow2([](const LegalityQuery &) { return true; }, 0)
@@ -205,6 +215,7 @@ def TripleRules : LegalizeRuleSet<["G_TRIPLE"]> {
 // CXX: .coreLegalIf([=](const LegalityQuery &Query) { return LegalityPredicates::typePairInSet(0, 1, {{.*}}s32, s64{{.*}})(Query); })
 // CXX: .coreCustomIf([=](const LegalityQuery &Query) { return (Is32) && (LegalityPredicates::typePairInSet(0, 1, {{.*}}s32, s64{{.*}})(Query)); })
 // CXX: .coreLegalIf([=](const LegalityQuery &Query) { return LegalityPredicates::typeTupleInSet(0, 1, 2, {{.*}}s32, s64, s32{{.*}}s64, s32, s64{{.*}}(Query); })
+// CXX: .coreLegalIf([=](const LegalityQuery &Query) { return LegalityPredicates::typePairAndMemDescInSet(0, 1, 0, {{.*}}s32, s64, s32, 8{{.*}}s64, s64, s64, 16{{.*}}(Query); })
 
 // CORE:       "version": "0.4",
 // CORE:       "op": "widen", "on": {"kind":"slot","index":0}, "to": {"kind":"pow2"}
@@ -245,3 +256,6 @@ def TripleRules : LegalizeRuleSet<["G_TRIPLE"]> {
 
 // POINTS: {TargetOpcode::G_PAIR, "G_PAIR", 2, {LLT::scalar(32), LLT::scalar(64), LLT()}
 // POINTS: {TargetOpcode::G_TRIPLE, "G_TRIPLE", 3, {LLT::scalar(32), LLT::scalar(64), LLT::scalar(32)}
+// CORE: "predicate":{"kind":"inMemDesc","args":[{"kind":"slot","index":0},{"kind":"slot","index":1},{"kind":"memSlot","args":[{"kind":"int","value":0}]},{"kind":"set","of":"Type","arity":2,"elems":{{.*}}"s32","s64","s32",8{{.*}}"s64","s64","s64",16{{.*}}
+
+// POINTS: {TargetOpcode::G_MEM, "G_MEM", 2, {LLT::scalar(32), LLT::scalar(64), LLT()}, LLT::scalar(32), 8, true}
