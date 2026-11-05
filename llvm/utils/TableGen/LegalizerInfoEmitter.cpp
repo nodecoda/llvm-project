@@ -2781,6 +2781,10 @@ private:
     return "LLT::fixed_vector(" + childValue(N, 0) + ", " + childValue(N, 1) +
            ")";
   }
+  std::string emitScalarOrVecOf(const CoreNode &N) {
+    return "LLT::scalarOrVector(ElementCount::getFixed(" + childValue(N, 0) +
+           "), " + childValue(N, 1) + ")";
+  }
   std::string emitEltTypeTo(const CoreNode &N) {
     return "(" + childValue(N, 0) + ").changeElementType(" + childValue(N, 1) +
            ")";
@@ -2838,6 +2842,7 @@ std::string CoreCxxEmitter::value(const CoreNode &N) {
       {"udiv", &CoreCxxEmitter::emitUDiv},
       {"intOfSize", &CoreCxxEmitter::emitIntOfSize},
       {"vecOf", &CoreCxxEmitter::emitVecOf},
+      {"scalarOrVecOf", &CoreCxxEmitter::emitScalarOrVecOf},
       {"eltTypeTo", &CoreCxxEmitter::emitEltTypeTo},
       {"eltSizeTo", &CoreCxxEmitter::emitEltSizeTo},
       {"divLanes", &CoreCxxEmitter::emitDivLanes},

@@ -109,12 +109,19 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
                                   (NumElems (Slot 0))),
                          0)>,
 
+    // A lane clamp is two core rules, not an operator: the direction the
+    // builder picks by comparing the query's lane count is an action, and the
+    // element type and lane count are the guard and the target.
+    CoreClampMinNumElements<0, s32, 4>,
+    CoreClampMaxNumElements<0, s32, 4>,
+    CoreFewer<(Slot 0), (Replace (ScalarOrVecOf 4, (Slot 0)))>,
+
     // Terminal actions.  Libcall is the one that carries no mutation.
     CoreLibcall<(CoreNot Is32)>
   ];
 }
 
-// CHECK:       "core_rules": 54,
+// CHECK:       "core_rules": 57,
 // CHECK:       "core_operators": ["bitcast", "custom", "fewer", "legal", "libcall", "lower", "more", "narrow", "scalarize", "unsupported", "widen"]
 
 // CXX: .coreWidenScalarToNextPow2([](const LegalityQuery &) { return true; }, 0)
@@ -170,6 +177,9 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
 // CXX: .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.Types[0]).getScalarType()).isBFloat16(); }, 0)
 // CXX: .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.Types[0]).getScalarSizeInBits() > ((Query.Types[1]).getScalarSizeInBits() * 2)); }, 0)
 // CXX: .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((((Query.Types[1]).getNumElements() * llvm::PowerOf2Ceil((Query.Types[0]).getNumElements())) % (Query.Types[0]).getNumElements()) != 0); }, 0)
+// CXX: .coreMoreTo([=](const LegalityQuery &Query) { return (Query.Types[0].isVector()) && (!(Query.Types[0].isScalableVector())) && (((Query.Types[0]).getElementType() == s32)) && (((Query.Types[0]).getNumElements() < 4)); }, 0, [=](const LegalityQuery &Query) { return std::make_pair(0, LLT::fixed_vector(4, (Query.Types[0]).getElementType())); })
+// CXX: .coreFewerTo([=](const LegalityQuery &Query) { return (Query.Types[0].isVector()) && (!(Query.Types[0].isScalableVector())) && (((Query.Types[0]).getElementType() == s32)) && (((Query.Types[0]).getNumElements() > 4)); }, 0, [=](const LegalityQuery &Query) { return std::make_pair(0, LLT::scalarOrVector(ElementCount::getFixed(4), (Query.Types[0]).getElementType())); })
+// CXX: .coreFewerTo([](const LegalityQuery &) { return true; }, 0, [=](const LegalityQuery &Query) { return std::make_pair(0, LLT::scalarOrVector(ElementCount::getFixed(4), Query.Types[0])); })
 // CXX: .coreLibcallIf([=](const LegalityQuery &Query) { return !(Is32); });
 
 // CORE:       "version": "0.4",
@@ -201,4 +211,7 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
 // CORE:       "predicate":{"kind":"isBFloat16","args":[{"kind":"scalarOf","args":[{"kind":"slot","index":0}]}]}
 // CORE:       "predicate":{"kind":"gt","args":[{"kind":"bitsOf","args":[{"kind":"slot","index":0}]},{"kind":"mul","args":[{"kind":"bitsOf","args":[{"kind":"slot","index":1}]},{"kind":"int","value":2}]}]}
 // CORE:       "predicate":{"kind":"ne","args":[{"kind":"urem","args":[{"kind":"mul","args":[{"kind":"numElems","args":[{"kind":"slot","index":1}]},{"kind":"pow2Ceil","args":[{"kind":"numElems","args":[{"kind":"slot","index":0}]}]}]},{"kind":"numElems","args":[{"kind":"slot","index":0}]}]},{"kind":"int","value":0}]}
+// CORE:       "op": "more", "on": {"kind":"slot","index":0}, "to": {"kind":"replace","args":[{"kind":"vecOf","args":[{"kind":"int","value":4},{"kind":"elemOf","args":[{"kind":"slot","index":0}]}]}]}
+// CORE:       "op": "fewer", "on": {"kind":"slot","index":0}, "to": {"kind":"replace","args":[{"kind":"scalarOrVecOf","args":[{"kind":"int","value":4},{"kind":"elemOf","args":[{"kind":"slot","index":0}]}]}]}
+// CORE:       "op": "fewer", "on": {"kind":"slot","index":0}, "to": {"kind":"replace","args":[{"kind":"scalarOrVecOf","args":[{"kind":"int","value":4},{"kind":"slot","index":0}]}]}
 // CORE:       "op": "libcall", "ruleset": "AllPrimitives"

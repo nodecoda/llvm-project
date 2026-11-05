@@ -263,6 +263,12 @@ def EltSizeTo       : LegalizeCoreExpr<"eltSizeTo", [SortType, SortInt],
 def DivLanes        : LegalizeCoreExpr<"divLanes", [SortType, SortInt],
                                        SortType>;
 
+/// A fixed vector of `n` lanes whose element type is `ty`, except that `n == 1`
+/// is the element type itself.  This is `LLT::scalarOrVector`, which the lane
+/// clamp needs: lowering a vector to one lane leaves a scalar, not `<1 x ty>`.
+def ScalarOrVecOf  : LegalizeCoreExpr<"scalarOrVecOf", [SortInt, SortType],
+                                      SortType>;
+
 /// Assign this whole type to the slot.  `Widen` and `Narrow` over a `Ty`
 /// target change the *element size*; `Replace` says the new type outright.
 /// The two cannot share a spelling: `changeElementSizeTo(f32)` on `<4 x s16>`
@@ -408,3 +414,25 @@ class CoreBitcastIf<dag on, dag to, dag guard>
     : LegalizeCoreRule<(Bitcast on, to)> {
   let CoreGuard = guard;
 }
+
+/// A lane-count clamp is not an operator: a fixed vector of `Elt` is raised to
+/// `Num` lanes by `more` over a whole type, and lowered to `Num` lanes by
+/// `fewer` over one.  The guard is what the builder used to spell inline -- the
+/// vector must be fixed (a scalable vector's lane count is a minimum), hold
+/// `Elt`, and be on the wrong side of `Num`.  Writing the two directions as
+/// two rules is what the builders do as well, so a clamp is two core rules.
+class CoreClampMinNumElements<int Idx, LegalizeNamedType Elt, int Num>
+    : CoreMoreIf<(Slot Idx), (Replace (VecOf Num, (ElemOf (Slot Idx)))),
+                 (CoreAll (CoreEq (SortOf (Slot Idx)), KindVector),
+                          (CoreNot (CoreEq (SortOf (Slot Idx)),
+                                            KindScalableVector)),
+                          (CoreEq (ElemOf (Slot Idx)), (Ty Elt)),
+                          (CoreLt (NumElems (Slot Idx)), Num))>;
+class CoreClampMaxNumElements<int Idx, LegalizeNamedType Elt, int Num>
+    : CoreFewerIf<(Slot Idx),
+                  (Replace (ScalarOrVecOf Num, (ElemOf (Slot Idx)))),
+                  (CoreAll (CoreEq (SortOf (Slot Idx)), KindVector),
+                           (CoreNot (CoreEq (SortOf (Slot Idx)),
+                                             KindScalableVector)),
+                           (CoreEq (ElemOf (Slot Idx)), (Ty Elt)),
+                           (CoreGt (NumElems (Slot Idx)), Num))>;

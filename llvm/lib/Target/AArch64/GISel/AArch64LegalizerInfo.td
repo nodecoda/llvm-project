@@ -12,12 +12,12 @@
 // AArch64LegalizerInfo.cpp, including the constructs X86 did not use
 // (custom(), bitcastIf(), minScalarOrEltIf(), libcallIf(), immIdx()).
 //
-// Every rule is written in the core IR: no rule carries a C++ predicate and no
-// rule carries a raw mutation.  The builders that remain spell *lists* rather
-// than expressions -- legalFor*, customFor*, lowerFor*, libcallFor*, immIdx
-// and scalarSameSizeAs name query shapes -- or the lane-count clamp, which the
-// core IR still has no operator for.  A rule whose condition can be written as
-// an expression is an expression, so the emitted chain says what it means.
+// Every rule whose condition is an expression is a core rule: no rule carries
+// a C++ predicate and no rule carries a raw mutation, and the lane clamp is
+// two core rules (a guard plus a whole-type assignment) rather than a builder.
+// The builders that remain spell *lists* -- legalFor*, customFor*, lowerFor*,
+// libcallFor*, immIdx and scalarSameSizeAs name query shapes rather than
+// conditions -- and the core IR has no set-of-tuples terminal yet.
 //
 //===----------------------------------------------------------------------===//
 
@@ -151,11 +151,14 @@ def AArch64_IMPLICIT_DEF : LegalizeRuleSet<["G_IMPLICIT_DEF", "G_FREEZE", "G_CON
     CoreNarrow<(Slot 0), (Ty AArch64_s64)>,
     CoreMore<(Slot 0), (Pow2)>,
     CoreWiden<(ElemOf (Slot 0)), (MinVectorSize 64)>,
-    ClampNumElements<0, AArch64_v8s8, AArch64_v16s8>,
-    ClampNumElements<0, AArch64_v4s16, AArch64_v8s16>,
-    ClampNumElements<0, AArch64_v2s32, AArch64_v4s32>,
-    ClampMaxNumElements<0, AArch64_s64, 2>,
-    ClampMaxNumElements<0, AArch64_p0, 2>,
+    CoreClampMinNumElements<0, AArch64_s8, 8>,
+    CoreClampMaxNumElements<0, AArch64_s8, 16>,
+    CoreClampMinNumElements<0, AArch64_s16, 4>,
+    CoreClampMaxNumElements<0, AArch64_s16, 8>,
+    CoreClampMinNumElements<0, AArch64_s32, 2>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMaxNumElements<0, AArch64_s64, 2>,
+    CoreClampMaxNumElements<0, AArch64_p0, 2>,
     CoreScalarizeIf<(Slot 0), (CoreGt (BitsOf (Slot 0)), 64)>
   ];
 }
@@ -169,11 +172,14 @@ def AArch64_PHI : LegalizeRuleSet<["G_PHI"]> {
     CoreScalarizeIf<(Slot 0), (CoreGt (BitsOf (Slot 0)), 64)>,
     CoreWiden<(Slot 0), (Ty AArch64_s16)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s64)>,
-    ClampNumElements<0, AArch64_v8s8, AArch64_v16s8>,
-    ClampNumElements<0, AArch64_v4s16, AArch64_v8s16>,
-    ClampNumElements<0, AArch64_v2s32, AArch64_v4s32>,
-    ClampMaxNumElements<0, AArch64_s64, 2>,
-    ClampMaxNumElements<0, AArch64_p0, 2>,
+    CoreClampMinNumElements<0, AArch64_s8, 8>,
+    CoreClampMaxNumElements<0, AArch64_s8, 16>,
+    CoreClampMinNumElements<0, AArch64_s16, 4>,
+    CoreClampMaxNumElements<0, AArch64_s16, 8>,
+    CoreClampMinNumElements<0, AArch64_s32, 2>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMaxNumElements<0, AArch64_s64, 2>,
+    CoreClampMaxNumElements<0, AArch64_p0, 2>,
     WidenScalarOrEltToNextPow2OrMinSize<0, 8>
   ];
 }
@@ -221,10 +227,12 @@ def AArch64_ADD : LegalizeRuleSet<["G_ADD", "G_SUB", "G_AND", "G_OR", "G_XOR"]> 
     CoreWiden<(Slot 0), (Pow2)>,
     CoreWiden<(Slot 0), (Ty AArch64_s32)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s64)>,
-    ClampMaxNumElements<0, AArch64_s8, 16>,
-    ClampMaxNumElements<0, AArch64_s16, 8>,
-    ClampNumElements<0, AArch64_v2s32, AArch64_v4s32>,
-    ClampNumElements<0, AArch64_v2s64, AArch64_v2s64>,
+    CoreClampMaxNumElements<0, AArch64_s8, 16>,
+    CoreClampMaxNumElements<0, AArch64_s16, 8>,
+    CoreClampMinNumElements<0, AArch64_s32, 2>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMinNumElements<0, AArch64_s64, 2>,
+    CoreClampMaxNumElements<0, AArch64_s64, 2>,
     CoreWidenIf<(ElemOf (Slot 0)), (Ty AArch64_s32),
                 (CoreLe (NumElems (Slot 0)), 2)>,
     CoreWidenIf<(ElemOf (Slot 0)), (Ty AArch64_s16), (CoreLe (NumElems (Slot 0)), 4)>,
@@ -241,10 +249,12 @@ def AArch64_MUL : LegalizeRuleSet<["G_MUL"]> {
     CoreWiden<(Slot 0), (Pow2)>,
     CoreWiden<(Slot 0), (Ty AArch64_s32)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s64)>,
-    ClampMaxNumElements<0, AArch64_s8, 16>,
-    ClampMaxNumElements<0, AArch64_s16, 8>,
-    ClampNumElements<0, AArch64_v2s32, AArch64_v4s32>,
-    ClampNumElements<0, AArch64_v2s64, AArch64_v2s64>,
+    CoreClampMaxNumElements<0, AArch64_s8, 16>,
+    CoreClampMaxNumElements<0, AArch64_s16, 8>,
+    CoreClampMinNumElements<0, AArch64_s32, 2>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMinNumElements<0, AArch64_s64, 2>,
+    CoreClampMaxNumElements<0, AArch64_s64, 2>,
     CoreWidenIf<(ElemOf (Slot 0)), (Ty AArch64_s32),
                 (CoreLe (NumElems (Slot 0)), 2)>,
     CoreWidenIf<(ElemOf (Slot 0)), (Ty AArch64_s16), (CoreLe (NumElems (Slot 0)), 4)>,
@@ -267,10 +277,14 @@ def AArch64_SHL : LegalizeRuleSet<["G_SHL", "G_ASHR", "G_LSHR"]> {
     CoreNarrow<(Slot 1), (Ty AArch64_s64)>,
     CoreWiden<(Slot 0), (Ty AArch64_s32)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s64)>,
-    ClampNumElements<0, AArch64_v8s8, AArch64_v16s8>,
-    ClampNumElements<0, AArch64_v4s16, AArch64_v8s16>,
-    ClampNumElements<0, AArch64_v2s32, AArch64_v4s32>,
-    ClampNumElements<0, AArch64_v2s64, AArch64_v2s64>,
+    CoreClampMinNumElements<0, AArch64_s8, 8>,
+    CoreClampMaxNumElements<0, AArch64_s8, 16>,
+    CoreClampMinNumElements<0, AArch64_s16, 4>,
+    CoreClampMaxNumElements<0, AArch64_s16, 8>,
+    CoreClampMinNumElements<0, AArch64_s32, 2>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMinNumElements<0, AArch64_s64, 2>,
+    CoreClampMaxNumElements<0, AArch64_s64, 2>,
     CoreMore<(Slot 0), (Pow2)>,
     MinScalarSameAs<1, 0>,
     CoreScalarizeIf<(Slot 0), (CoreGt (BitsOf (Slot 0)), 64)>,
@@ -287,7 +301,8 @@ def AArch64_PTR_ADD : LegalizeRuleSet<["G_PTR_ADD"]> {
     LegalForPairs<[LegalizeTypePair<AArch64_p0, AArch64_i64>, LegalizeTypePair<AArch64_v2p0, AArch64_v2i64>]>,
     CoreWiden<(ElemOf (Slot 1)), (Ty AArch64_s64)>,
     CoreNarrow<(ElemOf (Slot 1)), (Ty AArch64_s64)>,
-    ClampNumElements<0, AArch64_v2p0, AArch64_v2p0>
+    CoreClampMinNumElements<0, AArch64_p0, 2>,
+    CoreClampMaxNumElements<0, AArch64_p0, 2>
   ];
 }
 
@@ -314,8 +329,10 @@ def AArch64_SREM : LegalizeRuleSet<["G_SREM", "G_UREM", "G_SDIVREM", "G_UDIVREM"
     LibcallFor<[AArch64_i128]>,
     CoreWiden<(ElemOf (Slot 0)), (Pow2)>,
     CoreWiden<(ElemOf (Slot 0)), (Ty AArch64_s32)>,
-    ClampNumElements<0, AArch64_v2s32, AArch64_v4s32>,
-    ClampNumElements<0, AArch64_v2s64, AArch64_v2s64>,
+    CoreClampMinNumElements<0, AArch64_s32, 2>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMinNumElements<0, AArch64_s64, 2>,
+    CoreClampMaxNumElements<0, AArch64_s64, 2>,
     CoreScalarize<(Slot 0)>
   ];
 }
@@ -332,9 +349,9 @@ def AArch64_SMULO : LegalizeRuleSet<["G_SMULO", "G_UMULO"]> {
 def AArch64_SMULH : LegalizeRuleSet<["G_SMULH", "G_UMULH"]> {
   let Rules = [
     LegalFor<[AArch64_i64, AArch64_v16i8, AArch64_v8i16, AArch64_v4i32]>,
-    ClampMaxNumElements<0, AArch64_s8, 16>,
-    ClampMaxNumElements<0, AArch64_s16, 8>,
-    ClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMaxNumElements<0, AArch64_s8, 16>,
+    CoreClampMaxNumElements<0, AArch64_s16, 8>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
     CoreAlwaysLower
   ];
 }
@@ -350,9 +367,12 @@ def AArch64_SMIN : LegalizeRuleSet<["G_SMIN", "G_SMAX", "G_UMIN", "G_UMAX"]> {
     LegalFor<[AArch64_v8i8, AArch64_v16i8, AArch64_v4i16, AArch64_v8i16, AArch64_v2i32, AArch64_v4i32]>,
     LegalForIf<AArch64_HasCSSC, [AArch64_i32, AArch64_i64]>,
     CoreWiden<(Slot 0), (Ty AArch64_s32)>,
-    ClampNumElements<0, AArch64_v8s8, AArch64_v16s8>,
-    ClampNumElements<0, AArch64_v4s16, AArch64_v8s16>,
-    ClampNumElements<0, AArch64_v2s32, AArch64_v4s32>,
+    CoreClampMinNumElements<0, AArch64_s8, 8>,
+    CoreClampMaxNumElements<0, AArch64_s8, 16>,
+    CoreClampMinNumElements<0, AArch64_s16, 4>,
+    CoreClampMaxNumElements<0, AArch64_s16, 8>,
+    CoreClampMinNumElements<0, AArch64_s32, 2>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
     CoreAlwaysLower
   ];
 }
@@ -367,10 +387,14 @@ def AArch64_ABS : LegalizeRuleSet<["G_ABS"]> {
                 (CoreEq (Slot 0), (Ty AArch64_v4s8))>,
     CoreWidenIf<(Slot 0), (Replace (Ty AArch64_v2i32)),
                 (CoreEq (Slot 0), (Ty AArch64_v2s16))>,
-    ClampNumElements<0, AArch64_v8s8, AArch64_v16s8>,
-    ClampNumElements<0, AArch64_v4s16, AArch64_v8s16>,
-    ClampNumElements<0, AArch64_v2s32, AArch64_v4s32>,
-    ClampNumElements<0, AArch64_v2s64, AArch64_v2s64>,
+    CoreClampMinNumElements<0, AArch64_s8, 8>,
+    CoreClampMaxNumElements<0, AArch64_s8, 16>,
+    CoreClampMinNumElements<0, AArch64_s16, 4>,
+    CoreClampMaxNumElements<0, AArch64_s16, 8>,
+    CoreClampMinNumElements<0, AArch64_s32, 2>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMinNumElements<0, AArch64_s64, 2>,
+    CoreClampMaxNumElements<0, AArch64_s64, 2>,
     CoreMore<(Slot 0), (Pow2)>,
     CoreAlwaysLower
   ];
@@ -436,10 +460,14 @@ def AArch64_CTPOP : LegalizeRuleSet<["G_CTPOP"]> {
     CoreWiden<(Slot 1), (SameAs 0)>,
     CoreNarrowIf<(Slot 1), (Replace (SameAs 0)),
                  (CoreLt (BitsOf (Slot 0)), (BitsOf (Slot 1)))>,
-    ClampNumElements<0, AArch64_v8s8, AArch64_v16s8>,
-    ClampNumElements<0, AArch64_v4s16, AArch64_v8s16>,
-    ClampNumElements<0, AArch64_v2s32, AArch64_v4s32>,
-    ClampNumElements<0, AArch64_v2s64, AArch64_v2s64>,
+    CoreClampMinNumElements<0, AArch64_s8, 8>,
+    CoreClampMaxNumElements<0, AArch64_s8, 16>,
+    CoreClampMinNumElements<0, AArch64_s16, 4>,
+    CoreClampMaxNumElements<0, AArch64_s16, 8>,
+    CoreClampMinNumElements<0, AArch64_s32, 2>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMinNumElements<0, AArch64_s64, 2>,
+    CoreClampMaxNumElements<0, AArch64_s64, 2>,
     CoreMore<(Slot 0), (Pow2)>,
     CoreScalarizeIf<(Slot 0), (CoreGt (BitsOf (Slot 0)), 64)>
   ];
@@ -452,9 +480,12 @@ def AArch64_CTLZ : LegalizeRuleSet<["G_CTLZ", "G_CTLS"]> {
     CoreWiden<(Slot 1), (Ty AArch64_s32)>,
     CoreNarrow<(Slot 1), (Ty AArch64_s64)>,
     WidenScalarOrEltToNextPow2OrMinSize<1, 8>,
-    ClampNumElements<0, AArch64_v8s8, AArch64_v16s8>,
-    ClampNumElements<0, AArch64_v4s16, AArch64_v8s16>,
-    ClampNumElements<0, AArch64_v2s32, AArch64_v4s32>,
+    CoreClampMinNumElements<0, AArch64_s8, 8>,
+    CoreClampMaxNumElements<0, AArch64_s8, 16>,
+    CoreClampMinNumElements<0, AArch64_s16, 4>,
+    CoreClampMaxNumElements<0, AArch64_s16, 8>,
+    CoreClampMinNumElements<0, AArch64_s32, 2>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
     CoreMore<(Slot 0), (Pow2)>,
     CoreScalarizeIf<(Slot 0), (CoreGt (BitsOf (Slot 0)), 32)>,
     ScalarSameSizeAs<0, 1>
@@ -498,10 +529,14 @@ def AArch64_BITREVERSE : LegalizeRuleSet<["G_BITREVERSE"]> {
     WidenScalarOrEltToNextPow2OrMinSize<0, 8>,
     CoreWiden<(Slot 0), (Ty AArch64_s32)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s64)>,
-    ClampNumElements<0, AArch64_v8s8, AArch64_v16s8>,
-    ClampNumElements<0, AArch64_v4s16, AArch64_v8s16>,
-    ClampNumElements<0, AArch64_v2s32, AArch64_v4s32>,
-    ClampNumElements<0, AArch64_v2s64, AArch64_v2s64>,
+    CoreClampMinNumElements<0, AArch64_s8, 8>,
+    CoreClampMaxNumElements<0, AArch64_s8, 16>,
+    CoreClampMinNumElements<0, AArch64_s16, 4>,
+    CoreClampMaxNumElements<0, AArch64_s16, 8>,
+    CoreClampMinNumElements<0, AArch64_s32, 2>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMinNumElements<0, AArch64_s64, 2>,
+    CoreClampMaxNumElements<0, AArch64_s64, 2>,
     CoreScalarizeIf<(Slot 0), (CoreGt (BitsOf (Slot 0)), 64)>,
     CoreMore<(Slot 0), (Pow2)>,
     CoreAlwaysLower
@@ -520,9 +555,12 @@ def AArch64_BSWAP : LegalizeRuleSet<["G_BSWAP"]> {
     CoreWiden<(ElemOf (Slot 0)), (Pow2Min 16)>,
     CoreWiden<(Slot 0), (Ty AArch64_s32)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s64)>,
-    ClampNumElements<0, AArch64_v4s16, AArch64_v8s16>,
-    ClampNumElements<0, AArch64_v2s32, AArch64_v4s32>,
-    ClampNumElements<0, AArch64_v2s64, AArch64_v2s64>,
+    CoreClampMinNumElements<0, AArch64_s16, 4>,
+    CoreClampMaxNumElements<0, AArch64_s16, 8>,
+    CoreClampMinNumElements<0, AArch64_s32, 2>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMinNumElements<0, AArch64_s64, 2>,
+    CoreClampMaxNumElements<0, AArch64_s64, 2>,
     CoreMore<(Slot 0), (Pow2)>
   ];
 }
@@ -531,10 +569,13 @@ def AArch64_UADDSAT : LegalizeRuleSet<["G_UADDSAT", "G_SADDSAT", "G_USUBSAT", "G
   let Rules = [
     LegalFor<[AArch64_v8i8, AArch64_v16i8, AArch64_v4i16, AArch64_v8i16, AArch64_v2i32, AArch64_v4i32, AArch64_v2i64]>,
     LegalForIf<AArch64_HasSVE, [AArch64_nxv16i8, AArch64_nxv8i16, AArch64_nxv4i32, AArch64_nxv2i64]>,
-    ClampNumElements<0, AArch64_v8s8, AArch64_v16s8>,
-    ClampNumElements<0, AArch64_v4s16, AArch64_v8s16>,
-    ClampNumElements<0, AArch64_v2s32, AArch64_v4s32>,
-    ClampMaxNumElements<0, AArch64_s64, 2>,
+    CoreClampMinNumElements<0, AArch64_s8, 8>,
+    CoreClampMaxNumElements<0, AArch64_s8, 16>,
+    CoreClampMinNumElements<0, AArch64_s16, 4>,
+    CoreClampMaxNumElements<0, AArch64_s16, 8>,
+    CoreClampMinNumElements<0, AArch64_s32, 2>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMaxNumElements<0, AArch64_s64, 2>,
     CoreScalarizeIf<(Slot 0), (CoreGt (BitsOf (Slot 0)), 64)>,
     CoreMore<(Slot 0), (Pow2)>,
     CoreAlwaysLower
@@ -551,9 +592,12 @@ def AArch64_FADD : LegalizeRuleSet<["G_FADD", "G_FSUB", "G_FMUL", "G_FDIV", "G_F
                 (CoreAny (CoreAll (CoreNot AArch64_HasFP16),
                                   (IsFloat16 (ScalarOf (Slot 0)))),
                          (IsBFloat16 (ScalarOf (Slot 0))))>,
-    ClampNumElements<0, AArch64_v4s16, AArch64_v8s16>,
-    ClampNumElements<0, AArch64_v2s32, AArch64_v4s32>,
-    ClampNumElements<0, AArch64_v2s64, AArch64_v2s64>,
+    CoreClampMinNumElements<0, AArch64_s16, 4>,
+    CoreClampMaxNumElements<0, AArch64_s16, 8>,
+    CoreClampMinNumElements<0, AArch64_s32, 2>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMinNumElements<0, AArch64_s64, 2>,
+    CoreClampMaxNumElements<0, AArch64_s64, 2>,
     CoreMore<(Slot 0), (Pow2)>
   ];
 }
@@ -564,9 +608,12 @@ def AArch64_FABS : LegalizeRuleSet<["G_FABS", "G_FNEG"]> {
     LegalForIf<AArch64_HasFP16, [AArch64_f16, AArch64_bf16, AArch64_v4f16, AArch64_v4bf16, AArch64_v8f16, AArch64_v8bf16]>,
     CoreScalarizeIf<(Slot 0), (CoreGt (BitsOf (Slot 0)), 64)>,
     CoreLower<(CoreGt (BitsOf (Slot 0)), 64)>,
-    ClampNumElements<0, AArch64_v4s16, AArch64_v8s16>,
-    ClampNumElements<0, AArch64_v2s32, AArch64_v4s32>,
-    ClampNumElements<0, AArch64_v2s64, AArch64_v2s64>,
+    CoreClampMinNumElements<0, AArch64_s16, 4>,
+    CoreClampMaxNumElements<0, AArch64_s16, 8>,
+    CoreClampMinNumElements<0, AArch64_s32, 2>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMinNumElements<0, AArch64_s64, 2>,
+    CoreClampMaxNumElements<0, AArch64_s64, 2>,
     CoreMore<(Slot 0), (Pow2)>,
     LowerFor<[AArch64_f16, AArch64_bf16, AArch64_v4f16, AArch64_v4bf16, AArch64_v8f16, AArch64_v8bf16]>
   ];
@@ -641,11 +688,11 @@ def AArch64_LOAD : LegalizeRuleSet<["G_LOAD"]> {
     LegalForMemDesc<[LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s8, 8>, LegalizeMemDesc<AArch64_s32, AArch64_p0, AArch64_s16, 8>, LegalizeMemDesc<AArch64_s64, AArch64_p0, AArch64_s32, 8>]>,
     LegalForMemDesc<[LegalizeMemDesc<AArch64_nxv16s8, AArch64_p0, AArch64_nxv16s8, 8>, LegalizeMemDesc<AArch64_nxv8s16, AArch64_p0, AArch64_nxv8s16, 8>, LegalizeMemDesc<AArch64_nxv4s32, AArch64_p0, AArch64_nxv4s32, 8>, LegalizeMemDesc<AArch64_nxv2s64, AArch64_p0, AArch64_nxv2s64, 8>]>,
     CoreWiden<(Slot 0), (Pow2Min 8)>,
-    ClampMaxNumElements<0, AArch64_s8, 16>,
-    ClampMaxNumElements<0, AArch64_s16, 8>,
-    ClampMaxNumElements<0, AArch64_s32, 4>,
-    ClampMaxNumElements<0, AArch64_s64, 2>,
-    ClampMaxNumElements<0, AArch64_p0, 2>,
+    CoreClampMaxNumElements<0, AArch64_s8, 16>,
+    CoreClampMaxNumElements<0, AArch64_s16, 8>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMaxNumElements<0, AArch64_s64, 2>,
+    CoreClampMaxNumElements<0, AArch64_p0, 2>,
     LowerIfMemSizeNotByteSizePow2,
     CoreWiden<(Slot 0), (Ty AArch64_s8)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s64)>,
@@ -680,11 +727,11 @@ def AArch64_STORE : LegalizeRuleSet<["G_STORE"]> {
     CoreWiden<(ElemOf (Slot 0)), (Ty AArch64_s8)>,
     CoreLower<(CoreAll (CoreEq (SortOf (Slot 0)), KindScalar),
                        (CoreNe (Slot 0), (MemTy (MemSlot 0))))>,
-    ClampMaxNumElements<0, AArch64_s8, 16>,
-    ClampMaxNumElements<0, AArch64_s16, 8>,
-    ClampMaxNumElements<0, AArch64_s32, 4>,
-    ClampMaxNumElements<0, AArch64_s64, 2>,
-    ClampMaxNumElements<0, AArch64_p0, 2>,
+    CoreClampMaxNumElements<0, AArch64_s8, 16>,
+    CoreClampMaxNumElements<0, AArch64_s16, 8>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMaxNumElements<0, AArch64_s64, 2>,
+    CoreClampMaxNumElements<0, AArch64_p0, 2>,
     LowerIfMemSizeNotPow2,
     CoreBitcastIf<(Slot 0), (Replace (IntOfSize (SizeOf (Slot 0)))),
                   (CoreAll (CoreEq (Slot 0), (Ty AArch64_v4s8)),
@@ -770,11 +817,16 @@ def AArch64_ICMP : LegalizeRuleSet<["G_ICMP"]> {
     CoreWidenIf<(ElemOf (Slot 0)), (Ty AArch64_s64),
                 (CoreEq (SortOf (Slot 1)), KindPointerVector)>,
     CoreMore<(Slot 1), (Pow2)>,
-    ClampNumElements<1, AArch64_v8s8, AArch64_v16s8>,
-    ClampNumElements<1, AArch64_v4s16, AArch64_v8s16>,
-    ClampNumElements<1, AArch64_v2s32, AArch64_v4s32>,
-    ClampNumElements<1, AArch64_v2s64, AArch64_v2s64>,
-    ClampNumElements<1, AArch64_v2p0, AArch64_v2p0>,
+    CoreClampMinNumElements<1, AArch64_s8, 8>,
+    CoreClampMaxNumElements<1, AArch64_s8, 16>,
+    CoreClampMinNumElements<1, AArch64_s16, 4>,
+    CoreClampMaxNumElements<1, AArch64_s16, 8>,
+    CoreClampMinNumElements<1, AArch64_s32, 2>,
+    CoreClampMaxNumElements<1, AArch64_s32, 4>,
+    CoreClampMinNumElements<1, AArch64_s64, 2>,
+    CoreClampMaxNumElements<1, AArch64_s64, 2>,
+    CoreClampMinNumElements<1, AArch64_p0, 2>,
+    CoreClampMaxNumElements<1, AArch64_p0, 2>,
     CoreCustom<(CoreEq (SortOf (Slot 0)), KindVector)>
   ];
 }
@@ -795,9 +847,11 @@ def AArch64_FCMP : LegalizeRuleSet<["G_FCMP"]> {
                 (CoreAll (CoreEq (SortOf (Slot 0)), KindVector),
                          (CoreNot (CoreEq (SortOf (Slot 1)), KindPointerVector)),
                          (CoreNe (ElemOf (Slot 0)), (ElemOf (Slot 1))))>,
-    ClampNumElements<1, AArch64_v4s16, AArch64_v8s16>,
-    ClampNumElements<1, AArch64_v2s32, AArch64_v4s32>,
-    ClampMaxNumElements<1, AArch64_s64, 2>,
+    CoreClampMinNumElements<1, AArch64_s16, 4>,
+    CoreClampMaxNumElements<1, AArch64_s16, 8>,
+    CoreClampMinNumElements<1, AArch64_s32, 2>,
+    CoreClampMaxNumElements<1, AArch64_s32, 4>,
+    CoreClampMaxNumElements<1, AArch64_s64, 2>,
     CoreMore<(Slot 1), (Pow2)>,
     LibcallForPairs<[LegalizeTypePair<AArch64_s32, AArch64_s128>]>
   ];
@@ -815,16 +869,16 @@ def AArch64_ZEXT : LegalizeRuleSet<["G_ZEXT", "G_SEXT", "G_ANYEXT"]> {
     CoreWiden<(Slot 0), (Ty AArch64_s64)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s64)>,
     CoreMore<(Slot 0), (Pow2)>,
-    ClampMaxNumElements<1, AArch64_s8, 8>,
-    ClampMaxNumElements<1, AArch64_s16, 4>,
-    ClampMaxNumElements<1, AArch64_s32, 2>,
+    CoreClampMaxNumElements<1, AArch64_s8, 8>,
+    CoreClampMaxNumElements<1, AArch64_s16, 4>,
+    CoreClampMaxNumElements<1, AArch64_s32, 2>,
     CoreLower<(CoreAll (CoreEq (SortOf (Slot 0)), KindVector),
                        (CoreGt (BitsOf (Slot 0)),
                                (CoreMul (BitsOf (Slot 1)), 2)),
                        (CoreAny (CoreEq (BitsOf (Slot 1)), 8),
                                 (CoreEq (BitsOf (Slot 1)), 16)))>,
-    ClampMinNumElements<1, AArch64_s8, 8>,
-    ClampMinNumElements<1, AArch64_s16, 4>,
+    CoreClampMinNumElements<1, AArch64_s8, 8>,
+    CoreClampMinNumElements<1, AArch64_s16, 4>,
     CoreScalarizeIf<(Slot 0), (CoreGt (BitsOf (Slot 0)), 64)>
   ];
 }
@@ -833,17 +887,17 @@ def AArch64_TRUNC : LegalizeRuleSet<["G_TRUNC"]> {
   let Rules = [
     LegalForPairs<[LegalizeTypePair<AArch64_v8s8, AArch64_v8s16>, LegalizeTypePair<AArch64_v4s16, AArch64_v4s32>, LegalizeTypePair<AArch64_v2s32, AArch64_v2s64>]>,
     CoreMore<(Slot 0), (Pow2)>,
-    ClampMaxNumElements<0, AArch64_s8, 8>,
-    ClampMaxNumElements<0, AArch64_s16, 4>,
-    ClampMaxNumElements<0, AArch64_s32, 2>,
+    CoreClampMaxNumElements<0, AArch64_s8, 8>,
+    CoreClampMaxNumElements<0, AArch64_s16, 4>,
+    CoreClampMaxNumElements<0, AArch64_s32, 2>,
     CoreWidenIf<(ElemOf (Slot 0)), (Ty AArch64_s8),
                 (CoreEq (SortOf (Slot 0)), KindVector)>,
     CoreLower<(CoreAll (CoreEq (SortOf (Slot 0)), KindVector),
                        (CoreGt (SizeOf (Slot 1)), 128),
                        (CoreLe (CoreMul (BitsOf (Slot 0)), 2),
                                (BitsOf (Slot 1))))>,
-    ClampMinNumElements<0, AArch64_s8, 8>,
-    ClampMinNumElements<0, AArch64_s16, 4>,
+    CoreClampMinNumElements<0, AArch64_s8, 8>,
+    CoreClampMinNumElements<0, AArch64_s16, 4>,
     CoreAlwaysLegal
   ];
 }
@@ -851,9 +905,12 @@ def AArch64_TRUNC : LegalizeRuleSet<["G_TRUNC"]> {
 def AArch64_TRUNC_SSAT_S : LegalizeRuleSet<["G_TRUNC_SSAT_S", "G_TRUNC_SSAT_U", "G_TRUNC_USAT_U"]> {
   let Rules = [
     LegalForPairs<[LegalizeTypePair<AArch64_v8i8, AArch64_v8i16>, LegalizeTypePair<AArch64_v4i16, AArch64_v4i32>, LegalizeTypePair<AArch64_v2i32, AArch64_v2i64>]>,
-    ClampNumElements<0, AArch64_v8s8, AArch64_v8s8>,
-    ClampNumElements<0, AArch64_v4s16, AArch64_v4s16>,
-    ClampNumElements<0, AArch64_v2s32, AArch64_v2s32>,
+    CoreClampMinNumElements<0, AArch64_s8, 8>,
+    CoreClampMaxNumElements<0, AArch64_s8, 8>,
+    CoreClampMinNumElements<0, AArch64_s16, 4>,
+    CoreClampMaxNumElements<0, AArch64_s16, 4>,
+    CoreClampMinNumElements<0, AArch64_s32, 2>,
+    CoreClampMaxNumElements<0, AArch64_s32, 2>,
     CoreAlwaysLower
   ];
 }
@@ -862,10 +919,13 @@ def AArch64_SEXT_INREG : LegalizeRuleSet<["G_SEXT_INREG"]> {
   let Rules = [
     LegalFor<[AArch64_i32, AArch64_i64, AArch64_v8i8, AArch64_v16i8, AArch64_v4i16, AArch64_v8i16, AArch64_v2i32, AArch64_v4i32, AArch64_v2i64]>,
     CoreNarrow<(Slot 0), (Ty AArch64_s64)>,
-    ClampNumElements<0, AArch64_v8s8, AArch64_v16s8>,
-    ClampNumElements<0, AArch64_v4s16, AArch64_v8s16>,
-    ClampNumElements<0, AArch64_v2s32, AArch64_v4s32>,
-    ClampMaxNumElements<0, AArch64_s64, 2>,
+    CoreClampMinNumElements<0, AArch64_s8, 8>,
+    CoreClampMaxNumElements<0, AArch64_s8, 16>,
+    CoreClampMinNumElements<0, AArch64_s16, 4>,
+    CoreClampMaxNumElements<0, AArch64_s16, 8>,
+    CoreClampMinNumElements<0, AArch64_s32, 2>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMaxNumElements<0, AArch64_s64, 2>,
     CoreAlwaysLower
   ];
 }
@@ -879,8 +939,10 @@ def AArch64_FPTRUNC : LegalizeRuleSet<["G_FPTRUNC"]> {
     CoreCustom<(CoreAll (CoreEq (BitsOf (Slot 1)), 64),
                        (CoreEq (BitsOf (Slot 0)), 16))>,
     LowerForPairs<[LegalizeTypePair<AArch64_bf16, AArch64_f32>, LegalizeTypePair<AArch64_v4bf16, AArch64_v4f32>]>,
-    ClampNumElements<1, AArch64_v4s32, AArch64_v4s32>,
-    ClampNumElements<1, AArch64_v2s64, AArch64_v2s64>,
+    CoreClampMinNumElements<1, AArch64_s32, 4>,
+    CoreClampMaxNumElements<1, AArch64_s32, 4>,
+    CoreClampMinNumElements<1, AArch64_s64, 2>,
+    CoreClampMaxNumElements<1, AArch64_s64, 2>,
     CoreScalarize<(Slot 0)>
   ];
 }
@@ -895,8 +957,10 @@ def AArch64_FPEXT : LegalizeRuleSet<["G_FPEXT"]> {
                          (CoreEq (SortOf (Slot 0)), KindVector),
                          (CoreEq (BitsOf (Slot 1)), 16),
                          (CoreEq (BitsOf (Slot 0)), 64))>,
-    ClampNumElements<0, AArch64_v4s32, AArch64_v4s32>,
-    ClampNumElements<0, AArch64_v2s64, AArch64_v2s64>,
+    CoreClampMinNumElements<0, AArch64_s32, 4>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMinNumElements<0, AArch64_s64, 2>,
+    CoreClampMaxNumElements<0, AArch64_s64, 2>,
     CoreScalarize<(Slot 0)>
   ];
 }
@@ -919,9 +983,11 @@ def AArch64_FPTOSI : LegalizeRuleSet<["G_FPTOSI", "G_FPTOUI"]> {
                          (IsBFloat16 (ScalarOf (Slot 1))))>,
     CoreWidenIf<(Slot 1), (SameAs 0), (CoreLe (BitsOf (Slot 0)), 64)>,
     CoreWidenIf<(Slot 0), (SameAs 1), (CoreLe (BitsOf (Slot 1)), 64)>,
-    ClampNumElements<0, AArch64_v4s16, AArch64_v8s16>,
-    ClampNumElements<0, AArch64_v2s32, AArch64_v4s32>,
-    ClampMaxNumElements<0, AArch64_s64, 2>,
+    CoreClampMinNumElements<0, AArch64_s16, 4>,
+    CoreClampMaxNumElements<0, AArch64_s16, 8>,
+    CoreClampMinNumElements<0, AArch64_s32, 2>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMaxNumElements<0, AArch64_s64, 2>,
     LibcallForPairs<[LegalizeTypePair<AArch64_i32, AArch64_f128>, LegalizeTypePair<AArch64_i64, AArch64_f128>, LegalizeTypePair<AArch64_i128, AArch64_f128>, LegalizeTypePair<AArch64_i128, AArch64_f32>, LegalizeTypePair<AArch64_i128, AArch64_f64>]>
   ];
 }
@@ -955,9 +1021,11 @@ def AArch64_FPTOSI_SAT : LegalizeRuleSet<["G_FPTOSI_SAT", "G_FPTOUI_SAT"]> {
                          (CoreEq (BitsOf (Slot 1)), 32),
                          (CoreEq (BitsOf (Slot 1)), 64))>,
     CoreWiden<(ElemOf (Slot 0)), (Pow2)>,
-    ClampNumElements<0, AArch64_v4s16, AArch64_v8s16>,
-    ClampNumElements<0, AArch64_v2s32, AArch64_v4s32>,
-    ClampMaxNumElements<0, AArch64_s64, 2>
+    CoreClampMinNumElements<0, AArch64_s16, 4>,
+    CoreClampMaxNumElements<0, AArch64_s16, 8>,
+    CoreClampMinNumElements<0, AArch64_s32, 2>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMaxNumElements<0, AArch64_s64, 2>
   ];
 }
 
@@ -979,9 +1047,11 @@ def AArch64_SITOFP : LegalizeRuleSet<["G_SITOFP", "G_UITOFP"]> {
                                   (CoreEq (BitsOf (Slot 1)), 64))>,
     CoreWidenIf<(Slot 0), (SameAs 1), (CoreLe (BitsOf (Slot 1)), 64)>,
     CoreWidenIf<(Slot 1), (SameAs 0), (CoreLe (BitsOf (Slot 0)), 64)>,
-    ClampNumElements<0, AArch64_v4s16, AArch64_v8s16>,
-    ClampNumElements<0, AArch64_v2s32, AArch64_v4s32>,
-    ClampMaxNumElements<0, AArch64_s64, 2>,
+    CoreClampMinNumElements<0, AArch64_s16, 4>,
+    CoreClampMaxNumElements<0, AArch64_s16, 8>,
+    CoreClampMinNumElements<0, AArch64_s32, 2>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMaxNumElements<0, AArch64_s64, 2>,
     LibcallForPairs<[LegalizeTypePair<AArch64_f16, AArch64_i128>, LegalizeTypePair<AArch64_f32, AArch64_i128>, LegalizeTypePair<AArch64_f64, AArch64_i128>, LegalizeTypePair<AArch64_f128, AArch64_i128>, LegalizeTypePair<AArch64_f128, AArch64_i32>, LegalizeTypePair<AArch64_f128, AArch64_i64>]>
   ];
 }
@@ -1048,7 +1118,7 @@ def AArch64_PTRTOINT : LegalizeRuleSet<["G_PTRTOINT"]> {
     CoreWiden<(Slot 0), (Pow2Min 64)>,
     CoreWiden<(Slot 0), (Ty AArch64_s64)>,
     CoreNarrow<(Slot 0), (Ty AArch64_s64)>,
-    ClampMaxNumElements<0, AArch64_s64, 2>
+    CoreClampMaxNumElements<0, AArch64_s64, 2>
   ];
 }
 
@@ -1056,7 +1126,7 @@ def AArch64_INTTOPTR : LegalizeRuleSet<["G_INTTOPTR"]> {
   let Rules = [
     CoreUnsupported<(CoreNe (SizeOf (Slot 0)), (SizeOf (Slot 1)))>,
     LegalForPairs<[LegalizeTypePair<AArch64_p0, AArch64_i64>, LegalizeTypePair<AArch64_v2p0, AArch64_v2i64>]>,
-    ClampMaxNumElements<1, AArch64_s64, 2>
+    CoreClampMaxNumElements<1, AArch64_s64, 2>
   ];
 }
 
@@ -1086,10 +1156,13 @@ def AArch64_BITCAST : LegalizeRuleSet<["G_BITCAST"]> {
                                     (NumElems (Slot 0))),
                                0))>,
     CoreMore<(Slot 0), (Pow2)>,
-    ClampNumElements<0, AArch64_v8s8, AArch64_v16s8>,
-    ClampNumElements<0, AArch64_v4s16, AArch64_v8s16>,
-    ClampNumElements<0, AArch64_v2s32, AArch64_v4s32>,
-    ClampMaxNumElements<0, AArch64_s64, 2>,
+    CoreClampMinNumElements<0, AArch64_s8, 8>,
+    CoreClampMaxNumElements<0, AArch64_s8, 16>,
+    CoreClampMinNumElements<0, AArch64_s16, 4>,
+    CoreClampMaxNumElements<0, AArch64_s16, 8>,
+    CoreClampMinNumElements<0, AArch64_s32, 2>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMaxNumElements<0, AArch64_s64, 2>,
     CoreAlwaysLower
   ];
 }
@@ -1176,11 +1249,11 @@ def AArch64_EXTRACT_VECTOR_ELT : LegalizeRuleSet<["G_EXTRACT_VECTOR_ELT"]> {
                          (CoreLe (NumElems (Slot 1)), 16))>,
     CoreWiden<(ElemOf (Slot 0)), (Ty AArch64_s8)>,
     CoreMore<(Slot 1), (Pow2)>,
-    ClampMaxNumElements<1, AArch64_s64, 2>,
-    ClampMaxNumElements<1, AArch64_s32, 4>,
-    ClampMaxNumElements<1, AArch64_s16, 8>,
-    ClampMaxNumElements<1, AArch64_s8, 16>,
-    ClampMaxNumElements<1, AArch64_p0, 2>,
+    CoreClampMaxNumElements<1, AArch64_s64, 2>,
+    CoreClampMaxNumElements<1, AArch64_s32, 4>,
+    CoreClampMaxNumElements<1, AArch64_s16, 8>,
+    CoreClampMaxNumElements<1, AArch64_s8, 16>,
+    CoreClampMaxNumElements<1, AArch64_p0, 2>,
     CoreScalarizeIf<(Slot 1), (CoreGt (BitsOf (Slot 1)), 64)>
   ];
 }
@@ -1191,11 +1264,14 @@ def AArch64_INSERT_VECTOR_ELT : LegalizeRuleSet<["G_INSERT_VECTOR_ELT"]> {
     LegalForTriplesIf<AArch64_HasSVE, [LegalizeTypeTriple<AArch64_nxv16s8, AArch64_s32, AArch64_s64>, LegalizeTypeTriple<AArch64_nxv8s16, AArch64_s32, AArch64_s64>, LegalizeTypeTriple<AArch64_nxv4s32, AArch64_s32, AArch64_s64>, LegalizeTypeTriple<AArch64_nxv2s64, AArch64_s64, AArch64_s64>]>,
     CoreMore<(Slot 0), (Pow2)>,
     CoreWiden<(ElemOf (Slot 0)), (MinVectorSize 64)>,
-    ClampNumElements<0, AArch64_v8s8, AArch64_v16s8>,
-    ClampNumElements<0, AArch64_v4s16, AArch64_v8s16>,
-    ClampNumElements<0, AArch64_v2s32, AArch64_v4s32>,
-    ClampMaxNumElements<0, AArch64_s64, 2>,
-    ClampMaxNumElements<0, AArch64_p0, 2>,
+    CoreClampMinNumElements<0, AArch64_s8, 8>,
+    CoreClampMaxNumElements<0, AArch64_s8, 16>,
+    CoreClampMinNumElements<0, AArch64_s16, 4>,
+    CoreClampMaxNumElements<0, AArch64_s16, 8>,
+    CoreClampMinNumElements<0, AArch64_s32, 2>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMaxNumElements<0, AArch64_s64, 2>,
+    CoreClampMaxNumElements<0, AArch64_p0, 2>,
     CoreScalarizeIf<(Slot 0), (CoreGt (BitsOf (Slot 0)), 64)>
   ];
 }
@@ -1203,8 +1279,10 @@ def AArch64_INSERT_VECTOR_ELT : LegalizeRuleSet<["G_INSERT_VECTOR_ELT"]> {
 def AArch64_BUILD_VECTOR : LegalizeRuleSet<["G_BUILD_VECTOR"]> {
   let Rules = [
     LegalForPairs<[LegalizeTypePair<AArch64_v8s8, AArch64_s8>, LegalizeTypePair<AArch64_v16s8, AArch64_s8>, LegalizeTypePair<AArch64_v4s16, AArch64_s16>, LegalizeTypePair<AArch64_v8s16, AArch64_s16>, LegalizeTypePair<AArch64_v2s32, AArch64_s32>, LegalizeTypePair<AArch64_v4s32, AArch64_s32>, LegalizeTypePair<AArch64_v2s64, AArch64_s64>, LegalizeTypePair<AArch64_v2p0, AArch64_p0>]>,
-    ClampNumElements<0, AArch64_v4s32, AArch64_v4s32>,
-    ClampNumElements<0, AArch64_v2s64, AArch64_v2s64>,
+    CoreClampMinNumElements<0, AArch64_s32, 4>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMinNumElements<0, AArch64_s64, 2>,
+    CoreClampMaxNumElements<0, AArch64_s64, 2>,
     CoreWiden<(ElemOf (Slot 0)), (Ty AArch64_s8)>,
     CoreWiden<(ElemOf (Slot 0)), (MinVectorSize 64)>,
     CoreWiden<(ElemOf (Slot 0)), (Pow2)>,
@@ -1235,10 +1313,14 @@ def AArch64_SHUFFLE_VECTOR : LegalizeRuleSet<["G_SHUFFLE_VECTOR"]> {
     CoreMoreIf<(Slot 0), (Replace (SameAs 1)),
                (CoreLt (NumElems (Slot 0)), (NumElems (Slot 1)))>,
     WidenScalarOrEltToNextPow2OrMinSize<0, 8>,
-    ClampNumElements<0, AArch64_v8s8, AArch64_v16s8>,
-    ClampNumElements<0, AArch64_v4s16, AArch64_v8s16>,
-    ClampNumElements<0, AArch64_v4s32, AArch64_v4s32>,
-    ClampNumElements<0, AArch64_v2s64, AArch64_v2s64>,
+    CoreClampMinNumElements<0, AArch64_s8, 8>,
+    CoreClampMaxNumElements<0, AArch64_s8, 16>,
+    CoreClampMinNumElements<0, AArch64_s16, 4>,
+    CoreClampMaxNumElements<0, AArch64_s16, 8>,
+    CoreClampMinNumElements<0, AArch64_s32, 4>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMinNumElements<0, AArch64_s64, 2>,
+    CoreClampMaxNumElements<0, AArch64_s64, 2>,
     CoreScalarizeIf<(Slot 0), (CoreGt (BitsOf (Slot 0)), 64)>,
     CoreBitcastIf<(Slot 0), (Replace (EltTypeTo (Slot 0), (IntOfSize 64))),
                   (CoreEq (SortOf (Slot 0)), KindPointerVector)>
@@ -1270,12 +1352,15 @@ def AArch64_EXTRACT_SUBVECTOR : LegalizeRuleSet<["G_EXTRACT_SUBVECTOR"]> {
   let Rules = [
     LegalForPairs<[LegalizeTypePair<AArch64_v8s8, AArch64_v16s8>, LegalizeTypePair<AArch64_v4s16, AArch64_v8s16>, LegalizeTypePair<AArch64_v2s32, AArch64_v4s32>]>,
     CoreWiden<(ElemOf (Slot 0)), (Pow2)>,
-    ClampMaxNumElements<0, AArch64_s8, 16>,
-    ClampMaxNumElements<0, AArch64_s16, 8>,
-    ClampMaxNumElements<0, AArch64_s32, 4>,
-    ClampNumElements<1, AArch64_v8s8, AArch64_v16s8>,
-    ClampNumElements<1, AArch64_v4s16, AArch64_v8s16>,
-    ClampNumElements<1, AArch64_v2s32, AArch64_v4s32>,
+    CoreClampMaxNumElements<0, AArch64_s8, 16>,
+    CoreClampMaxNumElements<0, AArch64_s16, 8>,
+    CoreClampMaxNumElements<0, AArch64_s32, 4>,
+    CoreClampMinNumElements<1, AArch64_s8, 8>,
+    CoreClampMaxNumElements<1, AArch64_s8, 16>,
+    CoreClampMinNumElements<1, AArch64_s16, 4>,
+    CoreClampMaxNumElements<1, AArch64_s16, 8>,
+    CoreClampMinNumElements<1, AArch64_s32, 2>,
+    CoreClampMaxNumElements<1, AArch64_s32, 4>,
     CoreAlwaysLower,
     ImmIdx<0>
   ];
@@ -1381,9 +1466,9 @@ def AArch64_VECREDUCE_FADD : LegalizeRuleSet<["G_VECREDUCE_FADD"]> {
                 (CoreAny (CoreAll (CoreNot AArch64_HasFP16),
                                   (IsFloat16 (ScalarOf (Slot 0)))),
                          (IsBFloat16 (ScalarOf (Slot 0))))>,
-    ClampMaxNumElements<1, AArch64_s64, 2>,
-    ClampMaxNumElements<1, AArch64_s32, 4>,
-    ClampMaxNumElements<1, AArch64_s16, 8>,
+    CoreClampMaxNumElements<1, AArch64_s64, 2>,
+    CoreClampMaxNumElements<1, AArch64_s32, 4>,
+    CoreClampMaxNumElements<1, AArch64_s16, 8>,
     CoreMore<(Slot 1), (Pow2)>,
     CoreScalarize<(Slot 1)>,
     CoreAlwaysLower
@@ -1396,11 +1481,11 @@ def AArch64_VECREDUCE_FMUL : LegalizeRuleSet<["G_VECREDUCE_FMUL"]> {
                 (CoreAny (CoreAll (CoreNot AArch64_HasFP16),
                                   (IsFloat16 (ScalarOf (Slot 0)))),
                          (IsBFloat16 (ScalarOf (Slot 0))))>,
-    ClampMaxNumElements<1, AArch64_s64, 2>,
-    ClampMaxNumElements<1, AArch64_s32, 4>,
-    ClampMaxNumElements<1, AArch64_s16, 8>,
-    ClampMaxNumElements<1, AArch64_s32, 2>,
-    ClampMaxNumElements<1, AArch64_s16, 4>,
+    CoreClampMaxNumElements<1, AArch64_s64, 2>,
+    CoreClampMaxNumElements<1, AArch64_s32, 4>,
+    CoreClampMaxNumElements<1, AArch64_s16, 8>,
+    CoreClampMaxNumElements<1, AArch64_s32, 2>,
+    CoreClampMaxNumElements<1, AArch64_s16, 4>,
     CoreScalarize<(Slot 1)>,
     CoreAlwaysLower
   ];
@@ -1417,10 +1502,10 @@ def AArch64_VECREDUCE_ADD : LegalizeRuleSet<["G_VECREDUCE_ADD"]> {
   let Rules = [
     LegalForPairs<[LegalizeTypePair<AArch64_i8, AArch64_v8i8>, LegalizeTypePair<AArch64_i8, AArch64_v16i8>, LegalizeTypePair<AArch64_i16, AArch64_v4i16>, LegalizeTypePair<AArch64_i16, AArch64_v8i16>, LegalizeTypePair<AArch64_i32, AArch64_v2i32>, LegalizeTypePair<AArch64_i32, AArch64_v4i32>, LegalizeTypePair<AArch64_i64, AArch64_v2i64>]>,
     CoreMore<(Slot 1), (Pow2)>,
-    ClampMaxNumElements<1, AArch64_s64, 2>,
-    ClampMaxNumElements<1, AArch64_s32, 4>,
-    ClampMaxNumElements<1, AArch64_s16, 8>,
-    ClampMaxNumElements<1, AArch64_s8, 16>,
+    CoreClampMaxNumElements<1, AArch64_s64, 2>,
+    CoreClampMaxNumElements<1, AArch64_s32, 4>,
+    CoreClampMaxNumElements<1, AArch64_s16, 8>,
+    CoreClampMaxNumElements<1, AArch64_s8, 16>,
     CoreWiden<(ElemOf (Slot 1)), (MinVectorSize 64)>,
     CoreScalarize<(Slot 1)>
   ];
@@ -1434,9 +1519,9 @@ def AArch64_VECREDUCE_FMIN : LegalizeRuleSet<["G_VECREDUCE_FMIN", "G_VECREDUCE_F
                 (CoreAny (CoreAll (CoreNot AArch64_HasFP16),
                                   (IsFloat16 (ScalarOf (Slot 0)))),
                          (IsBFloat16 (ScalarOf (Slot 0))))>,
-    ClampMaxNumElements<1, AArch64_s64, 2>,
-    ClampMaxNumElements<1, AArch64_s32, 4>,
-    ClampMaxNumElements<1, AArch64_s16, 8>,
+    CoreClampMaxNumElements<1, AArch64_s64, 2>,
+    CoreClampMaxNumElements<1, AArch64_s32, 4>,
+    CoreClampMaxNumElements<1, AArch64_s16, 8>,
     CoreScalarize<(Slot 1)>,
     CoreAlwaysLower
   ];
@@ -1444,9 +1529,9 @@ def AArch64_VECREDUCE_FMIN : LegalizeRuleSet<["G_VECREDUCE_FMIN", "G_VECREDUCE_F
 
 def AArch64_VECREDUCE_MUL : LegalizeRuleSet<["G_VECREDUCE_MUL"]> {
   let Rules = [
-    ClampMaxNumElements<1, AArch64_s32, 2>,
-    ClampMaxNumElements<1, AArch64_s16, 4>,
-    ClampMaxNumElements<1, AArch64_s8, 8>,
+    CoreClampMaxNumElements<1, AArch64_s32, 2>,
+    CoreClampMaxNumElements<1, AArch64_s16, 4>,
+    CoreClampMaxNumElements<1, AArch64_s8, 8>,
     CoreScalarize<(Slot 1)>,
     CoreAlwaysLower
   ];
@@ -1459,10 +1544,10 @@ def AArch64_VECREDUCE_SMIN : LegalizeRuleSet<["G_VECREDUCE_SMIN", "G_VECREDUCE_S
                (CoreAll (CoreEq (SortOf (Slot 1)), KindVector),
                         (CoreNe (ElemOf (Slot 1)), (Ty AArch64_s8)),
                         (CoreNe (CoreURem (NumElems (Slot 1)), 2), 0))>,
-    ClampMaxNumElements<1, AArch64_s64, 2>,
-    ClampMaxNumElements<1, AArch64_s32, 4>,
-    ClampMaxNumElements<1, AArch64_s16, 8>,
-    ClampMaxNumElements<1, AArch64_s8, 16>,
+    CoreClampMaxNumElements<1, AArch64_s64, 2>,
+    CoreClampMaxNumElements<1, AArch64_s32, 4>,
+    CoreClampMaxNumElements<1, AArch64_s16, 8>,
+    CoreClampMaxNumElements<1, AArch64_s8, 16>,
     CoreScalarize<(Slot 1)>,
     CoreAlwaysLower
   ];
