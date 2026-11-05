@@ -2362,36 +2362,65 @@ static StringRef coreObservationForm(const CoreNode &N) {
   return "";
 }
 
+/// Which table-evaluator translation a shim has.  The C++ shim is always
+/// available (the row exists for it); this field is the capability the table
+/// backends must check before translating a rule.  A new shim starts at
+/// `None`, and the compiler warns when a new value is not handled here.
+enum class CoreTableTranslation {
+  None,
+  WidenVectorMinSize,
+  WidenPow2OrMinSize,
+};
+
 struct CoreShimRow {
   StringRef Operator;
   StringRef On;
   StringRef To;
   StringRef Method;
   unsigned Payload;
+  CoreTableTranslation Table;
 };
 
 /// One row per primitive the C++ layer can execute.  The checker rejects a
 /// rule whose (operator, observation, target) triple has no row, so a schema
 /// construct cannot silently degrade into a rule that emits nothing.
 static const CoreShimRow CoreShimTable[] = {
-    {"widen", "slot", "pow2", "coreWidenScalarToNextPow2", 0},
-    {"widen", "slot", "pow2Min", "coreWidenScalarToNextPow2", 1},
-    {"widen", "slot", "multipleOf", "coreWidenScalarToNextMultipleOf", 1},
-    {"widen", "slot", "ty", "coreMinScalar", 1},
-    {"widen", "slot", "sameAs", "coreMinScalarSameAs", 1},
-    {"widen", "elem", "pow2", "coreWidenScalarOrEltToNextPow2", 0},
-    {"widen", "elem", "pow2Min", "coreWidenScalarOrEltToNextPow2", 1},
-    {"widen", "elem", "multipleOf", "coreWidenScalarOrEltToNextMultipleOf", 1},
-    {"widen", "elem", "ty", "coreMinScalarOrElt", 1},
-    {"widen", "elem", "sameAs", "coreMinScalarSameAs", 1},
-    {"widen", "elem", "minVectorSize", "coreWidenVectorEltsToVectorMinSize", 1},
-    {"widen", "slot", "select", "coreWidenScalarOrEltToNextPow2OrMinSize", 1},
-    {"narrow", "slot", "ty", "coreMaxScalar", 1},
-    {"narrow", "slot", "sameAs", "coreMaxScalarSameAs", 1},
-    {"narrow", "elem", "ty", "coreMaxScalarOrElt", 1},
-    {"more", "slot", "pow2", "coreMoreElementsToNextPow2", 0},
-    {"fewer", "slot", "ty", "coreFewerElementsToType", 1},
-    {"bitcast", "slot", "ty", "coreBitcastTo", 1},
+    {"widen", "slot", "pow2", "coreWidenScalarToNextPow2", 0,
+     CoreTableTranslation::None},
+    {"widen", "slot", "pow2Min", "coreWidenScalarToNextPow2", 1,
+     CoreTableTranslation::None},
+    {"widen", "slot", "multipleOf", "coreWidenScalarToNextMultipleOf", 1,
+     CoreTableTranslation::None},
+    {"widen", "slot", "ty", "coreMinScalar", 1,
+     CoreTableTranslation::None},
+    {"widen", "slot", "sameAs", "coreMinScalarSameAs", 1,
+     CoreTableTranslation::None},
+    {"widen", "elem", "pow2", "coreWidenScalarOrEltToNextPow2", 0,
+     CoreTableTranslation::None},
+    {"widen", "elem", "pow2Min", "coreWidenScalarOrEltToNextPow2", 1,
+     CoreTableTranslation::None},
+    {"widen", "elem", "multipleOf", "coreWidenScalarOrEltToNextMultipleOf", 1,
+     CoreTableTranslation::None},
+    {"widen", "elem", "ty", "coreMinScalarOrElt", 1,
+     CoreTableTranslation::None},
+    {"widen", "elem", "sameAs", "coreMinScalarSameAs", 1,
+     CoreTableTranslation::None},
+    {"widen", "elem", "minVectorSize", "coreWidenVectorEltsToVectorMinSize", 1,
+     CoreTableTranslation::WidenVectorMinSize},
+    {"widen", "slot", "select", "coreWidenScalarOrEltToNextPow2OrMinSize", 1,
+     CoreTableTranslation::WidenPow2OrMinSize},
+    {"narrow", "slot", "ty", "coreMaxScalar", 1,
+     CoreTableTranslation::None},
+    {"narrow", "slot", "sameAs", "coreMaxScalarSameAs", 1,
+     CoreTableTranslation::None},
+    {"narrow", "elem", "ty", "coreMaxScalarOrElt", 1,
+     CoreTableTranslation::None},
+    {"more", "slot", "pow2", "coreMoreElementsToNextPow2", 0,
+     CoreTableTranslation::None},
+    {"fewer", "slot", "ty", "coreFewerElementsToType", 1,
+     CoreTableTranslation::None},
+    {"bitcast", "slot", "ty", "coreBitcastTo", 1,
+     CoreTableTranslation::None},
 };
 
 static const CoreShimRow *lookupCoreShim(StringRef Operator, StringRef On,
@@ -5580,7 +5609,13 @@ class LegalizerTableEmitterImpl {
     const std::string V = "Q.Types[" + Idx + "]";
     std::string Cond;
     std::string Mut;
-    if (Shim->Method == "coreWidenVectorEltsToVectorMinSize") {
+    switch (Shim->Table) {
+    case CoreTableTranslation::None:
+      PrintFatalError(Rule.getLoc(),
+                      "core rule: the table backends do not translate shim '" +
+                          Shim->Method + "' yet");
+      llvm_unreachable("PrintFatalError returned");
+    case CoreTableTranslation::WidenVectorMinSize: {
       const std::string Size = std::to_string(C.Target->Kids[0]->IntValue);
       Cond = "(" + V + ".isFixedVector() && " + V + ".getSizeInBits() < " +
              Size + ")";
@@ -5590,7 +5625,9 @@ class LegalizerTableEmitterImpl {
             Size + " / NumElts; return std::make_pair(unsigned(" + Idx +
             "), LLT::fixed_vector(NumElts, "
             "VecTy.getElementType().changeElementSize(MinSize))); }";
-    } else if (Shim->Method == "coreWidenScalarOrEltToNextPow2OrMinSize") {
+      break;
+    }
+    case CoreTableTranslation::WidenPow2OrMinSize: {
       const std::string Min = coreCxxValue(*C.Target, Records, Rule);
       Cond = "(scalarOrEltNarrowerThan(" + Idx + ", " + Min +
              ")(Q) || "
@@ -5598,10 +5635,8 @@ class LegalizerTableEmitterImpl {
              Idx + ")(Q))";
       Mut = "LegalizeMutations::widenScalarOrEltToNextPow2(" + Idx + ", " +
             Min + ")";
-    } else {
-      PrintFatalError(Rule.getLoc(),
-                      "core rule: the table backends do not translate shim '" +
-                          Shim->Method + "' yet");
+      break;
+    }
     }
     Cond = conjunction(P, Cond);
     std::string Buf;
