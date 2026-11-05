@@ -440,6 +440,7 @@ static bool isBracedGroup(ArrayRef<const Record *> Args) {
     return A->isSubClassOf("LegalizeNamedType") ||
            A->isSubClassOf("LegalizeInlineType") ||
            A->isSubClassOf("LegalizeTypePair") ||
+           A->isSubClassOf("LegalizeTypeTriple") ||
            A->isSubClassOf("LegalizeMemDesc");
   });
 }
@@ -461,11 +462,17 @@ static StringRef shapeOf(const Record &Arg) {
       Arg.isSubClassOf("LegalizeSelectLanes") ||
       Arg.isSubClassOf("LegalizeRawArg"))
     return "ShapeLanes";
+  if (Arg.isSubClassOf("LegalizeSelectBits"))
+    return "ShapeBits";
+  if (Arg.isSubClassOf("LegalizeRawMutation"))
+    return "ShapeRawMutation";
   if (Arg.isSubClassOf("LegalizeNamedType") ||
       Arg.isSubClassOf("LegalizeInlineType"))
     return "ShapeType";
   if (Arg.isSubClassOf("LegalizeTypePair"))
     return "ShapeTypePairList";
+  if (Arg.isSubClassOf("LegalizeTypeTriple"))
+    return "ShapeTypeTripleList";
   if (Arg.isSubClassOf("LegalizeMemDesc"))
     return "ShapeMemDescList";
   if (Arg.isSubClassOf("LegalizeNamedTypeList") ||
@@ -531,10 +538,14 @@ void LegalizerInfoEmitter::verifyRule(const Record &Rule) {
       bool AllPairs = llvm::all_of(Args, [](const Record *A) {
         return A->isSubClassOf("LegalizeTypePair");
       });
+      bool AllTriples = llvm::all_of(Args, [](const Record *A) {
+        return A->isSubClassOf("LegalizeTypeTriple");
+      });
       bool AllMemDesc = llvm::all_of(Args, [](const Record *A) {
         return A->isSubClassOf("LegalizeMemDesc");
       });
       Supplied.push_back(AllPairs     ? "ShapeTypePairList"
+                         : AllTriples ? "ShapeTypeTripleList"
                          : AllMemDesc ? "ShapeMemDescList"
                                       : "ShapeType");
     } else {
@@ -662,11 +673,41 @@ void LegalizerInfoEmitter::emitArg(const Record &Arg, raw_ostream &OS) {
        << Arg.getValueAsDef("Type1")->getName() << "}";
     return;
   }
+  if (Arg.isSubClassOf("LegalizeTypeTriple")) {
+    OS << "{" << Arg.getValueAsDef("Type0")->getName() << ", "
+       << Arg.getValueAsDef("Type1")->getName() << ", "
+       << Arg.getValueAsDef("Type2")->getName() << "}";
+    return;
+  }
   if (Arg.isSubClassOf("LegalizeMemDesc")) {
     OS << "{" << Arg.getValueAsDef("Type0")->getName() << ", "
        << Arg.getValueAsDef("Type1")->getName() << ", "
        << Arg.getValueAsDef("MemTy")->getName() << ", "
        << Arg.getValueAsInt("Align") << "}";
+    return;
+  }
+  if (Arg.isSubClassOf("LegalizeRawMutation")) {
+    OS << Arg.getValueAsString("Text");
+    return;
+  }
+  if (Arg.isSubClassOf("LegalizeSelectBits")) {
+    std::vector<const Record *> Conds = Arg.getValueAsListOfDefs("Conds");
+    std::vector<int64_t> Values = Arg.getValueAsListOfInts("Values");
+    if (Conds.size() != Values.size())
+      PrintFatalError(Arg.getLoc(),
+                      "'" + Arg.getName() + "' has " +
+                          std::to_string(Conds.size()) + " guards but " +
+                          std::to_string(Values.size()) + " values");
+    std::string Expr = std::to_string(Arg.getValueAsInt("Otherwise"));
+    for (size_t I = Conds.size(); I-- > 0;) {
+      std::string Cond;
+      raw_string_ostream C(Cond);
+      renderPredicate(*Conds[I], C);
+      C.flush();
+      Expr =
+          "(" + Cond + " ? " + std::to_string(Values[I]) + " : " + Expr + ")";
+    }
+    OS << Expr;
     return;
   }
   if (Arg.isSubClassOf("LegalizeArgInt")) {
@@ -870,6 +911,14 @@ void LegalizerInfoEmitter::run(raw_ostream &OS) {
   }
   for (const Record *E : Records.getAllDerivedDefinitions("LegalizeOpaqueBool"))
     CollectUsed(E->getValueAsString("Expr"));
+  // A raw query predicate is C++ text too: a feature named only inside it
+  // still has to be declared, or the generated fragment does not compile.
+  for (const Record *P :
+       Records.getAllDerivedDefinitions("LegalizeQueryPredicate"))
+    CollectUsed(P->getValueAsString("Expr"));
+  for (const Record *P :
+       Records.getAllDerivedDefinitions("LegalizeTypePredicate"))
+    CollectUsed(P->getValueAsString("Call"));
   // A feature whose condition names another feature is a reference like any
   // other: without this, the named feature would be reported as unused and not
   // declared, and the generated bool would not compile.
@@ -969,58 +1018,92 @@ void jsonString(raw_ostream &OS, StringRef S) {
   OS << '"';
 }
 
-/// Bit width of a literal LLT spelling.  Returns 0 for spellings we cannot
-/// size statically (pointer without a width, inline expression).
-unsigned lltBits(StringRef S) {
+/// Split a canonical LLT spelling into its lane count and element part.
+/// "v4s32" and "nxv4i32" both have four lanes; "s32" has one.  \p Scalable
+/// reports the `nxv` prefix, whose total size depends on vscale.
+unsigned splitLanes(StringRef S, StringRef &Elt, bool *Scalable = nullptr) {
+  Elt = S;
+  if (Scalable)
+    *Scalable = false;
   StringRef T = S;
-  unsigned Lanes = 1;
-  if (T.consume_front("v")) {
-    size_t L = 0;
-    while (L < T.size() && isDigit(T[L]))
-      ++L;
-    if (L == 0)
-      return 0;
-    Lanes = std::stoul(T.substr(0, L).str());
-    T = T.substr(L);
+  if (T.consume_front("nxv")) {
+    if (Scalable)
+      *Scalable = true;
+  } else if (!T.consume_front("v")) {
+    return 1;
   }
-  if (T.consume_front("p")) {
-    size_t Colon = T.find(':');
+  size_t L = 0;
+  while (L < T.size() && isDigit(T[L]))
+    ++L;
+  if (L == 0)
+    return 1;
+  Elt = T.substr(L);
+  return std::stoul(T.substr(0, L).str());
+}
+
+/// Bit width of a literal LLT spelling.  Returns 0 for spellings we cannot
+/// size statically (pointer without a width, scalable vector, inline
+/// expression).
+unsigned lltBits(StringRef S) {
+  StringRef Elt;
+  bool Scalable = false;
+  unsigned Lanes = splitLanes(S, Elt, &Scalable);
+  // A scalable vector's total size is a multiple of vscale, so no static
+  // width exists.  Saying 0 keeps a caller from baking in the minimum.
+  if (Scalable)
+    return 0;
+  if (Elt.consume_front("p")) {
+    size_t Colon = Elt.find(':');
     if (Colon == StringRef::npos)
       return 0;
     unsigned Bits = 0;
     // `p0:*` has no static width; it is bound by the Core IR configuration.
-    if (T.substr(Colon + 1).getAsInteger(10, Bits))
+    if (Elt.substr(Colon + 1).getAsInteger(10, Bits))
       return 0;
     return Lanes * Bits;
   }
   size_t I = 0;
-  while (I < T.size() && !isDigit(T[I]))
+  while (I < Elt.size() && !isDigit(Elt[I]))
     ++I;
-  if (I == T.size())
+  if (I == Elt.size())
     return 0;
-  return Lanes * std::stoul(T.substr(I).str());
+  return Lanes * std::stoul(Elt.substr(I).str());
+}
+
+/// Minimum bit width of a literal LLT spelling.  Unlike lltBits this is
+/// defined for a scalable vector: `nxv16s8` has a minimum of 128 bits, and
+/// that is the number `vscale x` multiplies.
+unsigned lltMinBits(StringRef S) {
+  StringRef Elt;
+  unsigned Lanes = splitLanes(S, Elt);
+  if (Elt.consume_front("p")) {
+    size_t Colon = Elt.find(':');
+    if (Colon == StringRef::npos)
+      return 0;
+    unsigned Bits = 0;
+    if (Elt.substr(Colon + 1).getAsInteger(10, Bits))
+      return 0;
+    return Lanes * Bits;
+  }
+  size_t I = 0;
+  while (I < Elt.size() && !isDigit(Elt[I]))
+    ++I;
+  if (I == Elt.size())
+    return 0;
+  return Lanes * std::stoul(Elt.substr(I).str());
 }
 
 /// Number of lanes of a literal LLT spelling.  A scalar has one.
 unsigned lltLanes(StringRef S) {
-  StringRef T = S;
-  if (!T.consume_front("v"))
-    return 1;
-  size_t L = 0;
-  while (L < T.size() && isDigit(T[L]))
-    ++L;
-  return L == 0 ? 1 : std::stoul(T.substr(0, L).str());
+  StringRef Elt;
+  return splitLanes(S, Elt);
 }
 
 /// Element spelling of a literal LLT: "v4s32" -> "s32", "s32" -> "s32".
 std::string lltElt(StringRef S) {
-  StringRef T = S;
-  if (!T.consume_front("v"))
-    return T.str();
-  size_t L = 0;
-  while (L < T.size() && isDigit(T[L]))
-    ++L;
-  return T.substr(L).str();
+  StringRef Elt;
+  splitLanes(S, Elt);
+  return Elt.str();
 }
 
 /// A JSON string literal, quotes included.
@@ -1062,22 +1145,51 @@ std::string normalizeLlt(StringRef S, const RecordKeeper *Records = nullptr) {
         llvm::all_of(R, isDigit))
       return "s" + R.str();
   }
+  // Fixed and scalable vectors share a shape; only the lane prefix differs.
+  // `nxv` is the canonical spelling of a scalable vector, so a rule that
+  // depends on vscale is still literal in the Core IR.
+  auto NormalizeVector = [&](StringRef Prefix, StringRef Head) -> std::string {
+    StringRef R = T;
+    if (!R.consume_front(Head) || !R.consume_back(")"))
+      return "";
+    size_t Comma = R.find(',');
+    if (Comma == StringRef::npos)
+      return "";
+    StringRef L = R.substr(0, Comma).trim();
+    StringRef E = R.substr(Comma + 1).trim();
+    // The element is either a bare bit width or a nested LLT expression such
+    // as `X86_p0` / `LLT::integer(8)`.
+    std::string Elem =
+        llvm::all_of(E, isDigit) ? "s" + E.str() : normalizeLlt(E, Records);
+    if (L.empty() || Elem.empty() || !llvm::all_of(L, isDigit))
+      return "";
+    return Prefix.str() + L.str() + Elem;
+  };
+  if (std::string V = NormalizeVector("v", "LLT::fixed_vector("); !V.empty())
+    return V;
+  if (std::string V = NormalizeVector("nxv", "LLT::scalable_vector(");
+      !V.empty())
+    return V;
+  // The extended kinds are distinct from `scalar` when
+  // LLT::getUseExtended() is on, which this branch enables: `i32` is not
+  // `s32`, and `f32` is not `s32` either.  Collapsing them would make the
+  // Core IR unable to say which type a rule is about.
   {
     StringRef R = T;
-    if (R.consume_front("LLT::fixed_vector(") && R.consume_back(")")) {
-      size_t Comma = R.find(',');
-      if (Comma != StringRef::npos) {
-        StringRef L = R.substr(0, Comma).trim();
-        StringRef E = R.substr(Comma + 1).trim();
-        // The element is either a bare bit width or a nested LLT expression
-        // such as `X86_p0`.
-        std::string Elem = llvm::all_of(E, isDigit)
-                               ? "s" + E.str()
-                               : normalizeLlt(E, Records);
-        if (!L.empty() && !Elem.empty() && llvm::all_of(L, isDigit))
-          return "v" + L.str() + Elem;
-      }
-    }
+    if (R.consume_front("LLT::integer(") && R.consume_back(")") && !R.empty() &&
+        llvm::all_of(R, isDigit))
+      return "i" + R.str();
+  }
+  {
+    static const std::pair<StringRef, StringRef> Kinds[] = {
+        {"LLT::bfloat16()", "bf16"},
+        {"LLT::float16()", "f16"},
+        {"LLT::float32()", "f32"},
+        {"LLT::float64()", "f64"},
+        {"LLT::float128()", "f128"}};
+    for (const auto &K : Kinds)
+      if (T == K.first)
+        return K.second.str();
   }
   {
     StringRef R = T;
@@ -1329,6 +1441,17 @@ std::string memSizePtr(unsigned Idx, unsigned Lanes, unsigned MinAlignBits) {
          std::to_string(MinAlignBits) + "]}";
 }
 
+/// memSizeScalable(mem_idx, min_bits, min_align_bits): the MMO at mem_idx has
+/// size `vscale x min_bits`.  A scalable memory type has no static bit size,
+/// and TypePairAndMemDesc::isCompatible compares TypeSize, so the vscale
+/// factor has to be part of the predicate rather than folded into an integer.
+std::string memSizeScalable(unsigned Idx, unsigned MinBits,
+                            unsigned MinAlignBits) {
+  return "{\"kind\":\"leaf\",\"name\":\"memSizeScalable\",\"args\":[" +
+         std::to_string(Idx) + "," + std::to_string(MinBits) + "," +
+         std::to_string(MinAlignBits) + "]}";
+}
+
 std::string allOf(const std::vector<std::string> &Parts) {
   std::string S = "{\"kind\":\"nary\",\"op\":\"all_of\",\"args\":[";
   for (size_t I = 0; I != Parts.size(); ++I) {
@@ -1356,6 +1479,25 @@ std::string scalarNarrowerThan(unsigned Idx, StringRef Bits) {
   return scalarNarrowerThanValue(Idx, jsonStringValue(Bits));
 }
 
+std::string anyOf(const std::vector<std::string> &Parts) {
+  std::string S = "{\"kind\":\"nary\",\"op\":\"any_of\",\"args\":[";
+  for (size_t I = 0; I != Parts.size(); ++I) {
+    if (I)
+      S += ",";
+    S += Parts[I];
+  }
+  return S + "]}";
+}
+
+std::string scalarOrEltNarrowerThanValue(unsigned Idx, StringRef BitsJson) {
+  return "{\"kind\":\"leaf\",\"name\":\"scalarOrEltNarrowerThan\",\"args\":[" +
+         std::to_string(Idx) + "," + BitsJson.str() + "]}";
+}
+
+std::string scalarOrEltNarrowerThan(unsigned Idx, StringRef Bits) {
+  return scalarOrEltNarrowerThanValue(Idx, jsonStringValue(Bits));
+}
+
 std::string scalarWiderThanValue(unsigned Idx, StringRef BitsJson) {
   return "{\"kind\":\"leaf\",\"name\":\"scalarWiderThan\",\"args\":[" +
          std::to_string(Idx) + "," + BitsJson.str() + "]}";
@@ -1371,6 +1513,14 @@ std::string oneArgLeaf(StringRef Name, unsigned A) {
 }
 
 std::string isVector(unsigned Idx) { return oneArgLeaf("isVector", Idx); }
+
+std::string memSizeNotPow2(unsigned Idx) {
+  return oneArgLeaf("memSizeNotPow2", Idx);
+}
+
+std::string memSizeNotByteSizePow2(unsigned Idx) {
+  return oneArgLeaf("memSizeNotByteSizePow2", Idx);
+}
 
 std::string sizeNotPow2(unsigned Idx) { return oneArgLeaf("sizeNotPow2", Idx); }
 
@@ -1682,6 +1832,12 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
 
   StringRef Method = builderName(Rule);
   StringRef Builder = builderRecordName(Rule);
+  // immIdx() is a coverage marker, not a legalization step: it emits a call
+  // that marks an immediate operand as handled and produces no Core IR row.
+  if (Builder == "BuilderImmIdx") {
+    Why = "coverage_marker";
+    return;
+  }
   std::vector<const Record *> Args = Rule.getValueAsListOfDefs("Args");
 
   // Arguments whose value only exists at code-generation time cannot be
@@ -1693,6 +1849,15 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
     if (A->isSubClassOf("LegalizeTypePair")) {
       if (coreTypeValue(Records, *A->getValueAsDef("Type0")).empty() ||
           coreTypeValue(Records, *A->getValueAsDef("Type1")).empty()) {
+        Why = "nonliteral_type";
+        return;
+      }
+      continue;
+    }
+    if (A->isSubClassOf("LegalizeTypeTriple")) {
+      if (coreTypeValue(Records, *A->getValueAsDef("Type0")).empty() ||
+          coreTypeValue(Records, *A->getValueAsDef("Type1")).empty() ||
+          coreTypeValue(Records, *A->getValueAsDef("Type2")).empty()) {
         Why = "nonliteral_type";
         return;
       }
@@ -1738,6 +1903,14 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
     }
     if (A->isSubClassOf("LegalizeRawArg")) {
       Why = "raw_argument";
+      return;
+    }
+    if (A->isSubClassOf("LegalizeRawMutation")) {
+      Why = "raw_mutation";
+      return;
+    }
+    if (A->isSubClassOf("LegalizeSelectBits")) {
+      Why = "nonliteral_bits";
       return;
     }
   }
@@ -1807,7 +1980,15 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
   if (Builder == "BuilderLegalFor") {
     for (size_t AI = 0; AI != Args.size(); ++AI) {
       const Record *A = Args[AI];
-      if (A->isSubClassOf("LegalizeTypePair")) {
+      if (A->isSubClassOf("LegalizeTypeTriple")) {
+        std::string T0 = coreTypeValue(Records, *A->getValueAsDef("Type0"));
+        std::string T1 = coreTypeValue(Records, *A->getValueAsDef("Type1"));
+        std::string T2 = coreTypeValue(Records, *A->getValueAsDef("Type2"));
+        Out.push_back({"Legal", 0,
+                       WithPred(allOf({typeIsValue(0, T0), typeIsValue(1, T1),
+                                       typeIsValue(2, T2)})),
+                       ""});
+      } else if (A->isSubClassOf("LegalizeTypePair")) {
         std::string T0 = coreTypeValue(Records, *A->getValueAsDef("Type0"));
         std::string T1 = coreTypeValue(Records, *A->getValueAsDef("Type1"));
         if (T0.empty() || T1.empty())
@@ -1837,21 +2018,41 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
     return;
   }
   if (Builder == "BuilderLegalForCartesianProduct") {
-    if (isSelectBearingList(*Args[0]) || isSelectBearingList(*Args[1])) {
-      Out.push_back({"Legal", 0,
-                     WithPred(allOf({typeInValue(0, TypeList(0)),
-                                     typeInValue(1, TypeList(1))})),
-                     ""});
+    // The C++ builder has one overload per number of type lists (1, 2 and 3);
+    // AArch64 uses all three.  Each list is one type slot of the query, so the
+    // product is the set of tuples that are legal, and a select-bearing list
+    // collapses into a single typeIn predicate on its slot.
+    if (Args.empty() || Args.size() > 3)
+      PrintFatalError(Rule.getLoc(),
+                      "legalForCartesianProduct expects 1 to 3 type lists");
+    const unsigned NumLists = Args.size();
+    bool AnySelect = false;
+    for (unsigned I = 0; I != NumLists; ++I)
+      AnySelect |= isSelectBearingList(*Args[I]);
+    if (AnySelect) {
+      std::vector<std::string> Parts;
+      for (unsigned I = 0; I != NumLists; ++I)
+        Parts.push_back(typeInValue(I, TypeList(I)));
+      Out.push_back({"Legal", 0, WithPred(allOf(Parts)), ""});
       return;
     }
-    for (const Record *A : Args[0]->getValueAsListOfDefs("Elems"))
-      for (const Record *B : Args[1]->getValueAsListOfDefs("Elems"))
-        Out.push_back(
-            {"Legal", 0,
-             WithPred(allOf(
-                 {typeIsValue(0, coreTypeValue(Records, *A)),
-                  typeIsValue(1, coreTypeValue(Records, *B))})),
-             ""});
+    // Literal lists: one rule per point of the product, leftmost list
+    // outermost.  This order is the emitted rule order, so it is observable.
+    std::vector<const Record *> Point(NumLists);
+    std::function<void(unsigned)> EmitPoint = [&](unsigned I) {
+      if (I == NumLists) {
+        std::vector<std::string> Parts;
+        for (unsigned K = 0; K != NumLists; ++K)
+          Parts.push_back(typeIsValue(K, coreTypeValue(Records, *Point[K])));
+        Out.push_back({"Legal", 0, WithPred(allOf(Parts)), ""});
+        return;
+      }
+      for (const Record *E : Args[I]->getValueAsListOfDefs("Elems")) {
+        Point[I] = E;
+        EmitPoint(I + 1);
+      }
+    };
+    EmitPoint(0);
     return;
   }
   if (Builder == "BuilderLegalForTypesWithMemDesc") {
@@ -1870,11 +2071,15 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
       if (PtrLanes != 0 && Mem.find(":*") != std::string::npos) {
         MemPred = memSizePtr(0, PtrLanes, Align);
       } else {
-        unsigned MemBits = lltBits(Mem);
+        StringRef MemElt;
+        bool MemScalable = false;
+        splitLanes(Mem, MemElt, &MemScalable);
+        unsigned MemBits = lltMinBits(Mem);
         if (MemBits == 0)
-          PrintFatalError(A->getLoc(), "memdesc memory type '" + Mem +
-                                           "' has no static bit size");
-        MemPred = memSize(0, MemBits, Align);
+          PrintFatalError(A->getLoc(),
+                          "memdesc memory type '" + Mem + "' has no bit size");
+        MemPred = MemScalable ? memSizeScalable(0, MemBits, Align)
+                              : memSize(0, MemBits, Align);
       }
       Out.push_back({"Legal", 0,
                      WithPred(
@@ -1927,6 +2132,18 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
     Out.push_back({"Lower", 0, WithPred(""), ""});
     return;
   }
+  // unsupportedIf(guard): same shape as customIf/legalIf/lowerIf -- the guard
+  // is the rule and the builder names the action.  AArch64 uses it for the
+  // "this shape is illegal outright" rules, so without it those rule sets had
+  // no Core IR form at all.
+  if (Builder == "BuilderUnsupportedIf" && Args.empty()) {
+    Out.push_back({"Unsupported", 0, WithPred(""), ""});
+    return;
+  }
+  if (Builder == "BuilderLibcallIf" && Args.empty()) {
+    Out.push_back({"Libcall", 0, WithPred(""), ""});
+    return;
+  }
 
   if (Builder == "BuilderLower") {
     Out.push_back({"Lower", 0, WithPred(""), ""});
@@ -1934,6 +2151,12 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
   }
   if (Builder == "BuilderLowerFor") {
     for (const Record *A : Args) {
+      if (A->isSubClassOf("LegalizeNamedType")) {
+        Out.push_back({"Lower", 0,
+                       WithPred(typeIsValue(0, coreTypeValue(Records, *A))),
+                       ""});
+        continue;
+      }
       std::string T0 = coreTypeValue(Records, *A->getValueAsDef("Type0"));
       std::string T1 = coreTypeValue(Records, *A->getValueAsDef("Type1"));
       Out.push_back({"Lower", 0,
@@ -1953,17 +2176,24 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
       if (A->isSubClassOf("LegalizeNamedType"))
         Out.push_back({Action.str(), 0,
                        WithPred(typeIsValue(0, coreTypeValue(Records, *A))), ""});
-      else
+      else if (A->isSubClassOf("LegalizeTypePair")) {
+        std::string T0 = coreTypeValue(Records, *A->getValueAsDef("Type0"));
+        std::string T1 = coreTypeValue(Records, *A->getValueAsDef("Type1"));
+        Out.push_back(
+            {Action.str(), 0,
+             WithPred(allOf({typeIsValue(0, T0), typeIsValue(1, T1)})), ""});
+      } else
         Out.push_back({Action.str(), 0, WithPred(typeInValue(0, TypeList(AI))),
                        ""});
     }
     return;
   }
   if (Builder == "BuilderCustomForCartesianProduct") {
-    Out.push_back({"Custom", 0,
-                   WithPred(allOf({typeInValue(0, TypeList(0)),
-                                   typeInValue(1, TypeList(1))})),
-                   ""});
+    std::vector<std::string> Parts = {typeInValue(0, TypeList(0)),
+                                      typeInValue(1, TypeList(1))};
+    if (Args.size() > 2)
+      Parts.push_back(typeInValue(2, TypeList(2)));
+    Out.push_back({"Custom", 0, WithPred(allOf(Parts)), ""});
     return;
   }
   if (Builder == "BuilderClampScalar" || Builder == "BuilderClampScalarOrElt") {
@@ -2100,6 +2330,69 @@ void expandRule(const RecordKeeper &Records, const Record &Rule,
     return;
   }
 
+  if (Builder == "BuilderCustom") {
+    Out.push_back({"Custom", 0, WithPred(""), ""});
+    return;
+  }
+  if (Builder == "BuilderWidenScalarOrEltToNextPow2OrMinSize") {
+    unsigned Idx = Int(0);
+    std::string Target = Args.size() > 1
+                             ? "nextPow2OrMin" + std::to_string(Int(1))
+                             : std::string("nextPow2");
+    std::string Guard =
+        Args.size() > 1
+            ? anyOf({scalarOrEltNarrowerThan(Idx, std::to_string(Int(1))),
+                     scalarOrEltSizeNotPow2(Idx)})
+            : scalarOrEltSizeNotPow2(Idx);
+    Out.push_back({"WidenScalar", Idx, WithPred(Guard),
+                   mutationJson(Idx, "set_elem_bits", Target)});
+    return;
+  }
+  if (Builder == "BuilderMinScalarOrElt" ||
+      Builder == "BuilderMinScalarOrEltIf") {
+    unsigned Idx = Int(0);
+    std::string Ty = TypeValue(1);
+    Out.push_back({"WidenScalar", Idx,
+                   WithPred(scalarOrEltNarrowerThanValue(Idx, TypeBits(1))),
+                   mutationJsonValue(Idx, "set_elem_type", Ty)});
+    return;
+  }
+  if (Builder == "BuilderMinScalarSameAs" ||
+      Builder == "BuilderMinScalarEltSameAsIf") {
+    unsigned Idx = Int(0);
+    unsigned Other = Int(1);
+    std::string Ref = "sameAsSlot" + std::to_string(Other);
+    Out.push_back({"WidenScalar", Idx,
+                   WithPred(scalarSizeLargerThanSlot(Other, Idx)),
+                   mutationJson(Idx, "set_elem_bits", Ref)});
+    return;
+  }
+  if (Builder == "BuilderMaxScalarEltSameAsIf") {
+    unsigned Idx = Int(0);
+    unsigned Other = Int(1);
+    std::string Ref = "sameAsSlot" + std::to_string(Other);
+    Out.push_back({"NarrowScalar", Idx,
+                   WithPred(scalarSizeSmallerThanSlot(Other, Idx)),
+                   mutationJson(Idx, "set_elem_bits", Ref)});
+    return;
+  }
+  if (Builder == "BuilderUnsupportedIfMemSizeNotPow2") {
+    Out.push_back({"Unsupported", 0, WithPred(memSizeNotPow2(0)), ""});
+    return;
+  }
+  if (Builder == "BuilderLowerIfMemSizeNotPow2") {
+    Out.push_back({"Lower", 0, WithPred(memSizeNotPow2(0)), ""});
+    return;
+  }
+  if (Builder == "BuilderLowerIfMemSizeNotByteSizePow2") {
+    Out.push_back({"Lower", 0, WithPred(memSizeNotByteSizePow2(0)), ""});
+    return;
+  }
+  if (Builder == "BuilderWidenVectorEltsToVectorMinSize") {
+    Why = "no_core_expansion";
+    return;
+  }
+
   // The remaining gap is the *Expr element counts, which the RawArg check
   // above already turned into escapes; everything else must have an expansion.
   PrintFatalError(Rule.getLoc(), "no Core IR expansion for builder '" + Method +
@@ -2173,7 +2466,17 @@ void LegalizerInfoEmitter::runCore(raw_ostream &OS) {
     S += jsonEscaped(Kind);
     S += ", \"reason\": ";
     S += jsonEscaped(Reason);
-    S += ", \"owner\": \"X86\", \"removal\": \"express it with the Core IR "
+    // The owner is the target this file describes, taken from its name, so
+    // one emitter serves every target .td instead of naming X86 in an
+    // AArch64 report.
+    StringRef Owner = originFile(Rule);
+    Owner = Owner.rsplit('/').second;
+    Owner.consume_front("/");
+    if (Owner.ends_with("LegalizerInfo.td"))
+      Owner = Owner.drop_back(strlen("LegalizerInfo.td"));
+    S += ", \"owner\": ";
+    S += jsonEscaped(Owner);
+    S += ", \"removal\": \"express it with the Core IR "
          "vocabulary\", ";
     S += "\"ruleset\": ";
     S += jsonEscaped(RuleSetName);
@@ -2217,6 +2520,8 @@ void LegalizerInfoEmitter::runCore(raw_ostream &OS) {
     std::vector<const Record *> Rules = RuleSet->getValueAsListOfDefs("Rules");
     for (size_t RuleIdx = 0; RuleIdx != Rules.size(); ++RuleIdx) {
       const Record *Rule = Rules[RuleIdx];
+      if (builderRecordName(*Rule) == "BuilderImmIdx")
+        continue;
       std::vector<CoreRule> Expanded;
       std::string Why;
       expandRule(Records, *Rule, Expanded, Why);
@@ -2305,7 +2610,28 @@ cl::opt<std::string>
                 cl::desc("identifier prefix for the generated legalizer table"),
                 cl::init("X86"));
 
-enum TableTypeKind { TablePointer, TableScalar, TableVector, TablePtrVector };
+/// A target whose rule chains are only defined on the shapes the rules
+/// themselves name (AArch64's element-count lambdas call
+/// LLT::getNumElements(), which is undefined for a scalar or a scalable
+/// vector) cannot be probed with synthetic shapes.  The domain then stays the
+/// tuples the rules name, which are well-formed by construction.
+cl::opt<bool> TableTuplesOnly(
+    "legalizer-table-tuples-only",
+    cl::desc("emit only the query shapes the rules name, without the pointer "
+             "probe and the residual shapes"),
+    cl::init(false));
+
+enum TableTypeKind {
+  TablePointer,
+  TableScalar,
+  TableInteger,
+  TableFloat,
+  TableBFloat,
+  TableVector,
+  TablePtrVector,
+  TableScalableVector,
+  TableScalablePtrVector
+};
 
 struct TableType {
   TableTypeKind Kind;
@@ -2416,6 +2742,66 @@ class LegalizerTableEmitterImpl {
       Out.push_back({TablePointer, 0, 1, Root.str()});
       return true;
     }
+    if (ArgOf("LLT::integer(", Arg)) {
+      unsigned Bits;
+      if (Arg.trim().getAsInteger(10, Bits))
+        return false;
+      Out.push_back({TableInteger, Bits, 1, Root.str()});
+      return true;
+    }
+    if (Expr == "LLT::float16()") {
+      Out.push_back({TableFloat, 16, 1, Root.str()});
+      return true;
+    }
+    if (Expr == "LLT::float32()") {
+      Out.push_back({TableFloat, 32, 1, Root.str()});
+      return true;
+    }
+    if (Expr == "LLT::float64()") {
+      Out.push_back({TableFloat, 64, 1, Root.str()});
+      return true;
+    }
+    if (Expr == "LLT::float128()") {
+      Out.push_back({TableFloat, 128, 1, Root.str()});
+      return true;
+    }
+    if (Expr == "LLT::bfloat16()") {
+      Out.push_back({TableBFloat, 16, 1, Root.str()});
+      return true;
+    }
+    if (ArgOf("LLT::scalable_vector(", Arg)) {
+      size_t Comma = Arg.find(',');
+      if (Comma == StringRef::npos)
+        return false;
+      unsigned Lanes;
+      if (Arg.substr(0, Comma).trim().getAsInteger(10, Lanes))
+        return false;
+      StringRef Elem = Arg.substr(Comma + 1).trim();
+      unsigned ElemBits;
+      if (!Elem.getAsInteger(10, ElemBits)) {
+        Out.push_back({TableScalableVector, ElemBits, Lanes, Root.str()});
+        return true;
+      }
+      SmallVector<TableType, 2> Elems;
+      if (!resolve(Elem, Root, Elems, Depth + 1))
+        return false;
+      for (const TableType &E : Elems) {
+        switch (E.Kind) {
+        case TableScalar:
+        case TableInteger:
+        case TableFloat:
+        case TableBFloat:
+          Out.push_back({TableScalableVector, E.ElemBits, Lanes, Root.str()});
+          break;
+        case TablePointer:
+          Out.push_back({TableScalablePtrVector, 0, Lanes, Root.str()});
+          break;
+        default:
+          return false;
+        }
+      }
+      return true;
+    }
     if (ArgOf("LLT::fixed_vector(", Arg)) {
       size_t Comma = Arg.find(',');
       if (Comma == StringRef::npos)
@@ -2435,14 +2821,21 @@ class LegalizerTableEmitterImpl {
       if (!resolve(Elem, Root, Elems, Depth + 1))
         return false;
       for (const TableType &E : Elems) {
-        if (E.Kind == TableScalar)
+        switch (E.Kind) {
+        case TableScalar:
+        case TableInteger:
+        case TableFloat:
+        case TableBFloat:
           Out.push_back({TableVector, E.ElemBits, Lanes, Root.str()});
-        else if (E.Kind == TablePointer)
+          break;
+        case TablePointer:
           // A vector of pointers is a different LLT from a vector of integers
           // of the same shape; the class list cannot express it yet.
           Out.push_back({TablePtrVector, 0, Lanes, Root.str()});
-        else
+          break;
+        default:
           return false;
+        }
       }
       return true;
     }
@@ -2499,10 +2892,20 @@ class LegalizerTableEmitterImpl {
       return 0;
     case TableScalar:
       return 1;
-    case TableVector:
+    case TableInteger:
       return 2;
-    case TablePtrVector:
+    case TableFloat:
       return 3;
+    case TableBFloat:
+      return 4;
+    case TableVector:
+      return 5;
+    case TablePtrVector:
+      return 6;
+    case TableScalableVector:
+      return 7;
+    case TableScalablePtrVector:
+      return 8;
     }
     llvm_unreachable("bad table type kind");
   }
@@ -2557,10 +2960,20 @@ class LegalizerTableEmitterImpl {
       return "Kind_Pointer";
     case TableScalar:
       return "Kind_Scalar";
+    case TableInteger:
+      return "Kind_Integer";
+    case TableFloat:
+      return "Kind_Float";
+    case TableBFloat:
+      return "Kind_BFloat";
     case TableVector:
       return "Kind_Vector";
     case TablePtrVector:
       return "Kind_PtrVector";
+    case TableScalableVector:
+      return "Kind_ScalableVector";
+    case TableScalablePtrVector:
+      return "Kind_ScalablePtrVector";
     }
     llvm_unreachable("bad table type kind");
   }
@@ -2576,11 +2989,26 @@ class LegalizerTableEmitterImpl {
     case TableScalar:
       Suffix = "TestKind_Scalar";
       break;
+    case TableInteger:
+      Suffix = "TestKind_Integer";
+      break;
+    case TableFloat:
+      Suffix = "TestKind_Float";
+      break;
+    case TableBFloat:
+      Suffix = "TestKind_BFloat";
+      break;
     case TableVector:
       Suffix = "TestKind_Vector";
       break;
     case TablePtrVector:
       Suffix = "TestKind_PtrVector";
+      break;
+    case TableScalableVector:
+      Suffix = "TestKind_ScalableVector";
+      break;
+    case TableScalablePtrVector:
+      Suffix = "TestKind_ScalablePtrVector";
       break;
     default:
       llvm_unreachable("bad table type kind");
@@ -2675,11 +3103,33 @@ class LegalizerTableEmitterImpl {
       return "LLT::pointer(0, PointerBits)";
     case TableScalar:
       return "LLT::scalar(" + std::to_string(T.ElemBits) + ")";
+    case TableInteger:
+      return "LLT::integer(" + std::to_string(T.ElemBits) + ")";
+    case TableFloat:
+      switch (T.ElemBits) {
+      case 16:
+        return "LLT::float16()";
+      case 32:
+        return "LLT::float32()";
+      case 64:
+        return "LLT::float64()";
+      case 128:
+        return "LLT::float128()";
+      }
+      llvm_unreachable("bad float width");
+    case TableBFloat:
+      return "LLT::bfloat16()";
     case TableVector:
       return "LLT::fixed_vector(" + std::to_string(T.Lanes) + ", " +
              std::to_string(T.ElemBits) + ")";
     case TablePtrVector:
       return "LLT::fixed_vector(" + std::to_string(T.Lanes) +
+             ", LLT::pointer(0, PointerBits))";
+    case TableScalableVector:
+      return "LLT::scalable_vector(" + std::to_string(T.Lanes) + ", " +
+             std::to_string(T.ElemBits) + ")";
+    case TableScalablePtrVector:
+      return "LLT::scalable_vector(" + std::to_string(T.Lanes) +
              ", LLT::pointer(0, PointerBits))";
     }
     llvm_unreachable("bad table type kind");
@@ -2747,8 +3197,9 @@ class LegalizerTableEmitterImpl {
         };
 
     // legalForCartesianProduct({a, b}, {c}) is a pair query, not two unary
-    // ones: each argument list contributes one slot.
-    if (builderName(Rule) == "legalForCartesianProduct") {
+    // ones: each argument list contributes one slot.  The same holds for
+    // customForCartesianProduct, which AArch64 uses for G_VAARG.
+    if (builderName(Rule).ends_with("ForCartesianProduct")) {
       std::vector<std::vector<TableType>> Lists;
       for (const Record *Arg : Args) {
         if (!Arg->isSubClassOf("LegalizeNamedTypeList") &&
@@ -3907,9 +4358,28 @@ public:
   unsigned arityOf(const Record &RuleSet) {
     unsigned Arity = 1;
     for (const Record *Rule : RuleSet.getValueAsListOfDefs("Rules")) {
-      for (const Record *Arg : Rule->getValueAsListOfDefs("Args"))
+      const std::vector<const Record *> Args =
+          Rule->getValueAsListOfDefs("Args");
+      // Every *ForCartesianProduct builder takes one type slot per list, so a
+      // product of two lists is a two-slot query even though no single
+      // argument names slot 1.  Missing this made G_VAARG a one-slot rule set
+      // whose customForCartesianProduct predicate reads Query.Types[1].
+      if (builderName(*Rule).ends_with("ForCartesianProduct")) {
+        unsigned Lists = 0;
+        for (const Record *Arg : Args)
+          if (Arg->isSubClassOf("LegalizeNamedTypeList") ||
+              Arg->isSubClassOf("LegalizeInlineTypeList") ||
+              Arg->isSubClassOf("LegalizeSelectTypeList"))
+            ++Lists;
+        Arity = std::max(Arity, Lists);
+      }
+      for (const Record *Arg : Args) {
         if (Arg->isSubClassOf("LegalizeArgIndex"))
           Arity = std::max(Arity, unsigned(Arg->getValueAsInt("Value") + 1));
+        else if (Arg->isSubClassOf("LegalizeTypePair") ||
+                 Arg->isSubClassOf("LegalizeMemDesc"))
+          Arity = std::max(Arity, 2u);
+      }
       scanPredicate(Rule->getValueAsOptionalDef("Pred"), Arity);
       scanSlots(Rule->getValueAsString("OpaqueArgs"), Arity);
     }
@@ -3983,7 +4453,7 @@ public:
       // legalForCartesianProduct gives one type slot per type-list argument,
       // so a product of two lists is a two-slot query even though no single
       // argument names slot 1.
-      if (builderName(*Rule) == "legalForCartesianProduct") {
+      if (builderName(*Rule).ends_with("ForCartesianProduct")) {
         unsigned Lists = 0;
         for (const Record *Arg : Args)
           if (Arg->isSubClassOf("LegalizeNamedTypeList") ||
@@ -4090,10 +4560,13 @@ public:
           Probe.MemTy = Ptr;
           Probe.Align = 1;
         }
-        Add(Probe);
+        if (!TableTuplesOnly)
+          Add(Probe);
         for (const RuleTuple &Tuple : Tuples)
           if (Tuple.Types.size() == Arity)
             Add(Tuple);
+        if (TableTuplesOnly)
+          continue;
 
         // Types the class list does not name take the reader's residual path:
         // the evaluator is called with the concrete query.  These are the

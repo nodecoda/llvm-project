@@ -211,6 +211,13 @@ class LegalizeTypePair<LegalizeNamedType type0, LegalizeNamedType type1>
 /// One LegalityPredicates::TypePairAndMemDesc entry (LegalizerInfo.h:167):
 /// {Type0, Type1, MemTy, Align}.  Align is in bits and is an integer, which is
 /// why a memdesc tuple is not a list of four types.
+class LegalizeTypeTriple<LegalizeNamedType type0, LegalizeNamedType type1,
+                         LegalizeNamedType type2> : LegalizeArg {
+  LegalizeNamedType Type0 = type0;
+  LegalizeNamedType Type1 = type1;
+  LegalizeNamedType Type2 = type2;
+}
+
 class LegalizeMemDesc<LegalizeNamedType type0, LegalizeNamedType type1,
                       LegalizeNamedType memTy, int align> : LegalizeArg {
   LegalizeNamedType Type0 = type0;
@@ -267,6 +274,22 @@ class LegalizeRawArg<string text> : LegalizeArg {
   string Text = text;
 }
 
+/// A bit width chosen by a priority list of cached-boolean guards, e.g.
+/// `HasFP16 ? 16 : 32`.  Like LegalizeSelectLanes, the guards stay structured.
+class LegalizeSelectBits<list<LegalizeBoolPredicate> conds,
+                         list<int> values, int otherwise> : LegalizeArg {
+  list<LegalizeBoolPredicate> Conds = conds;
+  list<int> Values = values;
+  int Otherwise = otherwise;
+}
+
+/// A mutation written as C++ text: a lambda, or a call such as
+/// `changeElementTo(0, AArch64_f32)`.  The builder still decides the action and
+/// the guard is still a predicate record; only the mutation body is opaque.
+class LegalizeRawMutation<string text> : LegalizeArg {
+  string Text = text;
+}
+
 //===----------------------------------------------------------------------===//
 // Actions
 //
@@ -311,6 +334,10 @@ def ActionClampScalar      : LegalizeAction<"ClampScalar", "any">;
 def ActionScalarSameSizeAs : LegalizeAction<"ScalarSameSizeAs", "neutral">;
 def ActionClampNumElements : LegalizeAction<"ClampNumElements", "any">;
 def ActionUnsupported     : LegalizeAction<"Unsupported", "">;
+/// Not an action: immIdx() marks an immediate operand as covered for the
+/// coverage verifier and produces no legalization step.  It gets an action
+/// record only so that it can be a rule the emitters can spell.
+def ActionCoverage        : LegalizeAction<"Coverage", "">;
 
 //===----------------------------------------------------------------------===//
 // Rules
@@ -330,6 +357,8 @@ def ShapeType : LegalizeArgShape;
 def ShapeTypePairList : LegalizeArgShape;
 /// A list of memdesc tuples, `{{s32, s32, s8, 8}, ...}`.
 def ShapeMemDescList : LegalizeArgShape;
+/// A list of three-type tuples, `{{s16, v8s8, s64}, ...}`.
+def ShapeTypeTripleList : LegalizeArgShape;
 /// A type slot index.
 def ShapeIndex : LegalizeArgShape;
 /// A bit width.
@@ -338,6 +367,9 @@ def ShapeBits : LegalizeArgShape;
 def ShapeLanes : LegalizeArgShape;
 /// A type list, for the cartesian-product builders.
 def ShapeTypeList : LegalizeArgShape;
+/// A mutation written as C++ text.  It is still a mutation argument, so the
+/// builder signature checks it, but the schema cannot type its body.
+def ShapeRawMutation : LegalizeArgShape;
 
 /// The kind of guard a builder accepts.
 class LegalizeGuardKind;
@@ -388,12 +420,14 @@ class LegalizeBuilder<string name, LegalizeAction action> {
 
 def BuilderLegalFor                      : LegalizeBuilder<"legalFor", ActionLegal> {
   let Guards = [GuardBool];
-  let Formals = [[ShapeType], [ShapeTypePairList]];
+  let Formals = [[ShapeType], [ShapeTypeList], [ShapeTypePairList],
+                 [ShapeTypeTripleList]];
 }
 
 def BuilderLegalForCartesianProduct      : LegalizeBuilder<"legalForCartesianProduct", ActionLegal> {
   let Guards = [];
-  let Formals = [[ShapeTypeList, ShapeTypeList]];
+  let Formals = [[ShapeTypeList], [ShapeTypeList, ShapeTypeList],
+                 [ShapeTypeList, ShapeTypeList, ShapeTypeList]];
 }
 def BuilderLegalForTypesWithMemDesc      : LegalizeBuilder<"legalForTypesWithMemDesc", ActionLegal> {
   let Guards = [GuardBool];
@@ -406,7 +440,7 @@ def BuilderLower                         : LegalizeBuilder<"lower", ActionLower>
 }
 def BuilderLowerFor                      : LegalizeBuilder<"lowerFor", ActionLower> {
   let Guards = [GuardBool];
-  let Formals = [[ShapeTypePairList]];
+  let Formals = [[ShapeType], [ShapeTypePairList]];
 }
 
 def BuilderLibcall                       : LegalizeBuilder<"libcall", ActionLibcall> {
@@ -415,17 +449,93 @@ def BuilderLibcall                       : LegalizeBuilder<"libcall", ActionLibc
 }
 def BuilderLibcallFor                    : LegalizeBuilder<"libcallFor", ActionLibcall> {
   let Guards = [GuardBool];
-  let Formals = [[ShapeType]];
+  let Formals = [[ShapeType], [ShapeTypePairList]];
 }
 
 def BuilderCustomFor                     : LegalizeBuilder<"customFor", ActionCustom> {
   let Guards = [GuardBool];
-  let Formals = [[ShapeType]];
+  let Formals = [[ShapeType], [ShapeTypePairList]];
 }
 
 def BuilderCustomForCartesianProduct     : LegalizeBuilder<"customForCartesianProduct", ActionCustom> {
   let Guards = [GuardBool];
-  let Formals = [[ShapeTypeList, ShapeTypeList]];
+  let Formals = [[ShapeTypeList], [ShapeTypeList, ShapeTypeList],
+                 [ShapeTypeList, ShapeTypeList, ShapeTypeList]];
+}
+
+def BuilderCustom                        : LegalizeBuilder<"custom", ActionCustom> {
+  let Guards = [];
+  let Formals = [[]];
+}
+
+def BuilderBitcastIf                     : LegalizeBuilder<"bitcastIf", ActionBitcast> {
+  let Guards = [GuardQuery];
+  let Formals = [[ShapeRawMutation]];
+}
+
+def BuilderWidenScalarFor                : LegalizeBuilder<"widenScalarFor", ActionWidenScalar> {
+  let Guards = [];
+  let Formals = [[ShapeTypeList, ShapeRawMutation]];
+}
+
+def BuilderWidenScalarOrEltToNextPow2OrMinSize
+    : LegalizeBuilder<"widenScalarOrEltToNextPow2OrMinSize", ActionWidenScalar> {
+  let Guards = [];
+  let Formals = [[ShapeIndex], [ShapeIndex, ShapeBits]];
+}
+
+def BuilderWidenVectorEltsToVectorMinSize
+    : LegalizeBuilder<"widenVectorEltsToVectorMinSize", ActionWidenScalar> {
+  let Guards = [];
+  let Formals = [[ShapeIndex, ShapeBits]];
+}
+
+def BuilderMinScalarOrElt                : LegalizeBuilder<"minScalarOrElt", ActionWidenScalar> {
+  let Guards = [];
+  let Formals = [[ShapeIndex, ShapeType]];
+}
+
+def BuilderMinScalarOrEltIf              : LegalizeBuilder<"minScalarOrEltIf", ActionWidenScalar> {
+  let Guards = [GuardQuery];
+  let Formals = [[ShapeIndex, ShapeType]];
+}
+
+def BuilderMinScalarSameAs               : LegalizeBuilder<"minScalarSameAs", ActionWidenScalar> {
+  let Guards = [];
+  let Formals = [[ShapeIndex, ShapeIndex]];
+}
+
+def BuilderMinScalarEltSameAsIf          : LegalizeBuilder<"minScalarEltSameAsIf", ActionWidenScalar> {
+  let Guards = [GuardQuery];
+  let Formals = [[ShapeIndex, ShapeIndex]];
+}
+
+def BuilderMaxScalarEltSameAsIf          : LegalizeBuilder<"maxScalarEltSameAsIf", ActionNarrowScalar> {
+  let Guards = [GuardQuery];
+  let Formals = [[ShapeIndex, ShapeIndex]];
+}
+
+def BuilderUnsupportedIfMemSizeNotPow2
+    : LegalizeBuilder<"unsupportedIfMemSizeNotPow2", ActionUnsupported> {
+  let Guards = [];
+  let Formals = [[]];
+}
+
+def BuilderLowerIfMemSizeNotPow2
+    : LegalizeBuilder<"lowerIfMemSizeNotPow2", ActionLower> {
+  let Guards = [];
+  let Formals = [[]];
+}
+
+def BuilderLowerIfMemSizeNotByteSizePow2
+    : LegalizeBuilder<"lowerIfMemSizeNotByteSizePow2", ActionLower> {
+  let Guards = [];
+  let Formals = [[]];
+}
+
+def BuilderImmIdx                        : LegalizeBuilder<"immIdx", ActionCoverage> {
+  let Guards = [];
+  let Formals = [[ShapeIndex]];
 }
 
 def BuilderAlwaysLegal                   : LegalizeBuilder<"alwaysLegal", ActionLegal> {
@@ -489,7 +599,7 @@ def BuilderLegalIf                       : LegalizeBuilder<"legalIf", ActionLega
 
 def BuilderLowerIf                       : LegalizeBuilder<"lowerIf", ActionLower> {
   let Guards = [GuardQuery];
-  let Formals = [[]];
+  let Formals = [[], [ShapeRawMutation]];
 }
 
 def BuilderCustomIf                      : LegalizeBuilder<"customIf", ActionCustom> {
@@ -499,12 +609,12 @@ def BuilderCustomIf                      : LegalizeBuilder<"customIf", ActionCus
 
 def BuilderWidenScalarIf                 : LegalizeBuilder<"widenScalarIf", ActionWidenScalar> {
   let Guards = [GuardQuery];
-  let Formals = [[]];
+  let Formals = [[ShapeRawMutation]];
 }
 
 def BuilderNarrowScalarIf                : LegalizeBuilder<"narrowScalarIf", ActionNarrowScalar> {
   let Guards = [GuardQuery];
-  let Formals = [[]];
+  let Formals = [[ShapeRawMutation]];
 }
 
 def BuilderLibcallIf                     : LegalizeBuilder<"libcallIf", ActionLibcall> {
@@ -514,12 +624,12 @@ def BuilderLibcallIf                     : LegalizeBuilder<"libcallIf", ActionLi
 
 def BuilderFewerElementsIf               : LegalizeBuilder<"fewerElementsIf", ActionFewerElements> {
   let Guards = [GuardQuery];
-  let Formals = [[]];
+  let Formals = [[ShapeRawMutation]];
 }
 
 def BuilderMoreElementsIf                : LegalizeBuilder<"moreElementsIf", ActionMoreElements> {
   let Guards = [GuardQuery];
-  let Formals = [[]];
+  let Formals = [[ShapeRawMutation]];
 }
 
 def BuilderMinScalarIf                   : LegalizeBuilder<"minScalarIf", ActionWidenScalar> {
@@ -627,6 +737,24 @@ class LegalizeOpaqueRule<LegalizeBuilder builder, code body> : LegalizeRule {
 class LegalFor<list<LegalizeArgType> Types>
     : LegalizeCall<BuilderLegalFor, Types>;
 
+class LegalForList<LegalizeArgTypeList Types>
+    : LegalizeCall<BuilderLegalFor, [Types]>;
+
+class LegalIf<LegalizeQueryPredicateBase P>
+    : LegalizeQueryGuardedCall<BuilderLegalIf, P, []>;
+
+class LowerIf<LegalizeQueryPredicateBase P>
+    : LegalizeQueryGuardedCall<BuilderLowerIf, P, []>;
+
+class CustomIf<LegalizeQueryPredicateBase P>
+    : LegalizeQueryGuardedCall<BuilderCustomIf, P, []>;
+
+class LibcallIf<LegalizeQueryPredicateBase P>
+    : LegalizeQueryGuardedCall<BuilderLibcallIf, P, []>;
+
+class LegalForListIf<LegalizeBoolPredicate P, LegalizeArgTypeList Types>
+    : LegalizeGuardedCall<BuilderLegalFor, P, [Types]>;
+
 class LegalForIf<LegalizeBoolPredicate P, list<LegalizeArgType> Types>
     : LegalizeGuardedCall<BuilderLegalFor, P, Types>;
 
@@ -636,11 +764,28 @@ class LegalForPairs<list<LegalizeTypePair> Pairs>
 class LegalForPairsIf<LegalizeBoolPredicate P, list<LegalizeTypePair> Pairs>
     : LegalizeGuardedCall<BuilderLegalFor, P, Pairs>;
 
+class LegalForTriples<list<LegalizeTypeTriple> Triples>
+    : LegalizeCall<BuilderLegalFor, Triples>;
+
+class LegalForTriplesIf<LegalizeBoolPredicate P,
+                        list<LegalizeTypeTriple> Triples>
+    : LegalizeGuardedCall<BuilderLegalFor, P, Triples>;
+
 class LegalForCartesianProduct<LegalizeArgTypeList T0, LegalizeArgTypeList T1>
     : LegalizeCall<BuilderLegalForCartesianProduct, [T0, T1]>;
 
+class LegalForCartesianProduct1<LegalizeArgTypeList T0>
+    : LegalizeCall<BuilderLegalForCartesianProduct, [T0]>;
+
+class LegalForCartesianProduct3<LegalizeArgTypeList T0, LegalizeArgTypeList T1,
+                                LegalizeArgTypeList T2>
+    : LegalizeCall<BuilderLegalForCartesianProduct, [T0, T1, T2]>;
+
 class LowerForPairsIf<LegalizeBoolPredicate P, list<LegalizeTypePair> Pairs>
     : LegalizeGuardedCall<BuilderLowerFor, P, Pairs>;
+
+class LowerForIf<LegalizeBoolPredicate P, list<LegalizeArgType> Types>
+    : LegalizeGuardedCall<BuilderLowerFor, P, Types>;
 
 class LegalForMemDesc<list<LegalizeMemDesc> Descs>
     : LegalizeCall<BuilderLegalForTypesWithMemDesc, Descs>;
@@ -655,8 +800,14 @@ def Libcall : LegalizeCall<BuilderLibcall, []>;
 class LibcallFor<list<LegalizeArgType> Types>
     : LegalizeCall<BuilderLibcallFor, Types>;
 
+class LibcallForIf<LegalizeBoolPredicate P, list<LegalizeArgType> Types>
+    : LegalizeGuardedCall<BuilderLibcallFor, P, Types>;
+
 class CustomFor<list<LegalizeArgType> Types>
     : LegalizeCall<BuilderCustomFor, Types>;
+
+class CustomForIf<LegalizeBoolPredicate P, list<LegalizeArgType> Types>
+    : LegalizeGuardedCall<BuilderCustomFor, P, Types>;
 
 class CustomForCartesianProductIf<LegalizeBoolPredicate P,
                                   LegalizeArgTypeList T0,
@@ -766,6 +917,99 @@ class ClampMaxNumElementsSel<int Idx, LegalizeArgType EltTy,
                              LegalizeSelectLanes Lanes>
     : LegalizeCall<BuilderClampMaxNumElements,
                    [LegalizeArgIndex<Idx>, EltTy, Lanes]>;
+
+def Custom : LegalizeCall<BuilderCustom, []>;
+
+class BitcastIf<LegalizeQueryPredicateBase P, LegalizeRawMutation M>
+    : LegalizeQueryGuardedCall<BuilderBitcastIf, P, [M]>;
+
+class WidenScalarIf<LegalizeQueryPredicateBase P, LegalizeRawMutation M>
+    : LegalizeQueryGuardedCall<BuilderWidenScalarIf, P, [M]>;
+
+class NarrowScalarIf<LegalizeQueryPredicateBase P, LegalizeRawMutation M>
+    : LegalizeQueryGuardedCall<BuilderNarrowScalarIf, P, [M]>;
+
+class MoreElementsIf<LegalizeQueryPredicateBase P, LegalizeRawMutation M>
+    : LegalizeQueryGuardedCall<BuilderMoreElementsIf, P, [M]>;
+
+class FewerElementsIf<LegalizeQueryPredicateBase P, LegalizeRawMutation M>
+    : LegalizeQueryGuardedCall<BuilderFewerElementsIf, P, [M]>;
+
+class LowerIfRaw<LegalizeQueryPredicateBase P, LegalizeRawMutation M>
+    : LegalizeQueryGuardedCall<BuilderLowerIf, P, [M]>;
+
+class WidenScalarFor<LegalizeArgTypeList Types, LegalizeRawMutation M>
+    : LegalizeCall<BuilderWidenScalarFor, [Types, M]>;
+
+class LowerFor<list<LegalizeArgType> Types>
+    : LegalizeCall<BuilderLowerFor, Types>;
+
+class LowerForPairs<list<LegalizeTypePair> Pairs>
+    : LegalizeCall<BuilderLowerFor, Pairs>;
+
+class LibcallForPairs<list<LegalizeTypePair> Pairs>
+    : LegalizeCall<BuilderLibcallFor, Pairs>;
+
+class LibcallForPairsIf<LegalizeBoolPredicate P, list<LegalizeTypePair> Pairs>
+    : LegalizeGuardedCall<BuilderLibcallFor, P, Pairs>;
+
+class CustomForPairs<list<LegalizeTypePair> Pairs>
+    : LegalizeCall<BuilderCustomFor, Pairs>;
+
+class CustomForPairsIf<LegalizeBoolPredicate P, list<LegalizeTypePair> Pairs>
+    : LegalizeGuardedCall<BuilderCustomFor, P, Pairs>;
+
+class CustomForCartesianProduct<LegalizeArgTypeList T0, LegalizeArgTypeList T1>
+    : LegalizeCall<BuilderCustomForCartesianProduct, [T0, T1]>;
+
+class CustomForCartesianProduct1<LegalizeArgTypeList T0>
+    : LegalizeCall<BuilderCustomForCartesianProduct, [T0]>;
+
+class CustomForCartesianProduct3<LegalizeArgTypeList T0, LegalizeArgTypeList T1,
+                                 LegalizeArgTypeList T2>
+    : LegalizeCall<BuilderCustomForCartesianProduct, [T0, T1, T2]>;
+
+class WidenScalarOrEltToNextPow2OrMinSize<int Idx, int Min = 0>
+    : LegalizeCall<BuilderWidenScalarOrEltToNextPow2OrMinSize,
+                   !if(!eq(Min, 0), [LegalizeArgIndex<Idx>],
+                       [LegalizeArgIndex<Idx>, LegalizeArgBits<Min>])>;
+
+class WidenScalarOrEltToNextPow2OrMinSizeSel<int Idx, LegalizeSelectBits Min>
+    : LegalizeCall<BuilderWidenScalarOrEltToNextPow2OrMinSize,
+                   [LegalizeArgIndex<Idx>, Min]>;
+
+class WidenVectorEltsToVectorMinSize<int Idx, int Size>
+    : LegalizeCall<BuilderWidenVectorEltsToVectorMinSize,
+                   [LegalizeArgIndex<Idx>, LegalizeArgBits<Size>]>;
+
+class MinScalarOrElt<int Idx, LegalizeArgType Ty>
+    : LegalizeCall<BuilderMinScalarOrElt, [LegalizeArgIndex<Idx>, Ty]>;
+
+class MinScalarOrEltIf<LegalizeQueryPredicateBase P, int Idx,
+                       LegalizeArgType Ty>
+    : LegalizeQueryGuardedCall<BuilderMinScalarOrEltIf, P,
+                               [LegalizeArgIndex<Idx>, Ty]>;
+
+class MinScalarSameAs<int Idx, int OtherIdx>
+    : LegalizeCall<BuilderMinScalarSameAs,
+                   [LegalizeArgIndex<Idx>, LegalizeArgIndex<OtherIdx>]>;
+
+class MinScalarEltSameAsIf<LegalizeQueryPredicateBase P, int Idx, int OtherIdx>
+    : LegalizeQueryGuardedCall<BuilderMinScalarEltSameAsIf, P,
+                               [LegalizeArgIndex<Idx>, LegalizeArgIndex<OtherIdx>]>;
+
+class MaxScalarEltSameAsIf<LegalizeQueryPredicateBase P, int Idx, int OtherIdx>
+    : LegalizeQueryGuardedCall<BuilderMaxScalarEltSameAsIf, P,
+                               [LegalizeArgIndex<Idx>, LegalizeArgIndex<OtherIdx>]>;
+
+def UnsupportedIfMemSizeNotPow2
+    : LegalizeCall<BuilderUnsupportedIfMemSizeNotPow2, []>;
+def LowerIfMemSizeNotPow2 : LegalizeCall<BuilderLowerIfMemSizeNotPow2, []>;
+def LowerIfMemSizeNotByteSizePow2
+    : LegalizeCall<BuilderLowerIfMemSizeNotByteSizePow2, []>;
+
+class ImmIdx<int Idx>
+    : LegalizeCall<BuilderImmIdx, [LegalizeArgIndex<Idx>]>;
 
 //===----------------------------------------------------------------------===//
 
