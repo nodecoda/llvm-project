@@ -120,19 +120,18 @@ def AArch64_ScalarAndPtrTypes : LegalizeNamedTypeList<
 //===----------------------------------------------------------------------===//
 
 def AArch64_NotSmallCodeModelQuery : LegalizeQueryPredicate<"[=](const LegalityQuery &) { return !AArch64_SmallCodeModel; }">;
-def AArch64_Pred_02008ef0 : LegalizeQueryPredicate<"typeInSet(0, {AArch64_s64, AArch64_p0})">;
+def AArch64_Pred_02008ef0 : LegalizeTypePredicate<"typeInSet(0, {AArch64_s64, AArch64_p0})">;
 def AArch64_Pred_0226be53 : LegalizeQueryPredicate<"[AArch64_HasFP16](const LegalityQuery &Query) { return (!AArch64_HasFP16 && Query.Types[0].getScalarType().isFloat16()) || Query.Types[0].getScalarType().isBFloat16(); }">;
 def AArch64_Pred_05361bee : LegalizeQueryPredicate<"[](const LegalityQuery &Query) { return Query.Types[0].isScalar(); }">;
 def AArch64_Pred_06878545 : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { LLT DstTy = Query.Types[0]; LLT SrcTy = Query.Types[1]; if (!DstTy.isFixedVector() || !SrcTy.isFixedVector()) return false; unsigned MoreElts = 1u << Log2_32_Ceil(DstTy.getNumElements()); return SrcTy.getNumElements() * MoreElts % DstTy.getNumElements() != 0; }">;
-def AArch64_Pred_080c5b65 : LegalizeQueryPredicate<"typeInSet(1, {AArch64_s64, AArch64_p0})">;
+def AArch64_Pred_080c5b65 : LegalizeTypePredicate<"typeInSet(1, {AArch64_s64, AArch64_p0})">;
 def AArch64_Pred_0dda87c5 : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { return Query.Types[1].isFixedVector() && Query.Types[1].getNumElements() <= 16; }">;
 def AArch64_Pred_11e45701 : LegalizeQueryPredicate<"[](const LegalityQuery &Q) { LLT DstTy = Q.Types[0]; LLT SrcTy = Q.Types[1]; return SrcTy.isVector() && DstTy.isVector() && SrcTy.getScalarSizeInBits() == 16 && DstTy.getScalarSizeInBits() == 64; }">;
 def AArch64_Pred_125bf639 : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { return Query.Types[0].isVector() != Query.Types[1].isVector(); }">;
 def AArch64_Pred_12d65c07 : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { return Query.Types[1].isVector() && Query.Types[1].getElementType() != AArch64_s8 && Query.Types[1].getNumElements() & 1; }">;
 def AArch64_Pred_131ecb96 : LegalizeQueryPredicate<"[=](const LegalityQuery &Q) { LLT SrcTy = Q.Types[1]; if (SrcTy.isScalar()) return false; if (!isPowerOf2_32(SrcTy.getNumElements())) return false; return SrcTy.getSizeInBits() > 64; }">;
-def AArch64_Pred_15859522 : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { return Query.Types[0].getNumElements() <= 4; }">;
 def AArch64_Pred_1671daba : LegalizeQueryPredicate<"[](const LegalityQuery &Q) { LLT DstTy = Q.Types[0]; LLT SrcTy = Q.Types[1]; return SrcTy.getScalarSizeInBits() == 64 && DstTy.getScalarSizeInBits() == 16; }">;
-def AArch64_Pred_1a80c04b : LegalizeQueryPredicate<"typeInSet(0, {AArch64_v8s8, AArch64_v16s8, AArch64_v4s16, AArch64_v8s16, AArch64_v2s32, AArch64_v4s32, AArch64_v2s64, AArch64_v2p0})">;
+def AArch64_Pred_1a80c04b : LegalizeTypePredicate<"typeInSet(0, {AArch64_v8s8, AArch64_v16s8, AArch64_v4s16, AArch64_v8s16, AArch64_v2s32, AArch64_v4s32, AArch64_v2s64, AArch64_v2p0})">;
 def AArch64_Pred_1f3dc25d : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { return Query.Types[0].isVector(); }">;
 def AArch64_Pred_20db2dd3 : LegalizeQueryPredicate<"::any(scalarWiderThan(0, 64), scalarWiderThan(1, 64))">;
 def AArch64_Pred_2ac0a068 : LegalizeQueryPredicate<"atomicOrderingAtLeastOrStrongerThan(0, AtomicOrdering::Unordered)">;
@@ -142,7 +141,7 @@ def AArch64_Pred_2d4385e9 : LegalizeQueryPredicate<"all(typeInSet(0, {AArch64_s3
 def AArch64_Pred_2e11e704 : LegalizeQueryPredicate<"[=](const LegalityQuery &Q) { const LLT BigTy = Q.Types[1]; return BigTy.isScalar() && !isPowerOf2_32(BigTy.getSizeInBits()) && BigTy.getSizeInBits() < 64; }">;
 def AArch64_Pred_2f2fbffa : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { return Query.Types[0].getNumElements() <= 2; }">;
 def AArch64_Pred_30a9dec1 : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { return Query.Types[0].getNumElements() <= 16; }">;
-def AArch64_Pred_359c5626 : LegalizeQueryPredicate<"typeInSet(0, {AArch64_v2s16, AArch64_v2s8})">;
+def AArch64_Pred_359c5626 : LegalizeTypePredicate<"typeInSet(0, {AArch64_v2s16, AArch64_v2s8})">;
 def AArch64_Pred_38f29bd4 : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { return (Query.Types[0].getScalarSizeInBits() > Query.Types[1].getScalarSizeInBits() * 2) && Query.Types[0].isVector() && (Query.Types[1].getScalarSizeInBits() == 8 || Query.Types[1].getScalarSizeInBits() == 16); }">;
 def AArch64_Pred_4212e231 : LegalizeQueryPredicate<"all(typeInSet(0, {AArch64_s16, AArch64_s32, AArch64_s64, AArch64_p0}), typeInSet(1, {AArch64_s32, AArch64_s64, AArch64_s128, AArch64_p0}), smallerThan(0, 1))">;
 def AArch64_Pred_4472211a : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { return Query.Types[1].isFixedVector() && Query.Types[1].getNumElements() <= 2; }">;
@@ -152,7 +151,7 @@ def AArch64_Pred_51f3473b : LegalizeQueryPredicate<"[=](const LegalityQuery &Que
 def AArch64_Pred_5789b262 : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { const LLT &Ty = Query.Types[0]; const LLT &SrcTy = Query.Types[1]; return Ty.isVector() && !SrcTy.isPointerVector() && Ty.getElementType() != SrcTy.getElementType(); }">;
 def AArch64_Pred_5b3dda4d : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { return Query.Types[0].isFixedVector() && Query.Types[1].isFixedVector() && Query.Types[0].getScalarSizeInBits() >= 8 && isPowerOf2_64(Query.Types[0].getScalarSizeInBits()) && Query.Types[0].getSizeInBits() <= 128 && Query.Types[1].getSizeInBits() <= 64; }">;
 def AArch64_Pred_5cc26dc8 : LegalizeQueryPredicate<"isPointerVector(0)">;
-def AArch64_Pred_6029cf3d : LegalizeQueryPredicate<"typeInSet(1, {AArch64_s128})">;
+def AArch64_Pred_6029cf3d : LegalizeTypePredicate<"typeInSet(1, {AArch64_s128})">;
 def AArch64_Pred_61c58b0b : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { unsigned ITySize = Query.Types[0].getScalarSizeInBits(); return (ITySize == 16 || ITySize == 32 || ITySize == 64) && ITySize > Query.Types[1].getScalarSizeInBits(); }">;
 def AArch64_Pred_6209b6d1 : LegalizeQueryPredicate<"[=](const LegalityQuery &Q) { switch (Q.Types[1].getSizeInBits()) { case 32: case 64: case 128: break; default: return false; } switch (Q.Types[0].getSizeInBits()) { case 8: case 16: case 32: case 64: return true; default: return false; } }">;
 def AArch64_Pred_661419a9 : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { return Query.Types[1].getScalarSizeInBits() <= 64 && Query.Types[0].getScalarSizeInBits() < Query.Types[1].getScalarSizeInBits(); }">;
@@ -163,7 +162,7 @@ def AArch64_Pred_79336d5c : LegalizeQueryPredicate<"all(scalarNarrowerThan(0, 32
 def AArch64_Pred_79e450cf : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { const auto &SrcTy = Query.Types[0]; const auto &AmtTy = Query.Types[1]; return !SrcTy.isVector() && SrcTy.getSizeInBits() == 32 && AmtTy.getSizeInBits() == 32; }">;
 def AArch64_Pred_7d8fccce : LegalizeQueryPredicate<"all(typeInSet(0, {AArch64_v4s8}), LegalityPredicate([=](const LegalityQuery &Query) { return Query.Types[0].getSizeInBits() == Query.MMODescrs[0].MemoryTy.getSizeInBits(); }))">;
 def AArch64_Pred_84602781 : LegalizeQueryPredicate<"all(isVector(0), isVector(1))">;
-def AArch64_Pred_85a847d2 : LegalizeQueryPredicate<"typeInSet(1, {AArch64_s32})">;
+def AArch64_Pred_85a847d2 : LegalizeTypePredicate<"typeInSet(1, {AArch64_s32})">;
 def AArch64_Pred_8883238c : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { return Query.Types[1].isFixedVector() && Query.Types[1].getNumElements() <= 4; }">;
 def AArch64_Pred_8bbda3e4 : LegalizeQueryPredicate<"all(typeIs(0, AArch64_p0), typeIs(1, AArch64_p0))">;
 def AArch64_Pred_8bd7def7 : LegalizeQueryPredicate<"all(typeInSet(0, {AArch64_s16, AArch64_s32, AArch64_s64}), LegalityPredicate([=](const LegalityQuery &Q) { LLT LdTy = Q.Types[0]; LLT PtrTy = Q.Types[1]; LLT MemTy = Q.MMODescrs[0].MemoryTy; if (PtrTy != AArch64_p0) return false; if (LdTy == AArch64_s16) return MemTy == AArch64_s8; if (LdTy == AArch64_s32) return MemTy == AArch64_s8 || MemTy == AArch64_s16; if (LdTy == AArch64_s64) return MemTy == AArch64_s8 || MemTy == AArch64_s16 || MemTy == AArch64_s32; return false; }))">;
@@ -180,7 +179,7 @@ def AArch64_Pred_a39de19a : LegalizeQueryPredicate<"[=](const LegalityQuery &Que
 def AArch64_Pred_a4516f30 : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { return AArch64_HasRCPC3 && Query.Types[0] == AArch64_s128 && Query.MMODescrs[0].Ordering == AtomicOrdering::Acquire; }">;
 def AArch64_Pred_b1fd2ec9 : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { return Query.Types[0].isScalar() && Query.Types[0] != Query.MMODescrs[0].MemoryTy; }">;
 def AArch64_Pred_b36dc304 : LegalizeQueryPredicate<"all(typeInSet(0, {AArch64_s8, AArch64_s16, AArch64_s32, AArch64_s64, AArch64_s128}), typeIs(2, AArch64_p0))">;
-def AArch64_Pred_b76ecc6d : LegalizeQueryPredicate<"typeInSet(0, {AArch64_v4s8})">;
+def AArch64_Pred_b76ecc6d : LegalizeTypePredicate<"typeInSet(0, {AArch64_v4s8})">;
 def AArch64_Pred_bb2dbe0b : LegalizeQueryPredicate<"isVector(0)">;
 def AArch64_Pred_bf12db7c : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { const LLT &EltTy = Query.Types[1].getElementType(); if (Query.Types[1].isScalableVector()) return false; return Query.Types[0] != EltTy; }">;
 def AArch64_Pred_c20b2585 : LegalizeQueryPredicate<"[=](const LegalityQuery &Q) { switch (Q.Types[0].getSizeInBits()) { case 32: case 64: case 128: break; default: return false; } switch (Q.Types[1].getSizeInBits()) { case 8: case 16: case 32: case 64: return true; default: return false; } }">;
@@ -195,7 +194,7 @@ def AArch64_Pred_e2acf90b : LegalizeQueryPredicate<"[=](const LegalityQuery &Que
 def AArch64_Pred_e44b3fa8 : LegalizeQueryPredicate<"[=](const LegalityQuery &Q) { const LLT BigTy = Q.Types[0]; return BigTy.isScalar() && !isPowerOf2_32(BigTy.getSizeInBits()) && BigTy.getSizeInBits() < 64; }">;
 def AArch64_Pred_e47b6b4a : LegalizeQueryPredicate<"[](const LegalityQuery &Query) { return Query.Types[1].getScalarSizeInBits() <= 64 && Query.Types[0].getScalarSizeInBits() < Query.Types[1].getScalarSizeInBits(); }">;
 def AArch64_Pred_e69215a4 : LegalizeQueryPredicate<"[AArch64_HasFP16](const LegalityQuery &Query) { return (!AArch64_HasFP16 && Query.Types[1].getScalarType().isFloat16()) || Query.Types[1].getScalarType().isBFloat16(); }">;
-def AArch64_Pred_e83e7106 : LegalizeQueryPredicate<"typeInSet(0, {AArch64_s32})">;
+def AArch64_Pred_e83e7106 : LegalizeTypePredicate<"typeInSet(0, {AArch64_s32})">;
 def AArch64_Pred_ed4695d7 : LegalizeQueryPredicate<"[=](const LegalityQuery &Query) { return Query.Types[0].isScalar() && Query.Types[0] != Query.MMODescrs[0].MemoryTy && Query.Types[0].getSizeInBits() > 32; }">;
 def AArch64_Pred_f0403665 : LegalizeQueryPredicate<"[](const LegalityQuery &Query) { return Query.Types[0].getNumElements() < Query.Types[1].getNumElements(); }">;
 def AArch64_Pred_f37f5690 : LegalizeQueryPredicate<"[=](const LegalityQuery &Q) { return true; }">;
@@ -281,7 +280,7 @@ def AArch64_ADD : LegalizeRuleSet<["G_ADD", "G_SUB", "G_AND", "G_OR", "G_XOR"]> 
     ClampNumElements<0, AArch64_v2s32, AArch64_v4s32>,
     ClampNumElements<0, AArch64_v2s64, AArch64_v2s64>,
     MinScalarOrEltIf<AArch64_Pred_2f2fbffa, 0, AArch64_s32>,
-    MinScalarOrEltIf<AArch64_Pred_15859522, 0, AArch64_s16>,
+    CoreWidenIf<(ElemOf (Slot 0)), (Ty AArch64_s16), (CoreLe (NumElems (Slot 0)), 4)>,
     MinScalarOrEltIf<AArch64_Pred_30a9dec1, 0, AArch64_s8>,
     ScalarizeIf<AArch64_Pred_f4c34fb1, 0>,
     MoreElementsToNextPow2<0>
@@ -298,7 +297,7 @@ def AArch64_MUL : LegalizeRuleSet<["G_MUL"]> {
     ClampNumElements<0, AArch64_v2s32, AArch64_v4s32>,
     ClampNumElements<0, AArch64_v2s64, AArch64_v2s64>,
     MinScalarOrEltIf<AArch64_Pred_2f2fbffa, 0, AArch64_s32>,
-    MinScalarOrEltIf<AArch64_Pred_15859522, 0, AArch64_s16>,
+    CoreWidenIf<(ElemOf (Slot 0)), (Ty AArch64_s16), (CoreLe (NumElems (Slot 0)), 4)>,
     MinScalarOrEltIf<AArch64_Pred_30a9dec1, 0, AArch64_s8>,
     ScalarizeIf<AArch64_Pred_f4c34fb1, 0>,
     MoreElementsToNextPow2<0>

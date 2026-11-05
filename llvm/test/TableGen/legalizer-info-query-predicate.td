@@ -18,4 +18,4 @@ def Bad : LegalizeRuleSet<["G_ADD"]> {
   ];
 }
 
-// CHECK: error: Value specified for template argument 'ScalarizeIf:P' is of type LegalizeFeature; expected type LegalizeQueryPredicate: HasAVX2
+// CHECK: error: Value specified for template argument 'ScalarizeIf:P' is of type LegalizeFeature; expected type LegalizeQueryPredicateBase: HasAVX2

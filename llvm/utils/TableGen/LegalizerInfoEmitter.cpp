@@ -2390,6 +2390,7 @@ enum class CoreTableTranslation {
   None,
   WidenVectorMinSize,
   WidenPow2OrMinSize,
+  MinScalarOrElt,
 };
 
 struct CoreShimRow {
@@ -2422,7 +2423,7 @@ static const CoreShimRow CoreShimTable[] = {
     {"widen", "elem", "multipleOf", "coreWidenScalarOrEltToNextMultipleOf", 1,
      CoreTableTranslation::None},
     {"widen", "elem", "ty", "coreMinScalarOrElt", 1,
-     CoreTableTranslation::None},
+     CoreTableTranslation::MinScalarOrElt},
     {"widen", "elem", "sameAs", "coreMinScalarSameAs", 1,
      CoreTableTranslation::None},
     {"widen", "elem", "minVectorSize", "coreWidenVectorEltsToVectorMinSize", 1,
@@ -2555,8 +2556,12 @@ static bool coreIsOrderingObserver(StringRef Tag) {
 /// with no emitter is a diagnostic instead of a silently dropped rule.
 class CoreCxxEmitter {
 public:
-  CoreCxxEmitter(const RecordKeeper &Records, const Record &Owner)
-      : Records(Records), Owner(Owner) {}
+  /// \p QueryVar is the name the surrounding code gives the query object: the
+  /// C++ chain wraps a guard in a lambda that calls it `Query`, while the
+  /// table evaluator already has `Q` in scope.
+  CoreCxxEmitter(const RecordKeeper &Records, const Record &Owner,
+                 StringRef QueryVar = "Query")
+      : Records(Records), Owner(Owner), QueryVar(QueryVar) {}
 
   std::string value(const CoreNode &N);
   std::string boolean(const CoreNode &N);
@@ -2570,6 +2575,7 @@ private:
 
   const RecordKeeper &Records;
   const Record &Owner;
+  StringRef QueryVar;
 
   [[noreturn]] void fatal(const Twine &Msg) const {
     PrintFatalError(Owner.getLoc(), "core rule: " + Msg);
@@ -2591,10 +2597,12 @@ private:
 
   // Value emitters.
   std::string emitSlot(const CoreNode &N) {
-    return "Query.Types[" + std::to_string(N.Kids[0]->IntValue) + "]";
+    return QueryVar.str() + ".Types[" +
+           std::to_string(N.Kids[0]->IntValue) + "]";
   }
   std::string emitMemSlot(const CoreNode &N) {
-    return "Query.MMODescrs[" + std::to_string(N.Kids[0]->IntValue) + "]";
+    return QueryVar.str() + ".MMODescrs[" +
+           std::to_string(N.Kids[0]->IntValue) + "]";
   }
   std::string emitElemOf(const CoreNode &N) {
     return "(" + childValue(N, 0) + ").getElementType()";
@@ -2630,7 +2638,8 @@ private:
   }
   std::string emitTy(const CoreNode &N) { return childValue(N, 0); }
   std::string emitSameAs(const CoreNode &N) {
-    return "Query.Types[" + std::to_string(N.Kids[0]->IntValue) + "]";
+    return QueryVar.str() + ".Types[" +
+           std::to_string(N.Kids[0]->IntValue) + "]";
   }
   std::string emitSelect(const CoreNode &N) {
     return "(" + childBool(N, 0) + " ? " + childValue(N, 1) + " : " +
@@ -5642,7 +5651,8 @@ class LegalizerTableEmitterImpl {
   /// The guard a core rule carries: the legacy Pred record or the typed
   /// CoreGuard, in the spelling the evaluator uses.
   static std::string coreRuleGuardText(const Record &Rule,
-                                       const RecordKeeper &Records) {
+                                       const RecordKeeper &Records,
+                                       StringRef QueryVar) {
     if (const Record *P = Rule.getValueAsOptionalDef("Pred")) {
       std::string S;
       raw_string_ostream OS(S);
@@ -5655,7 +5665,7 @@ class LegalizerTableEmitterImpl {
     const Init *G = Rule.getValueInit("CoreGuard");
     if (G && !isa<UnsetInit>(G)) {
       std::unique_ptr<CoreNode> N = parseCoreNode(*G, Rule);
-      return CoreCxxEmitter(Records, Rule).boolean(*N);
+      return CoreCxxEmitter(Records, Rule, QueryVar).boolean(*N);
     }
     return "";
   }
@@ -5667,7 +5677,7 @@ class LegalizerTableEmitterImpl {
   bool translateCoreRule(const Record &Rule, std::string &Out, std::string &Why,
                          const unsigned *RuleIdx, bool GuardOnly) {
     CheckedCoreRule C = checkCoreRule(Rule, Records);
-    CoreCxxEmitter Cxx(Records, Rule);
+    CoreCxxEmitter Cxx(Records, Rule, "Q");
     StringRef On = coreObservationForm(*C.Obs);
     StringRef To = coreTag(*C.Target->Op);
     StringRef Op = coreTag(*C.Operator);
@@ -5677,7 +5687,7 @@ class LegalizerTableEmitterImpl {
                       "core rule: the table backends do not translate "
                       "operator '" +
                           Op + "' over '" + On + "' to '" + To + "' yet");
-    const std::string P = coreRuleGuardText(Rule, Records);
+    const std::string P = coreRuleGuardText(Rule, Records, "Q");
     const std::string Idx = std::to_string(C.TypeIdx);
     const std::string V = "Q.Types[" + Idx + "]";
     std::string Cond;
@@ -5698,6 +5708,13 @@ class LegalizerTableEmitterImpl {
             Size + " / NumElts; return std::make_pair(unsigned(" + Idx +
             "), LLT::fixed_vector(NumElts, "
             "VecTy.getElementType().changeElementSize(MinSize))); }";
+      break;
+    }
+    case CoreTableTranslation::MinScalarOrElt: {
+      const std::string Ty = Cxx.value(*C.Target);
+      Cond = "scalarOrEltNarrowerThan(" + Idx + ", (" + Ty +
+             ").getScalarSizeInBits())(Q)";
+      Mut = "LegalizeMutations::changeElementSizeTo(" + Idx + ", " + Ty + ")";
       break;
     }
     case CoreTableTranslation::WidenPow2OrMinSize: {

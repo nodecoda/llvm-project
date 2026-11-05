@@ -829,7 +829,7 @@ class UnsupportedFor<list<LegalizeArgType> Types>
 
 /// unsupportedIf() takes a LegalityPredicate, not a cached bool: it is the
 /// query-time guard, like scalarizeIf().
-class UnsupportedIf<LegalizeQueryPredicate P>
+class UnsupportedIf<LegalizeQueryPredicateBase P>
     : LegalizeQueryGuardedCall<BuilderUnsupportedIf, P, []>;
 
 def Unsupported : LegalizeCall<BuilderUnsupported, []>;
@@ -879,7 +879,7 @@ class ScalarSameSizeAs<int Idx, int OtherIdx>
 class Scalarize<int Idx>
     : LegalizeCall<BuilderScalarize, [LegalizeArgIndex<Idx>]>;
 
-class ScalarizeIf<LegalizeQueryPredicate P, int Idx>
+class ScalarizeIf<LegalizeQueryPredicateBase P, int Idx>
     : LegalizeQueryGuardedCall<BuilderScalarizeIf, P, [LegalizeArgIndex<Idx>]>;
 
 class MoreElementsToNextPow2<int Idx>
