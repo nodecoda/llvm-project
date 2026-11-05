@@ -244,6 +244,9 @@ def WidenTo64 : CoreWiden<(Slot 0), (Pow2Min 64)>;
 def WidenVec  : CoreWiden<(ElemOf (Slot 1)), (Ty s16)>;
 def SplitWhen : CoreMoreIf<(Slot 0), (Pow2),
                            (CoreGt (NumElems (Slot 0)), 4)>;
+def WidenV4i16To64Bits : CoreWiden<(ElemOf (Slot 0)), (MinVectorSize 64)>;
+def HalfOr32 : CoreWiden<
+    (Slot 0), (CoreSelect (Feature "Subtarget.hasFP16()"), 16, 32)>;
 ```
 
 A rule is one operator (`Widen`, `Narrow`, `More`, `Fewer`, `Bitcast`), an
@@ -260,17 +263,25 @@ comparison between different sorts, a `Clamp` without two bounds, and a
 primitive with no C++ shim.  The diagnostic names the operator, the expected
 sort, the actual sort, and the `.td` line.
 
-The C++ translation is still a builder call: `CoreWiden` over a slot lowers to
-`widenScalarToNextPow2`/`minScalar`/`minScalarSameAs`, `CoreMore` to
-`moreElementsToNextPow2`, and so on.  A `CoreGuard` is emitted as a
-`LegalityQuery` lambda built from the same observer vocabulary.  The generated
-fragment therefore has exactly the same runtime shape as the hand-written
-chain; the typed layer only exists at TableGen time.
+The C++ translation is a thin `core*` shim call.  Every shim takes the guard
+first and composes an existing `LegalizeRuleSet` factory through `actionIf`:
+`CoreWiden` over a slot lowers to `coreWidenScalarToNextPow2` or
+`coreMinScalar`, `CoreMore` to `coreMoreElementsToNextPow2`,
+`MinVectorSize` to `coreWidenVectorEltsToVectorMinSize`, and so on.  A
+`CoreGuard` is emitted as a `LegalityQuery` lambda built from the same observer
+vocabulary.  The generated fragment therefore has exactly the same runtime
+shape as the hand-written chain; the typed layer only exists at TableGen time.
+The table backends translate the primitives whose shims have a table
+translation; a primitive without one is a build error, not a silent fallback
+to the chain.
 
 `-gen-legalizer-core` carries both views.  Rows with the primitive vocabulary
 emit `op`/`on`/`to` and declare schema version 0.4; legacy rows keep the 0.3
 `action`/`type_idx`/`mutation` fields byte-for-byte.  A target that does not
-use the primitives still emits 0.3.
+use the primitives still emits 0.3.  The 0.3 projection of a primitive is the
+closest legacy mutation: `MinVectorSize(64)` becomes
+`{"min_vector_size":64}` and `CoreSelect` becomes `{"select":[...]}` under
+`set_elem_bits`.
 
 The checker is a sort checker, not a shape checker.  `More` on a scalar is
 sort-correct because the slot's sort is always `Type`; that the slot is a
