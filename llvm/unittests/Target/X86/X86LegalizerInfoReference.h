@@ -16,7 +16,9 @@
 //   5cefdb37ddf34444f25e8a329bb5f8f51f012675f13c484e479654b98601428c
 //   builder-api-commit: ebac17721d12
 //   reference-behavior-sha256:
-//   6afdc0afe2be9616737594cdfcff668f9e3bfad9a7d4651ec1ec7d97b1da364c
+//   70f3be6243785b0692c2113bf42b980b9d58ceea32e4894cc2f7ae6d2cf9bffb
+//   re-baseline: 6706952f4a5a, G_BUILD_VECTOR clamps the maximum element
+//                count instead of widening; mirrors llvm#238277
 //   delete-after:  not planned; retirement requires an approved replacement
 //                  oracle
 //

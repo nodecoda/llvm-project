@@ -4,12 +4,12 @@
   "comment": "Coverage denominators for the X86 GlobalISel legalizer regression suite. Core entries are an expansion of the literal rules and are never a denominator.",
   "table_count": 63,
   "literal_bearing_rule_set_count": 63,
-  "literal_td_rule_count": 282,
-  "core_entry_count": 522,
+  "literal_td_rule_count": 281,
+  "core_entry_count": 517,
   "all_escaped_rule_set_count": 0,
   "escaped_td_rule_count": 0,
   "escaped_in_literal_sets": 0,
   "escaped_in_all_escaped_sets": 0,
-  "td_rule_count": 282,
-  "mutation_target_count": 124
+  "td_rule_count": 281,
+  "mutation_target_count": 123
 }

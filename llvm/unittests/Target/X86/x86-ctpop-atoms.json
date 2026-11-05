@@ -9,10 +9,10 @@
     "comment": "The SUT of the differential test must be this exact tuple. The build-time X86LegalizerPins gtest compares the frozen oracle, the generated .inc and the Core IR hash. What is pinned is behaviour, not source text: the emitter and the .td are covered through the .inc they produce, so formatting them does not force a repin. tblgen_binary_sha256 and base_commit are recorded provenance (machine-local / git history) and are not compared in CI. Update the block by pasting the ACTUAL values printed when X86LegalizerPins fails.",
     "base_commit": "ebac17721d12",
     "import_commit": "1a174146aa9e",
-    "oracle_sha256": "e9776b42efebd104e69f0af6a89f69f9ed95cd7f8700c11c6289876cec66ea85",
+    "oracle_sha256": "4539e62b18e37f1d296607222ca4da7a2f3ba5938b1dfc8fe345a82d655f5f63",
     "tblgen_binary_sha256": "d0ee89095edb5cef2405b9711edff286af365938d3324cf66d294d895f8b35a1",
-    "generated_inc_sha256": "e699cfc64fd4e37a6cb57857f036824e22b5987a08a35058d9ce423e691759e0",
-    "core_ir_sha256": "315b47789e85e04d138e40be408d237edd5a28312dbc17c6517c1581c23058a5",
+    "generated_inc_sha256": "4766ec6f51a43389c22f4daceeb45ccac4530affa047006a2d52503f63ad783b",
+    "core_ir_sha256": "367d565b470ddc6f0ce21a722ba7b8ec760a21c8129013962b8542dce5fd4ca6",
     "core_ir_escape_count": 0,
     "core_ir_ctpop_clamp_escapes": 0
   },

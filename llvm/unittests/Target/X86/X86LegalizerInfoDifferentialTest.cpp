@@ -82,7 +82,7 @@ namespace {
 // The domain is generated from the same point emitter the reader's selfCheck()
 // walks.  The struct below is the shape that emitter's aggregate initializers
 // expect -- the reader's own definition is private to X86LegalizerTable.cpp --
-// so the 1397 queries are included, never copied.
+// so the 1407 queries are included, never copied.
 struct X86TablePoint {
   unsigned Opcode;
   const char *Name;
@@ -2066,7 +2066,7 @@ TEST_F(X86LegalizerDifferentialTest, SelfCheckDomainSmoke) {
   Table.mutableTable().selfCheck(OS);
   OS.flush();
 
-  EXPECT_NE(Log.find("points 1397"), std::string::npos) << Log;
+  EXPECT_NE(Log.find("points 1407"), std::string::npos) << Log;
   EXPECT_NE(Log.find("mismatches 0"), std::string::npos) << Log;
   EXPECT_NE(Log.find("skipped 0"), std::string::npos) << Log;
 }
@@ -2091,7 +2091,7 @@ TEST_F(X86LegalizerDifferentialTest, RuleIndexAgreesWithReference) {
     SmallVector<X86TablePoint, 0> Points;
     Points.reserve(X86NumTablePoints);
     x86CollectTablePoints(Points, S.STI->isTarget64BitLP64() ? 64 : 32);
-    ASSERT_EQ(Points.size(), 1397u);
+    ASSERT_EQ(Points.size(), 1407u);
 
     for (const X86TablePoint &P : Points) {
       ArrayRef<LLT> Types(P.Types, P.NumTypes);
@@ -2163,8 +2163,8 @@ TEST_F(X86LegalizerDifferentialTest, RuleIndexAgreesWithReference) {
   EXPECT_EQ(OutOfRange, 0u) << Diag.str();
   // The domain is the table's own: a decline here would mean the rules stopped
   // matching queries the reader still asks.
-  EXPECT_EQ(Matched, 2164u) << Diag.str();
-  EXPECT_EQ(NoRule, 630u) << Diag.str();
+  EXPECT_EQ(Matched, 2182u) << Diag.str();
+  EXPECT_EQ(NoRule, 632u) << Diag.str();
   EXPECT_EQ(Opaque, 0u) << Diag.str();
 }
 
@@ -3425,7 +3425,7 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
       << "every literal rule must be either witnessed or approved";
 
   std::vector<WitnessAtom> Atoms;
-  Atoms.reserve(1256);
+  Atoms.reserve(1255);
 
   // Per-rule atoms: the first query the first-match search found for the rule,
   // in the configuration the search assigned it.
@@ -3631,7 +3631,7 @@ TEST_F(X86LegalizerDifferentialTest, DISABLED_GenerateWitness) {
   EXPECT_EQ(ASAtoms, 220u);
   EXPECT_EQ(DescriptorCount, DescriptorAtoms);
   EXPECT_EQ(DescriptorCount + DescriptorExceptions, Escapes->size());
-  EXPECT_EQ(Atoms.size(), 1256u);
+  EXPECT_EQ(Atoms.size(), 1255u);
 
   std::sort(Atoms.begin(), Atoms.end(),
             [](const WitnessAtom &L, const WitnessAtom &R) {
@@ -4486,7 +4486,7 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
       Root->getInteger("descriptor_atoms").value_or(-1);
   const int64_t DescriptorExceptions =
       Root->getInteger("descriptor_exceptions").value_or(-1);
-  EXPECT_EQ(AtomCount, 1256);
+  EXPECT_EQ(AtomCount, 1255);
   EXPECT_EQ(BoundaryHits, 756);
   EXPECT_EQ(ASHits, 220);
   EXPECT_EQ(PerRuleHits + DescriptorHits + BoundaryHits + ASHits, AtomCount)
@@ -4497,7 +4497,7 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
 
   const json::Array *AtomArray = Root->getArray("atoms");
   ASSERT_NE(AtomArray, nullptr);
-  EXPECT_EQ(AtomArray->size(), 1256u);
+  EXPECT_EQ(AtomArray->size(), 1255u);
 
   std::string Error;
   std::optional<std::map<RuleKey, LiteralTarget>> Targets =
@@ -4781,7 +4781,7 @@ TEST_F(X86LegalizerDifferentialTest, WitnessDecisionDifferential) {
                     << It->second;
     }
 
-  EXPECT_EQ(Atoms, 1256u);
+  EXPECT_EQ(Atoms, 1255u);
   EXPECT_EQ(BoundaryAtoms, 756u);
   EXPECT_EQ(ASAtoms, 220u);
   EXPECT_EQ(static_cast<int64_t>(DescriptorAtoms), EscapeDenominator);
@@ -5931,7 +5931,7 @@ TEST_F(X86LegalizerDifferentialTest, MutationKillMatrix) {
       << "the 14 .td mutants must cover 14 different rule sets";
 
   const KillMatrixResult KM = computeKillMatrix();
-  ASSERT_EQ(KM.Atoms, 1256u)
+  ASSERT_EQ(KM.Atoms, 1255u)
       << "the kill matrix must replay every witness atom";
   ASSERT_EQ(std::size(Mutants), 16u);
 
@@ -7124,7 +7124,7 @@ TEST_F(X86LegalizerDifferentialTest, ReleasePathNoApply) {
   std::string Error;
   std::optional<std::vector<WitnessAtom>> Atoms = readWitnessAtoms(Error);
   ASSERT_TRUE(Atoms.has_value()) << Error;
-  ASSERT_EQ(Atoms->size(), 1256u);
+  ASSERT_EQ(Atoms->size(), 1255u);
 
   std::map<std::string, unsigned> ConfigForID;
   for (unsigned I = 0; I != std::size(FullConfigs); ++I)

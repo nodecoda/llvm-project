@@ -177,6 +177,11 @@ set(X86_LEGALIZER_CORE
     ${LLVM_BINARY_DIR}/lib/Target/X86/X86LegalizerInfo.core.json)
 set(X86_LEGALIZER_ORACLE
     ${CMAKE_CURRENT_SOURCE_DIR}/X86LegalizerInfoReference.cpp)
+# The reference mutants below are generated at configure time from this file.
+# Without this dependency, editing the oracle leaves stale mutant copies behind
+# and the kill matrix silently tests the previous oracle.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+             ${X86_LEGALIZER_ORACLE})
 
 # The independent oracle can be corrupted too.  Each copy starts as the frozen
 # reference .cpp, has its class renamed, and has exactly one builder call

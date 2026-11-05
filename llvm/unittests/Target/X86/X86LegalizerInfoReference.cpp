@@ -557,11 +557,25 @@ X86LegalizerInfoReference::X86LegalizerInfoReference(const X86Subtarget &STI,
                (HasAVX512 &&
                 typeInSet(0, {v8s64, v16s32, v32s16, v64s8})(Query));
       })
-      .clampNumElements(0, v16s8, s8MaxVector)
-      .clampNumElements(0, v8s16, s16MaxVector)
-      .clampNumElements(0, v4s32, s32MaxVector)
-      .clampNumElements(0, v2s64, s64MaxVector)
-      .moreElementsToNextPow2(0);
+      // A narrow G_BUILD_VECTOR is reported as unsupported rather than
+      // widened: widening adds undef lanes, and narrowing back recreates the
+      // instruction, so the legalizer would re-enqueue the same query.
+      .clampMaxNumElements(0, s8,
+                           HasAVX512 ? 64
+                           : HasAVX  ? 32
+                                     : 16)
+      .clampMaxNumElements(0, s16,
+                           HasAVX512 ? 32
+                           : HasAVX  ? 16
+                                     : 8)
+      .clampMaxNumElements(0, s32,
+                           HasAVX512 ? 16
+                           : HasAVX  ? 8
+                                     : 4)
+      .clampMaxNumElements(0, s64,
+                           HasAVX512 ? 8
+                           : HasAVX  ? 4
+                                     : 2);
 
   getActionDefinitionsBuilder({G_EXTRACT, G_INSERT})
       .legalIf([=](const LegalityQuery &Query) {
