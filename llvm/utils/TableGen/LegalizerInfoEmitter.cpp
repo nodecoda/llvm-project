@@ -1970,7 +1970,13 @@ std::string mutationJsonInt(unsigned Target, StringRef Kind, int Value) {
 //===----------------------------------------------------------------------===//
 
 struct CoreNode {
-  enum NodeKind { OpNode, IntNode, StringNode, DefNode } Kind = OpNode;
+  enum NodeKind {
+    OpNode,
+    IntNode,
+    StringNode,
+    DefNode,
+    ListNode
+  } Kind = OpNode;
   /// The operator/observer/constructor def, or the named-type/set/tag def.
   const Record *Op = nullptr;
   int IntValue = 0;
@@ -1982,6 +1988,152 @@ struct CoreNode {
 /// Dispatch on this field, not on the TableGen record name: the schema's Name
 /// is the contract, and diagnostics can still use Record::getName().
 static StringRef coreTag(const Record &R) { return R.getValueAsString("Name"); }
+
+/// One member of a membership set, in the form its consumers want: the type
+/// each column names, and the alignment of a memory descriptor.
+struct CoreSetEntry {
+  const Record *Types[3] = {nullptr, nullptr, nullptr};
+  std::optional<unsigned> Align;
+};
+
+/// A membership set, decoded from either spelling.
+///
+/// A set is either a named `LegalizeCoreSet` def or a list literal written at
+/// the use site:
+///
+///   X86_IntTypes64
+///   [X86_s8, X86_s16, X86_s32, X86_s64, X86_p0]
+///   [[X86_s16, X86_s16], [X86_s32, X86_s32]]
+///   [LegalizeMemDesc<X86_s8, X86_p0, X86_s8, 1>]
+///
+/// Both decode to the same entries, so inlining a set is a spelling change and
+/// cannot change the emitted IR.
+struct CoreSetInfo {
+  unsigned Arity = 1;
+  const Record *ElemSort = nullptr;
+  bool MemDesc = false;
+  bool KindSet = false;
+  std::vector<CoreSetEntry> Entries;
+  /// The members of a kind set, which are tags rather than types.
+  std::vector<const Record *> KindElems;
+};
+
+/// Decode a set into its members.  A literal's shape gives the arity, which is
+/// why an inline set does not have to declare one.
+static void decodeCoreSet(const CoreNode &N, const RecordKeeper &Records,
+                          CoreSetInfo &Out, const Record &Owner) {
+  if (N.Kind == CoreNode::DefNode && N.Op->isSubClassOf("LegalizeNamedType")) {
+    // A member of the type sort is a one-member set, so `(in s64)` needs no
+    // braces around it.
+    Out.Arity = 1;
+    Out.ElemSort = Records.getDef("SortType");
+    CoreSetEntry Ent;
+    Ent.Types[0] = N.Op;
+    Out.Entries.push_back(Ent);
+    return;
+  }
+  if (N.Kind == CoreNode::DefNode) {
+    const Record *R = N.Op;
+    if (!R->isSubClassOf("LegalizeCoreSet"))
+      PrintFatalError(Owner.getLoc(),
+                      "core rule: '" + R->getName() + "' is not a set");
+    Out.Arity = R->getValueAsInt("Arity");
+    Out.ElemSort = R->getValueAsDef("ElemSort");
+    Out.MemDesc = R->isSubClassOf("LegalizeCoreMemDescSet");
+    Out.KindSet = R->isSubClassOf("LegalizeCoreKindSet");
+    for (const Record *E : R->getValueAsListOfDefs("Elems")) {
+      if (Out.KindSet) {
+        Out.KindElems.push_back(E);
+        continue;
+      }
+      CoreSetEntry Ent;
+      if (R->isSubClassOf("LegalizeCoreTypeSet")) {
+        Ent.Types[0] = E;
+      } else if (R->isSubClassOf("LegalizeCoreTypePairSet")) {
+        Ent.Types[0] = E->getValueAsDef("Type0");
+        Ent.Types[1] = E->getValueAsDef("Type1");
+      } else if (R->isSubClassOf("LegalizeCoreTypeTripleSet")) {
+        Ent.Types[0] = E->getValueAsDef("Type0");
+        Ent.Types[1] = E->getValueAsDef("Type1");
+        Ent.Types[2] = E->getValueAsDef("Type2");
+      } else if (Out.MemDesc) {
+        Ent.Types[0] = E->getValueAsDef("Type0");
+        Ent.Types[1] = E->getValueAsDef("Type1");
+        Ent.Types[2] = E->getValueAsDef("MemTy");
+        Ent.Align = E->getValueAsInt("Align");
+      } else {
+        PrintFatalError(Owner.getLoc(), "core rule: cannot decode the set '" +
+                                            R->getName() + "'");
+      }
+      Out.Entries.push_back(Ent);
+    }
+    return;
+  }
+
+  if (N.Kind != CoreNode::ListNode)
+    PrintFatalError(Owner.getLoc(), "core rule: expected a set");
+  if (N.Kids.empty())
+    PrintFatalError(Owner.getLoc(), "core rule: a set literal cannot be empty");
+  Out.ElemSort = Records.getDef("SortType");
+  // A list of `LegalizeMemDesc` records carries an alignment, which is an
+  // integer and so cannot sit in a homogeneous list beside the types.
+  if (N.Kids.front()->Kind == CoreNode::DefNode &&
+      N.Kids.front()->Op->isSubClassOf("LegalizeMemDesc")) {
+    Out.Arity = 2;
+    Out.MemDesc = true;
+    for (const auto &K : N.Kids) {
+      if (K->Kind != CoreNode::DefNode ||
+          !K->Op->isSubClassOf("LegalizeMemDesc"))
+        PrintFatalError(Owner.getLoc(),
+                        "core rule: a memory-descriptor set may only hold "
+                        "LegalizeMemDesc members");
+      CoreSetEntry Ent;
+      Ent.Types[0] = K->Op->getValueAsDef("Type0");
+      Ent.Types[1] = K->Op->getValueAsDef("Type1");
+      Ent.Types[2] = K->Op->getValueAsDef("MemTy");
+      Ent.Align = K->Op->getValueAsInt("Align");
+      Out.Entries.push_back(Ent);
+    }
+    return;
+  }
+  // A flat list names one type per member; a list of lists names one tuple.
+  if (N.Kids.front()->Kind != CoreNode::ListNode) {
+    Out.Arity = 1;
+    for (const auto &K : N.Kids) {
+      if (K->Kind != CoreNode::DefNode ||
+          !K->Op->isSubClassOf("LegalizeNamedType"))
+        PrintFatalError(Owner.getLoc(),
+                        "core rule: a type set names LegalizeNamedType defs");
+      CoreSetEntry Ent;
+      Ent.Types[0] = K->Op;
+      Out.Entries.push_back(Ent);
+    }
+    return;
+  }
+  Out.Arity = N.Kids.front()->Kids.size();
+  if (Out.Arity != 2 && Out.Arity != 3)
+    PrintFatalError(Owner.getLoc(),
+                    "core rule: a tuple set holds pairs or triples, got " +
+                        std::to_string(Out.Arity) + " columns");
+  for (const auto &E : N.Kids) {
+    if (E->Kind != CoreNode::ListNode)
+      PrintFatalError(Owner.getLoc(),
+                      "core rule: a tuple set member must be a list");
+    if (E->Kids.size() != Out.Arity)
+      PrintFatalError(Owner.getLoc(),
+                      "core rule: every member of a tuple set must have the "
+                      "same number of columns");
+    CoreSetEntry Ent;
+    for (unsigned I = 0; I != Out.Arity; ++I) {
+      if (E->Kids[I]->Kind != CoreNode::DefNode ||
+          !E->Kids[I]->Op->isSubClassOf("LegalizeNamedType"))
+        PrintFatalError(Owner.getLoc(),
+                        "core rule: a tuple set member must name types");
+      Ent.Types[I] = E->Kids[I]->Op;
+    }
+    Out.Entries.push_back(Ent);
+  }
+}
 
 static std::unique_ptr<CoreNode> parseCoreNode(const Init &I,
                                                const Record &Owner) {
@@ -1999,6 +2151,12 @@ static std::unique_ptr<CoreNode> parseCoreNode(const Init &I,
   if (const auto *DI = dyn_cast<DefInit>(&I)) {
     N->Kind = CoreNode::DefNode;
     N->Op = DI->getDef();
+    return N;
+  }
+  if (const auto *LI = dyn_cast<ListInit>(&I)) {
+    N->Kind = CoreNode::ListNode;
+    for (const Init *E : *LI)
+      N->Kids.push_back(parseCoreNode(*E, Owner));
     return N;
   }
   if (const auto *D = dyn_cast<DagInit>(&I)) {
@@ -2083,6 +2241,8 @@ static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
     PrintFatalError(Owner.getLoc(),
                     "core rule: '" + R->getName() + "' is not a core node");
   }
+  case CoreNode::ListNode:
+    PrintFatalError(Owner.getLoc(), "core rule: a set literal is not a value");
   case CoreNode::OpNode:
     break;
   }
@@ -2131,9 +2291,9 @@ static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
     if (coreTag(*N.Kids[2]->Op) != "memSlot")
       PrintFatalError(Owner.getLoc(), "core rule: the third operand of '" +
                                           Name + "' must be a memory slot");
-    const CoreNode &SetNode = *N.Kids[3];
-    if (SetNode.Kind != CoreNode::DefNode ||
-        !SetNode.Op->isSubClassOf("LegalizeCoreMemDescSet"))
+    CoreSetInfo Set;
+    decodeCoreSet(*N.Kids[3], Records, Set, Owner);
+    if (!Set.MemDesc)
       PrintFatalError(Owner.getLoc(), "core rule: the last operand of '" +
                                           Name +
                                           "' is not a memory-descriptor set");
@@ -2151,47 +2311,14 @@ static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
     // The last operand is the set; everything before it names one type slot.
     const unsigned NSlots = N.Kids.size() - 1;
     const CoreNode &RhsNode = *N.Kids.back();
-    if (RhsNode.Kind == CoreNode::DefNode &&
-        RhsNode.Op->isSubClassOf("LegalizeCoreSet")) {
-      const Record *Set = RhsNode.Op;
-      const unsigned SetArity = Set->getValueAsInt("Arity");
-      if (SetArity != NSlots)
-        PrintFatalError(Owner.getLoc(),
-                        "core rule: '" + Name + "' tests " +
-                            std::to_string(NSlots) + " slot(s) but '" +
-                            Set->getName() + "' holds " +
-                            std::to_string(SetArity) + "-tuples");
-      const Record *Elem = Set->getValueAsDef("ElemSort");
-      for (unsigned I = 0; I != NSlots; ++I) {
-        const CoreNode &Kid = *N.Kids[I];
-        // A tuple set names slots, not values: the C++ predicate is
-        // `typePairInSet(0, 1, ...)` and takes indices.
-        if (NSlots > 1 &&
-            (Kid.Kind != CoreNode::OpNode || coreTag(*Kid.Op) != "slot" ||
-             Kid.Kids.size() != 1 || Kid.Kids[0]->Kind != CoreNode::IntNode))
-          PrintFatalError(Owner.getLoc(),
-                          "core rule: operand " + std::to_string(I) + " of '" +
-                              Name + "' must name a type slot, e.g. (Slot " +
-                              std::to_string(I) + ")");
-        const Record *Lhs = coreSortOf(Kid, Records, Owner);
-        if (Lhs != Elem)
-          PrintFatalError(Owner.getLoc(),
-                          "core rule: '" + Name + "' expects a " +
-                              Elem->getValueAsString("Name") + " operand " +
-                              std::to_string(I) + ", got " +
-                              Lhs->getValueAsString("Name"));
-      }
-      return Op->getValueAsDef("Result");
-    }
-    if (NSlots != 1)
-      PrintFatalError(Owner.getLoc(),
-                      "core rule: '" + Name +
-                          "' tests type slots, so its last operand must be a "
-                          "set of tuples");
     // A Clamp is an integer range, so `(in x, (clamp lo, hi))` is membership
     // in an interval rather than in an enumerated set.
     if (RhsNode.Kind == CoreNode::OpNode &&
         coreTag(*RhsNode.Op) == "clamp") {
+      if (NSlots != 1)
+        PrintFatalError(Owner.getLoc(),
+                        "core rule: '" + Name +
+                            "' tests one value against a Clamp");
       const Record *Lhs = coreSortOf(*N.Kids[0], Records, Owner);
       if (Lhs != Records.getDef("SortInt"))
         PrintFatalError(Owner.getLoc(),
@@ -2209,8 +2336,34 @@ static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
       coreIntLiteral(*RhsNode.Kids[1], Owner, "'Clamp' upper bound");
       return Op->getValueAsDef("Result");
     }
-    PrintFatalError(Owner.getLoc(), "core rule: the last operand of '" + Name +
-                                        "' is not a set");
+    CoreSetInfo Set;
+    decodeCoreSet(RhsNode, Records, Set, Owner);
+    if (Set.Arity != NSlots)
+      PrintFatalError(Owner.getLoc(), "core rule: '" + Name + "' tests " +
+                                          std::to_string(NSlots) +
+                                          " slot(s) but its set holds " +
+                                          std::to_string(Set.Arity) +
+                                          "-tuples");
+    for (unsigned I = 0; I != NSlots; ++I) {
+      const CoreNode &Kid = *N.Kids[I];
+      // A tuple set names slots, not values: the C++ predicate is
+      // `typePairInSet(0, 1, ...)` and takes indices.
+      if (NSlots > 1 &&
+          (Kid.Kind != CoreNode::OpNode || coreTag(*Kid.Op) != "slot" ||
+           Kid.Kids.size() != 1 || Kid.Kids[0]->Kind != CoreNode::IntNode))
+        PrintFatalError(Owner.getLoc(),
+                        "core rule: operand " + std::to_string(I) + " of '" +
+                            Name + "' must name a type slot, e.g. (Slot " +
+                            std::to_string(I) + ")");
+      const Record *Lhs = coreSortOf(Kid, Records, Owner);
+      if (Lhs != Set.ElemSort)
+        PrintFatalError(Owner.getLoc(),
+                        "core rule: '" + Name + "' expects a " +
+                            Set.ElemSort->getValueAsString("Name") +
+                            " operand " + std::to_string(I) + ", got " +
+                            Lhs->getValueAsString("Name"));
+    }
+    return Op->getValueAsDef("Result");
   }
 
   if (Op->getValueAsBit("SameSortOperands")) {
@@ -2668,8 +2821,62 @@ static const CoreShimRow *lookupCoreShim(StringRef Operator, StringRef On,
   return nullptr;
 }
 
+/// The serialized form of a set.  A named set and the literal it spells
+/// serialize identically, so inlining one cannot move a pinned IR hash.
+static void coreSetJson(const CoreSetInfo &Set, const RecordKeeper &Records,
+                        std::string &Out) {
+  // A one-member type set is the type itself.  The grammar accepts `(in s64)`,
+  // `(in [s64])` and a named one-member set; serializing the first as `type`
+  // and the others as a `set` would give one predicate two encodings, and the
+  // difference would show up as a spurious IR diff when a set is inlined.
+  if (!Set.KindSet && !Set.MemDesc && Set.Arity == 1 &&
+      Set.Entries.size() == 1) {
+    Out = "{\"kind\":\"type\",\"value\":" +
+          coreTypeValue(Records, *Set.Entries.front().Types[0]) + "}";
+    return;
+  }
+  Out = "{\"kind\":\"set\",\"of\":\"" +
+        Set.ElemSort->getValueAsString("Name").str() + "\"";
+  // A one-slot set is the common case and its JSON predates tuple sets; the
+  // arity is only written when it changes what the elements mean.
+  if (Set.Arity != 1)
+    Out += ",\"arity\":" + std::to_string(Set.Arity);
+  Out += ",\"elems\":[";
+  StringRef Sep;
+  if (Set.KindSet) {
+    for (const Record *K : Set.KindElems) {
+      Out += Sep.str();
+      Out += jsonStringValue(coreTag(*K));
+      Sep = ",";
+    }
+  }
+  for (const CoreSetEntry &E : Set.Entries) {
+    Out += Sep.str();
+    if (Set.Arity == 1) {
+      Out += coreTypeValue(Records, *E.Types[0]);
+    } else {
+      Out += "[" + coreTypeValue(Records, *E.Types[0]) + "," +
+             coreTypeValue(Records, *E.Types[1]);
+      if (Set.Arity == 3)
+        Out += "," + coreTypeValue(Records, *E.Types[2]);
+      if (Set.MemDesc)
+        Out += "," + coreTypeValue(Records, *E.Types[2]) + "," +
+               std::to_string(*E.Align);
+      Out += "]";
+    }
+    Sep = ",";
+  }
+  Out += "]}";
+}
+
 static void coreNodeJson(const CoreNode &N, const RecordKeeper &Records,
-                         std::string &Out) {
+                         const Record &Owner, std::string &Out) {
+  if (N.Kind == CoreNode::ListNode) {
+    CoreSetInfo Set;
+    decodeCoreSet(N, Records, Set, Owner);
+    coreSetJson(Set, Records, Out);
+    return;
+  }
   if (N.Kind == CoreNode::IntNode) {
     Out = "{\"kind\":\"int\",\"value\":" + std::to_string(N.IntValue) + "}";
     return;
@@ -2691,38 +2898,9 @@ static void coreNodeJson(const CoreNode &N, const RecordKeeper &Records,
       return;
     }
     if (R->isSubClassOf("LegalizeCoreSet")) {
-      const Record *Elem = R->getValueAsDef("ElemSort");
-      const int Arity = R->getValueAsInt("Arity");
-      Out = "{\"kind\":\"set\",\"of\":\"" +
-            Elem->getValueAsString("Name").str() + "\"";
-      // A one-slot set is the common case and its JSON predates tuple sets;
-      // the arity is only written when it changes what the elements mean.
-      if (Arity != 1)
-        Out += ",\"arity\":" + std::to_string(Arity);
-      Out += ",\"elems\":[";
-      StringRef Sep;
-      for (const Record *E : R->getValueAsListOfDefs("Elems")) {
-        Out += Sep.str();
-        if (R->isSubClassOf("LegalizeCoreTypeSet"))
-          Out += coreTypeValue(Records, *E);
-        else if (R->isSubClassOf("LegalizeCoreTypePairSet")) {
-          Out += "[" + coreTypeValue(Records, *E->getValueAsDef("Type0")) +
-                 "," + coreTypeValue(Records, *E->getValueAsDef("Type1")) + "]";
-        } else if (R->isSubClassOf("LegalizeCoreTypeTripleSet")) {
-          Out += "[" + coreTypeValue(Records, *E->getValueAsDef("Type0")) +
-                 "," + coreTypeValue(Records, *E->getValueAsDef("Type1")) +
-                 "," + coreTypeValue(Records, *E->getValueAsDef("Type2")) + "]";
-        } else if (R->isSubClassOf("LegalizeCoreMemDescSet")) {
-          Out += "[" + coreTypeValue(Records, *E->getValueAsDef("Type0")) +
-                 "," + coreTypeValue(Records, *E->getValueAsDef("Type1")) +
-                 "," + coreTypeValue(Records, *E->getValueAsDef("MemTy")) +
-                 "," + std::to_string(E->getValueAsInt("Align")) + "]";
-        } else {
-          Out += jsonStringValue(coreTag(*E));
-        }
-        Sep = ",";
-      }
-      Out += "]}";
+      CoreSetInfo Set;
+      decodeCoreSet(N, Records, Set, Owner);
+      coreSetJson(Set, Records, Out);
       return;
     }
     Out = "{\"kind\":\"" + coreTag(*R).str() + "\"}";
@@ -2743,7 +2921,7 @@ static void coreNodeJson(const CoreNode &N, const RecordKeeper &Records,
     for (const auto &K : N.Kids) {
       Out += Sep.str();
       std::string Tmp;
-      coreNodeJson(*K, Records, Tmp);
+      coreNodeJson(*K, Records, Owner, Tmp);
       Out += Tmp;
       Sep = ",";
     }
@@ -3057,17 +3235,19 @@ std::string CoreCxxEmitter::emitInMemDesc(const CoreNode &N) {
   if (Mem.Kind != CoreNode::OpNode || coreTag(*Mem.Op) != "memSlot")
     fatal("the third operand of 'inMemDesc' must be a memory slot");
   const unsigned M = SlotIndex(Mem);
-  const Record *Set = N.Kids[3]->Op;
+  CoreSetInfo Set;
+  decodeCoreSet(*N.Kids[3], Records, Set, Owner);
+  if (!Set.MemDesc)
+    fatal("'inMemDesc' needs a memory-descriptor set");
   std::string Out = "LegalityPredicates::typePairAndMemDescInSet(" +
                     std::to_string(I0) + ", " + std::to_string(I1) + ", " +
                     std::to_string(M) + ", {";
   StringRef Sep;
-  for (const Record *E : Set->getValueAsListOfDefs("Elems")) {
+  for (const CoreSetEntry &E : Set.Entries) {
     Out += Sep.str();
-    Out += "{" + E->getValueAsDef("Type0")->getName().str() + ", " +
-           E->getValueAsDef("Type1")->getName().str() + ", " +
-           E->getValueAsDef("MemTy")->getName().str() + ", " +
-           std::to_string(E->getValueAsInt("Align")) + "}";
+    Out += "{" + E.Types[0]->getName().str() + ", " +
+           E.Types[1]->getName().str() + ", " + E.Types[2]->getName().str() +
+           ", " + std::to_string(*E.Align) + "}";
     Sep = ", ";
   }
   // One entry still goes inside the outer braces: `{a, b, c, 8}` would be an
@@ -3079,20 +3259,27 @@ std::string CoreCxxEmitter::emitInMemDesc(const CoreNode &N) {
 std::string CoreCxxEmitter::emitIn(const CoreNode &N) {
   if (coreTag(*N.Op) == "inMemDesc")
     return emitInMemDesc(N);
-  // The tuple forms are registered under their own tags but share this
-  // emitter: `(inPairs (Slot 0), (Slot 1), Set)` is one call, not a
-  // disjunction of `==`, because that is the predicate the C++ API offers and
-  // it compares the pair as a value.
+
   const unsigned NSlots = N.Kids.size() - 1;
   const CoreNode &Rhs = *N.Kids.back();
+  const CoreNode &Lhs = *N.Kids[0];
+
+  // Were the operand a Clamp, it would be an interval rather than a set.
+  const bool IsClamp =
+      Rhs.Kind == CoreNode::OpNode && coreTag(*Rhs.Op) == "clamp";
+
+  CoreSetInfo Set;
+  if (!IsClamp)
+    decodeCoreSet(Rhs, Records, Set, Owner);
+
+  // The tuple forms are registered under their own tags but share this
+  // emitter: `(inPairs Set)` is one call, not a disjunction of `==`, because
+  // that is the predicate the C++ API offers and it compares the pair as a
+  // value.
   if (NSlots > 1) {
-    if (Rhs.Kind != CoreNode::DefNode ||
-        !Rhs.Op->isSubClassOf("LegalizeCoreSet"))
-      fatal("a tuple membership needs a tuple set");
-    const int SetArity = Rhs.Op->getValueAsInt("Arity");
-    if (unsigned(SetArity) != NSlots)
+    if (Set.Arity != NSlots)
       fatal("a tuple membership is testing " + std::to_string(NSlots) +
-            " slots against a " + std::to_string(SetArity) + "-tuple set");
+            " slots against a " + std::to_string(Set.Arity) + "-tuple set");
     std::string Idx;
     for (unsigned I = 0; I != NSlots; ++I) {
       const CoreNode &Kid = *N.Kids[I];
@@ -3103,22 +3290,19 @@ std::string CoreCxxEmitter::emitIn(const CoreNode &N) {
         Idx += ", ";
       Idx += std::to_string(Kid.Kids[0]->IntValue);
     }
-    const bool Pairs = Rhs.Op->isSubClassOf("LegalizeCoreTypePairSet");
-    const bool Triples = Rhs.Op->isSubClassOf("LegalizeCoreTypeTripleSet");
-    if (!Pairs && !Triples)
-      fatal("a tuple membership needs a pair or triple set");
+    const bool Triples = Set.Arity == 3;
     std::string Out = "LegalityPredicates::";
-    Out += Pairs ? "typePairInSet(" : "typeTupleInSet(";
+    Out += Triples ? "typeTupleInSet(" : "typePairInSet(";
     Out += Idx + ", {";
     StringRef Sep;
-    for (const Record *E : Rhs.Op->getValueAsListOfDefs("Elems")) {
+    for (const CoreSetEntry &E : Set.Entries) {
       Out += Sep.str();
       // The member is the C++ name of a LegalizeNamedType, exactly as the
       // one-slot set emits it; `coreTypeValue` is the table's spelling.
-      Out += "{" + E->getValueAsDef("Type0")->getName().str() + ", " +
-             E->getValueAsDef("Type1")->getName().str();
+      Out += "{" + E.Types[0]->getName().str() + ", " +
+             E.Types[1]->getName().str();
       if (Triples)
-        Out += ", " + E->getValueAsDef("Type2")->getName().str();
+        Out += ", " + E.Types[2]->getName().str();
       Out += "}";
       Sep = ", ";
     }
@@ -3127,19 +3311,18 @@ std::string CoreCxxEmitter::emitIn(const CoreNode &N) {
     Out += "})(" + QueryVar.str() + ")";
     return Out;
   }
-  const CoreNode &Lhs = *N.Kids[0];
-  if (Rhs.Kind == CoreNode::OpNode && coreTag(*Rhs.Op) == "clamp") {
+
+  if (IsClamp) {
     std::string V = value(Lhs);
     return "(" + V + " >= " + std::to_string(Rhs.Kids[0]->IntValue) + " && " +
            V + " <= " + std::to_string(Rhs.Kids[1]->IntValue) + ")";
   }
-  if (Rhs.Kind == CoreNode::DefNode &&
-      Rhs.Op->isSubClassOf("LegalizeCoreKindSet")) {
+  if (Set.KindSet) {
     if (Lhs.Kind != CoreNode::OpNode || coreTag(*Lhs.Op) != "sortOf")
       fatal("a Kind set can only test SortOf");
     std::string V = value(*Lhs.Kids[0]);
     std::string Out;
-    for (const Record *E : Rhs.Op->getValueAsListOfDefs("Elems")) {
+    for (const Record *E : Set.KindElems) {
       StringRef Pred = coreKindPredicate(coreTag(*E));
       if (Pred.empty())
         fatal("'" + E->getName() + "' is not a kind");
@@ -3149,14 +3332,13 @@ std::string CoreCxxEmitter::emitIn(const CoreNode &N) {
     }
     return "(" + Out + ")";
   }
-  if (Rhs.Kind == CoreNode::DefNode &&
-      Rhs.Op->isSubClassOf("LegalizeCoreTypeSet")) {
+  if (!Set.MemDesc) {
     std::string V = value(Lhs);
     std::string Out;
-    for (const Record *E : Rhs.Op->getValueAsListOfDefs("Elems")) {
+    for (const CoreSetEntry &E : Set.Entries) {
       if (!Out.empty())
         Out += " || ";
-      Out += V + " == " + E->getName().str();
+      Out += V + " == " + E.Types[0]->getName().str();
     }
     return "(" + Out + ")";
   }
@@ -3244,13 +3426,13 @@ static void expandCoreRule(const RecordKeeper &Records, const Record &Rule,
   else if (const Init *G = Rule.getValueInit("CoreGuard"))
     if (!isa<UnsetInit>(G)) {
       std::unique_ptr<CoreNode> Guard = parseCoreNode(*G, Rule);
-      coreNodeJson(*Guard, Records, CR.Predicate);
+      coreNodeJson(*Guard, Records, Rule, CR.Predicate);
     }
   CR.Op = coreTag(*C.Operator).str();
   if (C.Obs)
-    coreNodeJson(*C.Obs, Records, CR.On);
+    coreNodeJson(*C.Obs, Records, Rule, CR.On);
   if (C.Target)
-    coreNodeJson(*C.Target, Records, CR.To);
+    coreNodeJson(*C.Target, Records, Rule, CR.To);
   Out.push_back(std::move(CR));
 }
 
@@ -5154,18 +5336,19 @@ class LegalizerTableEmitterImpl {
   /// Alignments a core memory-descriptor membership names.  The evaluator
   /// partitions the descriptor axis by every threshold the rules mention, so a
   /// core rule has to contribute them exactly like a legacy argument list.
-  static void collectCoreAligns(const CoreNode &N,
+  static void collectCoreAligns(const CoreNode &N, const RecordKeeper &Records,
+                                const Record &Owner,
                                 std::set<unsigned> &Thresholds) {
     if (N.Kind != CoreNode::OpNode)
       return;
     if (coreTag(*N.Op) == "inMemDesc" && N.Kids.size() == 4) {
-      const CoreNode &Set = *N.Kids[3];
-      if (Set.Kind == CoreNode::DefNode)
-        for (const Record *E : Set.Op->getValueAsListOfDefs("Elems"))
-          Thresholds.insert(E->getValueAsInt("Align"));
+      CoreSetInfo Set;
+      decodeCoreSet(*N.Kids[3], Records, Set, Owner);
+      for (const CoreSetEntry &E : Set.Entries)
+        Thresholds.insert(*E.Align);
     }
     for (const auto &K : N.Kids)
-      collectCoreAligns(*K, Thresholds);
+      collectCoreAligns(*K, Records, Owner, Thresholds);
   }
 
   std::vector<unsigned> alignThresholds() {
@@ -5180,7 +5363,7 @@ class LegalizerTableEmitterImpl {
             const Init *I = Rule->getValueInit(Field);
             if (!I || isa<UnsetInit>(I))
               continue;
-            collectCoreAligns(*parseCoreNode(*I, *Rule), Thresholds);
+            collectCoreAligns(*parseCoreNode(*I, *Rule), Records, *Rule, Thresholds);
           }
           continue;
         }
@@ -5321,63 +5504,59 @@ class LegalizerTableEmitterImpl {
         unsigned I0, I1;
         if (!SlotOf(*N.Kids[0], I0) || !SlotOf(*N.Kids[1], I1) || I0 == I1)
           return;
-        const CoreNode &Set = *N.Kids[3];
-        if (Set.Kind != CoreNode::DefNode ||
-            !Set.Op->isSubClassOf("LegalizeCoreMemDescSet"))
-          return;
         if (std::max(I0, I1) != 1)
           return;
-        for (const Record *E : Set.Op->getValueAsListOfDefs("Elems")) {
+        CoreSetInfo Set;
+        decodeCoreSet(*N.Kids[3], Records, Set, Rule);
+        if (!Set.MemDesc)
+          return;
+        for (const CoreSetEntry &E : Set.Entries) {
           RuleTuple T;
           T.Types.assign(2, TableType{});
           bool Ok = true;
           for (unsigned I = 0; I != 2 && Ok; ++I) {
-            const Record *Ty = E->getValueAsDef("Type" + std::to_string(I));
             SmallVector<TableType, 2> Resolved;
-            Ok = resolveType(*Ty, Resolved) && Resolved.size() == 1;
+            Ok = resolveType(*E.Types[I], Resolved) && Resolved.size() == 1;
             if (Ok)
               T.Types[I ? I1 : I0] = Resolved.front();
           }
-          const Record *MemTy = E->getValueAsDef("MemTy");
           SmallVector<TableType, 2> Mem;
-          Ok = Ok && resolveType(*MemTy, Mem) && Mem.size() == 1;
+          Ok = Ok && resolveType(*E.Types[2], Mem) && Mem.size() == 1;
           if (!Ok)
             return;
           T.HasMem = true;
           T.MemTy = Mem.front();
-          T.Align = E->getValueAsInt("Align");
+          T.Align = *E.Align;
           Exact.push_back(std::move(T));
         }
         return;
       }
       if ((Tag == "inPairs" || Tag == "inTriples") && N.Kids.size() >= 3) {
         const unsigned NSlots = N.Kids.size() - 1;
-        const CoreNode &Set = *N.Kids.back();
-        if (Set.Kind != CoreNode::DefNode ||
-            !Set.Op->isSubClassOf("LegalizeCoreSet"))
+        CoreSetInfo Set;
+        decodeCoreSet(*N.Kids.back(), Records, Set, Rule);
+        if (Set.KindSet || Set.MemDesc)
           return;
         std::vector<unsigned> Idx(NSlots);
         for (unsigned I = 0; I != NSlots; ++I)
           if (!SlotOf(*N.Kids[I], Idx[I]))
             return;
-        for (const Record *E : Set.Op->getValueAsListOfDefs("Elems")) {
-          unsigned Width = 0;
-          for (unsigned I = 0; I != NSlots; ++I)
-            Width = std::max(Width, Idx[I] + 1);
-          // The tuple is positional, so the slots have to be a permutation of
-          // a prefix; `(Slot 0), (Slot 2)` would leave a hole the table cannot
-          // express.
-          if (Width != NSlots)
-            return;
+        unsigned Width = 0;
+        for (unsigned I = 0; I != NSlots; ++I)
+          Width = std::max(Width, Idx[I] + 1);
+        // The tuple is positional, so the slots have to be a permutation of
+        // a prefix; `(Slot 0), (Slot 2)` would leave a hole the table cannot
+        // express.
+        if (Width != NSlots)
+          return;
+        for (const CoreSetEntry &E : Set.Entries) {
           // A select-bearing element names one class per feature
           // combination, so it contributes one point per branch and the
           // tuple's branches are combined positionally.
           SmallVector<SmallVector<TableType, 2>, 3> Alts(NSlots);
           bool Ok = true;
-          for (unsigned I = 0; I != NSlots && Ok; ++I) {
-            const Record *Ty = E->getValueAsDef("Type" + std::to_string(I));
-            Ok = resolveType(*Ty, Alts[I]) && !Alts[I].empty();
-          }
+          for (unsigned I = 0; I != NSlots && Ok; ++I)
+            Ok = resolveType(*E.Types[I], Alts[I]) && !Alts[I].empty();
           if (!Ok)
             return;
           SmallVector<unsigned, 3> Pick(NSlots, 0);
@@ -5403,12 +5582,13 @@ class LegalizerTableEmitterImpl {
         unsigned Idx;
         if (!SlotOf(*N.Kids[0], Idx))
           return;
-        if (N.Kids[1]->Kind != CoreNode::DefNode ||
-            !N.Kids[1]->Op->isSubClassOf("LegalizeCoreTypeSet"))
+        CoreSetInfo Set;
+        decodeCoreSet(*N.Kids[1], Records, Set, Rule);
+        if (Set.KindSet || Set.MemDesc)
           return;
-        for (const Record *E : N.Kids[1]->Op->getValueAsListOfDefs("Elems")) {
+        for (const CoreSetEntry &E : Set.Entries) {
           SmallVector<TableType, 2> Resolved;
-          if (!resolveType(*E, Resolved))
+          if (!resolveType(*E.Types[0], Resolved))
             continue;
           for (const TableType &R : Resolved)
             AddType(Idx, R);

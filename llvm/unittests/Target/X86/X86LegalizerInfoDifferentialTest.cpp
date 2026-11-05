@@ -5416,7 +5416,7 @@ TEST_F(X86LegalizerDifferentialTest, PinnedTuple) {
   EXPECT_STREQ(X86_PIN_INC_RECORDED, X86_PIN_INC_ACTUAL)
       << "generated X86LegalizerInfo.inc";
   EXPECT_STREQ(X86_PIN_CORE_RECORDED, X86_PIN_CORE_ACTUAL)
-      << "X86LegalizerInfo.core.json (checkout root folded)";
+      << "X86LegalizerInfo.core.json (origins dropped, checkout root folded)";
 }
 
 // TC-31: the escapes are the part of the table that is C++ in disguise.  Pin

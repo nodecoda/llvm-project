@@ -330,6 +330,20 @@ def CoreIsPow2 : LegalizeCoreExpr<"isPow2", [SortInt], SortBool>;
 /// The slots are written out because the C++ predicate takes indices, not
 /// query values; the set itself is a table, which is why it is not spelled as
 /// a disjunction of equalities the way a one-slot set is.
+///
+/// The set may also be written as a list literal at the use site instead of
+/// being lifted to a named def:
+///
+///   (CoreIn (Slot 0), [s32, s64])
+///   (CoreInPairs (Slot 0), (Slot 1), [[s32, s32]])
+///   (CoreInMemDesc (Slot 0), (Slot 1), (MemSlot 0),
+///                   [LegalizeMemDesc<s32, p0, s32, 8>])
+///
+/// TableGen accepts a list only as the last operand of a node, which the
+/// trailing set already is.  A literal's shape gives its arity, so an inline
+/// set does not declare one.  A one-member type set *is* the type: `(in s64)`
+/// and `(in [s64])` are the same predicate and serialize identically, so a
+/// singleton has no special spelling to remember.
 def CoreIn : LegalizeCoreExpr<"in", [], SortBool> { let SetMembership = 1; }
 def CoreInPairs
     : LegalizeCoreExpr<"inPairs", [], SortBool> { let SetMembership = 1; }

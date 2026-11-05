@@ -51,7 +51,12 @@ file(SHA256 "${INC}" _act_inc)
 # would only hold in the tree that produced it.
 file(READ "${CORE}" _core)
 string(REPLACE "${SRC_ROOT}" "<llvm>" _core "${_core}")
-string(SHA256 _act_core "${_core}")
+
+# `origin` is a source position: a comment above a rule, or a line added to a
+# shared include, moves it without changing what the table answers.  The pin is
+# on behaviour, so the hash drops those records; the artifact keeps them.
+string(REGEX REPLACE "\"origin\": \\{[^}]*\\},?" "" _core_pinned "${_core}")
+string(SHA256 _act_core "${_core_pinned}")
 
 string(JSON _n LENGTH "${_core}" escapes)
 set(_act_escapes "${_n}")

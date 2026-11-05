@@ -17,4 +17,4 @@ def R : LegalizeRuleSet<["G_PAIR"]> {
   ];
 }
 
-// CHECK: error: core rule: 'CoreInPairs' tests 2 slot(s) but 'IntSet' holds 1-tuples
+// CHECK: error: core rule: 'CoreInPairs' tests 2 slot(s) but its set holds 1-tuples
