@@ -285,7 +285,7 @@ protected:
 TEST_F(AArch64LegalizerDifferentialTest, GeneratedTableMatchesReference) {
   SmallVector<AArch64TablePoint, 0> Points;
   aArch64CollectTablePoints(Points, /*PointerBits=*/64);
-  ASSERT_EQ(Points.size(), 1071u) << "the reviewed AArch64 domain changed";
+  ASSERT_EQ(Points.size(), 1079u) << "the reviewed AArch64 domain changed";
   ASSERT_EQ(Points.size(), AArch64NumTablePoints);
 
   unsigned Compared = 0;
