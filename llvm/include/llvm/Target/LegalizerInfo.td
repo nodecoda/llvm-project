@@ -1072,8 +1072,7 @@ class LegalizeLowering<LegalizeBuilder builder, int overload,
                        LegalizeExpansion expansion,
                        list<LegalizeAction> actions,
                        list<string> escapes = [],
-                       bit tableTranslation = 1,
-                       string shim = ""> {
+                       bit tableTranslation = 1> {
   LegalizeBuilder Builder = builder;
   int Overload = overload;
   LegalizeExpansion Expansion = expansion;
@@ -1089,9 +1088,6 @@ class LegalizeLowering<LegalizeBuilder builder, int overload,
   /// False when -gen-legalizer-rule-index cannot answer for this overload and
   /// the reader falls back to the rule chain.
   bit TableTranslation = tableTranslation;
-
-  /// C++ shim this primitive owns, if any.  Empty in P1; P2 adds the primitives.
-  string Shim = shim;
 }
 
 def LoweringLegalFor0 : LegalizeLowering<BuilderLegalFor, 0, ExPerType, [ActionLegal]>;

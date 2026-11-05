@@ -3584,7 +3584,10 @@ static LoweringStats verifyLoweringRegistry(const RecordKeeper &Records) {
                     " entries for " + std::to_string(S.Overloads) +
                     " declared overloads");
 
-  // Assertions 2, 3, 6: actions, coverage, and the (still empty) shim table.
+  // Assertions 2, 3: actions and coverage.  A shim is not a property of a
+  // (builder, overload) entry: the same builder reaches different primitives
+  // depending on its target, so the shim table is keyed by
+  // (operator, observation, target) and verified by verifyCoreTables().
   //
   // The actions a Core IR row can carry.  Composite actions (clampScalar and
   // friends) are directions rather than rows, and Coverage never reaches the
@@ -3618,15 +3621,6 @@ static LoweringStats verifyLoweringRegistry(const RecordKeeper &Records) {
         PrintFatalError(L->getLoc(),
                         "'" + A->getName() + "' is not a LegalizeAction");
       CoveredActions.insert(A->getValueAsString("Name").str());
-    }
-    if (StringRef Shim = L->getValueAsString("Shim"); !Shim.empty()) {
-      bool Found = llvm::any_of(CoreShimTable, [&](const CoreShimRow &Row) {
-        return Row.Method == Shim;
-      });
-      if (!Found)
-        PrintFatalError(L->getLoc(), "lowering names shim '" + Shim +
-                                         "', which the core shim table does "
-                                         "not declare");
     }
     if (!L->getValueAsBit("TableTranslation"))
       ++S.EntriesWithoutTable;
