@@ -43,6 +43,8 @@
 //                 in/inPairs/inTriples/inMemDesc, mul, urem, udiv, isPow2
 //   shapes        fixed, variadic, sameSort, membership, memDescMembership
 //                 (one per constructor, not four independent flags)
+//   actions       (operator, target sort) -> LegalizeAction; a total function,
+//                 one LegalizeCoreAction record per key
 //
 // This list is the only index to the file: a node that is missing here is a
 // node nobody finds.  It had gone stale once (IsFloat16, SizeInBytesOf,
@@ -171,6 +173,39 @@ def LibcallOp     : LegalizeCoreTerminal<"libcall", SortBool>;
 def ScalarizeOp : LegalizeCoreOperator<"scalarize", SortType, []> {
   // HasObservation stays set: the slot is the observation.
 }
+
+//===----------------------------------------------------------------------===//
+// Action table
+//===----------------------------------------------------------------------===//
+
+/// The action is a total function of (operator, target sort): the observation
+/// chooses the guard, the target chooses the mutation payload.  A terminal
+/// operator has no target, so the empty sort keys its row.
+///
+/// These are records rather than a C++ array so that the table is part of the
+/// schema: an operator with no row, a row for something that is not an
+/// operator, and two rows with the same key are all build-time errors.
+class LegalizeCoreAction<string op, string targetSort, string action> {
+  string Operator = op;
+  string TargetSort = targetSort;
+  string Action = action;
+}
+
+def CoreActionWidenToType    : LegalizeCoreAction<"widen", "Type", "WidenScalar">;
+def CoreActionWidenToInt     : LegalizeCoreAction<"widen", "Int", "WidenScalar">;
+def CoreActionNarrowToType   : LegalizeCoreAction<"narrow", "Type", "NarrowScalar">;
+def CoreActionNarrowToInt    : LegalizeCoreAction<"narrow", "Int", "NarrowScalar">;
+def CoreActionMoreToInt      : LegalizeCoreAction<"more", "Int", "MoreElements">;
+def CoreActionMoreToType     : LegalizeCoreAction<"more", "Type", "MoreElements">;
+def CoreActionFewerToInt     : LegalizeCoreAction<"fewer", "Int", "FewerElements">;
+def CoreActionFewerToType    : LegalizeCoreAction<"fewer", "Type", "FewerElements">;
+def CoreActionBitcast        : LegalizeCoreAction<"bitcast", "Type", "Bitcast">;
+def CoreActionLegal          : LegalizeCoreAction<"legal", "", "Legal">;
+def CoreActionCustom         : LegalizeCoreAction<"custom", "", "Custom">;
+def CoreActionLower          : LegalizeCoreAction<"lower", "", "Lower">;
+def CoreActionUnsupported    : LegalizeCoreAction<"unsupported", "", "Unsupported">;
+def CoreActionLibcall        : LegalizeCoreAction<"libcall", "", "Libcall">;
+def CoreActionScalarize      : LegalizeCoreAction<"scalarize", "", "FewerElements">;
 
 //===----------------------------------------------------------------------===//
 // Observers

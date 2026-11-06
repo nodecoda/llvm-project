@@ -2468,33 +2468,10 @@ static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
   return Op->getValueAsDef("Result");
 }
 
-struct CoreActionRow {
-  StringRef Operator;
-  StringRef TargetSort;
-  StringRef Action;
-};
-
 /// C5: the action is a total function of (operator, target sort).  The
 /// observation chooses the guard; the target chooses the mutation payload.
-static const CoreActionRow CoreActionTable[] = {
-    {"widen", "Type", "WidenScalar"},
-    {"widen", "Int", "WidenScalar"},
-    {"narrow", "Type", "NarrowScalar"},
-    {"narrow", "Int", "NarrowScalar"},
-    {"more", "Int", "MoreElements"},
-    {"more", "Type", "MoreElements"},
-    {"fewer", "Int", "FewerElements"},
-    {"fewer", "Type", "FewerElements"},
-    {"bitcast", "Type", "Bitcast"},
-    // A terminal operator has no target, so the empty sort keys its action.
-    {"legal", "", "Legal"},
-    {"custom", "", "Custom"},
-    {"lower", "", "Lower"},
-    {"unsupported", "", "Unsupported"},
-    {"libcall", "", "Libcall"},
-    {"scalarize", "", "FewerElements"},
-};
-
+/// The rows are LegalizeCoreAction records, so the table is part of the schema
+/// and the checks in verifyCoreTables() can see it.
 static const Record *findCoreAction(const RecordKeeper &Records,
                                     StringRef Name) {
   for (const Record *A : Records.getAllDerivedDefinitions("LegalizeAction"))
@@ -2503,11 +2480,14 @@ static const Record *findCoreAction(const RecordKeeper &Records,
   return nullptr;
 }
 
-static const CoreActionRow *lookupCoreAction(StringRef Operator,
-                                             StringRef TargetSort) {
-  for (const CoreActionRow &Row : CoreActionTable)
-    if (Row.Operator == Operator && Row.TargetSort == TargetSort)
-      return &Row;
+static const Record *lookupCoreAction(const RecordKeeper &Records,
+                                      StringRef Operator,
+                                      StringRef TargetSort) {
+  for (const Record *Row :
+       Records.getAllDerivedDefinitions("LegalizeCoreAction"))
+    if (Row->getValueAsString("Operator") == Operator &&
+        Row->getValueAsString("TargetSort") == TargetSort)
+      return Row;
   return nullptr;
 }
 
@@ -2624,7 +2604,8 @@ static CheckedCoreRule checkCoreRule(const Record &Rule,
 
   StringRef TargetSort =
       HasTarget ? ToSort->getValueAsString("Name") : StringRef();
-  const CoreActionRow *Row = lookupCoreAction(coreTag(*Root->Op), TargetSort);
+  const Record *Row =
+      lookupCoreAction(Records, coreTag(*Root->Op), TargetSort);
   if (!Row)
     PrintFatalError(
         Rule.getLoc(),
@@ -2647,11 +2628,12 @@ static CheckedCoreRule checkCoreRule(const Record &Rule,
 
   CheckedCoreRule C;
   C.Operator = Root->Op;
-  C.Action = findCoreAction(Records, Row->Action);
+  C.Action = findCoreAction(Records, Row->getValueAsString("Action"));
   if (!C.Action)
-    PrintFatalError(Rule.getLoc(), "core rule: action table names '" +
-                                       Row->Action +
-                                       "', which is not a LegalizeAction");
+    PrintFatalError(Rule.getLoc(),
+                    "core rule: action table names '" +
+                        Row->getValueAsString("Action") +
+                        "', which is not a LegalizeAction");
   C.Obs = HasObs ? Root->Kids[0].get() : nullptr;
   C.Target = HasTarget ? Root->Kids[1].get() : nullptr;
   C.Root = std::move(Root);
@@ -3474,38 +3456,69 @@ static void verifyCoreTables(const RecordKeeper &Records) {
       // A terminal operator's action does not depend on a target sort, so the
       // empty sort keys it.  Without this check a new terminal would parse and
       // then fail in every rule that used it.
-      if (!lookupCoreAction(coreTag(*Op), ""))
+      if (!lookupCoreAction(Records, coreTag(*Op), ""))
         PrintFatalError(Op->getLoc(),
                         "core action table has no row for terminal operator '" +
                             Op->getName() + "'");
       continue;
     }
     for (const Record *T : Op->getValueAsListOfDefs("Targets"))
-      if (!lookupCoreAction(coreTag(*Op), T->getValueAsString("Name")))
+      if (!lookupCoreAction(Records, coreTag(*Op),
+                            T->getValueAsString("Name")))
         PrintFatalError(Op->getLoc(),
                         "core action table has no row for operator '" +
                             Op->getName() + "' with target sort " +
                             T->getValueAsString("Name"));
   }
-  for (const CoreActionRow &Row : CoreActionTable) {
-    const Record *Op = findCoreOperator(Records, Row.Operator);
+  for (const Record *Row :
+       Records.getAllDerivedDefinitions("LegalizeCoreAction")) {
+    StringRef OpName = Row->getValueAsString("Operator");
+    StringRef TargetSort = Row->getValueAsString("TargetSort");
+    StringRef Action = Row->getValueAsString("Action");
+    // (operator, target sort) is the key of a function.  A second row with
+    // the same key would make it a relation, and every lookup would silently
+    // take the first one.
+    unsigned Keys = 0;
+    for (const Record *Other :
+         Records.getAllDerivedDefinitions("LegalizeCoreAction"))
+      Keys += Other->getValueAsString("Operator") == OpName &&
+              Other->getValueAsString("TargetSort") == TargetSort;
+    if (Keys != 1)
+      PrintFatalError(Row->getLoc(),
+                      "core action table has " + std::to_string(Keys) +
+                          " rows for operator '" + OpName.str() +
+                          "' with target sort '" +
+                          (TargetSort.empty() ? StringRef("<none>")
+                                              : TargetSort)
+                              .str() +
+                          "'");
+    const Record *Op = findCoreOperator(Records, OpName);
     if (!Op)
-      PrintFatalError("core action table names '" + Row.Operator +
-                      "', which is not a LegalizeCoreOperator");
-    if (Row.TargetSort.empty()) {
+      PrintFatalError(Row->getLoc(), "core action table names '" + OpName +
+                                         "', which is not a "
+                                         "LegalizeCoreOperator");
+    if (TargetSort.empty()) {
       // A terminal row: the empty sort is the key, so it must not name a sort
       // and the operator must not accept one.
       if (!Op->getValueAsListOfDefs("Targets").empty())
-        PrintFatalError("core action table gives operator '" + Row.Operator +
-                        "' an empty target sort, but the operator has targets");
+        PrintFatalError(Row->getLoc(),
+                        "core action table gives operator '" + OpName +
+                            "' an empty target sort, but the operator has "
+                            "targets");
+      if (!findCoreAction(Records, Action))
+        PrintFatalError(Row->getLoc(), "core action table names action '" +
+                                           Action +
+                                           "', which is not a LegalizeAction");
       continue;
     }
-    if (!findCoreSort(Records, Row.TargetSort))
-      PrintFatalError("core action table names '" + Row.TargetSort +
-                      "', which is not a LegalizeSort");
-    if (!findCoreAction(Records, Row.Action))
-      PrintFatalError("core action table names action '" + Row.Action +
-                      "', which is not a LegalizeAction");
+    if (!findCoreSort(Records, TargetSort))
+      PrintFatalError(Row->getLoc(),
+                      "core action table names '" + TargetSort +
+                          "', which is not a LegalizeSort");
+    if (!findCoreAction(Records, Action))
+      PrintFatalError(Row->getLoc(), "core action table names action '" +
+                                         Action +
+                                         "', which is not a LegalizeAction");
   }
   for (const CoreShimRow &Row : CoreShimTable) {
     if (!findCoreOperator(Records, Row.Operator))
