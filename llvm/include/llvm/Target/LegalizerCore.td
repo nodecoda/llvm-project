@@ -39,7 +39,7 @@
 //   tags          Kind{Scalar,Vector,ScalableVector,Pointer,PointerVector},
 //                 Ordering{Unordered,Monotonic,Acquire,Release,AcquireRelease,
 //                          SequentiallyConsistent}
-//   combinators   all/any/not, select, eq/ne/lt/le/gt/ge,
+//   combinators   true, all/any/not, select, eq/ne/lt/le/gt/ge,
 //                 in/inPairs/inTriples/inMemDesc, mul, urem, udiv, isPow2
 //   shapes        fixed, variadic, sameSort, membership, memDescMembership
 //                 (one per constructor, not four independent flags)
