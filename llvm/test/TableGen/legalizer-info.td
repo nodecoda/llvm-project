@@ -5,6 +5,10 @@
 
 include "llvm/Target/LegalizerInfo.td"
 
+// The schema no longer declares a bare `not` record: a target gets it from
+// Target.td, and a standalone file declares it here.
+def not;
+
 // A leaf is a record whose name is the C++ identifier; -gen-legalizer emits the
 // declaration ahead of the rules, in .td order.
 def Is64Bit : LegalizeFeature<"Subtarget.is64Bit()">;

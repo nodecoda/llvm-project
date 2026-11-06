@@ -10,6 +10,10 @@
 
 include "llvm/Target/LegalizerInfo.td"
 
+// The schema no longer declares a bare `not` record: a target gets it from
+// Target.td, and a standalone file declares it here.
+def not;
+
 def HasSSE1 : LegalizeFeature<"Subtarget.hasSSE1()">;
 def s32 : LegalizeNamedType<"LLT::scalar(32)">;
 

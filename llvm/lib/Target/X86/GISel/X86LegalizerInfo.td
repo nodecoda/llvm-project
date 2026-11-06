@@ -45,6 +45,13 @@
 
 include "llvm/Target/LegalizerInfo.td"
 
+// Target.td declares the generic opcodes' operand types (GenericOpcodes.td):
+// typeN/ptypeN is the index into LegalityQuery::Types, which is what makes an
+// out-of-range (Slot N) a build error instead of an out-of-bounds read.  It
+// comes after LegalizerInfo.td because both declare `class Register` (a
+// forward declaration there, the definition here).
+include "llvm/Target/Target.td"
+
 /// Subtarget-feature booleans the rules are written in terms of.  The record
 /// name is the C++ identifier -gen-legalizer declares.
 def Is64Bit : LegalizeFeature<"Subtarget.is64Bit()">;

@@ -3480,6 +3480,117 @@ static void verifyCoreTags(const RecordKeeper &Records) {
     Check(R);
 }
 
+/// The number of type slots a generic opcode's LegalityQuery has.
+///
+/// `Target.td` includes GenericOpcodes.td, so the operand declarations are
+/// records here even though a target's legalizer file only writes opcode
+/// names.  `typeN` and `ptypeN` carry `OPERAND_GENERIC_N`, and the legalizer
+/// builds Query.Types from the first-seen generic operand index
+/// (LegalizerInfo::getAction).  Every opcode declares a dense 0..n set in
+/// operand order, so the highest declared index is both the last slot and
+/// (index + 1) the count.  A variadic operand list does not widen the set:
+/// those operands reuse `variadicOpsType` or are untyped.
+static std::optional<unsigned>
+genericOpcodeTypeSlots(const RecordKeeper &Records, StringRef Opcode) {
+  const Record *Op = Records.getDef(Opcode);
+  if (!Op || !Op->isSubClassOf("GenericInstruction"))
+    return std::nullopt;
+
+  static constexpr StringLiteral Prefix = "OPERAND_GENERIC_";
+  unsigned Max = 0;
+  bool Any = false;
+  auto Scan = [&](const Init *I) {
+    const auto *D = dyn_cast<DagInit>(I);
+    if (!D)
+      return;
+    for (unsigned A = 0, E = D->getNumArgs(); A != E; ++A) {
+      const auto *Arg = dyn_cast<DefInit>(D->getArg(A));
+      if (!Arg || !Arg->getDef()->isSubClassOf("TypedOperand"))
+        continue;
+      StringRef Ty = Arg->getDef()->getValueAsString("OperandType");
+      if (!Ty.starts_with(Prefix))
+        continue;
+      unsigned N = 0;
+      if (Ty.drop_front(Prefix.size()).getAsInteger(10, N))
+        continue; // OPERAND_GENERIC_IMM_N is an immediate, not a slot.
+      Max = std::max(Max, N);
+      Any = true;
+    }
+  };
+  Scan(Op->getValueInit("OutOperandList"));
+  Scan(Op->getValueInit("InOperandList"));
+  return Any ? std::optional<unsigned>(Max + 1) : std::optional<unsigned>(0u);
+}
+
+/// Every (Slot N) and (SameAs N) a core rule writes must name a type slot the
+/// opcode in that rule set actually has.  The bound comes from
+/// GenericOpcodes.td, so it is checked here rather than guessed from the rules
+/// themselves -- arityOf() used to infer it from the rules, which made an
+/// out-of-range index look like a legitimate four-slot opcode.
+///
+/// Memory-descriptor slots are not checked: they index Query.MMODescrs, whose
+/// length comes from the instruction's memory operands, not from its operand
+/// declaration.
+static void verifyCoreSlotBounds(const RecordKeeper &Records) {
+  auto CheckRule = [&](const Record &Rule, StringRef RuleSet,
+                       unsigned Slots, StringRef Opcode) {
+    std::function<void(const Init *)> Walk = [&](const Init *I) {
+      const auto *D = dyn_cast<DagInit>(I);
+      if (!D)
+        return;
+      for (unsigned A = 0, E = D->getNumArgs(); A != E; ++A)
+        Walk(D->getArg(A));
+      const auto *Callee = dyn_cast<DefInit>(D->getOperator());
+      if (!Callee)
+        return;
+      StringRef Tag = coreTag(*Callee->getDef());
+      if (Tag != "slot" && Tag != "sameAs")
+        return;
+      if (D->getNumArgs() != 1)
+        return; // the sort checker reports the arity
+      const auto *Idx = dyn_cast<IntInit>(D->getArg(0));
+      if (!Idx || Idx->getValue() < 0)
+        return; // coreIntLiteral reports the payload
+      if (static_cast<unsigned>(Idx->getValue()) < Slots)
+        return;
+      PrintFatalError(Rule.getLoc(),
+                      "core rule: rule set '" + RuleSet + "' reads type slot " +
+                          std::to_string(Idx->getValue()) + ", but " + Opcode +
+                          " has " + std::to_string(Slots) + " type slot(s)");
+    };
+    Walk(Rule.getValueInit("CoreExpr"));
+    const Init *G = Rule.getValueInit("CoreGuard");
+    if (G && !isa<UnsetInit>(G))
+      Walk(G);
+  };
+
+  for (const Record *RS :
+       Records.getAllDerivedDefinitions("LegalizeRuleSet")) {
+    // A rule applies to every opcode in the set, so it has to fit the
+    // smallest of them.  An opcode we cannot resolve (a target opcode, or one
+    // that is not a GenericInstruction) makes the whole set unchecked.
+    std::optional<unsigned> Bound;
+    StringRef BoundOpcode;
+    bool Checked = true;
+    for (StringRef Opcode : RS->getValueAsListOfStrings("Opcodes")) {
+      std::optional<unsigned> N = genericOpcodeTypeSlots(Records, Opcode);
+      if (!N) {
+        Checked = false;
+        break;
+      }
+      if (!Bound || *N < *Bound) {
+        Bound = N;
+        BoundOpcode = Opcode;
+      }
+    }
+    if (!Checked || !Bound)
+      continue;
+    for (const Record *Rule : RS->getValueAsListOfDefs("Rules"))
+      if (isCoreRule(*Rule))
+        CheckRule(*Rule, RS->getName(), *Bound, BoundOpcode);
+  }
+}
+
 static void verifyCoreTables(const RecordKeeper &Records) {
   verifyCoreTags(Records);
   for (const Record *Op :
@@ -4458,6 +4569,7 @@ static LoweringStats verifyLoweringRegistry(const RecordKeeper &Records) {
   LoweringStats S;
   verifyNoUnusedPredicates(Records);
   verifyCoreTables(Records);
+  verifyCoreSlotBounds(Records);
   std::vector<const Record *> Builders =
       Records.getAllDerivedDefinitions("LegalizeBuilder");
   std::vector<const Record *> Lowerings =

@@ -37,11 +37,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+// This file deliberately does not include llvm/Target/Target.td: the schema
+// describes legality queries, not a target's instruction set.  A target that
+// wants (Slot N) checked against the opcode's operand declaration includes it
+// after this file (see X86LegalizerInfo.td).  That is also where the `not` dag
+// operator comes from (Target.td -> TargetSelectionDAG.td), so this file must
+// not declare one; a standalone schema file that writes (not ...) declares
+// `def not;` itself, as RuntimeLibcallsImpl.td does for libcall availability.
+// Target.td additionally brings in the value-type names (s32, v2s64, ...),
+// which is why a target's own names carry a target prefix.
 include "llvm/Target/TargetSubtarget.td"
-
-// `not` is not a generic dag operator: each domain defines the ones it uses.
-// RuntimeLibcallsImpl.td:14 does the same for libcall availability.
-def not;
 
 //===----------------------------------------------------------------------===//
 // Predicate AST
