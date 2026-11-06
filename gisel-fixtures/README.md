@@ -3,6 +3,9 @@
 六篇《GlobalISel 合法化规则的可测试性》里出现的可复现输入。**不参与 `check-llvm`**：
 目录在仓库根，不在 `llvm/test` 下，lit 配置是独立的；上游不需要这些文件。
 
+> 分支状态：文章引用的是 frozen tag `gisel-legalizer-rules-2026-11-07`（9 条用例）。
+> 本分支 `test/gisel-fixtures-axes` 从那个 tag 长出来，是扩展实验区，**不进文章**。
+
 ## 依赖
 
 - 一个 **assertions** 构建的 `llc`，targets 含 X86 / AArch64 / RISCV
@@ -35,6 +38,9 @@ bash gisel-fixtures/cases/05-hang/check.sh "$B/llc"
 | `02-boundary/add-v15i8.ll` | 第 2 篇 §4.3 | 15 lane 要补到 16 |
 | `02-boundary/add-v16i8.ll` | 第 2 篇 §4.3 | 16 lane 一次命中，没有任何动作 |
 | `02-boundary/add-v32i8.ll` | 第 2 篇 §4.3 | 32 lane 拆成两条 16 lane 的 `G_ADD` |
+| `02-axes/config-avx2.ll` | 第 2 篇 §1 | 同一个 `<32 x i8>`：SSE2 拆成两条，`+avx2` 一次命中 |
+| `02-axes/imm-sext.ll` | 第 2 篇 §1 | `Tys` 全是 `{s64, }`，imm 8/16/24/32 给出三类答案 |
+| `02-axes/addrspace.ll` | 第 2 篇 §1 | 同样的 `s32` load：`p0` Legal，`p272` unable to legalize |
 | `05-hang/mul-v2i32.ll` | 第 5 篇 §0 | GlobalISel 不返回（#236649）；SelectionDAG 返回 0 |
 | `06-cross/add-i32.ll` | 第 6 篇 §1 | 标量 `i32`：X86 `Legal` / AArch64 `Legal` / RISCV `Custom` |
 | `06-cross/add-v4i32.ll` | 第 6 篇 §1 | 向量：X86、AArch64 `Legal` / RISCV `unable to legalize` |
