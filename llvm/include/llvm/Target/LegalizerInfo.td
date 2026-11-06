@@ -307,9 +307,6 @@ class LegalizeRawMutation<string text> : LegalizeArg {
 // clampMaxNumElements), so the rule picks a direction at query time and they
 // accept either one.  ScalarSameSizeAs is a composite too, but its direction is
 // always the same on both sides, so it states "neutral" rather than "any".
-//
-// Unsupported has no entry yet: unsupported() and unsupportedIf() exist in the
-// C++ API (LegalizerInfo.h:875) but the schema does not model them.
 //===----------------------------------------------------------------------===//
 
 class LegalizeAction<string name, string mutation> {

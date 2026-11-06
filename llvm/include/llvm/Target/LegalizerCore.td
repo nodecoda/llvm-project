@@ -24,16 +24,28 @@
 //
 // The vocabulary is deliberately small:
 //
-//   sorts         Type, Int, Bool, MemDesc, Opcode, Kind, Ordering, String
-//   operators     Widen, Narrow, More, Fewer, Bitcast,
-//                 Legal, Custom, Lower, Unsupported (terminal), Scalarize,
-//                 IsPow2
-//   constructors  Pow2, Pow2Min(n), MultipleOf(n), Ty(t), SameAs(k),
-//                 MinVectorSize(n), Clamp(l,h), Pow2Ceil(n)
-//   observers     Slot, ElemOf, ScalarOf, NumElems, BitsOf, SizeOf, AlignOf,
-//                 AddrSpace, SortOf, MemSlot, MemTy, MemOrdering,
-//                 MemFailureOrdering, Feature, IsBFloat16
-//   combinators   all/any/not, select, eq/ne/lt/le/gt/ge, in, mul, urem
+//   sorts         Type, Int, Bool, MemDesc, Kind, Ordering, String
+//   operators     Widen, Narrow, More, Fewer, Bitcast   (lattice: have a target)
+//                 Scalarize                             (observation, no target)
+//                 Legal, Custom, Lower, Unsupported, Libcall   (terminal: no operand)
+//   constructors  Pow2, Pow2Min(n), MultipleOf(n), Pow2Ceil(n), Clamp(l,h),
+//                 Ty(t), SameAs(k), MinVectorSize(n), IntOfSize(n),
+//                 EltTypeTo(t,t), EltSizeTo(t,n), DivLanes(t,n),
+//                 VecOf(n,t), ScalarOrVecOf(n,t), Replace(t)
+//   observers     Slot, ElemOf, ScalarOf, NumElems, BitsOf, SizeOf,
+//                 SizeInBytesOf, IsByteSized, AddrSpace, AlignOf, SortOf,
+//                 MemSlot, MemTy, MemOrdering, MemFailureOrdering,
+//                 Feature, IsBFloat16, IsFloat16
+//   tags          Kind{Scalar,Vector,ScalableVector,Pointer,PointerVector},
+//                 Ordering{Unordered,Monotonic,Acquire,Release,AcquireRelease,
+//                          SequentiallyConsistent}
+//   combinators   all/any/not, select, eq/ne/lt/le/gt/ge,
+//                 in/inPairs/inTriples/inMemDesc, mul, urem, udiv, isPow2
+//
+// This list is the only index to the file: a node that is missing here is a
+// node nobody finds.  It had gone stale once (IsFloat16, SizeInBytesOf,
+// IsByteSized and both tag groups were missing), so add a line when you add a
+// node.
 //
 // This is not a shape checker.  `More` on a scalar is sort-correct: that it
 // also needs a vector at run time is the guard's business, not the sort's.
@@ -52,7 +64,6 @@ def SortType     : LegalizeSort<"Type">;
 def SortInt      : LegalizeSort<"Int">;
 def SortBool     : LegalizeSort<"Bool">;
 def SortMemDesc  : LegalizeSort<"MemDesc">;
-def SortOpcode   : LegalizeSort<"Opcode">;
 def SortKind     : LegalizeSort<"Kind">;
 def SortOrdering : LegalizeSort<"Ordering">;
 def SortString   : LegalizeSort<"String">;
@@ -391,6 +402,11 @@ class LegalizeCoreSet<string name, LegalizeSort elemSort>
     : LegalizeCoreNode {
   string Name = name;
   LegalizeSort ElemSort = elemSort;
+
+  /// How many type slots one element occupies -- not how many fields the
+  /// element record has.  A memory descriptor is {Type0, Type1, MemTy, Align}
+  /// but occupies two slots, because the memory type and the alignment come
+  /// from the query's descriptor rather than from `Types`.
   int Arity = 1;
 }
 
@@ -448,13 +464,14 @@ class CoreWiden<dag on, dag to>   : LegalizeCoreRule<(Widen on, to)>;
 
 /// `widenScalarOrEltToNextPow2OrMinSize(TypeIdx, Min)`: widen the scalar or
 /// element to the next power of two that is at least `Min`, when it is either
-/// below `Min` *or* not a power of two.  `Min` is a literal here because the
-/// legacy construct bakes it into the emitted call; the feature-dependent form
-/// of the same mutation writes `(CoreSelect Feature, A, B)` in the target of
-/// `CoreWiden` instead, which is `widenScalarOrEltToNextPow2` and therefore
-/// lacks the "below Min" half of the condition.  The two are separate
-/// spellings because they are separate predicates, not because of the
-/// payload.
+/// below `Min` *or* not a power of two.
+///
+/// `Min` is an `int`, and that is the whole reason this class exists: the
+/// general form's target is a `dag`, so a bare literal does not parse there
+/// ("Value ... is of type int; expected type dag").  A feature-dependent bound
+/// takes the other route, `CoreWiden<(Slot 0), (CoreSelect F, A, B)>`, and
+/// lands on the same C++ method with the below-Min half intact.  So the two
+/// spellings denote the same rule; this one only decides what it accepts.
 class CoreWidenPow2OrMinSize<dag on, int min>
     : LegalizeCoreRule<(Widen on, min)>;
 class CoreNarrow<dag on, dag to>  : LegalizeCoreRule<(Narrow on, to)>;
@@ -523,6 +540,13 @@ class CoreBitcastIf<dag on, dag to, dag guard>
 /// vector must be fixed (a scalable vector's lane count is a minimum), hold
 /// `Elt`, and be on the wrong side of `Num`.  Writing the two directions as
 /// two rules is what the builders do as well, so a clamp is two core rules.
+///
+/// The min form assigns `(VecOf ...)` and the max form `(ScalarOrVecOf ...)`.
+/// The two are not interchangeable spellings even though the guard already
+/// implies a fixed vector: the C++ builders differ (clampMinNumElements emits
+/// LLT::fixed_vector, clampMaxNumElements emits LLT::scalarOrVector) and the
+/// emitter writes the constructor the builder writes.  They record the
+/// builder, not the intent.
 class CoreClampMinNumElements<int Idx, LegalizeNamedType Elt, int Num>
     : CoreMoreIf<(Slot Idx), (Replace (VecOf Num, (ElemOf (Slot Idx)))),
                  (CoreAll (CoreEq (SortOf (Slot Idx)), KindVector),
@@ -544,6 +568,12 @@ class CoreClampMaxNumElements<int Idx, LegalizeNamedType Elt, int Num>
 /// are separate classes because `Num` is a `dag` here and a literal in the
 /// forms above; a dag parameter cannot take a bare integer, and an integer
 /// parameter cannot take a select.
+///
+/// The four guards in this section are four copies of one condition.  That is
+/// forced by TableGen, not chosen: a `dag` parameter rejects an integer, a
+/// `record` cannot be a dag operator, and a class cannot be instantiated
+/// inline as an argument.  Changing what "a fixed vector of Elt" means means
+/// changing all four.
 class CoreClampMinNumElementsSel<int Idx, LegalizeNamedType Elt, dag Num>
     : CoreMoreIf<(Slot Idx), (Replace (VecOf Num, (ElemOf (Slot Idx)))),
                  (CoreAll (CoreEq (SortOf (Slot Idx)), KindVector),
