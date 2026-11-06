@@ -7563,7 +7563,16 @@ public:
       scanPredicate(Rule->getValueAsOptionalDef("Pred"), Arity);
       scanSlots(Rule->getValueAsString("OpaqueArgs"), Arity);
     }
-    return std::min(Arity, 3u);
+    // The probe covers three type slots.  Clamping was silent: a rule reading
+    // Types[5] would be probed as if it read three, and the rule would index
+    // past the array at run time.  No opcode has four type operands today, so
+    // this is a limit to raise deliberately rather than to round down.
+    if (Arity > 3)
+      PrintFatalError(RuleSet.getLoc(),
+                      "rule set '" + RuleSet.getName() + "' reads type slot " +
+                          std::to_string(Arity - 1) +
+                          ", but the domain probe covers at most three");
+    return Arity;
   }
 
   /// Slot numbers in a rendered predicate or mutation.  Unlike scanSlots this
@@ -7656,7 +7665,12 @@ public:
       scanPredicateSlots(Rule->getValueAsOptionalDef("Pred"), Arity);
       scanSlotNumbers(Rule->getValueAsString("OpaqueArgs"), Arity);
     }
-    return std::min(Arity, 3u);
+    if (Arity > 3)
+      PrintFatalError(RuleSet.getLoc(),
+                      "rule set '" + RuleSet.getName() + "' reads type slot " +
+                          std::to_string(Arity - 1) +
+                          ", but the domain metadata covers at most three");
+    return Arity;
   }
 
   void runPoints(raw_ostream &OS) {
