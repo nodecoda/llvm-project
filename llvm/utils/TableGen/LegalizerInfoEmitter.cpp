@@ -4320,6 +4320,78 @@ static bool isGlobalEscapeReason(StringRef Why) {
          Why == "inline_type_expr" || Why == "raw_argument";
 }
 
+/// Reject a predicate record that no rule can reach.
+///
+/// The emitters only walk what the rules name, so an unreferenced guard is
+/// invisible: it parses, it is accepted, and it produces nothing.  X86 kept 32
+/// such records after its rules moved to the core IR, and only a manual
+/// reference count found them.  Reachability here includes the guards named by
+/// a type select, because those are referenced from a rule's argument rather
+/// than from its predicate.
+///
+/// Only records whose references are structural are checked.  A
+/// `LegalizeFeature` and a `LegalizeOpaqueBool` carry C++ text that can name a
+/// sibling record (`"SlowMem || Is64Bit"`), and that reference is not a
+/// `DefInit`; unused features already have their own diagnostic in
+/// emitFeatures(), which scans those strings.
+static void verifyNoUnusedPredicates(const RecordKeeper &Records) {
+  SmallPtrSet<const Record *, 32> Seen;
+  SmallVector<const Record *, 32> Work;
+
+  std::function<void(const Init *)> Walk;
+  auto Visit = [&](const Record *R) {
+    if (R && Seen.insert(R).second)
+      Work.push_back(R);
+  };
+  Walk = [&](const Init *I) {
+    if (!I)
+      return;
+    if (const auto *DI = dyn_cast<DefInit>(I)) {
+      Visit(DI->getDef());
+      return;
+    }
+    if (const auto *DI = dyn_cast<DagInit>(I)) {
+      if (const auto *Op = dyn_cast<DefInit>(DI->getOperator()))
+        Visit(Op->getDef());
+      for (unsigned A = 0, E = DI->getNumArgs(); A != E; ++A)
+        Walk(DI->getArg(A));
+      return;
+    }
+    if (const auto *LI = dyn_cast<ListInit>(I))
+      for (const Init *E : *LI)
+        Walk(E);
+  };
+
+  for (const Record *RuleSet :
+       Records.getAllDerivedDefinitions("LegalizeRuleSet"))
+    Walk(RuleSet->getValueInit("Rules"));
+
+  while (!Work.empty()) {
+    const Record *R = Work.pop_back_val();
+    for (const RecordVal &RV : R->getValues())
+      Walk(RV.getValue());
+  }
+
+  SmallVector<const Record *, 8> Unused;
+  static constexpr StringLiteral Checked[] = {
+      "LegalizeBoolPredicateDag", "LegalizeTypePredicate",
+      "LegalizeQueryPredicateDag"};
+  for (StringRef Class : Checked)
+    for (const Record *P : Records.getAllDerivedDefinitions(Class))
+      if (!Seen.count(P))
+        Unused.push_back(P);
+  if (Unused.empty())
+    return;
+
+  std::string Names;
+  for (const Record *P : Unused)
+    Names += (Names.empty() ? "'" : ", '") + P->getName().str() + "'";
+  PrintFatalError("legalizer predicate" + Twine(Unused.size() == 1 ? " " : "s ") +
+                  Names + (Unused.size() == 1 ? " is" : " are") +
+                  " not reachable from any rule; delete the record, or name it "
+                  "in a rule or a select type");
+}
+
 /// Check the lowering registry declared in LegalizerInfo.td.
 ///
 /// Runs once per llvm-tblgen invocation, before anything is emitted, so a
@@ -4328,6 +4400,7 @@ static bool isGlobalEscapeReason(StringRef Why) {
 /// unhandled algorithm cannot degrade into a fallback.
 static LoweringStats verifyLoweringRegistry(const RecordKeeper &Records) {
   LoweringStats S;
+  verifyNoUnusedPredicates(Records);
   verifyCoreTables(Records);
   std::vector<const Record *> Builders =
       Records.getAllDerivedDefinitions("LegalizeBuilder");
