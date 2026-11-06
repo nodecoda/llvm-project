@@ -54,6 +54,36 @@
 // This is not a shape checker.  `More` on a scalar is sort-correct: that it
 // also needs a vector at run time is the guard's business, not the sort's.
 //
+// How to read this file
+// ---------------------
+// The classes are a signature, not a grammar: `LegalizeCoreExpr<name,
+// argSorts, result, shape>` says that a node with that name takes operands of
+// those sorts and produces `result`.  A `def` is one constructor of that
+// signature; a term is written by using it in a dag.  There is no sequence,
+// no recursion and no binder, so a term is a fixed-depth tree and checking is
+// a walk over it.  That is why the diagnostics here are sort and arity
+// errors, never parse errors, and why "semantics" is a rewrite rather than an
+// evaluation.
+//
+// One abstract syntax has four interpreters: -gen-legalizer emits the C++
+// builder chain, -gen-legalizer-check emits the canonical form (schema 0.4),
+// -gen-legalizer-core emits the term as JSON, and -gen-legalizer-table emits
+// the runtime table.  The canonical form is what the other three are compared
+// against; they are deliberately independent.
+//
+// What is deliberately not checkable here
+// ---------------------------------------
+// The opcode arity is not in this file, so a slot index cannot be checked
+// against the opcode that will see it.  A value-level degeneracy such as
+// `MinSize = 0` is invisible to template arguments, so the spelling must be
+// chosen deliberately (`CoreWiden<(ElemOf (Slot 0)), (Pow2)>`, not the
+// or-min-size form with a zero).  A tag is a string, so a rename is caught by
+// the generated products, not by the type system.
+//
+// Adding a shape is the one change that spans two files: a shape def here and
+// a branch in LegalizerInfoEmitter.cpp.  The checker rejects an unknown shape
+// by name, so forgetting the second half is a build error, not a fall-through.
+//
 //===----------------------------------------------------------------------===//
 
 /// A sort.  Sorts are nominal records rather than TableGen types because
