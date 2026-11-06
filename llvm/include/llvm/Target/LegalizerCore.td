@@ -12,7 +12,7 @@
 // constructor:
 //
 //   CoreWiden<(Slot 0), (Pow2Min 64)>
-//   CoreMore<(Slot 1), Pow2>
+//   CoreMore<(Slot 1), (Pow2)>
 //
 // The operator fixes the sort of its observation (`Type` for all five lattice
 // operators) and the sorts it accepts for its target.  The checker in
@@ -73,12 +73,13 @@
 //
 // What is deliberately not checkable here
 // ---------------------------------------
-// The opcode arity is not in this file, so a slot index cannot be checked
-// against the opcode that will see it.  A value-level degeneracy such as
-// `MinSize = 0` is invisible to template arguments, so the spelling must be
-// chosen deliberately (`CoreWiden<(ElemOf (Slot 0)), (Pow2)>`, not the
-// or-min-size form with a zero).  A tag is a string, so a rename is caught by
-// the generated products, not by the type system.
+// A slot index is checked against the opcode's operand declaration
+// (Target.td -> GenericOpcodes.td) when the target includes Target.td, and
+// skipped when it does not.  A value-level degeneracy such as `MinSize = 0`
+// is invisible to template arguments, so the spelling must be chosen
+// deliberately (`CoreWiden<(ElemOf (Slot 0)), (Pow2)>`, not the or-min-size
+// form with a zero).  A tag is a string, so a rename is caught by the
+// generated products, not by the type system.
 //
 // Adding a shape is the one change that spans two files: a shape def here and
 // a branch in LegalizerInfoEmitter.cpp.  The checker rejects an unknown shape
@@ -241,8 +242,9 @@ def CoreActionScalarize      : LegalizeCoreAction<"scalarize", "", "FewerElement
 // Observers
 //===----------------------------------------------------------------------===//
 
-/// A type slot.  `(Slot 0)` and the bare integer `0` are the same node; the
-/// bare form is accepted because a rule's observation is usually just its slot.
+/// A type slot.  Always written `(Slot n)`: a bare integer is an `Int`, and
+/// the checker rejects it in a `Type` position, so the two spellings are not
+/// interchangeable.
 def Slot      : LegalizeCoreExpr<"slot", [SortInt], SortType>;
 
 /// The element type of a vector slot.  ElemOf on a scalar is sort-correct;
