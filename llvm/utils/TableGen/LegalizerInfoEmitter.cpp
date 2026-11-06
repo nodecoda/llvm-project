@@ -1989,6 +1989,12 @@ struct CoreNode {
 /// is the contract, and diagnostics can still use Record::getName().
 static StringRef coreTag(const Record &R) { return R.getValueAsString("Name"); }
 
+/// A constructor's operand shape.  This is one field, not four flags, so the
+/// four branches below are exhaustive and mutually exclusive by construction.
+static StringRef coreShapeOf(const Record &R) {
+  return coreTag(*R.getValueAsDef("Shape"));
+}
+
 /// One member of a membership set, in the form its consumers want: the type
 /// each column names, and the alignment of a memory descriptor.
 struct CoreSetEntry {
@@ -2258,13 +2264,14 @@ static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
 
   StringRef Name = Op->getName();
   StringRef Tag = coreTag(*Op);
+  StringRef Shape = coreShapeOf(*Op);
   const std::vector<const Record *> ArgSorts =
       Op->getValueAsListOfDefs("ArgSorts");
 
   // A memdesc membership is two type slots, a memory slot, and a set.  It is
   // not the generic membership: the descriptor is a second axis of the query
   // and the predicate takes its index like the type indices.
-  if (Op->getValueAsBit("MemDescMembership")) {
+  if (Shape == "memDescMembership") {
     if (N.Kids.size() != 4)
       PrintFatalError(Owner.getLoc(),
                       "core rule: '" + Name +
@@ -2302,7 +2309,7 @@ static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
 
   // The set-membership and comparison nodes are polymorphic; their operand
   // sorts are stated as constraints rather than a fixed signature.
-  if (Op->getValueAsBit("SetMembership")) {
+  if (Shape == "membership") {
     if (N.Kids.size() < 2)
       PrintFatalError(Owner.getLoc(),
                       "core rule: '" + Name +
@@ -2366,7 +2373,7 @@ static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
     return Op->getValueAsDef("Result");
   }
 
-  if (Op->getValueAsBit("SameSortOperands")) {
+  if (Shape == "sameSort") {
     if (N.Kids.size() != 2)
       PrintFatalError(Owner.getLoc(), "core rule: '" + Name +
                                           "' expects 2 operands, got " +
@@ -2398,8 +2405,7 @@ static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
     return Op->getValueAsDef("Result");
   }
 
-  const bool Variadic = Op->getValueAsBit("Variadic");
-  if (Variadic) {
+  if (Shape == "variadic") {
     if (N.Kids.empty() || ArgSorts.size() != 1)
       PrintFatalError(Owner.getLoc(),
                       "core rule: '" + Name + "' expects at least 1 operand");
@@ -2413,6 +2419,11 @@ static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
     }
     return Op->getValueAsDef("Result");
   }
+
+  if (Shape != "fixed")
+    PrintFatalError(Owner.getLoc(), "core rule: '" + Name +
+                                        "' has an unknown shape '" + Shape +
+                                        "'; add it to the shape switch");
 
   if (N.Kids.size() != ArgSorts.size())
     PrintFatalError(Owner.getLoc(), "core rule: '" + Name + "' expects " +

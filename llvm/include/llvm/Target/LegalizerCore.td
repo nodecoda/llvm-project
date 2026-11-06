@@ -41,6 +41,8 @@
 //                          SequentiallyConsistent}
 //   combinators   all/any/not, select, eq/ne/lt/le/gt/ge,
 //                 in/inPairs/inTriples/inMemDesc, mul, urem, udiv, isPow2
+//   shapes        fixed, variadic, sameSort, membership, memDescMembership
+//                 (one per constructor, not four independent flags)
 //
 // This list is the only index to the file: a node that is missing here is a
 // node nobody finds.  It had gone stale once (IsFloat16, SizeInBytesOf,
@@ -83,29 +85,37 @@ def SortTypeOrMemDesc : LegalizeSortSet<"Type|MemDesc", [SortType, SortMemDesc]>
 
 class LegalizeCoreNode;
 
+/// How a constructor's operands are shaped.
+///
+/// One value, not four independent flags: a term cannot be both a membership
+/// and a variadic combination, so that state should not be writable at all.
+/// The checker switches on this and has no way to see two shapes at once.
+class LegalizeCoreShape<string name> {
+  string Name = name;
+}
+
+def ShapeFixed             : LegalizeCoreShape<"fixed">;
+def ShapeVariadic          : LegalizeCoreShape<"variadic">;
+def ShapeSameSort          : LegalizeCoreShape<"sameSort">;
+def ShapeMembership        : LegalizeCoreShape<"membership">;
+def ShapeMemDescMembership : LegalizeCoreShape<"memDescMembership">;
+
 /// An operator, observer, constructor, or combinator.
 ///
 /// `ArgSorts` is the declared signature.  A variadic operator accepts `N`
 /// instantiations of its single declared sort.  The comparison operators and
-/// `in` are polymorphic; they leave the signature empty and set a flag the
-/// checker interprets.
+/// `in` are polymorphic; they leave the signature empty and name a `Shape`,
+/// which the checker interprets.
 class LegalizeCoreExpr<string name, list<LegalizeSort> argSorts,
-                        LegalizeSort result> : LegalizeCoreNode {
+                        LegalizeSort result,
+                        LegalizeCoreShape shape = ShapeFixed>
+    : LegalizeCoreNode {
   string Name = name;
   list<LegalizeSort> ArgSorts = argSorts;
   LegalizeSort Result = result;
 
-  /// `all`/`any`: the one declared argument sort repeats.
-  bit Variadic = 0;
-
-  /// The two operands must have the same sort.  Used by eq/ne/lt/le/gt/ge.
-  bit SameSortOperands = 0;
-
-  /// The second operand is a set and the first must be a member of it.
-  bit SetMembership = 0;
-
-  /// The operands are two type slots, a memory slot, and a memdesc set.
-  bit MemDescMembership = 0;
+  /// How the operands are shaped; see LegalizeCoreShape.
+  LegalizeCoreShape Shape = shape;
 }
 
 /// An operator.  The target sorts are the second operand's admissible sorts;
@@ -306,17 +316,15 @@ def Replace         : LegalizeCoreExpr<"replace", [SortType], SortType>;
 //===----------------------------------------------------------------------===//
 
 def CoreTrue  : LegalizeCoreExpr<"true", [], SortBool>;
-def CoreAll   : LegalizeCoreExpr<"all", [SortBool], SortBool> { let Variadic = 1; }
-def CoreAny   : LegalizeCoreExpr<"any", [SortBool], SortBool> { let Variadic = 1; }
+def CoreAll   : LegalizeCoreExpr<"all", [SortBool], SortBool, ShapeVariadic>;
+def CoreAny   : LegalizeCoreExpr<"any", [SortBool], SortBool, ShapeVariadic>;
 def CoreNot   : LegalizeCoreExpr<"not", [SortBool], SortBool>;
 
 /// Comparisons.  Both operands must have the same sort, and that sort must be
 /// Int, Ordering, Kind, or Type.  Which pairs are meaningful in C++ is the
 /// shim table's business; the checker only rejects ill-sorted comparisons.
 class LegalizeCoreCompare<string name>
-    : LegalizeCoreExpr<name, [], SortBool> {
-  let SameSortOperands = 1;
-}
+    : LegalizeCoreExpr<name, [], SortBool, ShapeSameSort>;
 
 def CoreEq : LegalizeCoreCompare<"eq">;
 def CoreNe : LegalizeCoreCompare<"ne">;
@@ -355,11 +363,11 @@ def CoreIsPow2 : LegalizeCoreExpr<"isPow2", [SortInt], SortBool>;
 /// set does not declare one.  A one-member type set *is* the type: `(in s64)`
 /// and `(in [s64])` are the same predicate and serialize identically, so a
 /// singleton has no special spelling to remember.
-def CoreIn : LegalizeCoreExpr<"in", [], SortBool> { let SetMembership = 1; }
+def CoreIn : LegalizeCoreExpr<"in", [], SortBool, ShapeMembership>;
 def CoreInPairs
-    : LegalizeCoreExpr<"inPairs", [], SortBool> { let SetMembership = 1; }
+    : LegalizeCoreExpr<"inPairs", [], SortBool, ShapeMembership>;
 def CoreInTriples
-    : LegalizeCoreExpr<"inTriples", [], SortBool> { let SetMembership = 1; }
+    : LegalizeCoreExpr<"inTriples", [], SortBool, ShapeMembership>;
 
 /// Memory-descriptor membership:
 ///
@@ -372,7 +380,7 @@ def CoreInTriples
 /// `TypePairAndMemDesc::isCompatible`, so an entry is a lower bound on the
 /// alignment and a size for the memory type, not an equality on either.
 def CoreInMemDesc
-    : LegalizeCoreExpr<"inMemDesc", [], SortBool> { let MemDescMembership = 1; }
+    : LegalizeCoreExpr<"inMemDesc", [], SortBool, ShapeMemDescMembership>;
 
 /// Integer arithmetic.  These are the two a legalizer guard needs to compare
 /// a type against a multiple or a residue of another type's size; there is no
