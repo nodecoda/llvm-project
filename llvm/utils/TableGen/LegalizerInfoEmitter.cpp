@@ -3449,7 +3449,30 @@ static const Record *findCoreSort(const RecordKeeper &Records, StringRef Name) {
   return nullptr;
 }
 
+/// Every core node is identified by its `Name` string: the checker dispatches
+/// on it and both emitters index their tables with it.  Two records with the
+/// same name would make every lookup silently pick one of them, and the loser
+/// would be unreachable no matter which rule named it.
+static void verifyCoreTags(const RecordKeeper &Records) {
+  StringMap<const Record *> Seen;
+  auto Check = [&](const Record *R) {
+    StringRef Name = coreTag(*R);
+    auto Inserted = Seen.insert({Name, R});
+    if (!Inserted.second)
+      PrintFatalError(R->getLoc(), "core tag '" + Name +
+                                       "' is already used by '" +
+                                       Inserted.first->second->getName() + "'");
+  };
+  for (const Record *R :
+       Records.getAllDerivedDefinitions("LegalizeCoreExpr"))
+    Check(R);
+  for (const Record *R :
+       Records.getAllDerivedDefinitions("LegalizeCoreOperator"))
+    Check(R);
+}
+
 static void verifyCoreTables(const RecordKeeper &Records) {
+  verifyCoreTags(Records);
   for (const Record *Op :
        Records.getAllDerivedDefinitions("LegalizeCoreOperator")) {
     if (Op->getValueAsListOfDefs("Targets").empty()) {
