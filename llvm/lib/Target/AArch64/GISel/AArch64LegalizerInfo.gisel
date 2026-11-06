@@ -1,0 +1,1310 @@
+//===- AArch64LegalizerInfo.gisel - free-form legalizer rules --*- gisel -*-===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// Source of truth for AArch64LegalizerInfo.td.  That .td is generated; do not
+// edit it.  Regenerate and check with:
+//
+//   llvm-dev/tools/gisel_td.py gen <this file> --out AArch64LegalizerInfo.td
+//   llvm-dev/tools/gisel_td.py check <this file> --td AArch64LegalizerInfo.td
+//
+// The rule body is one statement per line; the indentation after `ruleset`
+// groups statements into one rule set.  The vocabulary is the core IR:
+//
+//   legal <pred>                            terminal: legal
+//   lower/custom/unsupported/libcall <pred>
+//   widen|narrow|more|fewer|bitcast(<obs>, <target>) [when <pred>]
+//   scalarize(<obs>) [when <pred>]
+//   clamp_min(<idx>, <elt>, <lanes>) / clamp_max(<idx>, <elt>, <lanes>)
+//   imm_idx(<n>)                            coverage marker, not a core rule
+//
+// Observations: slot(i), elem_of, scalar_of, sort_of, num_elems, bits_of,
+// size_of, size_in_bytes_of, is_byte_sized, addr_space, align_of, mem_slot,
+// mem_ty, mem_ordering, mem_failure_ordering, is_pow2, is_bfloat16, is_float16.
+// Constructors: pow2, pow2_min(n), multiple_of(n), pow2_ceil(n), clamp(l,h),
+// ty(t), same_as(k), min_vector_size(n), int_of_size(n), elt_type_to(t,t),
+// elt_size_to(t,n), div_lanes(t,n), vec_of(n,t), scalar_or_vec_of(n,t),
+// replace(t), select(p,a,b), mul(a,b), urem(a,b), udiv(a,b).
+// Predicates: feature("<C++ bool expression>"), true, A and B, A or B, not A,
+// a == b (and !=, <, <=, >, >=), in(slot(t)|[t,...]), in_pairs, in_triples,
+// in_mem_desc.
+//
+// The declarations below are the TableGen scaffolding the rules name: the
+// feature booleans (whose record names become the C++ `bool`s), the named LLT
+// constants, the select types that cache a subtarget choice, and the type
+// lists/sets a rule can use as one operand.  A rule body never spells the
+// target prefix; the generator resolves `s8`, `v2s64`, ... to the named
+// records.
+//
+//===----------------------------------------------------------------------===//
+include "llvm/Target/LegalizerInfo.td"
+include "llvm/Target/Target.td"
+
+feature AArch64_HasFP16 = Subtarget.hasFullFP16()
+feature AArch64_HasCSSC = Subtarget.hasCSSC()
+feature AArch64_HasRCPC3 = Subtarget.hasRCPC3()
+feature AArch64_HasSVE = Subtarget.hasSVE()
+feature AArch64_UseOutlineAtomics = Subtarget.outlineAtomics() && !Subtarget.hasLSE()
+feature AArch64_SmallCodeModel = TM.getCodeModel() == CodeModel::Small
+feature AArch64_HasBF16 = Subtarget.hasBF16()
+feature AArch64_HasMOPS = Subtarget.hasMOPS()
+type AArch64_p0 = LLT::pointer(0, 64)
+type AArch64_s1 = LLT::scalar(1)
+type AArch64_s8 = LLT::scalar(8)
+type AArch64_s16 = LLT::scalar(16)
+type AArch64_s32 = LLT::scalar(32)
+type AArch64_s64 = LLT::scalar(64)
+type AArch64_s128 = LLT::scalar(128)
+type AArch64_i8 = LLT::integer(8)
+type AArch64_i16 = LLT::integer(16)
+type AArch64_i32 = LLT::integer(32)
+type AArch64_i64 = LLT::integer(64)
+type AArch64_i128 = LLT::integer(128)
+type AArch64_bf16 = LLT::bfloat16()
+type AArch64_f16 = LLT::float16()
+type AArch64_f32 = LLT::float32()
+type AArch64_f64 = LLT::float64()
+type AArch64_f128 = LLT::float128()
+type AArch64_v2s8 = LLT::fixed_vector(2, 8)
+type AArch64_v4s8 = LLT::fixed_vector(4, 8)
+type AArch64_v8s8 = LLT::fixed_vector(8, 8)
+type AArch64_v16s8 = LLT::fixed_vector(16, 8)
+type AArch64_v2s16 = LLT::fixed_vector(2, 16)
+type AArch64_v4s16 = LLT::fixed_vector(4, 16)
+type AArch64_v8s16 = LLT::fixed_vector(8, 16)
+type AArch64_v2s32 = LLT::fixed_vector(2, 32)
+type AArch64_v4s32 = LLT::fixed_vector(4, 32)
+type AArch64_v2s64 = LLT::fixed_vector(2, 64)
+type AArch64_v2p0 = LLT::fixed_vector(2, LLT::pointer(0, 64))
+type AArch64_v8i8 = LLT::fixed_vector(8, LLT::integer(8))
+type AArch64_v16i8 = LLT::fixed_vector(16, LLT::integer(8))
+type AArch64_v4i16 = LLT::fixed_vector(4, LLT::integer(16))
+type AArch64_v8i16 = LLT::fixed_vector(8, LLT::integer(16))
+type AArch64_v2i32 = LLT::fixed_vector(2, LLT::integer(32))
+type AArch64_v4i32 = LLT::fixed_vector(4, LLT::integer(32))
+type AArch64_v2i64 = LLT::fixed_vector(2, LLT::integer(64))
+type AArch64_v4bf16 = LLT::fixed_vector(4, LLT::bfloat16())
+type AArch64_v8bf16 = LLT::fixed_vector(8, LLT::bfloat16())
+type AArch64_v4f16 = LLT::fixed_vector(4, LLT::float16())
+type AArch64_v8f16 = LLT::fixed_vector(8, LLT::float16())
+type AArch64_v2f32 = LLT::fixed_vector(2, LLT::float32())
+type AArch64_v4f32 = LLT::fixed_vector(4, LLT::float32())
+type AArch64_v2f64 = LLT::fixed_vector(2, LLT::float64())
+type AArch64_nxv16s8 = LLT::scalable_vector(16, 8)
+type AArch64_nxv8s16 = LLT::scalable_vector(8, 16)
+type AArch64_nxv4s32 = LLT::scalable_vector(4, 32)
+type AArch64_nxv2s64 = LLT::scalable_vector(2, 64)
+type AArch64_nxv16i8 = LLT::scalable_vector(16, LLT::integer(8))
+type AArch64_nxv8i16 = LLT::scalable_vector(8, LLT::integer(16))
+type AArch64_nxv4i32 = LLT::scalable_vector(4, LLT::integer(32))
+type AArch64_nxv2i64 = LLT::scalable_vector(2, LLT::integer(64))
+type_list AArch64_PackedVectorAllTypes = [AArch64_v16s8, AArch64_v8s16, AArch64_v4s32, AArch64_v2s64, AArch64_v2p0, AArch64_v8s8, AArch64_v4s16, AArch64_v2s32]
+type_set AArch64_S8To32Set = [AArch64_s8, AArch64_s16, AArch64_s32]
+type_set AArch64_S16To64Set = [AArch64_s16, AArch64_s32, AArch64_s64]
+type_set AArch64_S16To64OrPtrSet = [AArch64_s16, AArch64_s32, AArch64_s64, AArch64_p0]
+type_set AArch64_S32Or64Set = [AArch64_s32, AArch64_s64]
+type_set AArch64_S32Or64OrPtrSet = [AArch64_s32, AArch64_s64, AArch64_p0]
+type_set AArch64_S32Or64Or128OrPtrSet = [AArch64_s32, AArch64_s64, AArch64_s128, AArch64_p0]
+type_set AArch64_S8To128Set = [AArch64_s8, AArch64_s16, AArch64_s32, AArch64_s64, AArch64_s128]
+type_set AArch64_V2s16OrV2s8Set = [AArch64_v2s16, AArch64_v2s8]
+type_set AArch64_S64OrPtrSet = [AArch64_s64, AArch64_p0]
+type_set AArch64_F16OrBF16Set = [AArch64_f16, AArch64_bf16]
+type_set AArch64_MemS8OrS16Set = [AArch64_s8, AArch64_s16]
+type_set AArch64_MemS8To32Set = [AArch64_s8, AArch64_s16, AArch64_s32]
+type_set AArch64_ShuffleSrcSet = [AArch64_v8s8, AArch64_v16s8, AArch64_v4s16, AArch64_v8s16, AArch64_v2s32, AArch64_v4s32, AArch64_v2s64]
+type_set AArch64_PackedVectorCoreSet = AArch64_PackedVectorAllTypes.Elems
+type_set AArch64_ScalarAndPtrCoreSet = [AArch64_s8, AArch64_s16, AArch64_s32, AArch64_s64, AArch64_p0]
+type_set AArch64_PackedVectorOrV2s16Set = [AArch64_v8s8, AArch64_v16s8, AArch64_v2s16, AArch64_v4s16, AArch64_v8s16, AArch64_v2s32, AArch64_v4s32, AArch64_v2s64, AArch64_v2p0]
+type_set AArch64_ImplicitDefScalarSet = [AArch64_p0, AArch64_s8, AArch64_s16, AArch64_s32, AArch64_s64, AArch64_s128]
+type_set AArch64_ImplicitDefVectorSet = [AArch64_v2s8, AArch64_v4s8, AArch64_v8s8, AArch64_v16s8, AArch64_v2s16, AArch64_v4s16, AArch64_v8s16, AArch64_v2s32, AArch64_v4s32, AArch64_v2s64, AArch64_v2p0]
+type_set AArch64_PhiTypesSet = [AArch64_p0, AArch64_s16, AArch64_s32, AArch64_s64]
+type_set AArch64_I32Or64OrIntVecSet = [AArch64_i32, AArch64_i64, AArch64_v8i8, AArch64_v16i8, AArch64_v4i16, AArch64_v8i16, AArch64_v2i32, AArch64_v4i32, AArch64_v2i64]
+type_set AArch64_I32OrI64Set = [AArch64_i32, AArch64_i64]
+type_set AArch64_SmulhTypesSet = [AArch64_i64, AArch64_v16i8, AArch64_v8i16, AArch64_v4i32]
+type_set AArch64_IntVecNoV2i64Set = [AArch64_v8i8, AArch64_v16i8, AArch64_v4i16, AArch64_v8i16, AArch64_v2i32, AArch64_v4i32]
+type_set AArch64_PackedVectorOrV2p0Set = [AArch64_v16i8, AArch64_v8i16, AArch64_v4i32, AArch64_v2i64, AArch64_v2p0, AArch64_v8i8, AArch64_v4i16, AArch64_v2i32]
+type_set AArch64_BitreverseTypesSet = [AArch64_i32, AArch64_i64, AArch64_v8i8, AArch64_v16i8]
+type_set AArch64_V8i8OrV16i8Set = [AArch64_v8i8, AArch64_v16i8]
+type_set AArch64_BswapTypesSet = [AArch64_i32, AArch64_i64, AArch64_v4i16, AArch64_v8i16, AArch64_v2i32, AArch64_v4i32, AArch64_v2i64]
+type_set AArch64_UaddsatTypesSet = [AArch64_v8i8, AArch64_v16i8, AArch64_v4i16, AArch64_v8i16, AArch64_v2i32, AArch64_v4i32, AArch64_v2i64]
+type_set AArch64_FPScalarOrVecSet = [AArch64_f32, AArch64_f64, AArch64_v2f32, AArch64_v4f32, AArch64_v2f64]
+type_set AArch64_S16To128Set = [AArch64_s16, AArch64_s32, AArch64_s64, AArch64_s128]
+type_set AArch64_S32Set = [AArch64_s32]
+type_set AArch64_PtrSet = [AArch64_p0]
+type_set AArch64_I128Set = [AArch64_i128]
+type_set AArch64_F128Set = [AArch64_f128]
+type_set AArch64_F32To128Set = [AArch64_f32, AArch64_f64, AArch64_f128]
+type_set AArch64_SremTypesSet = [AArch64_i8, AArch64_i16, AArch64_i32, AArch64_i64, AArch64_v2i32, AArch64_v4i32, AArch64_v2i64]
+type_set AArch64_F16OrBF16VecSet = [AArch64_f16, AArch64_bf16, AArch64_v4f16, AArch64_v4bf16, AArch64_v8f16, AArch64_v8bf16]
+type_set AArch64_SVEIntVecSet = [AArch64_nxv16i8, AArch64_nxv8i16, AArch64_nxv4i32, AArch64_nxv2i64]
+type_set AArch64_F16OrV4V8F16Set = [AArch64_f16, AArch64_v4f16, AArch64_v8f16]
+type_set AArch64_Bitcast16Set = [AArch64_s16]
+type_set AArch64_Bitcast32Set = [AArch64_s32, AArch64_v2s16, AArch64_v4s8]
+type_set AArch64_Bitcast64Set = [AArch64_s64, AArch64_v8s8, AArch64_v4s16, AArch64_v2s32]
+type_set AArch64_Bitcast128Set = [AArch64_s128, AArch64_v16s8, AArch64_v8s16, AArch64_v4s32, AArch64_v2s64, AArch64_v2p0]
+
+ruleset AArch64_IMPLICIT_DEF: G_IMPLICIT_DEF G_FREEZE G_CONSTANT_FOLD_BARRIER
+    legal in(slot(0), AArch64_ImplicitDefScalarSet)
+    legal in(slot(0), AArch64_ImplicitDefVectorSet)
+    widen(slot(0), pow2)
+    widen(slot(0), ty(AArch64_s8))
+    narrow(slot(0), ty(AArch64_s64))
+    more(slot(0), pow2)
+    widen(elem_of(slot(0)), min_vector_size(64))
+    clamp_min(0, AArch64_s8, 8)
+    clamp_max(0, AArch64_s8, 16)
+    clamp_min(0, AArch64_s16, 4)
+    clamp_max(0, AArch64_s16, 8)
+    clamp_min(0, AArch64_s32, 2)
+    clamp_max(0, AArch64_s32, 4)
+    clamp_max(0, AArch64_s64, 2)
+    clamp_max(0, AArch64_p0, 2)
+    scalarize(slot(0)) when bits_of(slot(0)) > 64
+
+ruleset AArch64_PHI: G_PHI
+    legal in(slot(0), AArch64_PhiTypesSet)
+    legal in(slot(0), AArch64_PackedVectorCoreSet)
+    widen(slot(0), pow2)
+    more(slot(0), pow2)
+    scalarize(slot(0)) when bits_of(slot(0)) > 64
+    widen(slot(0), ty(AArch64_s16))
+    narrow(slot(0), ty(AArch64_s64))
+    clamp_min(0, AArch64_s8, 8)
+    clamp_max(0, AArch64_s8, 16)
+    clamp_min(0, AArch64_s16, 4)
+    clamp_max(0, AArch64_s16, 8)
+    clamp_min(0, AArch64_s32, 2)
+    clamp_max(0, AArch64_s32, 4)
+    clamp_max(0, AArch64_s64, 2)
+    clamp_max(0, AArch64_p0, 2)
+    widen(slot(0), 8)
+
+ruleset AArch64_INSERT: G_INSERT
+    legal (in(slot(0), AArch64_S32Or64OrPtrSet) and in(slot(1),
+            AArch64_MemS8To32Set) and size_of(slot(1)) < size_of(slot(0)))
+    widen(slot(0), pow2)
+    widen(slot(0), ty(AArch64_s32))
+    narrow(slot(0), ty(AArch64_s64))
+    widen(slot(1), pow2)
+    widen(slot(1), ty(AArch64_s8))
+    narrow(slot(1), ty(AArch64_s16)) when slot(0) == ty(AArch64_s32)
+    narrow(slot(1), ty(AArch64_s32)) when in(slot(0), AArch64_S64OrPtrSet)
+
+ruleset AArch64_EXTRACT: G_EXTRACT
+    legal (in(slot(0), AArch64_S16To64OrPtrSet) and in(slot(1),
+            AArch64_S32Or64Or128OrPtrSet) and size_of(slot(0)) < size_of(slot(1)))
+    widen(slot(1), pow2)
+    widen(slot(1), ty(AArch64_s32))
+    narrow(slot(1), ty(AArch64_s128))
+    widen(slot(0), pow2)
+    widen(slot(0), ty(AArch64_s16))
+    narrow(slot(0), ty(AArch64_s16)) when slot(1) == ty(AArch64_s32)
+    narrow(slot(0), ty(AArch64_s32)) when in(slot(1), AArch64_S64OrPtrSet)
+    narrow(slot(0), ty(AArch64_s64)) when slot(1) == ty(AArch64_s128)
+
+ruleset AArch64_ADD: G_ADD G_SUB G_AND G_OR G_XOR
+    legal in(slot(0), AArch64_I32Or64OrIntVecSet)
+    legal (feature("Subtarget.hasSVE()") and in(slot(0), AArch64_SVEIntVecSet))
+    widen(slot(0), pow2)
+    widen(slot(0), ty(AArch64_s32))
+    narrow(slot(0), ty(AArch64_s64))
+    clamp_max(0, AArch64_s8, 16)
+    clamp_max(0, AArch64_s16, 8)
+    clamp_min(0, AArch64_s32, 2)
+    clamp_max(0, AArch64_s32, 4)
+    clamp_min(0, AArch64_s64, 2)
+    clamp_max(0, AArch64_s64, 2)
+    widen(elem_of(slot(0)), ty(AArch64_s32)) when num_elems(slot(0)) <= 2
+    widen(elem_of(slot(0)), ty(AArch64_s16)) when num_elems(slot(0)) <= 4
+    widen(elem_of(slot(0)), ty(AArch64_s8)) when num_elems(slot(0)) <= 16
+    scalarize(slot(0)) when bits_of(slot(0)) > 64
+    more(slot(0), pow2)
+
+ruleset AArch64_MUL: G_MUL
+    legal in(slot(0), AArch64_I32Or64OrIntVecSet)
+    widen(slot(0), pow2)
+    widen(slot(0), ty(AArch64_s32))
+    narrow(slot(0), ty(AArch64_s64))
+    clamp_max(0, AArch64_s8, 16)
+    clamp_max(0, AArch64_s16, 8)
+    clamp_min(0, AArch64_s32, 2)
+    clamp_max(0, AArch64_s32, 4)
+    clamp_min(0, AArch64_s64, 2)
+    clamp_max(0, AArch64_s64, 2)
+    widen(elem_of(slot(0)), ty(AArch64_s32)) when num_elems(slot(0)) <= 2
+    widen(elem_of(slot(0)), ty(AArch64_s16)) when num_elems(slot(0)) <= 4
+    widen(elem_of(slot(0)), ty(AArch64_s8)) when num_elems(slot(0)) <= 16
+    scalarize(slot(0)) when bits_of(slot(0)) > 64
+    more(slot(0), pow2)
+
+ruleset AArch64_SHL: G_SHL G_ASHR G_LSHR
+    custom (not sort_of(slot(0)) == vector and size_of(slot(0)) == 32 and size_of(slot(1)) == 32)
+    legal in_pairs(slot(0), slot(1), [[AArch64_i32, AArch64_i32], [AArch64_i32,
+            AArch64_i64], [AArch64_i64, AArch64_i64], [AArch64_v8i8, AArch64_v8i8],
+            [AArch64_v16i8, AArch64_v16i8], [AArch64_v4i16, AArch64_v4i16], [AArch64_v8i16,
+            AArch64_v8i16], [AArch64_v2i32, AArch64_v2i32], [AArch64_v4i32, AArch64_v4i32],
+            [AArch64_v2i64, AArch64_v2i64]])
+    widen(slot(1), pow2)
+    widen(slot(0), pow2)
+    widen(slot(1), ty(AArch64_s32))
+    narrow(slot(1), ty(AArch64_s64))
+    widen(slot(0), ty(AArch64_s32))
+    narrow(slot(0), ty(AArch64_s64))
+    clamp_min(0, AArch64_s8, 8)
+    clamp_max(0, AArch64_s8, 16)
+    clamp_min(0, AArch64_s16, 4)
+    clamp_max(0, AArch64_s16, 8)
+    clamp_min(0, AArch64_s32, 2)
+    clamp_max(0, AArch64_s32, 4)
+    clamp_min(0, AArch64_s64, 2)
+    clamp_max(0, AArch64_s64, 2)
+    more(slot(0), pow2)
+    widen(slot(1), same_as(0))
+    scalarize(slot(0)) when bits_of(slot(0)) > 64
+    widen(slot(1), same_as(0)) when sort_of(slot(0)) == vector
+    narrow(slot(1),
+            replace(same_as(0))) when (sort_of(slot(0)) == vector and bits_of(slot(0)) < bits_of(slot(1)))
+
+ruleset AArch64_PTR_ADD: G_PTR_ADD
+    legal in_pairs(slot(0), slot(1), [[AArch64_p0, AArch64_i64], [AArch64_v2p0,
+            AArch64_v2i64]])
+    widen(elem_of(slot(1)), ty(AArch64_s64))
+    narrow(elem_of(slot(1)), ty(AArch64_s64))
+    clamp_min(0, AArch64_p0, 2)
+    clamp_max(0, AArch64_p0, 2)
+
+ruleset AArch64_PTRMASK: G_PTRMASK
+    legal in_pairs(slot(0), slot(1), [[AArch64_p0, AArch64_s64]])
+
+ruleset AArch64_SDIV: G_SDIV G_UDIV
+    legal in(slot(0), AArch64_I32OrI64Set)
+    libcall in(slot(0), AArch64_i128)
+    widen(slot(0), ty(AArch64_s32))
+    narrow(slot(0), ty(AArch64_s64))
+    widen(slot(0), pow2)
+    scalarize(slot(0))
+
+ruleset AArch64_SREM: G_SREM G_UREM G_SDIVREM G_UDIVREM
+    lower in(slot(0), AArch64_SremTypesSet)
+    libcall in(slot(0), AArch64_i128)
+    widen(elem_of(slot(0)), pow2)
+    widen(elem_of(slot(0)), ty(AArch64_s32))
+    clamp_min(0, AArch64_s32, 2)
+    clamp_max(0, AArch64_s32, 4)
+    clamp_min(0, AArch64_s64, 2)
+    clamp_max(0, AArch64_s64, 2)
+    scalarize(slot(0))
+
+ruleset AArch64_SMULO: G_SMULO G_UMULO
+    widen(slot(0), pow2_min(32))
+    widen(slot(0), ty(AArch64_s32))
+    narrow(slot(0), ty(AArch64_s64))
+    lower true
+
+ruleset AArch64_SMULH: G_SMULH G_UMULH
+    legal in(slot(0), AArch64_SmulhTypesSet)
+    clamp_max(0, AArch64_s8, 16)
+    clamp_max(0, AArch64_s16, 8)
+    clamp_max(0, AArch64_s32, 4)
+    lower true
+
+ruleset AArch64_SMULFIX: G_SMULFIX G_UMULFIX G_SMULFIXSAT G_UMULFIXSAT
+    lower true
+
+ruleset AArch64_SMIN: G_SMIN G_SMAX G_UMIN G_UMAX
+    legal in(slot(0), AArch64_IntVecNoV2i64Set)
+    legal (feature("Subtarget.hasCSSC()") and in(slot(0), AArch64_I32OrI64Set))
+    widen(slot(0), ty(AArch64_s32))
+    clamp_min(0, AArch64_s8, 8)
+    clamp_max(0, AArch64_s8, 16)
+    clamp_min(0, AArch64_s16, 4)
+    clamp_max(0, AArch64_s16, 8)
+    clamp_min(0, AArch64_s32, 2)
+    clamp_max(0, AArch64_s32, 4)
+    lower true
+
+ruleset AArch64_ABS: G_ABS
+    legal (feature("Subtarget.hasCSSC()") and in(slot(0), AArch64_I32OrI64Set))
+    legal in(slot(0), AArch64_PackedVectorOrV2p0Set)
+    custom (sort_of(slot(0)) == scalar and size_of(slot(0)) < 128)
+    widen(slot(0), replace(ty(AArch64_v4i16))) when slot(0) == ty(AArch64_v4s8)
+    widen(slot(0), replace(ty(AArch64_v2i32))) when slot(0) == ty(AArch64_v2s16)
+    clamp_min(0, AArch64_s8, 8)
+    clamp_max(0, AArch64_s8, 16)
+    clamp_min(0, AArch64_s16, 4)
+    clamp_max(0, AArch64_s16, 8)
+    clamp_min(0, AArch64_s32, 2)
+    clamp_max(0, AArch64_s32, 4)
+    clamp_min(0, AArch64_s64, 2)
+    clamp_max(0, AArch64_s64, 2)
+    more(slot(0), pow2)
+    lower true
+
+ruleset AArch64_ABDS: G_ABDS G_ABDU G_UAVGFLOOR G_UAVGCEIL G_SAVGFLOOR G_SAVGCEIL
+    legal in(slot(0), AArch64_IntVecNoV2i64Set)
+    lower true
+
+ruleset AArch64_SADDE: G_SADDE G_SSUBE G_UADDE G_USUBE G_SADDO G_SSUBO G_UADDO G_USUBO
+    legal in_pairs(slot(0), slot(1), [[AArch64_i32, AArch64_i32], [AArch64_i64,
+            AArch64_i32]])
+    widen(slot(0), ty(AArch64_s32))
+    narrow(slot(0), ty(AArch64_s64))
+    widen(slot(1), ty(AArch64_s32))
+    narrow(slot(1), ty(AArch64_s64))
+    widen(slot(0), pow2)
+    lower true
+
+ruleset AArch64_FSHL: G_FSHL G_FSHR
+    custom in_pairs(slot(0), slot(1), [[AArch64_i32, AArch64_i32], [AArch64_i32,
+            AArch64_i64], [AArch64_i64, AArch64_i64]])
+    lower true
+
+ruleset AArch64_ROTR: G_ROTR
+    legal in_pairs(slot(0), slot(1), [[AArch64_i32, AArch64_i64], [AArch64_i64,
+            AArch64_i64]])
+    custom (sort_of(slot(0)) == scalar and bits_of(slot(1)) < 64)
+    lower true
+
+ruleset AArch64_ROTL: G_ROTL
+    lower true
+
+ruleset AArch64_SBFX: G_SBFX G_UBFX
+    custom in_pairs(slot(0), slot(1), [[AArch64_s32, AArch64_s32], [AArch64_s64,
+            AArch64_s64]])
+
+ruleset AArch64_CTPOP: G_CTPOP
+    legal (feature("Subtarget.hasCSSC()") and in_pairs(slot(0), slot(1), [[AArch64_i32,
+            AArch64_i32], [AArch64_i64, AArch64_i64]]))
+    legal in_pairs(slot(0), slot(1), [[AArch64_v8i8, AArch64_v8i8], [AArch64_v16i8,
+            AArch64_v16i8]])
+    custom (not feature("Subtarget.hasCSSC()") and in_pairs(slot(0), slot(1),
+            [[AArch64_s32, AArch64_s32], [AArch64_s64, AArch64_s64]]))
+    custom in_pairs(slot(0), slot(1), [[AArch64_s128, AArch64_s128], [AArch64_v4s16,
+            AArch64_v4s16], [AArch64_v8s16, AArch64_v8s16], [AArch64_v2s32, AArch64_v2s32],
+            [AArch64_v4s32, AArch64_v4s32], [AArch64_v2s64, AArch64_v2s64]])
+    widen(slot(0), ty(AArch64_s32))
+    narrow(slot(0), ty(AArch64_s128))
+    widen(slot(0), pow2)
+    widen(slot(0), 8)
+    widen(slot(1), same_as(0))
+    narrow(slot(1), replace(same_as(0))) when bits_of(slot(0)) < bits_of(slot(1))
+    clamp_min(0, AArch64_s8, 8)
+    clamp_max(0, AArch64_s8, 16)
+    clamp_min(0, AArch64_s16, 4)
+    clamp_max(0, AArch64_s16, 8)
+    clamp_min(0, AArch64_s32, 2)
+    clamp_max(0, AArch64_s32, 4)
+    clamp_min(0, AArch64_s64, 2)
+    clamp_max(0, AArch64_s64, 2)
+    more(slot(0), pow2)
+    scalarize(slot(0)) when bits_of(slot(0)) > 64
+
+ruleset AArch64_CTLZ: G_CTLZ G_CTLS
+    legal in_pairs(slot(0), slot(1), [[AArch64_i32, AArch64_i32], [AArch64_i64,
+            AArch64_i64], [AArch64_v8i8, AArch64_v8i8], [AArch64_v16i8, AArch64_v16i8],
+            [AArch64_v4i16, AArch64_v4i16], [AArch64_v8i16, AArch64_v8i16], [AArch64_v2i32,
+            AArch64_v2i32], [AArch64_v4i32, AArch64_v4i32]])
+    widen(slot(1), pow2_min(32))
+    widen(slot(1), ty(AArch64_s32))
+    narrow(slot(1), ty(AArch64_s64))
+    widen(slot(1), 8)
+    clamp_min(0, AArch64_s8, 8)
+    clamp_max(0, AArch64_s8, 16)
+    clamp_min(0, AArch64_s16, 4)
+    clamp_max(0, AArch64_s16, 8)
+    clamp_min(0, AArch64_s32, 2)
+    clamp_max(0, AArch64_s32, 4)
+    more(slot(0), pow2)
+    scalarize(slot(0)) when bits_of(slot(0)) > 32
+    widen(slot(0), same_as(1))
+    narrow(slot(0), same_as(1))
+
+ruleset AArch64_INSERT_SUBVECTOR: G_INSERT_SUBVECTOR
+    lower true
+
+ruleset AArch64_CTLZ_ZERO_POISON: G_CTLZ_ZERO_POISON
+    lower true
+
+ruleset AArch64_CTTZ: G_CTTZ
+    lower sort_of(slot(0)) == vector
+    widen(slot(1), pow2_min(32))
+    widen(slot(1), ty(AArch64_s32))
+    narrow(slot(1), ty(AArch64_s64))
+    widen(slot(0), same_as(1))
+    narrow(slot(0), same_as(1))
+    legal (feature("Subtarget.hasCSSC()") and in(slot(0), AArch64_S32Or64Set))
+    custom (not feature("Subtarget.hasCSSC()") and in(slot(0), AArch64_S32Or64Set))
+
+ruleset AArch64_CTTZ_ZERO_POISON: G_CTTZ_ZERO_POISON
+    lower true
+
+ruleset AArch64_BITREVERSE: G_BITREVERSE
+    legal in(slot(0), AArch64_BitreverseTypesSet)
+    widen(slot(0), pow2_min(32))
+    widen(slot(0), 8)
+    widen(slot(0), ty(AArch64_s32))
+    narrow(slot(0), ty(AArch64_s64))
+    clamp_min(0, AArch64_s8, 8)
+    clamp_max(0, AArch64_s8, 16)
+    clamp_min(0, AArch64_s16, 4)
+    clamp_max(0, AArch64_s16, 8)
+    clamp_min(0, AArch64_s32, 2)
+    clamp_max(0, AArch64_s32, 4)
+    clamp_min(0, AArch64_s64, 2)
+    clamp_max(0, AArch64_s64, 2)
+    scalarize(slot(0)) when bits_of(slot(0)) > 64
+    more(slot(0), pow2)
+    lower true
+
+ruleset AArch64_CLMUL: G_CLMUL
+    legal in(slot(0), AArch64_V8i8OrV16i8Set)
+
+ruleset AArch64_BSWAP: G_BSWAP
+    legal in(slot(0), AArch64_BswapTypesSet)
+    widen(elem_of(slot(0)), pow2_min(16))
+    widen(slot(0), ty(AArch64_s32))
+    narrow(slot(0), ty(AArch64_s64))
+    clamp_min(0, AArch64_s16, 4)
+    clamp_max(0, AArch64_s16, 8)
+    clamp_min(0, AArch64_s32, 2)
+    clamp_max(0, AArch64_s32, 4)
+    clamp_min(0, AArch64_s64, 2)
+    clamp_max(0, AArch64_s64, 2)
+    more(slot(0), pow2)
+
+ruleset AArch64_UADDSAT: G_UADDSAT G_SADDSAT G_USUBSAT G_SSUBSAT
+    legal in(slot(0), AArch64_UaddsatTypesSet)
+    legal (feature("Subtarget.hasSVE()") and in(slot(0), AArch64_SVEIntVecSet))
+    clamp_min(0, AArch64_s8, 8)
+    clamp_max(0, AArch64_s8, 16)
+    clamp_min(0, AArch64_s16, 4)
+    clamp_max(0, AArch64_s16, 8)
+    clamp_min(0, AArch64_s32, 2)
+    clamp_max(0, AArch64_s32, 4)
+    clamp_max(0, AArch64_s64, 2)
+    scalarize(slot(0)) when bits_of(slot(0)) > 64
+    more(slot(0), pow2)
+    lower true
+
+ruleset AArch64_FADD: G_FADD G_FSUB G_FMUL G_FDIV G_FMA G_FSQRT G_FMAXNUM G_FMINNUM G_FMAXIMUM G_FMINIMUM G_FCEIL G_FFLOOR G_FRINT G_FNEARBYINT G_INTRINSIC_TRUNC G_INTRINSIC_ROUND G_INTRINSIC_ROUNDEVEN
+    legal in(slot(0), AArch64_FPScalarOrVecSet)
+    legal (feature("Subtarget.hasFullFP16()") and in(slot(0), AArch64_F16OrV4V8F16Set))
+    libcall in(slot(0), AArch64_f128)
+    scalarize(slot(0)) when bits_of(slot(0)) > 64
+    widen(slot(0), replace(elt_type_to(slot(0),
+            ty(AArch64_f32)))) when ((not feature("Subtarget.hasFullFP16()") and is_float16(scalar_of(slot(0)))) or is_bfloat16(scalar_of(slot(0))))
+    clamp_min(0, AArch64_s16, 4)
+    clamp_max(0, AArch64_s16, 8)
+    clamp_min(0, AArch64_s32, 2)
+    clamp_max(0, AArch64_s32, 4)
+    clamp_min(0, AArch64_s64, 2)
+    clamp_max(0, AArch64_s64, 2)
+    more(slot(0), pow2)
+
+ruleset AArch64_FABS: G_FABS G_FNEG
+    legal in(slot(0), AArch64_FPScalarOrVecSet)
+    legal (feature("Subtarget.hasFullFP16()") and in(slot(0), AArch64_F16OrBF16VecSet))
+    scalarize(slot(0)) when bits_of(slot(0)) > 64
+    lower bits_of(slot(0)) > 64
+    clamp_min(0, AArch64_s16, 4)
+    clamp_max(0, AArch64_s16, 8)
+    clamp_min(0, AArch64_s32, 2)
+    clamp_max(0, AArch64_s32, 4)
+    clamp_min(0, AArch64_s64, 2)
+    clamp_max(0, AArch64_s64, 2)
+    more(slot(0), pow2)
+    lower in(slot(0), AArch64_F16OrBF16VecSet)
+
+ruleset AArch64_FREM: G_FREM G_FCOS G_FSIN G_FPOW G_FLOG G_FLOG2 G_FLOG10 G_FTAN G_FEXP G_FEXP2 G_FEXP10 G_FACOS G_FASIN G_FATAN G_FATAN2 G_FCOSH G_FSINH G_FTANH G_FMODF
+    libcall in(slot(0), AArch64_F32To128Set)
+    widen(slot(0), replace(elt_type_to(slot(0), ty(AArch64_f32)))) when in(slot(0),
+            AArch64_F16OrBF16Set)
+    scalarize(slot(0))
+
+ruleset AArch64_FPOWI: G_FPOWI G_FLDEXP
+    libcall in_pairs(slot(0), slot(1), [[AArch64_f32, AArch64_i32], [AArch64_f64,
+            AArch64_i32], [AArch64_f128, AArch64_i32]])
+    widen(slot(0), replace(elt_type_to(slot(0), ty(AArch64_f32)))) when in(slot(0),
+            AArch64_F16OrBF16Set)
+    scalarize(slot(0))
+
+ruleset AArch64_LROUND: G_LROUND G_INTRINSIC_LRINT
+    legal in_pairs(slot(0), slot(1), [[AArch64_i32, AArch64_f32], [AArch64_i32,
+            AArch64_f64], [AArch64_i64, AArch64_f32], [AArch64_i64, AArch64_f64]])
+    legal (feature("Subtarget.hasFullFP16()") and in_pairs(slot(0), slot(1), [[AArch64_i32,
+            AArch64_f16], [AArch64_i64, AArch64_f16]]))
+    widen(slot(1), ty(AArch64_s32))
+    libcall in_pairs(slot(0), slot(1), [[AArch64_s64, AArch64_s128]])
+    lower true
+
+ruleset AArch64_LLROUND: G_LLROUND G_INTRINSIC_LLRINT
+    legal in_pairs(slot(0), slot(1), [[AArch64_i64, AArch64_f32], [AArch64_i64,
+            AArch64_f64]])
+    legal (feature("Subtarget.hasFullFP16()") and in_pairs(slot(0), slot(1), [[AArch64_i64,
+            AArch64_f16]]))
+    widen(slot(0), ty(AArch64_s64))
+    widen(slot(1), ty(AArch64_s32))
+    libcall in_pairs(slot(0), slot(1), [[AArch64_s64, AArch64_s128]])
+    lower true
+
+ruleset AArch64_FCOPYSIGN: G_FCOPYSIGN
+    more(slot(0), replace(vec_of(select(slot(0) == ty(AArch64_s16), 4, 2),
+            slot(0)))) when sort_of(slot(0)) == scalar
+    lower true
+
+ruleset AArch64_FMAD: G_FMAD
+    lower true
+
+ruleset AArch64_LOAD: G_LOAD
+    custom (feature("Subtarget.hasRCPC3()") and slot(0) == ty(AArch64_s128) and mem_ordering(mem_slot(0)) == ordering_acquire)
+    custom (slot(0) == ty(AArch64_s128) and mem_ordering(mem_slot(0)) >= ordering_unordered)
+    legal in_mem_desc(slot(0), slot(1), mem_slot(0), [mem_desc(AArch64_s8, AArch64_p0,
+            AArch64_s8, 8), mem_desc(AArch64_s16, AArch64_p0, AArch64_s16, 8),
+            mem_desc(AArch64_s32, AArch64_p0, AArch64_s32, 8), mem_desc(AArch64_s64,
+            AArch64_p0, AArch64_s64, 8), mem_desc(AArch64_p0, AArch64_p0, AArch64_s64, 8),
+            mem_desc(AArch64_s128, AArch64_p0, AArch64_s128, 8), mem_desc(AArch64_v8s8,
+            AArch64_p0, AArch64_s64, 8), mem_desc(AArch64_v16s8, AArch64_p0, AArch64_s128,
+            8), mem_desc(AArch64_v4s16, AArch64_p0, AArch64_s64, 8),
+            mem_desc(AArch64_v8s16, AArch64_p0, AArch64_s128, 8), mem_desc(AArch64_v2s32,
+            AArch64_p0, AArch64_s64, 8), mem_desc(AArch64_v4s32, AArch64_p0, AArch64_s128,
+            8), mem_desc(AArch64_v2s64, AArch64_p0, AArch64_s128, 8)])
+    legal in_mem_desc(slot(0), slot(1), mem_slot(0), [mem_desc(AArch64_s32, AArch64_p0,
+            AArch64_s8, 8), mem_desc(AArch64_s32, AArch64_p0, AArch64_s16, 8),
+            mem_desc(AArch64_s64, AArch64_p0, AArch64_s32, 8)])
+    legal in_mem_desc(slot(0), slot(1), mem_slot(0), [mem_desc(AArch64_nxv16s8, AArch64_p0,
+            AArch64_nxv16s8, 8), mem_desc(AArch64_nxv8s16, AArch64_p0, AArch64_nxv8s16, 8),
+            mem_desc(AArch64_nxv4s32, AArch64_p0, AArch64_nxv4s32, 8),
+            mem_desc(AArch64_nxv2s64, AArch64_p0, AArch64_nxv2s64, 8)])
+    widen(slot(0), pow2_min(8))
+    clamp_max(0, AArch64_s8, 16)
+    clamp_max(0, AArch64_s16, 8)
+    clamp_max(0, AArch64_s32, 4)
+    clamp_max(0, AArch64_s64, 2)
+    clamp_max(0, AArch64_p0, 2)
+    lower (not is_byte_sized(mem_ty(mem_slot(0))) or not is_pow2(size_in_bytes_of(mem_ty(mem_slot(0)))))
+    widen(slot(0), ty(AArch64_s8))
+    narrow(slot(0), ty(AArch64_s64))
+    narrow(slot(0),
+            replace(ty(AArch64_i32))) when (sort_of(slot(0)) == scalar and slot(0) != mem_ty(mem_slot(0)) and size_of(slot(0)) > 32)
+    bitcast(slot(0),
+            replace(int_of_size(size_of(slot(0))))) when slot(0) == ty(AArch64_v4s8)
+    custom (sort_of(slot(0)) == pointer_vector and addr_space(slot(0)) == 0)
+    scalarize(slot(0)) when in(slot(0), AArch64_V2s16OrV2s8Set)
+    scalarize(slot(0)) when bits_of(slot(0)) > 64
+
+ruleset AArch64_STORE: G_STORE
+    custom (feature("Subtarget.hasRCPC3()") and slot(0) == ty(AArch64_s128) and mem_ordering(mem_slot(0)) == ordering_release)
+    custom (slot(0) == ty(AArch64_s128) and mem_ordering(mem_slot(0)) >= ordering_unordered)
+    widen(slot(0), ty(AArch64_s32)) when mem_ordering(mem_slot(0)) >= ordering_release
+    legal in_mem_desc(slot(0), slot(1), mem_slot(0), [mem_desc(AArch64_s8, AArch64_p0,
+            AArch64_s8, 8), mem_desc(AArch64_s16, AArch64_p0, AArch64_s8, 8),
+            mem_desc(AArch64_s32, AArch64_p0, AArch64_s8, 8), mem_desc(AArch64_s64,
+            AArch64_p0, AArch64_s8, 8), mem_desc(AArch64_s16, AArch64_p0, AArch64_s16, 8),
+            mem_desc(AArch64_s32, AArch64_p0, AArch64_s16, 8), mem_desc(AArch64_s64,
+            AArch64_p0, AArch64_s16, 8), mem_desc(AArch64_s32, AArch64_p0, AArch64_s8, 8),
+            mem_desc(AArch64_s32, AArch64_p0, AArch64_s16, 8), mem_desc(AArch64_s32,
+            AArch64_p0, AArch64_s32, 8), mem_desc(AArch64_s64, AArch64_p0, AArch64_s64, 8),
+            mem_desc(AArch64_s64, AArch64_p0, AArch64_s32, 8), mem_desc(AArch64_p0,
+            AArch64_p0, AArch64_s64, 8), mem_desc(AArch64_s128, AArch64_p0, AArch64_s128,
+            8), mem_desc(AArch64_v16s8, AArch64_p0, AArch64_s128, 8),
+            mem_desc(AArch64_v8s8, AArch64_p0, AArch64_s64, 8), mem_desc(AArch64_v4s16,
+            AArch64_p0, AArch64_s64, 8), mem_desc(AArch64_v8s16, AArch64_p0, AArch64_s128,
+            8), mem_desc(AArch64_v2s32, AArch64_p0, AArch64_s64, 8),
+            mem_desc(AArch64_v4s32, AArch64_p0, AArch64_s128, 8), mem_desc(AArch64_v2s64,
+            AArch64_p0, AArch64_s128, 8)])
+    legal in_mem_desc(slot(0), slot(1), mem_slot(0), [mem_desc(AArch64_nxv16s8, AArch64_p0,
+            AArch64_nxv16s8, 8), mem_desc(AArch64_nxv8s16, AArch64_p0, AArch64_nxv8s16, 8),
+            mem_desc(AArch64_nxv4s32, AArch64_p0, AArch64_nxv4s32, 8),
+            mem_desc(AArch64_nxv2s64, AArch64_p0, AArch64_nxv2s64, 8)])
+    widen(slot(0), ty(AArch64_s8))
+    narrow(slot(0), ty(AArch64_s64))
+    widen(elem_of(slot(0)), ty(AArch64_s8))
+    lower (sort_of(slot(0)) == scalar and slot(0) != mem_ty(mem_slot(0)))
+    clamp_max(0, AArch64_s8, 16)
+    clamp_max(0, AArch64_s16, 8)
+    clamp_max(0, AArch64_s32, 4)
+    clamp_max(0, AArch64_s64, 2)
+    clamp_max(0, AArch64_p0, 2)
+    lower not is_pow2(size_in_bytes_of(mem_ty(mem_slot(0))))
+    bitcast(slot(0),
+            replace(int_of_size(size_of(slot(0))))) when (slot(0) == ty(AArch64_v4s8) and size_of(slot(0)) == size_of(mem_slot(0)))
+    custom (sort_of(slot(0)) == pointer_vector and addr_space(slot(0)) == 0)
+    scalarize(slot(0)) when in(slot(0), AArch64_V2s16OrV2s8Set)
+    scalarize(slot(0)) when bits_of(slot(0)) > 64
+    lower true
+
+ruleset AArch64_INDEXED_STORE: G_INDEXED_STORE
+    legal in_mem_desc(slot(0), slot(1), mem_slot(0), [mem_desc(AArch64_p0, AArch64_s8,
+            AArch64_s8, 8), mem_desc(AArch64_p0, AArch64_s16, AArch64_s16, 8),
+            mem_desc(AArch64_p0, AArch64_s32, AArch64_s8, 8), mem_desc(AArch64_p0,
+            AArch64_s32, AArch64_s16, 8), mem_desc(AArch64_p0, AArch64_s32, AArch64_s32,
+            8), mem_desc(AArch64_p0, AArch64_s64, AArch64_s64, 8), mem_desc(AArch64_p0,
+            AArch64_p0, AArch64_p0, 8), mem_desc(AArch64_p0, AArch64_v8s8, AArch64_v8s8,
+            8), mem_desc(AArch64_p0, AArch64_v16s8, AArch64_v16s8, 8), mem_desc(AArch64_p0,
+            AArch64_v4s16, AArch64_v4s16, 8), mem_desc(AArch64_p0, AArch64_v8s16,
+            AArch64_v8s16, 8), mem_desc(AArch64_p0, AArch64_v2s32, AArch64_v2s32, 8),
+            mem_desc(AArch64_p0, AArch64_v4s32, AArch64_v4s32, 8), mem_desc(AArch64_p0,
+            AArch64_v2s64, AArch64_v2s64, 8), mem_desc(AArch64_p0, AArch64_v2p0,
+            AArch64_v2p0, 8), mem_desc(AArch64_p0, AArch64_s128, AArch64_s128, 8)])
+    unsupported true
+
+ruleset AArch64_INDEXED_LOAD: G_INDEXED_LOAD
+    unsupported mem_ordering(mem_slot(0)) >= ordering_unordered
+    legal ((in(slot(0), AArch64_PackedVectorCoreSet) or in(slot(0),
+            AArch64_ScalarAndPtrCoreSet) or slot(0) == ty(AArch64_s128)) and slot(1) == ty(AArch64_p0))
+    unsupported true
+
+ruleset AArch64_INDEXED_SEXTLOAD: G_INDEXED_SEXTLOAD G_INDEXED_ZEXTLOAD
+    unsupported mem_ordering(mem_slot(0)) >= ordering_unordered
+    legal (in(slot(0),
+            AArch64_S16To64Set) and slot(1) == ty(AArch64_p0) and ((slot(0) == ty(AArch64_s16) and mem_ty(mem_slot(0)) == ty(AArch64_s8)) or (slot(0) == ty(AArch64_s32) and in(mem_ty(mem_slot(0)),
+            AArch64_MemS8OrS16Set)) or (slot(0) == ty(AArch64_s64) and in(mem_ty(mem_slot(0)),
+            AArch64_MemS8To32Set))))
+    unsupported true
+
+ruleset AArch64_CONSTANT: G_CONSTANT
+    legal in(slot(0), AArch64_ScalarAndPtrCoreSet)
+    widen(slot(0), pow2)
+    widen(slot(0), ty(AArch64_s8))
+    narrow(slot(0), ty(AArch64_s64))
+
+ruleset AArch64_FCONSTANT: G_FCONSTANT
+    legal in(slot(0), AArch64_S16To128Set)
+
+ruleset AArch64_ICMP: G_ICMP
+    legal in_pairs(slot(0), slot(1), [[AArch64_i32, AArch64_i32], [AArch64_i32,
+            AArch64_i64], [AArch64_i32, AArch64_p0]])
+    widen(elem_of(slot(1)), pow2)
+    widen(elem_of(slot(1)), ty(AArch64_s8))
+    widen(slot(1), ty(AArch64_s32))
+    narrow(slot(1), ty(AArch64_s64))
+    widen(slot(0), ty(AArch64_s32))
+    narrow(slot(0), ty(AArch64_s32))
+    scalarize(slot(1)) when bits_of(slot(1)) > 64
+    widen(slot(0),
+            same_as(1)) when (sort_of(slot(0)) == vector and not sort_of(slot(1)) == pointer_vector and elem_of(slot(0)) != elem_of(slot(1)))
+    widen(elem_of(slot(1)), ty(AArch64_s32)) when slot(1) == ty(AArch64_v2s16)
+    widen(elem_of(slot(0)), ty(AArch64_s64)) when sort_of(slot(1)) == pointer_vector
+    more(slot(1), pow2)
+    clamp_min(1, AArch64_s8, 8)
+    clamp_max(1, AArch64_s8, 16)
+    clamp_min(1, AArch64_s16, 4)
+    clamp_max(1, AArch64_s16, 8)
+    clamp_min(1, AArch64_s32, 2)
+    clamp_max(1, AArch64_s32, 4)
+    clamp_min(1, AArch64_s64, 2)
+    clamp_max(1, AArch64_s64, 2)
+    clamp_min(1, AArch64_p0, 2)
+    clamp_max(1, AArch64_p0, 2)
+    custom sort_of(slot(0)) == vector
+
+ruleset AArch64_FCMP: G_FCMP
+    legal in_pairs(slot(0), slot(1), [[AArch64_i32, AArch64_f32], [AArch64_i32,
+            AArch64_f64], [AArch64_v4i32, AArch64_v4f32], [AArch64_v2i32, AArch64_v2f32],
+            [AArch64_v2i64, AArch64_v2f64]])
+    legal (feature("Subtarget.hasFullFP16()") and in_pairs(slot(0), slot(1), [[AArch64_i32,
+            AArch64_f16], [AArch64_v4i16, AArch64_v4f16], [AArch64_v8i16, AArch64_v8f16]]))
+    widen(elem_of(slot(1)), pow2)
+    widen(slot(0), ty(AArch64_s32))
+    narrow(slot(0), ty(AArch64_s32))
+    widen(slot(1), replace(elt_type_to(slot(1),
+            ty(AArch64_f32)))) when ((not feature("Subtarget.hasFullFP16()") and is_float16(scalar_of(slot(1)))) or is_bfloat16(scalar_of(slot(1))))
+    scalarize(slot(1)) when bits_of(slot(1)) > 64
+    widen(slot(0),
+            same_as(1)) when (sort_of(slot(0)) == vector and not sort_of(slot(1)) == pointer_vector and elem_of(slot(0)) != elem_of(slot(1)))
+    clamp_min(1, AArch64_s16, 4)
+    clamp_max(1, AArch64_s16, 8)
+    clamp_min(1, AArch64_s32, 2)
+    clamp_max(1, AArch64_s32, 4)
+    clamp_max(1, AArch64_s64, 2)
+    more(slot(1), pow2)
+    libcall in_pairs(slot(0), slot(1), [[AArch64_s32, AArch64_s128]])
+
+ruleset AArch64_ZEXT: G_ZEXT G_SEXT G_ANYEXT
+    legal (not sort_of(slot(0)) == vector and size_of(slot(0)) >= 8 and size_of(slot(0)) < 128 and is_pow2(size_of(slot(0))) and size_of(slot(1)) >= 8 and is_pow2(size_of(slot(1))))
+    legal in_pairs(slot(0), slot(1), [[AArch64_v8s16, AArch64_v8s8], [AArch64_v4s32,
+            AArch64_v4s16], [AArch64_v2s64, AArch64_v2s32]])
+    widen(slot(0), ty(AArch64_s64))
+    narrow(slot(0), ty(AArch64_s64))
+    more(slot(0), pow2)
+    clamp_max(1, AArch64_s8, 8)
+    clamp_max(1, AArch64_s16, 4)
+    clamp_max(1, AArch64_s32, 2)
+    lower (sort_of(slot(0)) == vector and bits_of(slot(0)) > mul(bits_of(slot(1)),
+            2) and (bits_of(slot(1)) == 8 or bits_of(slot(1)) == 16))
+    clamp_min(1, AArch64_s8, 8)
+    clamp_min(1, AArch64_s16, 4)
+    scalarize(slot(0)) when bits_of(slot(0)) > 64
+
+ruleset AArch64_TRUNC: G_TRUNC
+    legal in_pairs(slot(0), slot(1), [[AArch64_v8s8, AArch64_v8s16], [AArch64_v4s16,
+            AArch64_v4s32], [AArch64_v2s32, AArch64_v2s64]])
+    more(slot(0), pow2)
+    clamp_max(0, AArch64_s8, 8)
+    clamp_max(0, AArch64_s16, 4)
+    clamp_max(0, AArch64_s32, 2)
+    widen(elem_of(slot(0)), ty(AArch64_s8)) when sort_of(slot(0)) == vector
+    lower (sort_of(slot(0)) == vector and size_of(slot(1)) > 128 and mul(bits_of(slot(0)),
+            2) <= bits_of(slot(1)))
+    clamp_min(0, AArch64_s8, 8)
+    clamp_min(0, AArch64_s16, 4)
+    legal true
+
+ruleset AArch64_TRUNC_SSAT_S: G_TRUNC_SSAT_S G_TRUNC_SSAT_U G_TRUNC_USAT_U
+    legal in_pairs(slot(0), slot(1), [[AArch64_v8i8, AArch64_v8i16], [AArch64_v4i16,
+            AArch64_v4i32], [AArch64_v2i32, AArch64_v2i64]])
+    clamp_min(0, AArch64_s8, 8)
+    clamp_max(0, AArch64_s8, 8)
+    clamp_min(0, AArch64_s16, 4)
+    clamp_max(0, AArch64_s16, 4)
+    clamp_min(0, AArch64_s32, 2)
+    clamp_max(0, AArch64_s32, 2)
+    lower true
+
+ruleset AArch64_SEXT_INREG: G_SEXT_INREG
+    legal in(slot(0), AArch64_I32Or64OrIntVecSet)
+    narrow(slot(0), ty(AArch64_s64))
+    clamp_min(0, AArch64_s8, 8)
+    clamp_max(0, AArch64_s8, 16)
+    clamp_min(0, AArch64_s16, 4)
+    clamp_max(0, AArch64_s16, 8)
+    clamp_min(0, AArch64_s32, 2)
+    clamp_max(0, AArch64_s32, 4)
+    clamp_max(0, AArch64_s64, 2)
+    lower true
+
+ruleset AArch64_FPTRUNC: G_FPTRUNC
+    legal in_pairs(slot(0), slot(1), [[AArch64_f16, AArch64_f32], [AArch64_f16,
+            AArch64_f64], [AArch64_f32, AArch64_f64], [AArch64_v4f16, AArch64_v4f32],
+            [AArch64_v2f32, AArch64_v2f64]])
+    legal (feature("Subtarget.hasBF16()") and in_pairs(slot(0), slot(1), [[AArch64_bf16,
+            AArch64_f32], [AArch64_v4bf16, AArch64_v4f32]]))
+    libcall in_pairs(slot(0), slot(1), [[AArch64_f16, AArch64_f128], [AArch64_f32,
+            AArch64_f128], [AArch64_f64, AArch64_f128]])
+    more(slot(1), pow2)
+    custom (bits_of(slot(1)) == 64 and bits_of(slot(0)) == 16)
+    lower in_pairs(slot(0), slot(1), [[AArch64_bf16, AArch64_f32], [AArch64_v4bf16,
+            AArch64_v4f32]])
+    clamp_min(1, AArch64_s32, 4)
+    clamp_max(1, AArch64_s32, 4)
+    clamp_min(1, AArch64_s64, 2)
+    clamp_max(1, AArch64_s64, 2)
+    scalarize(slot(0))
+
+ruleset AArch64_FPEXT: G_FPEXT
+    legal in_pairs(slot(0), slot(1), [[AArch64_f32, AArch64_f16], [AArch64_f64,
+            AArch64_f16], [AArch64_f32, AArch64_bf16], [AArch64_f64, AArch64_f32],
+            [AArch64_v4f32, AArch64_v4f16], [AArch64_v4f32, AArch64_v4bf16],
+            [AArch64_v2f64, AArch64_v2f32]])
+    libcall in_pairs(slot(0), slot(1), [[AArch64_f128, AArch64_f64], [AArch64_f128,
+            AArch64_f32], [AArch64_f128, AArch64_f16]])
+    more(slot(0), pow2)
+    widen(slot(1), replace(elt_type_to(slot(1),
+            ty(AArch64_f32)))) when (sort_of(slot(1)) == vector and sort_of(slot(0)) == vector and bits_of(slot(1)) == 16 and bits_of(slot(0)) == 64)
+    clamp_min(0, AArch64_s32, 4)
+    clamp_max(0, AArch64_s32, 4)
+    clamp_min(0, AArch64_s64, 2)
+    clamp_max(0, AArch64_s64, 2)
+    scalarize(slot(0))
+
+ruleset AArch64_FPTOSI: G_FPTOSI G_FPTOUI
+    legal in_pairs(slot(0), slot(1), [[AArch64_i32, AArch64_f32], [AArch64_i64,
+            AArch64_f32], [AArch64_i32, AArch64_f64], [AArch64_i64, AArch64_f64],
+            [AArch64_v2i32, AArch64_v2f32], [AArch64_v4i32, AArch64_v4f32], [AArch64_v2i64,
+            AArch64_v2f64]])
+    legal (feature("Subtarget.hasFullFP16()") and in_pairs(slot(0), slot(1), [[AArch64_i32,
+            AArch64_f16], [AArch64_i64, AArch64_f16], [AArch64_v4i16, AArch64_v4f16],
+            [AArch64_v8i16, AArch64_v8f16]]))
+    scalarize(slot(0)) when bits_of(slot(0)) > 64
+    scalarize(slot(1)) when bits_of(slot(1)) > 64
+    narrow(slot(0),
+            replace(ty(AArch64_i64))) when (slot(1) == ty(AArch64_f16) and size_of(slot(0)) > 64)
+    more(slot(0), pow2)
+    widen(elem_of(slot(0)), pow2)
+    widen(slot(0), ty(AArch64_s32))
+    widen(slot(1), replace(elt_type_to(slot(1),
+            ty(AArch64_f32)))) when ((not feature("Subtarget.hasFullFP16()") and is_float16(scalar_of(slot(1)))) or is_bfloat16(scalar_of(slot(1))))
+    widen(slot(1), same_as(0)) when bits_of(slot(0)) <= 64
+    widen(slot(0), same_as(1)) when bits_of(slot(1)) <= 64
+    clamp_min(0, AArch64_s16, 4)
+    clamp_max(0, AArch64_s16, 8)
+    clamp_min(0, AArch64_s32, 2)
+    clamp_max(0, AArch64_s32, 4)
+    clamp_max(0, AArch64_s64, 2)
+    libcall in_pairs(slot(0), slot(1), [[AArch64_i32, AArch64_f128], [AArch64_i64,
+            AArch64_f128], [AArch64_i128, AArch64_f128], [AArch64_i128, AArch64_f32],
+            [AArch64_i128, AArch64_f64]])
+
+ruleset AArch64_FPTOSI_SAT: G_FPTOSI_SAT G_FPTOUI_SAT
+    legal in_pairs(slot(0), slot(1), [[AArch64_i32, AArch64_f32], [AArch64_i64,
+            AArch64_f32], [AArch64_i32, AArch64_f64], [AArch64_i64, AArch64_f64],
+            [AArch64_v2i32, AArch64_v2f32], [AArch64_v4i32, AArch64_v4f32], [AArch64_v2i64,
+            AArch64_v2f64]])
+    legal (feature("Subtarget.hasFullFP16()") and in_pairs(slot(0), slot(1), [[AArch64_i16,
+            AArch64_f16], [AArch64_i32, AArch64_f16], [AArch64_i64, AArch64_f16],
+            [AArch64_v4i16, AArch64_v4f16], [AArch64_v8i16, AArch64_v8f16]]))
+    scalarize(slot(0)) when bits_of(slot(0)) > 64
+    scalarize(slot(1)) when bits_of(slot(1)) > 64
+    narrow(slot(0),
+            replace(ty(AArch64_i64))) when (slot(1) == ty(AArch64_f16) and size_of(slot(0)) > 64)
+    lower ((sort_of(slot(0)) == scalar and size_of(slot(0)) > 64) or (sort_of(slot(1)) == scalar and size_of(slot(1)) > 64))
+    more(slot(0), pow2)
+    widen(slot(0), pow2_min(32))
+    widen(slot(0), ty(AArch64_s32))
+    widen(slot(1), replace(elt_type_to(slot(1),
+            ty(AArch64_f32)))) when ((not feature("Subtarget.hasFullFP16()") and is_float16(scalar_of(slot(1)))) or is_bfloat16(scalar_of(slot(1))))
+    widen(slot(1),
+            same_as(0)) when (bits_of(slot(0)) == 16 or bits_of(slot(0)) == 32 or bits_of(slot(0)) == 64)
+    widen(slot(0),
+            same_as(1)) when (bits_of(slot(1)) == 16 or bits_of(slot(1)) == 32 or bits_of(slot(1)) == 64)
+    widen(elem_of(slot(0)), pow2)
+    clamp_min(0, AArch64_s16, 4)
+    clamp_max(0, AArch64_s16, 8)
+    clamp_min(0, AArch64_s32, 2)
+    clamp_max(0, AArch64_s32, 4)
+    clamp_max(0, AArch64_s64, 2)
+
+ruleset AArch64_SITOFP: G_SITOFP G_UITOFP
+    legal in_pairs(slot(0), slot(1), [[AArch64_f32, AArch64_i32], [AArch64_f64,
+            AArch64_i32], [AArch64_f32, AArch64_i64], [AArch64_f64, AArch64_i64],
+            [AArch64_v2f32, AArch64_v2i32], [AArch64_v4f32, AArch64_v4i32], [AArch64_v2f64,
+            AArch64_v2i64]])
+    legal (feature("Subtarget.hasFullFP16()") and in_pairs(slot(0), slot(1), [[AArch64_f16,
+            AArch64_i32], [AArch64_f16, AArch64_i64], [AArch64_v4f16, AArch64_v4i16],
+            [AArch64_v8f16, AArch64_v8i16]]))
+    unsupported is_bfloat16(scalar_of(slot(0)))
+    scalarize(slot(1)) when bits_of(slot(1)) > 64
+    scalarize(slot(0)) when bits_of(slot(0)) > 64
+    more(slot(1), pow2)
+    widen(elem_of(slot(1)), pow2)
+    widen(slot(1), ty(AArch64_f32))
+    lower (sort_of(slot(1)) == vector and bits_of(slot(1)) == 64 and bits_of(slot(0)) == 16)
+    widen(slot(0), select(feature("Subtarget.hasFullFP16()"), 16, 32))
+    scalarize(slot(0)) when (bits_of(slot(0)) == 32 and bits_of(slot(1)) == 64)
+    widen(slot(0), same_as(1)) when bits_of(slot(1)) <= 64
+    widen(slot(1), same_as(0)) when bits_of(slot(0)) <= 64
+    clamp_min(0, AArch64_s16, 4)
+    clamp_max(0, AArch64_s16, 8)
+    clamp_min(0, AArch64_s32, 2)
+    clamp_max(0, AArch64_s32, 4)
+    clamp_max(0, AArch64_s64, 2)
+    libcall in_pairs(slot(0), slot(1), [[AArch64_f16, AArch64_i128], [AArch64_f32,
+            AArch64_i128], [AArch64_f64, AArch64_i128], [AArch64_f128, AArch64_i128],
+            [AArch64_f128, AArch64_i32], [AArch64_f128, AArch64_i64]])
+
+ruleset AArch64_BR: G_BR
+    legal true
+
+ruleset AArch64_BRCOND: G_BRCOND
+    legal in(slot(0), AArch64_s32)
+    widen(slot(0), ty(AArch64_s32))
+    narrow(slot(0), ty(AArch64_s32))
+
+ruleset AArch64_BRINDIRECT: G_BRINDIRECT
+    legal in(slot(0), AArch64_p0)
+
+ruleset AArch64_SELECT: G_SELECT
+    legal in_pairs(slot(0), slot(1), [[AArch64_s32, AArch64_s32], [AArch64_s64,
+            AArch64_s32], [AArch64_p0, AArch64_s32]])
+    widen(slot(0), pow2)
+    widen(slot(0), ty(AArch64_s32))
+    narrow(slot(0), ty(AArch64_s64))
+    widen(slot(1), ty(AArch64_s32))
+    narrow(slot(1), ty(AArch64_s32))
+    scalarize(slot(0)) when bits_of(slot(0)) > 64
+    widen(slot(1),
+            same_as(0)) when (sort_of(slot(0)) == vector and sort_of(slot(1)) == vector)
+    lower sort_of(slot(0)) == vector
+
+ruleset AArch64_FRAME_INDEX: G_FRAME_INDEX
+    legal in(slot(0), AArch64_p0)
+
+ruleset AArch64_GLOBAL_VALUE: G_GLOBAL_VALUE
+    custom all_of(feature("TM.getCodeModel() == CodeModel::Small"))
+    legal not feature("TM.getCodeModel() == CodeModel::Small")
+
+ruleset AArch64_PTRAUTH_GLOBAL_VALUE: G_PTRAUTH_GLOBAL_VALUE
+    legal (slot(0) == ty(AArch64_p0) and slot(1) == ty(AArch64_p0))
+
+ruleset AArch64_PTRTOINT: G_PTRTOINT
+    legal in_pairs(slot(0), slot(1), [[AArch64_i64, AArch64_p0], [AArch64_v2i64,
+            AArch64_v2p0]])
+    widen(slot(0), pow2_min(64))
+    widen(slot(0), ty(AArch64_s64))
+    narrow(slot(0), ty(AArch64_s64))
+    clamp_max(0, AArch64_s64, 2)
+
+ruleset AArch64_INTTOPTR: G_INTTOPTR
+    unsupported size_of(slot(0)) != size_of(slot(1))
+    legal in_pairs(slot(0), slot(1), [[AArch64_p0, AArch64_i64], [AArch64_v2p0,
+            AArch64_v2i64]])
+    clamp_max(1, AArch64_s64, 2)
+
+ruleset AArch64_BITCAST: G_BITCAST
+    legal (in(slot(0), AArch64_s16) and in(slot(1), AArch64_s16))
+    legal (in(slot(0), AArch64_Bitcast32Set) and in(slot(1), AArch64_Bitcast32Set))
+    legal (in(slot(0), AArch64_Bitcast64Set) and in(slot(1), AArch64_Bitcast64Set))
+    legal (in(slot(0), AArch64_Bitcast128Set) and in(slot(1), AArch64_Bitcast128Set))
+    custom (sort_of(slot(0)) == scalar and sort_of(slot(1)) == vector and bits_of(slot(1)) == 1)
+    lower ((sort_of(slot(0)) == vector and not sort_of(slot(1)) == vector) or (not sort_of(slot(0)) == vector and sort_of(slot(1)) == vector))
+    lower (sort_of(slot(0)) == vector and not sort_of(slot(0)) == scalable_vector and sort_of(slot(1)) == vector and not sort_of(slot(1)) == scalable_vector and urem(mul(num_elems(slot(1)),
+            pow2_ceil(num_elems(slot(0)))), num_elems(slot(0))) != 0)
+    more(slot(0), pow2)
+    clamp_min(0, AArch64_s8, 8)
+    clamp_max(0, AArch64_s8, 16)
+    clamp_min(0, AArch64_s16, 4)
+    clamp_max(0, AArch64_s16, 8)
+    clamp_min(0, AArch64_s32, 2)
+    clamp_max(0, AArch64_s32, 4)
+    clamp_max(0, AArch64_s64, 2)
+    lower true
+
+ruleset AArch64_VASTART: G_VASTART
+    legal in(slot(0), AArch64_p0)
+
+ruleset AArch64_VAARG: G_VAARG
+    custom (in(slot(0), AArch64_ScalarAndPtrCoreSet) and in(slot(1), AArch64_p0))
+    widen(slot(0), ty(AArch64_s8))
+    narrow(slot(0), ty(AArch64_s64))
+    widen(slot(0), pow2_min(8))
+
+ruleset AArch64_ATOMIC_CMPXCHG_WITH_SUCCESS: G_ATOMIC_CMPXCHG_WITH_SUCCESS
+    lower (in(slot(0), AArch64_S8To128Set) and slot(2) == ty(AArch64_p0))
+
+ruleset AArch64_ATOMIC_CMPXCHG: G_ATOMIC_CMPXCHG
+    legal (not feature("Subtarget.outlineAtomics() && !Subtarget.hasLSE()") and in_pairs(slot(0),
+            slot(1), [[AArch64_s32, AArch64_p0], [AArch64_s64, AArch64_p0]]))
+    custom (not feature("Subtarget.outlineAtomics() && !Subtarget.hasLSE()") and in_pairs(slot(0),
+            slot(1), [[AArch64_s128, AArch64_p0]]))
+    libcall (feature("Subtarget.outlineAtomics() && !Subtarget.hasLSE()") and in_pairs(slot(0),
+            slot(1), [[AArch64_s8, AArch64_p0], [AArch64_s16, AArch64_p0], [AArch64_s32,
+            AArch64_p0], [AArch64_s64, AArch64_p0], [AArch64_s128, AArch64_p0]]))
+    widen(slot(0), ty(AArch64_s32))
+    narrow(slot(0), ty(AArch64_s64))
+
+ruleset AArch64_ATOMICRMW_XCHG: G_ATOMICRMW_XCHG G_ATOMICRMW_ADD G_ATOMICRMW_SUB G_ATOMICRMW_AND G_ATOMICRMW_OR G_ATOMICRMW_XOR
+    legal (not feature("Subtarget.outlineAtomics() && !Subtarget.hasLSE()") and in_pairs(slot(0),
+            slot(1), [[AArch64_s32, AArch64_p0], [AArch64_s64, AArch64_p0]]))
+    libcall (feature("Subtarget.outlineAtomics() && !Subtarget.hasLSE()") and in_pairs(slot(0),
+            slot(1), [[AArch64_s8, AArch64_p0], [AArch64_s16, AArch64_p0], [AArch64_s32,
+            AArch64_p0], [AArch64_s64, AArch64_p0]]))
+    widen(slot(0), ty(AArch64_s32))
+    narrow(slot(0), ty(AArch64_s64))
+
+ruleset AArch64_ATOMICRMW_MIN: G_ATOMICRMW_MIN G_ATOMICRMW_MAX G_ATOMICRMW_UMIN G_ATOMICRMW_UMAX
+    legal (in(slot(0), AArch64_S32Or64Set) and slot(1) == ty(AArch64_p0))
+    widen(slot(0), ty(AArch64_s32))
+    narrow(slot(0), ty(AArch64_s64))
+
+ruleset AArch64_BLOCK_ADDR: G_BLOCK_ADDR
+    legal in(slot(0), AArch64_p0)
+
+ruleset AArch64_EXTRACT_VECTOR_ELT: G_EXTRACT_VECTOR_ELT
+    legal (feature("Subtarget.hasSVE()") and in_triples(slot(0), slot(1), slot(2),
+            [[AArch64_s16, AArch64_nxv16s8, AArch64_s64], [AArch64_s16, AArch64_nxv8s16,
+            AArch64_s64], [AArch64_s32, AArch64_nxv4s32, AArch64_s64], [AArch64_s64,
+            AArch64_nxv2s64, AArch64_s64]]))
+    unsupported (not sort_of(slot(1)) == scalable_vector and slot(0) != elem_of(slot(1)))
+    widen(slot(2), ty(AArch64_s64))
+    custom in(slot(1), AArch64_PackedVectorOrV2s16Set)
+    widen(elem_of(slot(0)),
+            ty(AArch64_s64)) when (sort_of(slot(1)) == vector and not sort_of(slot(1)) == scalable_vector and num_elems(slot(1)) <= 2)
+    widen(elem_of(slot(0)),
+            ty(AArch64_s32)) when (sort_of(slot(1)) == vector and not sort_of(slot(1)) == scalable_vector and num_elems(slot(1)) <= 4)
+    widen(elem_of(slot(0)),
+            ty(AArch64_s16)) when (sort_of(slot(1)) == vector and not sort_of(slot(1)) == scalable_vector and num_elems(slot(1)) <= 8)
+    widen(elem_of(slot(0)),
+            ty(AArch64_s8)) when (sort_of(slot(1)) == vector and not sort_of(slot(1)) == scalable_vector and num_elems(slot(1)) <= 16)
+    widen(elem_of(slot(0)), ty(AArch64_s8))
+    more(slot(1), pow2)
+    clamp_max(1, AArch64_s64, 2)
+    clamp_max(1, AArch64_s32, 4)
+    clamp_max(1, AArch64_s16, 8)
+    clamp_max(1, AArch64_s8, 16)
+    clamp_max(1, AArch64_p0, 2)
+    scalarize(slot(1)) when bits_of(slot(1)) > 64
+
+ruleset AArch64_INSERT_VECTOR_ELT: G_INSERT_VECTOR_ELT
+    legal in(slot(0), AArch64_PackedVectorCoreSet)
+    legal (feature("Subtarget.hasSVE()") and in_triples(slot(0), slot(1), slot(2),
+            [[AArch64_nxv16s8, AArch64_s32, AArch64_s64], [AArch64_nxv8s16, AArch64_s32,
+            AArch64_s64], [AArch64_nxv4s32, AArch64_s32, AArch64_s64], [AArch64_nxv2s64,
+            AArch64_s64, AArch64_s64]]))
+    more(slot(0), pow2)
+    widen(elem_of(slot(0)), min_vector_size(64))
+    clamp_min(0, AArch64_s8, 8)
+    clamp_max(0, AArch64_s8, 16)
+    clamp_min(0, AArch64_s16, 4)
+    clamp_max(0, AArch64_s16, 8)
+    clamp_min(0, AArch64_s32, 2)
+    clamp_max(0, AArch64_s32, 4)
+    clamp_max(0, AArch64_s64, 2)
+    clamp_max(0, AArch64_p0, 2)
+    scalarize(slot(0)) when bits_of(slot(0)) > 64
+
+ruleset AArch64_BUILD_VECTOR: G_BUILD_VECTOR
+    legal in_pairs(slot(0), slot(1), [[AArch64_v8s8, AArch64_s8], [AArch64_v16s8,
+            AArch64_s8], [AArch64_v4s16, AArch64_s16], [AArch64_v8s16, AArch64_s16],
+            [AArch64_v2s32, AArch64_s32], [AArch64_v4s32, AArch64_s32], [AArch64_v2s64,
+            AArch64_s64], [AArch64_v2p0, AArch64_p0]])
+    clamp_min(0, AArch64_s32, 4)
+    clamp_max(0, AArch64_s32, 4)
+    clamp_min(0, AArch64_s64, 2)
+    clamp_max(0, AArch64_s64, 2)
+    widen(elem_of(slot(0)), ty(AArch64_s8))
+    widen(elem_of(slot(0)), min_vector_size(64))
+    widen(elem_of(slot(0)), pow2)
+    widen(slot(1), same_as(0))
+
+ruleset AArch64_BUILD_VECTOR_TRUNC: G_BUILD_VECTOR_TRUNC
+    lower true
+
+ruleset AArch64_SPLAT_VECTOR: G_SPLAT_VECTOR
+    legal in_pairs(slot(0), slot(1), [[AArch64_v8s8, AArch64_s8], [AArch64_v8s8,
+            AArch64_s32], [AArch64_v16s8, AArch64_s8], [AArch64_v16s8, AArch64_s32],
+            [AArch64_v4s16, AArch64_s16], [AArch64_v4s16, AArch64_s32], [AArch64_v8s16,
+            AArch64_s16], [AArch64_v8s16, AArch64_s32], [AArch64_v2s32, AArch64_s32],
+            [AArch64_v4s32, AArch64_s32], [AArch64_v2s64, AArch64_s64], [AArch64_v2p0,
+            AArch64_p0]])
+    legal (feature("Subtarget.hasSVE()") and in_pairs(slot(0), slot(1), [[AArch64_nxv4s32,
+            AArch64_s32], [AArch64_nxv2s64, AArch64_s64]]))
+
+ruleset AArch64_SHUFFLE_VECTOR: G_SHUFFLE_VECTOR
+    legal (slot(0) == slot(1) and in(slot(0), AArch64_ShuffleSrcSet))
+    more(slot(1), replace(same_as(0))) when num_elems(slot(0)) > num_elems(slot(1))
+    more(slot(0), pow2)
+    more(slot(0), replace(same_as(1))) when num_elems(slot(0)) < num_elems(slot(1))
+    widen(slot(0), 8)
+    clamp_min(0, AArch64_s8, 8)
+    clamp_max(0, AArch64_s8, 16)
+    clamp_min(0, AArch64_s16, 4)
+    clamp_max(0, AArch64_s16, 8)
+    clamp_min(0, AArch64_s32, 4)
+    clamp_max(0, AArch64_s32, 4)
+    clamp_min(0, AArch64_s64, 2)
+    clamp_max(0, AArch64_s64, 2)
+    scalarize(slot(0)) when bits_of(slot(0)) > 64
+    bitcast(slot(0), replace(elt_type_to(slot(0),
+            int_of_size(64)))) when sort_of(slot(0)) == pointer_vector
+
+ruleset AArch64_CONCAT_VECTORS: G_CONCAT_VECTORS
+    legal in_pairs(slot(0), slot(1), [[AArch64_v16s8, AArch64_v8s8], [AArch64_v8s16,
+            AArch64_v4s16], [AArch64_v4s32, AArch64_v2s32]])
+    custom (sort_of(slot(0)) == vector and not sort_of(slot(0)) == scalable_vector and bits_of(slot(0)) < 8)
+    bitcast(slot(0), replace(div_lanes(elt_size_to(slot(0), size_of(slot(1))),
+            num_elems(slot(1))))) when (sort_of(slot(0)) == vector and not sort_of(slot(0)) == scalable_vector and sort_of(slot(1)) == vector and not sort_of(slot(1)) == scalable_vector and bits_of(slot(0)) >= 8 and is_pow2(bits_of(slot(0))) and size_of(slot(0)) <= 128 and size_of(slot(1)) <= 64)
+
+ruleset AArch64_EXTRACT_SUBVECTOR: G_EXTRACT_SUBVECTOR
+    legal in_pairs(slot(0), slot(1), [[AArch64_v8s8, AArch64_v16s8], [AArch64_v4s16,
+            AArch64_v8s16], [AArch64_v2s32, AArch64_v4s32]])
+    widen(elem_of(slot(0)), pow2)
+    clamp_max(0, AArch64_s8, 16)
+    clamp_max(0, AArch64_s16, 8)
+    clamp_max(0, AArch64_s32, 4)
+    clamp_min(1, AArch64_s8, 8)
+    clamp_max(1, AArch64_s8, 16)
+    clamp_min(1, AArch64_s16, 4)
+    clamp_max(1, AArch64_s16, 8)
+    clamp_min(1, AArch64_s32, 2)
+    clamp_max(1, AArch64_s32, 4)
+    lower true
+    imm_idx(0)
+
+ruleset AArch64_JUMP_TABLE: G_JUMP_TABLE
+    legal in(slot(0), AArch64_p0)
+
+ruleset AArch64_BRJT: G_BRJT
+    legal in_pairs(slot(0), slot(1), [[AArch64_p0, AArch64_s64]])
+
+ruleset AArch64_TRAP: G_TRAP G_DEBUGTRAP G_UBSANTRAP
+    legal true
+
+ruleset AArch64_DYN_STACKALLOC: G_DYN_STACKALLOC
+    custom true
+
+ruleset AArch64_STACKSAVE: G_STACKSAVE G_STACKRESTORE
+    lower true
+
+ruleset AArch64_BZERO: G_BZERO
+    unsupported all_of(feature("Subtarget.hasMOPS()"))
+    libcall not feature("Subtarget.hasMOPS()")
+
+ruleset AArch64_MEMSET: G_MEMSET
+    legal (feature("Subtarget.hasMOPS()") and slot(0) == ty(AArch64_p0) and slot(1) == ty(AArch64_s64) and slot(2) == ty(AArch64_s64))
+    custom (feature("Subtarget.hasMOPS()") and slot(0) == ty(AArch64_p0) and slot(1) == ty(AArch64_s8) and slot(2) == ty(AArch64_s64))
+    libcall not feature("Subtarget.hasMOPS()")
+    imm_idx(0)
+
+ruleset AArch64_MEMCPY: G_MEMCPY G_MEMMOVE
+    legal (feature("Subtarget.hasMOPS()") and slot(0) == ty(AArch64_p0) and slot(1) == ty(AArch64_p0) and slot(2) == ty(AArch64_s64))
+    libcall not feature("Subtarget.hasMOPS()")
+    imm_idx(0)
+
+ruleset AArch64_MEMCPY_INLINE: G_MEMCPY_INLINE
+    legal (feature("Subtarget.hasMOPS()") and slot(0) == ty(AArch64_p0) and slot(1) == ty(AArch64_p0) and slot(2) == ty(AArch64_s64))
+
+ruleset AArch64_MEMSET_INLINE: G_MEMSET_INLINE
+    legal (feature("Subtarget.hasMOPS()") and slot(0) == ty(AArch64_p0) and slot(1) == ty(AArch64_s64) and slot(2) == ty(AArch64_s64))
+    custom (feature("Subtarget.hasMOPS()") and slot(0) == ty(AArch64_p0) and slot(1) == ty(AArch64_s8) and slot(2) == ty(AArch64_s64))
+
+ruleset AArch64_VECREDUCE_FADD: G_VECREDUCE_FADD
+    legal in_pairs(slot(0), slot(1), [[AArch64_f32, AArch64_v2f32], [AArch64_f32,
+            AArch64_v4f32], [AArch64_f64, AArch64_v2f64]])
+    legal (feature("Subtarget.hasFullFP16()") and in_pairs(slot(0), slot(1), [[AArch64_f16,
+            AArch64_v4f16], [AArch64_f16, AArch64_v8f16]]))
+    widen(slot(0), replace(elt_type_to(slot(0),
+            ty(AArch64_f32)))) when ((not feature("Subtarget.hasFullFP16()") and is_float16(scalar_of(slot(0)))) or is_bfloat16(scalar_of(slot(0))))
+    clamp_max(1, AArch64_s64, 2)
+    clamp_max(1, AArch64_s32, 4)
+    clamp_max(1, AArch64_s16, 8)
+    more(slot(1), pow2)
+    scalarize(slot(1))
+    lower true
+
+ruleset AArch64_VECREDUCE_FMUL: G_VECREDUCE_FMUL
+    widen(slot(0), replace(elt_type_to(slot(0),
+            ty(AArch64_f32)))) when ((not feature("Subtarget.hasFullFP16()") and is_float16(scalar_of(slot(0)))) or is_bfloat16(scalar_of(slot(0))))
+    clamp_max(1, AArch64_s64, 2)
+    clamp_max(1, AArch64_s32, 4)
+    clamp_max(1, AArch64_s16, 8)
+    clamp_max(1, AArch64_s32, 2)
+    clamp_max(1, AArch64_s16, 4)
+    scalarize(slot(1))
+    lower true
+
+ruleset AArch64_VECREDUCE_SEQ_FADD: G_VECREDUCE_SEQ_FADD G_VECREDUCE_SEQ_FMUL
+    scalarize(slot(2))
+    lower true
+
+ruleset AArch64_VECREDUCE_ADD: G_VECREDUCE_ADD
+    legal in_pairs(slot(0), slot(1), [[AArch64_i8, AArch64_v8i8], [AArch64_i8,
+            AArch64_v16i8], [AArch64_i16, AArch64_v4i16], [AArch64_i16, AArch64_v8i16],
+            [AArch64_i32, AArch64_v2i32], [AArch64_i32, AArch64_v4i32], [AArch64_i64,
+            AArch64_v2i64]])
+    more(slot(1), pow2)
+    clamp_max(1, AArch64_s64, 2)
+    clamp_max(1, AArch64_s32, 4)
+    clamp_max(1, AArch64_s16, 8)
+    clamp_max(1, AArch64_s8, 16)
+    widen(elem_of(slot(1)), min_vector_size(64))
+    scalarize(slot(1))
+
+ruleset AArch64_VECREDUCE_FMIN: G_VECREDUCE_FMIN G_VECREDUCE_FMAX G_VECREDUCE_FMINIMUM G_VECREDUCE_FMAXIMUM
+    legal in_pairs(slot(0), slot(1), [[AArch64_f32, AArch64_v2f32], [AArch64_f32,
+            AArch64_v4f32], [AArch64_f64, AArch64_v2f64]])
+    legal (feature("Subtarget.hasFullFP16()") and in_pairs(slot(0), slot(1), [[AArch64_f16,
+            AArch64_v4f16], [AArch64_f16, AArch64_v8f16]]))
+    widen(slot(0), replace(elt_type_to(slot(0),
+            ty(AArch64_f32)))) when ((not feature("Subtarget.hasFullFP16()") and is_float16(scalar_of(slot(0)))) or is_bfloat16(scalar_of(slot(0))))
+    clamp_max(1, AArch64_s64, 2)
+    clamp_max(1, AArch64_s32, 4)
+    clamp_max(1, AArch64_s16, 8)
+    scalarize(slot(1))
+    lower true
+
+ruleset AArch64_VECREDUCE_MUL: G_VECREDUCE_MUL
+    clamp_max(1, AArch64_s32, 2)
+    clamp_max(1, AArch64_s16, 4)
+    clamp_max(1, AArch64_s8, 8)
+    scalarize(slot(1))
+    lower true
+
+ruleset AArch64_VECREDUCE_SMIN: G_VECREDUCE_SMIN G_VECREDUCE_SMAX G_VECREDUCE_UMIN G_VECREDUCE_UMAX
+    legal in_pairs(slot(0), slot(1), [[AArch64_i8, AArch64_v8i8], [AArch64_i8,
+            AArch64_v16i8], [AArch64_i16, AArch64_v4i16], [AArch64_i16, AArch64_v8i16],
+            [AArch64_i32, AArch64_v2i32], [AArch64_i32, AArch64_v4i32]])
+    more(slot(1),
+            pow2) when (sort_of(slot(1)) == vector and elem_of(slot(1)) != ty(AArch64_s8) and urem(num_elems(slot(1)),
+            2) != 0)
+    clamp_max(1, AArch64_s64, 2)
+    clamp_max(1, AArch64_s32, 4)
+    clamp_max(1, AArch64_s16, 8)
+    clamp_max(1, AArch64_s8, 16)
+    scalarize(slot(1))
+    lower true
+
+ruleset AArch64_VECREDUCE_OR: G_VECREDUCE_OR G_VECREDUCE_AND G_VECREDUCE_XOR
+    fewer(slot(1), replace(div_lanes(slot(1),
+            2))) when (not sort_of(slot(1)) == scalar and is_pow2(num_elems(slot(1))) and size_of(slot(1)) > 64)
+    scalarize(slot(1))
+    lower true
+
+ruleset AArch64_VECTOR_COMPRESS: G_VECTOR_COMPRESS
+    lower true
+
+ruleset AArch64_GET_FPENV: G_GET_FPENV G_SET_FPENV G_RESET_FPENV G_GET_FPMODE G_SET_FPMODE G_RESET_FPMODE
+    libcall true
+
+ruleset AArch64_GET_ROUNDING: G_GET_ROUNDING G_SET_ROUNDING
+    custom in(slot(0), AArch64_s32)
+
+ruleset AArch64_IS_FPCLASS: G_IS_FPCLASS
+    lower true
+
+ruleset AArch64_PREFETCH: G_PREFETCH
+    custom true
+
+ruleset AArch64_SCMP: G_SCMP G_UCMP
+    lower true
+
+ruleset AArch64_INTRINSIC: G_INTRINSIC G_INTRINSIC_W_SIDE_EFFECTS
+    legal true
+
+ruleset AArch64_FENCE: G_FENCE
+    legal true
+
+ruleset AArch64_INVOKE_REGION_START: G_INVOKE_REGION_START
+    legal true
+
+ruleset AArch64_SEXTLOAD: G_SEXTLOAD
+    lower mem_ordering(mem_slot(0)) >= ordering_unordered
+    legal in_mem_desc(slot(0), slot(1), mem_slot(0), [mem_desc(AArch64_s32, AArch64_p0,
+            AArch64_s8, 8), mem_desc(AArch64_s32, AArch64_p0, AArch64_s16, 8),
+            mem_desc(AArch64_s32, AArch64_p0, AArch64_s32, 8), mem_desc(AArch64_s64,
+            AArch64_p0, AArch64_s8, 2), mem_desc(AArch64_s64, AArch64_p0, AArch64_s16, 2),
+            mem_desc(AArch64_s64, AArch64_p0, AArch64_s32, 4), mem_desc(AArch64_s64,
+            AArch64_p0, AArch64_s64, 8), mem_desc(AArch64_p0, AArch64_p0, AArch64_s64, 8),
+            mem_desc(AArch64_v2s32, AArch64_p0, AArch64_s64, 8)])
+    widen(slot(0), pow2)
+    widen(slot(0), ty(AArch64_s32))
+    narrow(slot(0), ty(AArch64_s64))
+    unsupported not is_pow2(size_in_bytes_of(mem_ty(mem_slot(0))))
+    lower true
+
+ruleset AArch64_ZEXTLOAD: G_ZEXTLOAD
+    legal in_mem_desc(slot(0), slot(1), mem_slot(0), [mem_desc(AArch64_s32, AArch64_p0,
+            AArch64_s8, 8), mem_desc(AArch64_s32, AArch64_p0, AArch64_s16, 8),
+            mem_desc(AArch64_s32, AArch64_p0, AArch64_s32, 8), mem_desc(AArch64_s64,
+            AArch64_p0, AArch64_s8, 2), mem_desc(AArch64_s64, AArch64_p0, AArch64_s16, 2),
+            mem_desc(AArch64_s64, AArch64_p0, AArch64_s32, 4), mem_desc(AArch64_s64,
+            AArch64_p0, AArch64_s64, 8), mem_desc(AArch64_p0, AArch64_p0, AArch64_s64, 8),
+            mem_desc(AArch64_v2s32, AArch64_p0, AArch64_s64, 8)])
+    widen(slot(0), pow2)
+    widen(slot(0), ty(AArch64_s32))
+    narrow(slot(0), ty(AArch64_s64))
+    unsupported not is_pow2(size_in_bytes_of(mem_ty(mem_slot(0))))
+    lower true
+
+ruleset AArch64_MERGE_VALUES: G_MERGE_VALUES
+    widen(slot(1), pow2_min(8))
+    lower (sort_of(slot(0)) == scalar and not is_pow2(size_of(slot(0))) and size_of(slot(0)) < 64)
+    widen(slot(0), pow2_min(32))
+    widen(slot(1), ty(AArch64_s8))
+    narrow(slot(1), ty(AArch64_s64))
+    widen(slot(0), ty(AArch64_s32))
+    narrow(slot(0), ty(AArch64_s128))
+    legal ((size_of(slot(0)) == 32 or size_of(slot(0)) == 64 or size_of(slot(0)) == 128) and (size_of(slot(1)) == 8 or size_of(slot(1)) == 16 or size_of(slot(1)) == 32 or size_of(slot(1)) == 64))
+
+ruleset AArch64_UNMERGE_VALUES: G_UNMERGE_VALUES
+    widen(slot(0), pow2_min(8))
+    lower (sort_of(slot(1)) == scalar and not is_pow2(size_of(slot(1))) and size_of(slot(1)) < 64)
+    widen(slot(1), pow2_min(32))
+    widen(slot(0), ty(AArch64_s8))
+    narrow(slot(0), ty(AArch64_s64))
+    widen(slot(1), ty(AArch64_s32))
+    narrow(slot(1), ty(AArch64_s128))
+    legal ((size_of(slot(1)) == 32 or size_of(slot(1)) == 64 or size_of(slot(1)) == 128) and (size_of(slot(0)) == 8 or size_of(slot(0)) == 16 or size_of(slot(0)) == 32 or size_of(slot(0)) == 64))

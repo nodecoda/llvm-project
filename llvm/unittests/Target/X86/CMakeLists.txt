@@ -102,13 +102,13 @@ x86_add_legalizer_mutant(X86LegalizerInfoMutant1
 # 2. X86_CTLZ: HasLZCNT was written as HasPOPCNT.  Only a LZCNT target without
 # POPCNT separates the two.
 x86_add_legalizer_mutant(X86LegalizerInfoMutant2
-  "(CoreAll HasLZCNT,\n                       (CoreInPairs"
-  "(CoreAll HasPOPCNT,\n                       (CoreInPairs")
+  "(CoreAll HasLZCNT, (CoreInPairs"
+  "(CoreAll HasPOPCNT, (CoreInPairs")
 
 # 3. X86_CTTZ: HasBMI was written as HasLZCNT.
 x86_add_legalizer_mutant(X86LegalizerInfoMutant3
-  "(CoreAll HasBMI,\n                       (CoreInPairs"
-  "(CoreAll HasLZCNT,\n                       (CoreInPairs")
+  "(CoreAll HasBMI, (CoreInPairs"
+  "(CoreAll HasLZCNT, (CoreInPairs")
 
 # 4. X86_MUL: the pairwise s64 rule lost the DQI half of its guard.
 x86_add_legalizer_mutant(X86LegalizerInfoMutant4
@@ -139,18 +139,18 @@ x86_add_legalizer_mutant(X86LegalizerInfoMutant8
 
 # 9. X86_CONCAT_VECTORS: the v32s8 <- v16s8 pair is dropped from the SSE1 rule.
 x86_add_legalizer_mutant(X86LegalizerInfoMutant9
-  "(CoreAll HasSSE1,\n                       (CoreInPairs (Slot 0), (Slot 1),\n                                    [[X86_v32s8, X86_v16s8],\n"
-  "(CoreAll HasSSE1,\n                       (CoreInPairs (Slot 0), (Slot 1),\n                                    [")
+  "(CoreAll HasSSE1, (CoreInPairs (Slot 0), (Slot 1), [[X86_v32s8, X86_v16s8], ["
+  "(CoreAll HasSSE1, (CoreInPairs (Slot 0), (Slot 1), [[")
 
 # 10. X86_INSERT: the v64s8 <- v16s8 pair is dropped from the AVX512 rule.
 x86_add_legalizer_mutant(X86LegalizerInfoMutant10
-  "(CoreAll HasAVX512,\n                       (CoreInPairs (Slot 0), (Slot 1),\n                                    [[X86_v64s8, X86_v16s8],\n"
-  "(CoreAll HasAVX512,\n                       (CoreInPairs (Slot 0), (Slot 1),\n                                    [")
+  "(CoreAll HasAVX512, (CoreInPairs (Slot 0), (Slot 1), [[X86_v64s8, X86_v16s8], ["
+  "(CoreAll HasAVX512, (CoreInPairs (Slot 0), (Slot 1), [[")
 
 # 11. X86_CTTZ_ZERO_POISON: the s16 pair is dropped from the unguarded rule.
 x86_add_legalizer_mutant(X86LegalizerInfoMutant11
-  "CoreLegal<(CoreInPairs (Slot 0), (Slot 1),\n                           [[X86_s16, X86_s16], [X86_s32, X86_s32]])>"
-  "CoreLegal<(CoreInPairs (Slot 0), (Slot 1),\n                           [[X86_s32, X86_s32]])>")
+  "CoreLegal<(CoreInPairs (Slot 0), (Slot 1), [[X86_s16, X86_s16], [X86_s32, X86_s32]])>"
+  "CoreLegal<(CoreInPairs (Slot 0), (Slot 1), [[X86_s32, X86_s32]])>")
 
 # 12. X86_BSWAP: s32 is custom instead of legal.
 x86_add_legalizer_mutant(X86LegalizerInfoMutant12

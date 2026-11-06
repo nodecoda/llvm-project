@@ -1,0 +1,778 @@
+//===- X86LegalizerInfo.gisel - free-form legalizer rules --*- gisel -*-===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// Source of truth for X86LegalizerInfo.td.  That .td is generated; do not
+// edit it.  Regenerate and check with:
+//
+//   llvm-dev/tools/gisel_td.py gen <this file> --out X86LegalizerInfo.td
+//   llvm-dev/tools/gisel_td.py check <this file> --td X86LegalizerInfo.td
+//
+// The rule body is one statement per line; the indentation after `ruleset`
+// groups statements into one rule set.  The vocabulary is the core IR:
+//
+//   legal <pred>                            terminal: legal
+//   lower/custom/unsupported/libcall <pred>
+//   widen|narrow|more|fewer|bitcast(<obs>, <target>) [when <pred>]
+//   scalarize(<obs>) [when <pred>]
+//   clamp_min(<idx>, <elt>, <lanes>) / clamp_max(<idx>, <elt>, <lanes>)
+//   imm_idx(<n>)                            coverage marker, not a core rule
+//
+// Observations: slot(i), elem_of, scalar_of, sort_of, num_elems, bits_of,
+// size_of, size_in_bytes_of, is_byte_sized, addr_space, align_of, mem_slot,
+// mem_ty, mem_ordering, mem_failure_ordering, is_pow2, is_bfloat16, is_float16.
+// Constructors: pow2, pow2_min(n), multiple_of(n), pow2_ceil(n), clamp(l,h),
+// ty(t), same_as(k), min_vector_size(n), int_of_size(n), elt_type_to(t,t),
+// elt_size_to(t,n), div_lanes(t,n), vec_of(n,t), scalar_or_vec_of(n,t),
+// replace(t), select(p,a,b), mul(a,b), urem(a,b), udiv(a,b).
+// Predicates: feature("<C++ bool expression>"), true, A and B, A or B, not A,
+// a == b (and !=, <, <=, >, >=), in(slot(t)|[t,...]), in_pairs, in_triples,
+// in_mem_desc.
+//
+// The declarations below are the TableGen scaffolding the rules name: the
+// feature booleans (whose record names become the C++ `bool`s), the named LLT
+// constants, the select types that cache a subtarget choice, and the type
+// lists/sets a rule can use as one operand.  A rule body never spells the
+// target prefix; the generator resolves `s8`, `v2s64`, ... to the named
+// records.
+//
+//===----------------------------------------------------------------------===//
+include "llvm/Target/LegalizerInfo.td"
+include "llvm/Target/Target.td"
+
+feature Is64Bit = Subtarget.is64Bit()
+feature HasCMOV = Subtarget.canUseCMOV()
+feature HasSSE1 = Subtarget.hasSSE1()
+feature HasSSE2 = Subtarget.hasSSE2()
+feature HasSSE41 = Subtarget.hasSSE41()
+feature HasAVX = Subtarget.hasAVX()
+feature HasAVX2 = Subtarget.hasAVX2()
+feature HasAVX512 = Subtarget.hasAVX512()
+feature HasVLX = Subtarget.hasVLX()
+feature HasDQI = Subtarget.hasAVX512() && Subtarget.hasDQI()
+feature HasBWI = Subtarget.hasAVX512() && Subtarget.hasBWI()
+feature UseX87 = !Subtarget.useSoftFloat() && Subtarget.hasX87()
+feature HasPOPCNT = Subtarget.hasPOPCNT()
+feature HasVPOPCNTDQ = Subtarget.hasVPOPCNTDQ()
+feature HasLZCNT = Subtarget.hasLZCNT()
+feature HasBMI = Subtarget.hasBMI()
+pred UseX87NotSSE1 = (UseX87 and not HasSSE1)
+type X86_p0 = LLT::pointer(0, Subtarget.isTarget64BitLP64() ? 64 : 32)
+type X86_s1 = LLT::scalar(1)
+type X86_s8 = LLT::scalar(8)
+type X86_s16 = LLT::scalar(16)
+type X86_s32 = LLT::scalar(32)
+type X86_s64 = LLT::scalar(64)
+type X86_s80 = LLT::scalar(80)
+type X86_s128 = LLT::scalar(128)
+select X86_sMaxScalar = if Is64Bit then X86_s64 else X86_s32
+type X86_v2s32 = LLT::fixed_vector(2, 32)
+type X86_v4s8 = LLT::fixed_vector(4, 8)
+type X86_v16s8 = LLT::fixed_vector(16, 8)
+type X86_v8s16 = LLT::fixed_vector(8, 16)
+type X86_v4s32 = LLT::fixed_vector(4, 32)
+type X86_v2s64 = LLT::fixed_vector(2, 64)
+type X86_v2p0 = LLT::fixed_vector(2, X86_p0)
+type X86_v32s8 = LLT::fixed_vector(32, 8)
+type X86_v16s16 = LLT::fixed_vector(16, 16)
+type X86_v8s32 = LLT::fixed_vector(8, 32)
+type X86_v4s64 = LLT::fixed_vector(4, 64)
+type X86_v4p0 = LLT::fixed_vector(4, X86_p0)
+type X86_v64s8 = LLT::fixed_vector(64, 8)
+type X86_v32s16 = LLT::fixed_vector(32, 16)
+type X86_v16s32 = LLT::fixed_vector(16, 32)
+type X86_v8s64 = LLT::fixed_vector(8, 64)
+select X86_s8MaxVector = if HasAVX512 then X86_v64s8 else if HasAVX then X86_v32s8 else X86_v16s8
+select X86_s16MaxVector = if HasAVX512 then X86_v32s16 else if HasAVX then X86_v16s16 else X86_v8s16
+select X86_s32MaxVector = if HasAVX512 then X86_v16s32 else if HasAVX then X86_v8s32 else X86_v4s32
+select X86_s64MaxVector = if HasAVX512 then X86_v8s64 else if HasAVX then X86_v4s64 else X86_v2s64
+select X86_s64OrS32 = if HasSSE2 then X86_s64 else X86_s32
+select X86_X87OrS32 = if UseX87NotSSE1 then X86_s16 else X86_s32
+select X86_CMOVOrS8 = if HasCMOV then X86_s16 else X86_s8
+type_set X86_Vec128 = [X86_v16s8, X86_v8s16, X86_v4s32, X86_v2s64]
+type_set X86_Vec256 = [X86_v32s8, X86_v16s16, X86_v8s32, X86_v4s64]
+type_set X86_Vec512 = [X86_v64s8, X86_v32s16, X86_v16s32, X86_v8s64]
+type_set X86_IntTypes32 = [X86_s8, X86_s16, X86_s32, X86_p0]
+type_set X86_IntTypes64 = [X86_s8, X86_s16, X86_s32, X86_s64, X86_p0]
+type_set X86_PtrTypes32 = [X86_s1, X86_s8, X86_s16, X86_s32]
+type_set X86_PtrTypes64 = [X86_s1, X86_s8, X86_s16, X86_s32, X86_s64]
+
+ruleset X86_IMPLICIT_DEF: G_IMPLICIT_DEF G_PHI G_FREEZE G_CONSTANT_FOLD_BARRIER
+    note "implicit/constants"
+    note "32/64-bits needs support for s64/s128 to handle cases:"
+    note "s64 = EXTEND (G_IMPLICIT_DEF s32) -> s64 = G_IMPLICIT_DEF"
+    note "s128 = EXTEND (G_IMPLICIT_DEF s32/s64) -> s128 = G_IMPLICIT_DEF"
+    legal in(slot(0), [X86_p0, X86_s1, X86_s8, X86_s16, X86_s32, X86_s64])
+    legal (feature("!Subtarget.useSoftFloat() && Subtarget.hasX87()") and in(slot(0),
+            X86_s80))
+    legal (feature("Subtarget.is64Bit()") and in(slot(0), X86_s128))
+    legal (feature("Subtarget.hasSSE2()") and in(slot(0), X86_Vec128))
+    legal (feature("Subtarget.hasAVX()") and in(slot(0), X86_Vec256))
+    legal (feature("Subtarget.hasAVX512()") and in(slot(0), X86_Vec512))
+    widen(elem_of(slot(0)), pow2_min(8))
+    widen(elem_of(slot(0)), ty(X86_s8))
+    narrow(elem_of(slot(0)), ty(X86_sMaxScalar))
+    more(slot(0), pow2)
+    clamp_min(0, X86_s8, num_elems(ty(X86_v16s8)))
+    clamp_max(0, X86_s8, num_elems(ty(X86_s8MaxVector)))
+    clamp_min(0, X86_s16, num_elems(ty(X86_v8s16)))
+    clamp_max(0, X86_s16, num_elems(ty(X86_s16MaxVector)))
+    clamp_min(0, X86_s32, num_elems(ty(X86_v4s32)))
+    clamp_max(0, X86_s32, num_elems(ty(X86_s32MaxVector)))
+    clamp_min(0, X86_s64, num_elems(ty(X86_v2s64)))
+    clamp_max(0, X86_s64, num_elems(ty(X86_s64MaxVector)))
+    fewer(slot(0),
+            replace(scalar_or_vec_of(select((feature("Subtarget.is64Bit()") and feature("Subtarget.hasAVX512()")),
+            8, select((feature("Subtarget.is64Bit()") and feature("Subtarget.hasAVX()")),
+            4, select(feature("Subtarget.is64Bit()"), 2,
+            select(feature("Subtarget.hasAVX512()"), 16,
+            select(feature("Subtarget.hasAVX()"), 8, 4))))),
+            elem_of(slot(0))))) when (sort_of(slot(0)) == vector and not sort_of(slot(0)) == scalable_vector and elem_of(slot(0)) == ty(X86_p0) and num_elems(slot(0)) > select((feature("Subtarget.is64Bit()") and feature("Subtarget.hasAVX512()")),
+            8, select((feature("Subtarget.is64Bit()") and feature("Subtarget.hasAVX()")),
+            4, select(feature("Subtarget.is64Bit()"), 2,
+            select(feature("Subtarget.hasAVX512()"), 16,
+            select(feature("Subtarget.hasAVX()"), 8, 4))))))
+    scalarize(slot(0)) when bits_of(slot(0)) > 64
+
+ruleset X86_CONSTANT: G_CONSTANT
+    legal in(slot(0), [X86_p0, X86_s8, X86_s16, X86_s32])
+    legal (feature("Subtarget.is64Bit()") and in(slot(0), X86_s64))
+    widen(slot(0), pow2_min(8))
+    widen(slot(0), ty(X86_s8))
+    narrow(slot(0), ty(X86_sMaxScalar))
+
+ruleset X86_LROUND: G_LROUND G_LLROUND
+    widen(slot(1), ty(X86_s32)) when slot(1) == ty(X86_s16)
+    libcall true
+
+ruleset X86_FCOS: G_FCOS G_FCOSH G_FACOS G_FSIN G_FSINH G_FASIN G_FTAN G_FTANH G_FATAN G_FATAN2 G_FPOW G_FEXP G_FEXP2 G_FEXP10 G_FLOG G_FLOG2 G_FLOG10 G_FPOWI G_FSINCOS G_FCEIL G_FFLOOR
+    libcall true
+
+ruleset X86_FNEG: G_FNEG
+    legal (feature("!Subtarget.useSoftFloat() && Subtarget.hasX87()") and not feature("Subtarget.hasSSE1()") and in(slot(0),
+            X86_s32))
+    legal (feature("!Subtarget.useSoftFloat() && Subtarget.hasX87()") and not feature("Subtarget.hasSSE2()") and in(slot(0),
+            X86_s64))
+    legal (feature("!Subtarget.useSoftFloat() && Subtarget.hasX87()") and in(slot(0),
+            X86_s80))
+    lower true
+
+ruleset X86_FSQRT: G_FSQRT
+    legal ((feature("Subtarget.hasSSE1()") or feature("!Subtarget.useSoftFloat() && Subtarget.hasX87()")) and in(slot(0),
+            X86_s32))
+    legal ((feature("Subtarget.hasSSE2()") or feature("!Subtarget.useSoftFloat() && Subtarget.hasX87()")) and in(slot(0),
+            X86_s64))
+    legal (feature("!Subtarget.useSoftFloat() && Subtarget.hasX87()") and in(slot(0),
+            X86_s80))
+
+ruleset X86_GET_ROUNDING: G_GET_ROUNDING G_SET_ROUNDING
+    custom in(slot(0), X86_s32)
+
+ruleset X86_MERGE_VALUES: G_MERGE_VALUES
+    widen(slot(1), pow2_min(8))
+    widen(slot(0), pow2_min(16))
+    widen(slot(1), ty(X86_s8))
+    widen(slot(0), ty(X86_s32))
+    legal ((size_of(slot(0)) == 16 or size_of(slot(0)) == 32 or size_of(slot(0)) == 64 or size_of(slot(0)) == 128 or size_of(slot(0)) == 256 or size_of(slot(0)) == 512) and (size_of(slot(1)) == 8 or size_of(slot(1)) == 16 or size_of(slot(1)) == 32 or size_of(slot(1)) == 64 or size_of(slot(1)) == 128 or size_of(slot(1)) == 256))
+
+ruleset X86_UNMERGE_VALUES: G_UNMERGE_VALUES
+    widen(slot(0), pow2_min(8))
+    widen(slot(1), pow2_min(16))
+    widen(slot(0), ty(X86_s8))
+    widen(slot(1), ty(X86_s32))
+    legal ((size_of(slot(1)) == 16 or size_of(slot(1)) == 32 or size_of(slot(1)) == 64 or size_of(slot(1)) == 128 or size_of(slot(1)) == 256 or size_of(slot(1)) == 512) and (size_of(slot(0)) == 8 or size_of(slot(0)) == 16 or size_of(slot(0)) == 32 or size_of(slot(0)) == 64 or size_of(slot(0)) == 128 or size_of(slot(0)) == 256))
+
+ruleset X86_UMIN: G_UMIN G_UMAX G_SMIN G_SMAX
+    widen(slot(0), pow2_min(32))
+    lower true
+
+ruleset X86_ADD: G_ADD G_SUB
+    note "integer addition/subtraction"
+    legal in(slot(0), [X86_s8, X86_s16, X86_s32])
+    legal (feature("Subtarget.is64Bit()") and in(slot(0), X86_s64))
+    legal (feature("Subtarget.hasSSE2()") and in(slot(0), X86_Vec128))
+    legal (feature("Subtarget.hasAVX2()") and in(slot(0), X86_Vec256))
+    legal (feature("Subtarget.hasAVX512()") and in(slot(0), [X86_v16s32, X86_v8s64]))
+    legal (feature("Subtarget.hasAVX512() && Subtarget.hasBWI()") and in(slot(0),
+            [X86_v64s8, X86_v32s16]))
+    clamp_min(0, X86_s8, 16)
+    clamp_min(0, X86_s16, 8)
+    clamp_min(0, X86_s32, 4)
+    clamp_min(0, X86_s64, 2)
+    fewer(slot(0),
+            replace(scalar_or_vec_of(select(feature("Subtarget.hasAVX512() && Subtarget.hasBWI()"),
+            64, select(feature("Subtarget.hasAVX2()"), 32, 16)),
+            elem_of(slot(0))))) when (sort_of(slot(0)) == vector and not sort_of(slot(0)) == scalable_vector and elem_of(slot(0)) == ty(X86_s8) and num_elems(slot(0)) > select(feature("Subtarget.hasAVX512() && Subtarget.hasBWI()"),
+            64, select(feature("Subtarget.hasAVX2()"), 32, 16)))
+    fewer(slot(0),
+            replace(scalar_or_vec_of(select(feature("Subtarget.hasAVX512() && Subtarget.hasBWI()"),
+            32, select(feature("Subtarget.hasAVX2()"), 16, 8)),
+            elem_of(slot(0))))) when (sort_of(slot(0)) == vector and not sort_of(slot(0)) == scalable_vector and elem_of(slot(0)) == ty(X86_s16) and num_elems(slot(0)) > select(feature("Subtarget.hasAVX512() && Subtarget.hasBWI()"),
+            32, select(feature("Subtarget.hasAVX2()"), 16, 8)))
+    fewer(slot(0), replace(scalar_or_vec_of(select(feature("Subtarget.hasAVX512()"), 16,
+            select(feature("Subtarget.hasAVX2()"), 8, 4)),
+            elem_of(slot(0))))) when (sort_of(slot(0)) == vector and not sort_of(slot(0)) == scalable_vector and elem_of(slot(0)) == ty(X86_s32) and num_elems(slot(0)) > select(feature("Subtarget.hasAVX512()"),
+            16, select(feature("Subtarget.hasAVX2()"), 8, 4)))
+    fewer(slot(0), replace(scalar_or_vec_of(select(feature("Subtarget.hasAVX512()"), 8,
+            select(feature("Subtarget.hasAVX2()"), 4, 2)),
+            elem_of(slot(0))))) when (sort_of(slot(0)) == vector and not sort_of(slot(0)) == scalable_vector and elem_of(slot(0)) == ty(X86_s64) and num_elems(slot(0)) > select(feature("Subtarget.hasAVX512()"),
+            8, select(feature("Subtarget.hasAVX2()"), 4, 2)))
+    widen(slot(0), pow2_min(32))
+    widen(slot(0), ty(X86_s8))
+    narrow(slot(0), ty(X86_sMaxScalar))
+    scalarize(slot(0))
+
+ruleset X86_UADDE: G_UADDE G_UADDO G_USUBE G_USUBO
+    legal in_pairs(slot(0), slot(1), [[X86_s8, X86_s8], [X86_s16, X86_s8], [X86_s32,
+            X86_s8]])
+    legal (feature("Subtarget.is64Bit()") and in_pairs(slot(0), slot(1), [[X86_s64,
+            X86_s8]]))
+    widen(slot(0), pow2_min(32))
+    widen(slot(0), ty(X86_s8))
+    narrow(slot(0), ty(X86_sMaxScalar))
+    widen(slot(1), ty(X86_s8))
+    narrow(slot(1), ty(X86_s8))
+    scalarize(slot(0))
+
+ruleset X86_MUL: G_MUL
+    note "integer multiply"
+    legal in(slot(0), [X86_s8, X86_s16, X86_s32])
+    legal (feature("Subtarget.is64Bit()") and in(slot(0), X86_s64))
+    legal (feature("Subtarget.hasSSE2()") and in(slot(0), X86_v8s16))
+    legal (feature("Subtarget.hasSSE41()") and in(slot(0), X86_v4s32))
+    legal (feature("Subtarget.hasAVX2()") and in(slot(0), [X86_v16s16, X86_v8s32]))
+    legal (feature("Subtarget.hasAVX512()") and in(slot(0), X86_v16s32))
+    legal (feature("Subtarget.hasAVX512() && Subtarget.hasDQI()") and in(slot(0),
+            X86_v8s64))
+    legal (feature("Subtarget.hasAVX512() && Subtarget.hasDQI()") and feature("Subtarget.hasVLX()") and in(slot(0),
+            [X86_v2s64, X86_v4s64]))
+    legal (feature("Subtarget.hasAVX512() && Subtarget.hasBWI()") and in(slot(0),
+            X86_v32s16))
+    clamp_min(0, X86_s16, 8)
+    clamp_min(0, X86_s32, 4)
+    more(slot(0), replace(vec_of(select(feature("Subtarget.hasVLX()"), 2, 8),
+            elem_of(slot(0))))) when (sort_of(slot(0)) == vector and not sort_of(slot(0)) == scalable_vector and elem_of(slot(0)) == ty(X86_s64) and num_elems(slot(0)) < select(feature("Subtarget.hasVLX()"),
+            2, 8))
+    fewer(slot(0),
+            replace(scalar_or_vec_of(select(feature("Subtarget.hasAVX512() && Subtarget.hasBWI()"),
+            32, select(feature("Subtarget.hasAVX2()"), 16, 8)),
+            elem_of(slot(0))))) when (sort_of(slot(0)) == vector and not sort_of(slot(0)) == scalable_vector and elem_of(slot(0)) == ty(X86_s16) and num_elems(slot(0)) > select(feature("Subtarget.hasAVX512() && Subtarget.hasBWI()"),
+            32, select(feature("Subtarget.hasAVX2()"), 16, 8)))
+    fewer(slot(0), replace(scalar_or_vec_of(select(feature("Subtarget.hasAVX512()"), 16,
+            select(feature("Subtarget.hasAVX2()"), 8, 4)),
+            elem_of(slot(0))))) when (sort_of(slot(0)) == vector and not sort_of(slot(0)) == scalable_vector and elem_of(slot(0)) == ty(X86_s32) and num_elems(slot(0)) > select(feature("Subtarget.hasAVX512()"),
+            16, select(feature("Subtarget.hasAVX2()"), 8, 4)))
+    clamp_max(0, X86_s64, 8)
+    widen(slot(0), pow2_min(32))
+    widen(slot(0), ty(X86_s8))
+    narrow(slot(0), ty(X86_sMaxScalar))
+    scalarize(slot(0))
+
+ruleset X86_SMULH: G_SMULH G_UMULH
+    legal in(slot(0), [X86_s8, X86_s16, X86_s32])
+    legal (feature("Subtarget.is64Bit()") and in(slot(0), X86_s64))
+    widen(slot(0), pow2_min(32))
+    widen(slot(0), ty(X86_s8))
+    narrow(slot(0), ty(X86_sMaxScalar))
+    scalarize(slot(0))
+
+ruleset X86_SDIV: G_SDIV G_SREM G_UDIV G_UREM
+    note "integer divisions"
+    legal in(slot(0), [X86_s8, X86_s16, X86_s32])
+    legal (feature("Subtarget.is64Bit()") and in(slot(0), X86_s64))
+    libcall in(slot(0), X86_s64)
+    widen(slot(0), ty(X86_s8))
+    narrow(slot(0), ty(X86_sMaxScalar))
+
+ruleset X86_SHL: G_SHL G_LSHR G_ASHR
+    note "integer shifts"
+    legal in_pairs(slot(0), slot(1), [[X86_s8, X86_s8], [X86_s16, X86_s8], [X86_s32,
+            X86_s8]])
+    legal (feature("Subtarget.is64Bit()") and in_pairs(slot(0), slot(1), [[X86_s64,
+            X86_s8]]))
+    widen(slot(0), ty(X86_s8))
+    narrow(slot(0), ty(X86_sMaxScalar))
+    widen(slot(1), ty(X86_s8))
+    narrow(slot(1), ty(X86_s8))
+
+ruleset X86_AND: G_AND G_OR G_XOR
+    note "integer logic"
+    legal in(slot(0), [X86_s8, X86_s16, X86_s32])
+    legal (feature("Subtarget.is64Bit()") and in(slot(0), X86_s64))
+    legal (feature("Subtarget.hasSSE2()") and in(slot(0), X86_Vec128))
+    legal (feature("Subtarget.hasAVX()") and in(slot(0), X86_Vec256))
+    legal (feature("Subtarget.hasAVX512()") and in(slot(0), X86_Vec512))
+    clamp_min(0, X86_s8, num_elems(ty(X86_v16s8)))
+    clamp_max(0, X86_s8, num_elems(ty(X86_s8MaxVector)))
+    clamp_min(0, X86_s16, num_elems(ty(X86_v8s16)))
+    clamp_max(0, X86_s16, num_elems(ty(X86_s16MaxVector)))
+    clamp_min(0, X86_s32, num_elems(ty(X86_v4s32)))
+    clamp_max(0, X86_s32, num_elems(ty(X86_s32MaxVector)))
+    clamp_min(0, X86_s64, num_elems(ty(X86_v2s64)))
+    clamp_max(0, X86_s64, num_elems(ty(X86_s64MaxVector)))
+    widen(slot(0), pow2_min(32))
+    widen(slot(0), ty(X86_s8))
+    narrow(slot(0), ty(X86_sMaxScalar))
+    scalarize(slot(0))
+
+ruleset X86_ICMP: G_ICMP
+    legal (feature("Subtarget.is64Bit()") and in(slot(0), X86_s8) and in(slot(1),
+            X86_IntTypes64))
+    legal (not feature("Subtarget.is64Bit()") and in(slot(0), X86_s8) and in(slot(1),
+            X86_IntTypes32))
+    widen(slot(0), ty(X86_s8))
+    narrow(slot(0), ty(X86_s8))
+    widen(slot(1), pow2_min(8))
+    widen(slot(1), ty(X86_s8))
+    narrow(slot(1), ty(X86_sMaxScalar))
+
+ruleset X86_BSWAP: G_BSWAP
+    note "bswap"
+    legal in(slot(0), X86_s32)
+    legal (feature("Subtarget.is64Bit()") and in(slot(0), X86_s64))
+    widen(slot(0), pow2_min(32))
+    widen(slot(0), ty(X86_s32))
+    narrow(slot(0), ty(X86_sMaxScalar))
+
+ruleset X86_CTPOP: G_CTPOP
+    note "popcount"
+    legal (feature("Subtarget.hasPOPCNT()") and in_pairs(slot(0), slot(1), [[X86_s16,
+            X86_s16], [X86_s32, X86_s32]]))
+    legal (feature("Subtarget.hasPOPCNT()") and feature("Subtarget.is64Bit()") and in_pairs(slot(0),
+            slot(1), [[X86_s64, X86_s64]]))
+    legal (feature("Subtarget.hasVPOPCNTDQ()") and in_pairs(slot(0), slot(1), [[X86_v16s32,
+            X86_v16s32], [X86_v8s64, X86_v8s64]]))
+    legal (feature("Subtarget.hasVPOPCNTDQ()") and feature("Subtarget.hasVLX()") and in_pairs(slot(0),
+            slot(1), [[X86_v4s32, X86_v4s32], [X86_v8s32, X86_v8s32], [X86_v2s64,
+            X86_v2s64], [X86_v4s64, X86_v4s64]]))
+    widen(slot(1), pow2_min(16))
+    widen(slot(1), ty(X86_s16))
+    narrow(slot(1), ty(X86_sMaxScalar))
+    widen(slot(0), same_as(1))
+    narrow(slot(0), same_as(1))
+
+ruleset X86_CTLZ: G_CTLZ
+    note "count leading zeros (LZCNT)"
+    legal (feature("Subtarget.hasLZCNT()") and in_pairs(slot(0), slot(1), [[X86_s16,
+            X86_s16], [X86_s32, X86_s32]]))
+    legal (feature("Subtarget.hasLZCNT()") and feature("Subtarget.is64Bit()") and in_pairs(slot(0),
+            slot(1), [[X86_s64, X86_s64]]))
+    widen(slot(1), pow2_min(16))
+    widen(slot(1), ty(X86_s16))
+    narrow(slot(1), ty(X86_sMaxScalar))
+    widen(slot(0), same_as(1))
+    narrow(slot(0), same_as(1))
+
+ruleset X86_CTTZ_ZERO_POISON: G_CTTZ_ZERO_POISON
+    note "count trailing zeros"
+    legal in_pairs(slot(0), slot(1), [[X86_s16, X86_s16], [X86_s32, X86_s32]])
+    legal (feature("Subtarget.is64Bit()") and in_pairs(slot(0), slot(1), [[X86_s64,
+            X86_s64]]))
+    widen(slot(1), pow2_min(16))
+    widen(slot(1), ty(X86_s16))
+    narrow(slot(1), ty(X86_sMaxScalar))
+    widen(slot(0), same_as(1))
+    narrow(slot(0), same_as(1))
+
+ruleset X86_CTTZ: G_CTTZ
+    legal (feature("Subtarget.hasBMI()") and in_pairs(slot(0), slot(1), [[X86_s16,
+            X86_s16], [X86_s32, X86_s32]]))
+    legal (feature("Subtarget.hasBMI()") and feature("Subtarget.is64Bit()") and in_pairs(slot(0),
+            slot(1), [[X86_s64, X86_s64]]))
+    widen(slot(1), pow2_min(16))
+    widen(slot(1), ty(X86_s16))
+    narrow(slot(1), ty(X86_sMaxScalar))
+    widen(slot(0), same_as(1))
+    narrow(slot(0), same_as(1))
+
+ruleset X86_BR: G_BR
+    legal true
+
+ruleset X86_BRCOND: G_BRCOND
+    legal in(slot(0), X86_s1)
+
+ruleset X86_PTRTOINT: G_PTRTOINT
+    legal (feature("Subtarget.is64Bit()") and in(slot(0), X86_PtrTypes64) and in(slot(1),
+            X86_p0))
+    legal (not feature("Subtarget.is64Bit()") and in(slot(0),
+            X86_PtrTypes32) and in(slot(1), X86_p0))
+    narrow(slot(0), ty(X86_sMaxScalar))
+    widen(slot(0), pow2_min(8))
+
+ruleset X86_INTTOPTR: G_INTTOPTR
+    legal in_pairs(slot(0), slot(1), [[X86_p0, X86_sMaxScalar]])
+
+ruleset X86_CONSTANT_POOL: G_CONSTANT_POOL
+    legal in(slot(0), X86_p0)
+
+ruleset X86_PTR_ADD: G_PTR_ADD
+    legal in_pairs(slot(0), slot(1), [[X86_p0, X86_s32]])
+    legal (feature("Subtarget.is64Bit()") and in_pairs(slot(0), slot(1), [[X86_p0,
+            X86_s64]]))
+    widen(slot(1), pow2_min(32))
+    widen(slot(1), ty(X86_s32))
+    narrow(slot(1), ty(X86_sMaxScalar))
+
+ruleset X86_FRAME_INDEX: G_FRAME_INDEX
+    legal in(slot(0), X86_p0)
+
+ruleset X86_GLOBAL_VALUE: G_GLOBAL_VALUE
+    custom in(slot(0), X86_p0)
+
+ruleset X86_LOAD: G_LOAD
+    note "load/store: add more corner cases"
+    legal in_mem_desc(slot(0), slot(1), mem_slot(0), [mem_desc(X86_s8, X86_p0, X86_s8, 1),
+            mem_desc(X86_s16, X86_p0, X86_s16, 1), mem_desc(X86_s32, X86_p0, X86_s32, 1),
+            mem_desc(X86_s80, X86_p0, X86_s80, 1), mem_desc(X86_p0, X86_p0, X86_p0, 1),
+            mem_desc(X86_v4s8, X86_p0, X86_v4s8, 1)])
+    legal (feature("Subtarget.is64Bit()") and in_mem_desc(slot(0), slot(1), mem_slot(0),
+            [mem_desc(X86_s64, X86_p0, X86_s64, 1), mem_desc(X86_v2s32, X86_p0, X86_v2s32,
+            1)]))
+    legal (feature("Subtarget.hasSSE1()") and in_mem_desc(slot(0), slot(1), mem_slot(0),
+            [mem_desc(X86_v4s32, X86_p0, X86_v4s32, 1)]))
+    legal (feature("Subtarget.hasSSE2()") and in_mem_desc(slot(0), slot(1), mem_slot(0),
+            [mem_desc(X86_v16s8, X86_p0, X86_v16s8, 1), mem_desc(X86_v8s16, X86_p0,
+            X86_v8s16, 1), mem_desc(X86_v2s64, X86_p0, X86_v2s64, 1), mem_desc(X86_v2p0,
+            X86_p0, X86_v2p0, 1)]))
+    legal (feature("Subtarget.hasAVX()") and in_mem_desc(slot(0), slot(1), mem_slot(0),
+            [mem_desc(X86_v32s8, X86_p0, X86_v32s8, 1), mem_desc(X86_v16s16, X86_p0,
+            X86_v16s16, 1), mem_desc(X86_v8s32, X86_p0, X86_v8s32, 1), mem_desc(X86_v4s64,
+            X86_p0, X86_v4s64, 1), mem_desc(X86_v4p0, X86_p0, X86_v4p0, 1)]))
+    legal (feature("Subtarget.hasAVX512()") and in_mem_desc(slot(0), slot(1), mem_slot(0),
+            [mem_desc(X86_v64s8, X86_p0, X86_v64s8, 1), mem_desc(X86_v32s16, X86_p0,
+            X86_v32s16, 1), mem_desc(X86_v16s32, X86_p0, X86_v16s32, 1),
+            mem_desc(X86_v8s64, X86_p0, X86_v8s64, 1)]))
+    legal in_mem_desc(slot(0), slot(1), mem_slot(0), [mem_desc(X86_s8, X86_p0, X86_s1, 1),
+            mem_desc(X86_s16, X86_p0, X86_s8, 1), mem_desc(X86_s32, X86_p0, X86_s8, 1),
+            mem_desc(X86_s32, X86_p0, X86_s16, 1)])
+    legal (feature("Subtarget.is64Bit()") and in_mem_desc(slot(0), slot(1), mem_slot(0),
+            [mem_desc(X86_s64, X86_p0, X86_s8, 1), mem_desc(X86_s64, X86_p0, X86_s16, 1),
+            mem_desc(X86_s64, X86_p0, X86_s32, 1)]))
+    widen(slot(0), pow2_min(8))
+    widen(slot(0), ty(X86_s8))
+    narrow(slot(0), ty(X86_sMaxScalar))
+    scalarize(slot(0))
+
+ruleset X86_STORE: G_STORE
+    legal in_mem_desc(slot(0), slot(1), mem_slot(0), [mem_desc(X86_s8, X86_p0, X86_s8, 1),
+            mem_desc(X86_s16, X86_p0, X86_s16, 1), mem_desc(X86_s32, X86_p0, X86_s32, 1),
+            mem_desc(X86_s80, X86_p0, X86_s80, 1), mem_desc(X86_p0, X86_p0, X86_p0, 1),
+            mem_desc(X86_v4s8, X86_p0, X86_v4s8, 1)])
+    legal (feature("Subtarget.is64Bit()") and in_mem_desc(slot(0), slot(1), mem_slot(0),
+            [mem_desc(X86_s64, X86_p0, X86_s64, 1), mem_desc(X86_v2s32, X86_p0, X86_v2s32,
+            1)]))
+    legal (feature("Subtarget.hasSSE1()") and in_mem_desc(slot(0), slot(1), mem_slot(0),
+            [mem_desc(X86_v4s32, X86_p0, X86_v4s32, 1)]))
+    legal (feature("Subtarget.hasSSE2()") and in_mem_desc(slot(0), slot(1), mem_slot(0),
+            [mem_desc(X86_v16s8, X86_p0, X86_v16s8, 1), mem_desc(X86_v8s16, X86_p0,
+            X86_v8s16, 1), mem_desc(X86_v2s64, X86_p0, X86_v2s64, 1), mem_desc(X86_v2p0,
+            X86_p0, X86_v2p0, 1)]))
+    legal (feature("Subtarget.hasAVX()") and in_mem_desc(slot(0), slot(1), mem_slot(0),
+            [mem_desc(X86_v32s8, X86_p0, X86_v32s8, 1), mem_desc(X86_v16s16, X86_p0,
+            X86_v16s16, 1), mem_desc(X86_v8s32, X86_p0, X86_v8s32, 1), mem_desc(X86_v4s64,
+            X86_p0, X86_v4s64, 1), mem_desc(X86_v4p0, X86_p0, X86_v4p0, 1)]))
+    legal (feature("Subtarget.hasAVX512()") and in_mem_desc(slot(0), slot(1), mem_slot(0),
+            [mem_desc(X86_v64s8, X86_p0, X86_v64s8, 1), mem_desc(X86_v32s16, X86_p0,
+            X86_v32s16, 1), mem_desc(X86_v16s32, X86_p0, X86_v16s32, 1),
+            mem_desc(X86_v8s64, X86_p0, X86_v8s64, 1)]))
+    custom slot(0) != mem_ty(mem_slot(0))
+    widen(slot(0), pow2_min(8))
+    widen(slot(0), ty(X86_s8))
+    narrow(slot(0), ty(X86_sMaxScalar))
+    scalarize(slot(0))
+
+ruleset X86_SEXTLOAD: G_SEXTLOAD
+    legal in_mem_desc(slot(0), slot(1), mem_slot(0), [mem_desc(X86_s16, X86_p0, X86_s8, 1),
+            mem_desc(X86_s32, X86_p0, X86_s8, 1), mem_desc(X86_s32, X86_p0, X86_s16, 1)])
+    legal (feature("Subtarget.is64Bit()") and in_mem_desc(slot(0), slot(1), mem_slot(0),
+            [mem_desc(X86_s64, X86_p0, X86_s8, 1), mem_desc(X86_s64, X86_p0, X86_s16, 1),
+            mem_desc(X86_s64, X86_p0, X86_s32, 1)]))
+
+ruleset X86_ZEXTLOAD: G_ZEXTLOAD
+    legal in_mem_desc(slot(0), slot(1), mem_slot(0), [mem_desc(X86_s16, X86_p0, X86_s8, 1),
+            mem_desc(X86_s32, X86_p0, X86_s8, 1), mem_desc(X86_s32, X86_p0, X86_s16, 1)])
+    legal (feature("Subtarget.is64Bit()") and in_mem_desc(slot(0), slot(1), mem_slot(0),
+            [mem_desc(X86_s64, X86_p0, X86_s8, 1), mem_desc(X86_s64, X86_p0, X86_s16, 1),
+            mem_desc(X86_s64, X86_p0, X86_s32, 1)]))
+
+ruleset X86_FPEXTLOAD: G_FPEXTLOAD
+    legal (feature("!Subtarget.useSoftFloat() && Subtarget.hasX87()") and in_mem_desc(slot(0),
+            slot(1), mem_slot(0), [mem_desc(X86_s80, X86_p0, X86_s32, 1), mem_desc(X86_s80,
+            X86_p0, X86_s64, 1), mem_desc(X86_s64, X86_p0, X86_s32, 1)]))
+
+ruleset X86_FPTRUNCSTORE: G_FPTRUNCSTORE
+    legal (feature("!Subtarget.useSoftFloat() && Subtarget.hasX87()") and in_mem_desc(slot(0),
+            slot(1), mem_slot(0), [mem_desc(X86_s80, X86_p0, X86_s32, 1), mem_desc(X86_s80,
+            X86_p0, X86_s64, 1), mem_desc(X86_s64, X86_p0, X86_s32, 1)]))
+
+ruleset X86_ANYEXT: G_ANYEXT
+    note "sext, zext, and anyext"
+    legal in(slot(0), [X86_s8, X86_s16, X86_s32, X86_s128])
+    legal (feature("Subtarget.is64Bit()") and in(slot(0), X86_s64))
+    widen(slot(0), pow2_min(8))
+    widen(slot(0), ty(X86_s8))
+    narrow(slot(0), ty(X86_sMaxScalar))
+    widen(slot(1), pow2_min(8))
+    widen(slot(1), ty(X86_s8))
+    narrow(slot(1), ty(X86_sMaxScalar))
+    scalarize(slot(0))
+
+ruleset X86_SEXT: G_SEXT G_ZEXT
+    legal in(slot(0), [X86_s8, X86_s16, X86_s32])
+    legal (feature("Subtarget.is64Bit()") and in(slot(0), X86_s64))
+    widen(slot(0), pow2_min(8))
+    widen(slot(0), ty(X86_s8))
+    narrow(slot(0), ty(X86_sMaxScalar))
+    widen(slot(1), pow2_min(8))
+    widen(slot(1), ty(X86_s8))
+    narrow(slot(1), ty(X86_sMaxScalar))
+    scalarize(slot(0))
+
+ruleset X86_TRUNC: G_TRUNC
+    legal (in(slot(0), X86_PtrTypes64) and in(slot(1), [X86_s8, X86_s16, X86_s32, X86_s64,
+            X86_s128]))
+
+ruleset X86_SEXT_INREG: G_SEXT_INREG
+    lower true
+
+ruleset X86_FCONSTANT: G_FCONSTANT
+    note "fp constants"
+    legal in(slot(0), [X86_s32, X86_s64])
+    legal (feature("!Subtarget.useSoftFloat() && Subtarget.hasX87()") and in(slot(0),
+            X86_s80))
+
+ruleset X86_FADD: G_FADD G_FSUB G_FMUL G_FDIV
+    note "fp arithmetic"
+    legal in(slot(0), [X86_s32, X86_s64])
+    legal (feature("Subtarget.hasSSE1()") and in(slot(0), X86_v4s32))
+    legal (feature("Subtarget.hasSSE2()") and in(slot(0), X86_v2s64))
+    legal (feature("Subtarget.hasAVX()") and in(slot(0), [X86_v8s32, X86_v4s64]))
+    legal (feature("Subtarget.hasAVX512()") and in(slot(0), [X86_v16s32, X86_v8s64]))
+    legal (feature("!Subtarget.useSoftFloat() && Subtarget.hasX87()") and in(slot(0),
+            X86_s80))
+
+ruleset X86_FABS: G_FABS
+    legal (feature("!Subtarget.useSoftFloat() && Subtarget.hasX87()") and in(slot(0),
+            X86_s80))
+    legal (feature("!Subtarget.useSoftFloat() && Subtarget.hasX87()") and not feature("Subtarget.is64Bit()") and in(slot(0),
+            X86_s64))
+    lower true
+
+ruleset X86_FCMP: G_FCMP
+    note "fp comparison"
+    legal ((feature("Subtarget.hasSSE1()") or feature("!Subtarget.useSoftFloat() && Subtarget.hasX87()")) and in(slot(0),
+            [X86_s8, X86_s32]))
+    legal ((feature("Subtarget.hasSSE2()") or feature("!Subtarget.useSoftFloat() && Subtarget.hasX87()")) and in(slot(0),
+            [X86_s8, X86_s64]))
+    legal (feature("!Subtarget.useSoftFloat() && Subtarget.hasX87()") and in(slot(0),
+            [X86_s8, X86_s80]))
+    widen(slot(0), ty(X86_s8))
+    narrow(slot(0), ty(X86_s8))
+    widen(slot(1), ty(X86_s32))
+    narrow(slot(1), ty(X86_s64OrS32))
+    widen(slot(1), pow2)
+
+ruleset X86_FPEXT: G_FPEXT
+    note "fp conversions"
+    legal (feature("Subtarget.hasSSE2()") and in_pairs(slot(0), slot(1), [[X86_s64,
+            X86_s32]]))
+    legal (feature("Subtarget.hasAVX()") and in_pairs(slot(0), slot(1), [[X86_v4s64,
+            X86_v4s32]]))
+    legal (feature("Subtarget.hasAVX512()") and in_pairs(slot(0), slot(1), [[X86_v8s64,
+            X86_v8s32]]))
+    lower (feature("!Subtarget.useSoftFloat() && Subtarget.hasX87()") and in_pairs(slot(0),
+            slot(1), [[X86_s64, X86_s32], [X86_s80, X86_s32], [X86_s80, X86_s64]]))
+    libcall true
+
+ruleset X86_FPTRUNC: G_FPTRUNC
+    legal (feature("Subtarget.hasSSE2()") and in_pairs(slot(0), slot(1), [[X86_s32,
+            X86_s64]]))
+    legal (feature("Subtarget.hasAVX()") and in_pairs(slot(0), slot(1), [[X86_v4s32,
+            X86_v4s64]]))
+    legal (feature("Subtarget.hasAVX512()") and in_pairs(slot(0), slot(1), [[X86_v8s32,
+            X86_v8s64]]))
+    lower (feature("!Subtarget.useSoftFloat() && Subtarget.hasX87()") and in_pairs(slot(0),
+            slot(1), [[X86_s32, X86_s64], [X86_s32, X86_s80], [X86_s64, X86_s80]]))
+
+ruleset X86_SITOFP: G_SITOFP
+    legal (feature("Subtarget.hasSSE1()") and in_pairs(slot(0), slot(1), [[X86_s32,
+            X86_s32]]))
+    legal (feature("Subtarget.hasSSE1()") and feature("Subtarget.is64Bit()") and in_pairs(slot(0),
+            slot(1), [[X86_s32, X86_s64]]))
+    legal (feature("Subtarget.hasSSE2()") and in_pairs(slot(0), slot(1), [[X86_s64,
+            X86_s32]]))
+    legal (feature("Subtarget.hasSSE2()") and feature("Subtarget.is64Bit()") and in_pairs(slot(0),
+            slot(1), [[X86_s64, X86_s64]]))
+    widen(slot(1), ty(X86_X87OrS32))
+    narrow(slot(1), ty(X86_sMaxScalar))
+    widen(slot(1), pow2)
+    custom (feature("!Subtarget.useSoftFloat() && Subtarget.hasX87()") and (in(slot(0),
+            [X86_s32, X86_s64, X86_s80]) and in(slot(1), [X86_s16, X86_s32, X86_s64])))
+    widen(slot(0), ty(X86_s32))
+    narrow(slot(0), ty(X86_s64OrS32))
+    widen(slot(0), pow2)
+
+ruleset X86_FPTOSI: G_FPTOSI
+    legal (feature("Subtarget.hasSSE1()") and in_pairs(slot(0), slot(1), [[X86_s32,
+            X86_s32]]))
+    legal (feature("Subtarget.hasSSE1()") and feature("Subtarget.is64Bit()") and in_pairs(slot(0),
+            slot(1), [[X86_s64, X86_s32]]))
+    legal (feature("Subtarget.hasSSE2()") and in_pairs(slot(0), slot(1), [[X86_s32,
+            X86_s64]]))
+    legal (feature("Subtarget.hasSSE2()") and feature("Subtarget.is64Bit()") and in_pairs(slot(0),
+            slot(1), [[X86_s64, X86_s64]]))
+    widen(slot(0), ty(X86_X87OrS32))
+    narrow(slot(0), ty(X86_sMaxScalar))
+    widen(slot(0), pow2)
+    custom (feature("!Subtarget.useSoftFloat() && Subtarget.hasX87()") and (in(slot(0),
+            [X86_s16, X86_s32, X86_s64]) and in(slot(1), [X86_s32, X86_s64, X86_s80])))
+    widen(slot(1), ty(X86_s32))
+    narrow(slot(1), ty(X86_s64OrS32))
+    widen(slot(1), pow2)
+
+ruleset X86_UITOFP: G_UITOFP
+    note "For G_UITOFP and G_FPTOUI without AVX512, we have to custom legalize"
+    note "types"
+    note "<= s32 manually. Otherwise, in custom handler there is no way to"
+    note "understand whether s32 is an original type and we need to promote it to"
+    note "s64 or s32 is obtained after widening and we shouldn't widen it to s64."
+    note ""
+    note "For AVX512 we simply widen types as there is direct mapping from opcodes"
+    note "to asm instructions."
+    legal (feature("Subtarget.hasAVX512()") and in_pairs(slot(0), slot(1), [[X86_s32,
+            X86_s32], [X86_s32, X86_s64], [X86_s64, X86_s32], [X86_s64, X86_s64]]))
+    custom (not feature("Subtarget.hasAVX512()") and ((feature("Subtarget.hasSSE1()") and slot(0) == ty(X86_s32)) or (feature("Subtarget.hasSSE2()") and slot(0) == ty(X86_s64))) and bits_of(slot(1)) < select(feature("Subtarget.is64Bit()"),
+            64, 32))
+    lower (not feature("Subtarget.hasAVX512()") and ((feature("Subtarget.hasSSE1()") and slot(0) == ty(X86_s32)) or (feature("Subtarget.hasSSE2()") and slot(0) == ty(X86_s64))) and feature("Subtarget.is64Bit()") and slot(1) == ty(X86_s64))
+    widen(slot(0), ty(X86_s32))
+    narrow(slot(0), ty(X86_s64OrS32))
+    widen(slot(0), pow2)
+    widen(slot(1), ty(X86_s32))
+    narrow(slot(1), ty(X86_sMaxScalar))
+    widen(slot(1), pow2)
+
+ruleset X86_FPTOUI: G_FPTOUI
+    note "TODO: replace with customized legalization using"
+    note "specifics of cvttsd2si. The selection of this node requires"
+    note "a vector type. Either G_SCALAR_TO_VECTOR is needed or more advanced"
+    note "support of G_BUILD_VECTOR/G_INSERT_VECTOR_ELT is required beforehand."
+    legal (feature("Subtarget.hasAVX512()") and in_pairs(slot(0), slot(1), [[X86_s32,
+            X86_s32], [X86_s32, X86_s64], [X86_s64, X86_s32], [X86_s64, X86_s64]]))
+    custom (not feature("Subtarget.hasAVX512()") and ((feature("Subtarget.hasSSE1()") and slot(1) == ty(X86_s32)) or (feature("Subtarget.hasSSE2()") and slot(1) == ty(X86_s64))) and bits_of(slot(0)) < select(feature("Subtarget.is64Bit()"),
+            64, 32))
+    lower (not feature("Subtarget.hasAVX512()") and ((feature("Subtarget.hasSSE1()") and slot(1) == ty(X86_s32)) or (feature("Subtarget.hasSSE2()") and slot(1) == ty(X86_s64))) and feature("Subtarget.is64Bit()") and slot(0) == ty(X86_s64))
+    widen(slot(0), ty(X86_s32))
+    narrow(slot(0), ty(X86_sMaxScalar))
+    widen(slot(0), pow2)
+    widen(slot(1), ty(X86_s32))
+    narrow(slot(1), ty(X86_s64OrS32))
+    widen(slot(1), pow2)
+
+ruleset X86_BUILD_VECTOR: G_BUILD_VECTOR
+    note "vector ops"
+    note "G_BUILD_VECTOR cannot be legalized by adding elements: the added"
+    note "elements are undef, and narrowing the widened vector back to the"
+    note "original type recreates the instruction being legalized, so the"
+    note "legalizer would re-enqueue the same query forever.  Only clamp the"
+    note "maximum number of elements; a narrow build vector is reported as"
+    note "unsupported (and falls back to SelectionDAG) instead of looping."
+    note "Lowering non-constant narrow build vectors is tracked by #143099."
+    custom ((feature("Subtarget.hasSSE1()") and slot(0) == ty(X86_v4s32)) or (feature("Subtarget.hasSSE2()") and in(slot(0),
+            [X86_v2s64, X86_v8s16,
+            X86_v16s8])) or (feature("Subtarget.hasAVX()") and in(slot(0), [X86_v4s64,
+            X86_v8s32, X86_v16s16,
+            X86_v32s8])) or (feature("Subtarget.hasAVX512()") and in(slot(0), [X86_v8s64,
+            X86_v16s32, X86_v32s16, X86_v64s8])))
+    fewer(slot(0), replace(scalar_or_vec_of(select(feature("Subtarget.hasAVX512()"), 64,
+            select(feature("Subtarget.hasAVX()"), 32, 16)),
+            elem_of(slot(0))))) when (sort_of(slot(0)) == vector and not sort_of(slot(0)) == scalable_vector and elem_of(slot(0)) == ty(X86_s8) and num_elems(slot(0)) > select(feature("Subtarget.hasAVX512()"),
+            64, select(feature("Subtarget.hasAVX()"), 32, 16)))
+    fewer(slot(0), replace(scalar_or_vec_of(select(feature("Subtarget.hasAVX512()"), 32,
+            select(feature("Subtarget.hasAVX()"), 16, 8)),
+            elem_of(slot(0))))) when (sort_of(slot(0)) == vector and not sort_of(slot(0)) == scalable_vector and elem_of(slot(0)) == ty(X86_s16) and num_elems(slot(0)) > select(feature("Subtarget.hasAVX512()"),
+            32, select(feature("Subtarget.hasAVX()"), 16, 8)))
+    fewer(slot(0), replace(scalar_or_vec_of(select(feature("Subtarget.hasAVX512()"), 16,
+            select(feature("Subtarget.hasAVX()"), 8, 4)),
+            elem_of(slot(0))))) when (sort_of(slot(0)) == vector and not sort_of(slot(0)) == scalable_vector and elem_of(slot(0)) == ty(X86_s32) and num_elems(slot(0)) > select(feature("Subtarget.hasAVX512()"),
+            16, select(feature("Subtarget.hasAVX()"), 8, 4)))
+    fewer(slot(0), replace(scalar_or_vec_of(select(feature("Subtarget.hasAVX512()"), 8,
+            select(feature("Subtarget.hasAVX()"), 4, 2)),
+            elem_of(slot(0))))) when (sort_of(slot(0)) == vector and not sort_of(slot(0)) == scalable_vector and elem_of(slot(0)) == ty(X86_s64) and num_elems(slot(0)) > select(feature("Subtarget.hasAVX512()"),
+            8, select(feature("Subtarget.hasAVX()"), 4, 2)))
+
+ruleset X86_EXTRACT: G_EXTRACT
+    legal (feature("Subtarget.hasAVX()") and in_pairs(slot(0), slot(1), [[X86_v16s8,
+            X86_v32s8], [X86_v8s16, X86_v16s16], [X86_v4s32, X86_v8s32], [X86_v2s64,
+            X86_v4s64]]))
+    legal (feature("Subtarget.hasAVX512()") and in_pairs(slot(0), slot(1), [[X86_v16s8,
+            X86_v64s8], [X86_v32s8, X86_v64s8], [X86_v8s16, X86_v32s16], [X86_v16s16,
+            X86_v32s16], [X86_v4s32, X86_v16s32], [X86_v8s32, X86_v16s32], [X86_v2s64,
+            X86_v8s64], [X86_v4s64, X86_v8s64]]))
+    unsupported true
+
+ruleset X86_INSERT: G_INSERT
+    legal (feature("Subtarget.hasAVX()") and in_pairs(slot(0), slot(1), [[X86_v32s8,
+            X86_v16s8], [X86_v16s16, X86_v8s16], [X86_v8s32, X86_v4s32], [X86_v4s64,
+            X86_v2s64]]))
+    legal (feature("Subtarget.hasAVX512()") and in_pairs(slot(0), slot(1), [[X86_v64s8,
+            X86_v16s8], [X86_v64s8, X86_v32s8], [X86_v32s16, X86_v8s16], [X86_v32s16,
+            X86_v16s16], [X86_v16s32, X86_v4s32], [X86_v16s32, X86_v8s32], [X86_v8s64,
+            X86_v2s64], [X86_v8s64, X86_v4s64]]))
+    unsupported true
+
+ruleset X86_CONCAT_VECTORS: G_CONCAT_VECTORS
+    note "todo: only permit dst types up to max legal vector register size?"
+    legal (feature("Subtarget.hasSSE1()") and in_pairs(slot(0), slot(1), [[X86_v32s8,
+            X86_v16s8], [X86_v16s16, X86_v8s16], [X86_v8s32, X86_v4s32], [X86_v4s64,
+            X86_v2s64]]))
+    legal (feature("Subtarget.hasAVX()") and in_pairs(slot(0), slot(1), [[X86_v64s8,
+            X86_v16s8], [X86_v64s8, X86_v32s8], [X86_v32s16, X86_v8s16], [X86_v32s16,
+            X86_v16s16], [X86_v16s32, X86_v4s32], [X86_v16s32, X86_v8s32], [X86_v8s64,
+            X86_v2s64], [X86_v8s64, X86_v4s64]]))
+
+ruleset X86_SELECT: G_SELECT
+    note "todo: vectors and address spaces"
+    legal in_pairs(slot(0), slot(1), [[X86_s16, X86_s32], [X86_s32, X86_s32], [X86_p0,
+            X86_s32]])
+    legal (not feature("Subtarget.canUseCMOV()") and in_pairs(slot(0), slot(1), [[X86_s8,
+            X86_s32]]))
+    legal (feature("Subtarget.is64Bit()") and in_pairs(slot(0), slot(1), [[X86_s64,
+            X86_s32]]))
+    legal (feature("!Subtarget.useSoftFloat() && Subtarget.hasX87()") and in_pairs(slot(0),
+            slot(1), [[X86_s80, X86_s32]]))
+    widen(slot(1), ty(X86_s32))
+    narrow(slot(1), ty(X86_s32))
+    widen(slot(0), pow2_min(8))
+    widen(slot(0), ty(X86_CMOVOrS8))
+    narrow(slot(0), ty(X86_sMaxScalar))
+
+ruleset X86_MEMCPY: G_MEMCPY G_MEMMOVE G_MEMSET
+    note "memory intrinsics"
+    libcall true
+
+ruleset X86_DYN_STACKALLOC: G_DYN_STACKALLOC G_STACKSAVE G_STACKRESTORE
+    lower true
+
+ruleset X86_IS_FPCLASS: G_IS_FPCLASS
+    note "fp intrinsics"
+    note "fpclass for i686 is disabled for llvm issue #171992"
+    lower (feature("Subtarget.is64Bit()") and in_pairs(slot(0), slot(1), [[X86_s1,
+            X86_s32], [X86_s1, X86_s64], [X86_s1, X86_s80]]))
+
+ruleset X86_INTRINSIC_ROUNDEVEN: G_INTRINSIC_ROUNDEVEN G_INTRINSIC_TRUNC
+    scalarize(slot(0))
+    widen(slot(0), ty(X86_s32))
+    libcall true
+
+ruleset X86_INTRINSIC: G_INTRINSIC G_INTRINSIC_W_SIDE_EFFECTS
+    legal true
+
+ruleset X86_TRAP: G_TRAP G_DEBUGTRAP G_UBSANTRAP
+    legal true
+
+ruleset X86_INVOKE_REGION_START: G_INVOKE_REGION_START
+    legal true
