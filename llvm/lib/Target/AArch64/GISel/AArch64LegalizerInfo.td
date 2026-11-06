@@ -40,9 +40,6 @@ def AArch64_SmallCodeModel
 def AArch64_HasBF16 : LegalizeFeature<"Subtarget.hasBF16()">;
 def AArch64_HasMOPS : LegalizeFeature<"Subtarget.hasMOPS()">;
 
-def AArch64_NotHasCSSC : LegalizePredicateDag<(not AArch64_HasCSSC)>;
-def AArch64_NotUseOutlineAtomics
-    : LegalizePredicateDag<(not AArch64_UseOutlineAtomics)>;
 //===----------------------------------------------------------------------===//
 // Types
 //===----------------------------------------------------------------------===//
