@@ -2345,6 +2345,15 @@ static const Record *coreSortOf(const CoreNode &N, const RecordKeeper &Records,
     }
     CoreSetInfo Set;
     decodeCoreSet(RhsNode, Records, Set, Owner);
+    // A memory-descriptor set is two types plus a memory type and an
+    // alignment.  `typePairInSet` would compare the two types and silently
+    // drop the other two, so the predicate would be strictly weaker than the
+    // rule that asked for it.  The descriptor form has its own operator.
+    if (Set.MemDesc)
+      PrintFatalError(Owner.getLoc(),
+                      "core rule: '" + Name +
+                          "' needs a type set, but its last operand is a "
+                          "memory-descriptor set; use 'inMemDesc'");
     if (Set.Arity != NSlots)
       PrintFatalError(Owner.getLoc(), "core rule: '" + Name + "' tests " +
                                           std::to_string(NSlots) +
