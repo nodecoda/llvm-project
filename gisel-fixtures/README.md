@@ -35,9 +35,9 @@ bash gisel-fixtures/cases/05-hang/check.sh "$B/llc"
 | `02-boundary/add-v15i8.ll` | 第 2 篇 §4.3 | 15 lane 要补到 16 |
 | `02-boundary/add-v16i8.ll` | 第 2 篇 §4.3 | 16 lane 一次命中，没有任何动作 |
 | `02-boundary/add-v32i8.ll` | 第 2 篇 §4.3 | 32 lane 拆成两条 16 lane 的 `G_ADD` |
-| `05-hang/mul-v2i32.ll` | 第 5 篇 §0 | GlobalISel 不返回（#236649）；SelectionDAG 返回 0 |
-| `06-cross/add-i32.ll` | 第 6 篇 §1 | 标量 `i32`：X86 `Legal` / AArch64 `Legal` / RISCV `Custom` |
-| `06-cross/add-v4i32.ll` | 第 6 篇 §1 | 向量：X86、AArch64 `Legal` / RISCV `unable to legalize` |
+| `05-hang/mul-v2i32.ll` | 第 4 篇 §0 | GlobalISel 不返回（#236649）；SelectionDAG 返回 0 |
+| `06-cross/add-i32.ll` | 第 5 篇 §1 | 标量 `i32`：X86 `Legal` / AArch64 `Legal` / RISCV `Custom` |
+| `06-cross/add-v4i32.ll` | 第 5 篇 §1 | 向量：X86、AArch64 `Legal` / RISCV `unable to legalize` |
 
 ## 纪律
 
