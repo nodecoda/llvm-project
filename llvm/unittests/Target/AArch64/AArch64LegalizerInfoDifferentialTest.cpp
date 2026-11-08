@@ -288,7 +288,9 @@ TEST_F(AArch64LegalizerDifferentialTest, GeneratedTableMatchesReference) {
   // 1128 before the self-bitcast lists became two-slot `CoreIn` guards: the
   // four `legalForCartesianProduct({...})` rules name both slots, so they add
   // their 1 + 9 + 16 + 36 = 62 self-products instead of probing slot 0 alone.
-  ASSERT_EQ(Points.size(), 1190u) << "the reviewed AArch64 domain changed";
+  // 1191 after G_GLOBAL_VALUE's `legalFor({p0})` was restored: the point
+  // generator only knows the types a rule names, so the constraint adds `p0`.
+  ASSERT_EQ(Points.size(), 1191u) << "the reviewed AArch64 domain changed";
   ASSERT_EQ(Points.size(), AArch64NumTablePoints);
 
   unsigned Compared = 0;

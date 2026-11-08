@@ -323,7 +323,7 @@ def AArch64_SMIN : LegalizeRuleSet<["G_SMIN", "G_SMAX", "G_UMIN", "G_UMAX"]> {
   let Rules = [
     CoreLegal<(CoreIn (Slot 0), AArch64_IntVecNoV2i64Set)>,
     CoreLegal<(CoreAll AArch64_HasCSSC, (CoreIn (Slot 0), AArch64_I32OrI64Set))>,
-    CoreWiden<(Slot 0), (Ty AArch64_s32)>,
+    CoreWidenIf<(Slot 0), (Ty AArch64_s32), (CoreAll AArch64_HasCSSC)>,
     CoreMoreIf<(Slot 0), (Replace (VecOf 8, (ElemOf (Slot 0)))), (CoreAll (CoreEq (SortOf (Slot 0)), KindVector), (CoreNot (CoreEq (SortOf (Slot 0)), KindScalableVector)), (CoreEq (ElemOf (Slot 0)), (Ty AArch64_s8)), (CoreLt (NumElems (Slot 0)), 8))>,
     CoreFewerIf<(Slot 0), (Replace (ScalarOrVecOf 16, (ElemOf (Slot 0)))), (CoreAll (CoreEq (SortOf (Slot 0)), KindVector), (CoreNot (CoreEq (SortOf (Slot 0)), KindScalableVector)), (CoreEq (ElemOf (Slot 0)), (Ty AArch64_s8)), (CoreGt (NumElems (Slot 0)), 16))>,
     CoreMoreIf<(Slot 0), (Replace (VecOf 4, (ElemOf (Slot 0)))), (CoreAll (CoreEq (SortOf (Slot 0)), KindVector), (CoreNot (CoreEq (SortOf (Slot 0)), KindScalableVector)), (CoreEq (ElemOf (Slot 0)), (Ty AArch64_s16)), (CoreLt (NumElems (Slot 0)), 4))>,
@@ -957,7 +957,7 @@ def AArch64_FRAME_INDEX : LegalizeRuleSet<["G_FRAME_INDEX"]> {
 def AArch64_GLOBAL_VALUE : LegalizeRuleSet<["G_GLOBAL_VALUE"]> {
   let Rules = [
     CoreCustom<(CoreAll AArch64_SmallCodeModel)>,
-    CoreLegal<(CoreNot AArch64_SmallCodeModel)>,
+    CoreLegal<(CoreAll (CoreNot AArch64_SmallCodeModel), (CoreEq (Slot 0), (Ty AArch64_p0)))>,
   ];
 }
 
