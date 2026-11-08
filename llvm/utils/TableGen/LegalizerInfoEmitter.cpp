@@ -3034,18 +3034,25 @@ private:
     return "(" + childValue(N, 0) + ").getScalarSizeInBits()";
   }
   std::string emitSizeInBytesOf(const CoreNode &N) {
-    return "(" + childValue(N, 0) + ").getSizeInBytes()";
+    // SizeInBytesOf has sort Int in LegalizerCore.td.  LLT returns a TypeSize,
+    // and TypeSize's implicit conversion to an integer is a fatal error for a
+    // scalable vector; read the known minimum, as
+    // LegalityPredicates::memSizeNotByteSizePow2 does.
+    return "(" + childValue(N, 0) + ").getSizeInBytes().getKnownMinValue()";
   }
   std::string emitIsByteSized(const CoreNode &N) {
     return "(" + childValue(N, 0) + ").isByteSized()";
   }
   std::string emitSizeOf(const CoreNode &N) {
-    // MemDesc::AlignInBits is an alignment, not a size.  SizeOf(memSlot) is
-    // the size of the memory type; alignment needs its own observer.
+    // SizeOf has sort Int in LegalizerCore.td; LLT returns a TypeSize, so read
+    // the known minimum before the value is used as a number.  MemDesc::
+    // AlignInBits is an alignment, not a size.  SizeOf(memSlot) is the size of
+    // the memory type; alignment needs its own observer.
     if (N.Kids[0]->Kind == CoreNode::OpNode &&
         coreTag(*N.Kids[0]->Op) == "memSlot")
-      return "(" + childValue(N, 0) + ").MemoryTy.getSizeInBits()";
-    return "(" + childValue(N, 0) + ").getSizeInBits()";
+      return "(" + childValue(N, 0) +
+             ").MemoryTy.getSizeInBits().getKnownMinValue()";
+    return "(" + childValue(N, 0) + ").getSizeInBits().getKnownMinValue()";
   }
   std::string emitAlignOf(const CoreNode &N) {
     return "(" + childValue(N, 0) + ").AlignInBits";

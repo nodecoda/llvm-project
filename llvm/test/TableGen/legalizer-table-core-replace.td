@@ -52,7 +52,7 @@ def Unconditional : LegalizeRuleSet<["G_UNCOND"]> {
 // CHECK-NEXT:   return {LegalizeActions::FewerElements, M.first, M.second};
 // CHECK-NEXT: }
 // CHECK-NEXT: {
-// CHECK-NEXT:   auto M = ([=](const LegalityQuery &Q) { return std::make_pair(unsigned(0), LLT::integer((Q.Types[0]).getSizeInBits())); })(Q);
+// CHECK-NEXT:   auto M = ([=](const LegalityQuery &Q) { return std::make_pair(unsigned(0), LLT::integer((Q.Types[0]).getSizeInBits().getKnownMinValue())); })(Q);
 // CHECK-NEXT:   return {LegalizeActions::Bitcast, M.first, M.second};
 // CHECK-NEXT: }
 

@@ -72,6 +72,10 @@ def AllPrimitives : LegalizeRuleSet<["G_ALL"]> {
     CoreWidenIf<(Slot 0), (Pow2), (IsFloat16 (ScalarOf (Slot 0)))>,
     CoreWidenIf<(Slot 0), (Pow2),
                 (CoreNe (CoreUDiv (NumElems (Slot 0)), 2), 0)>,
+    // SizeOf and SizeInBytesOf observe an LLT and have sort Int.  LLT returns
+    // a TypeSize; a rule set can be instantiated for scalable vectors, so the
+    // generated shim takes getKnownMinValue() rather than relying on
+    // TypeSize's implicit, fatal-for-scalable conversion to an integer.
     CoreWidenIf<(Slot 0), (Pow2), (CoreGe (SizeOf (Slot 0)), 8)>,
     CoreWidenIf<(Slot 0), (Pow2), (CoreGe (SizeOf (MemSlot 0)), 8)>,
     CoreWidenIf<(Slot 0), (Pow2), (CoreEq (AddrSpace (Slot 0)), 0)>,
@@ -186,19 +190,19 @@ def MemRules : LegalizeRuleSet<["G_MEM"]> {
 // CXX: .coreNarrowTo([](const LegalityQuery &) { return true; }, 0, [=](const LegalityQuery &Query) { return std::make_pair(0, s32); })
 // CXX: .coreWidenTo([](const LegalityQuery &) { return true; }, 0, [=](const LegalityQuery &Query) { return std::make_pair(0, Query.Types[1]); })
 // CXX: .coreWidenTo([](const LegalityQuery &) { return true; }, 0, [=](const LegalityQuery &Query) { return std::make_pair(0, (Query.Types[0]).changeElementType(s32)); })
-// CXX: .coreWidenTo([](const LegalityQuery &) { return true; }, 0, [=](const LegalityQuery &Query) { return std::make_pair(0, (Query.Types[0]).changeElementSize((Query.Types[1]).getSizeInBits())); })
-// CXX: .coreNarrowTo([](const LegalityQuery &) { return true; }, 0, [=](const LegalityQuery &Query) { return std::make_pair(0, LLT::integer((Query.Types[0]).getSizeInBits())); })
+// CXX: .coreWidenTo([](const LegalityQuery &) { return true; }, 0, [=](const LegalityQuery &Query) { return std::make_pair(0, (Query.Types[0]).changeElementSize((Query.Types[1]).getSizeInBits().getKnownMinValue())); })
+// CXX: .coreNarrowTo([](const LegalityQuery &) { return true; }, 0, [=](const LegalityQuery &Query) { return std::make_pair(0, LLT::integer((Query.Types[0]).getSizeInBits().getKnownMinValue())); })
 // CXX: .coreMoreTo([](const LegalityQuery &) { return true; }, 0, [=](const LegalityQuery &Query) { return std::make_pair(0, LLT::fixed_vector((Is32 ? 4 : 2), Query.Types[0])); })
 // CXX: .coreMoreTo([](const LegalityQuery &) { return true; }, 0, [=](const LegalityQuery &Query) { return std::make_pair(0, Query.Types[1]); })
 // CXX: .coreFewerTo([](const LegalityQuery &) { return true; }, 0, [=](const LegalityQuery &Query) { return std::make_pair(0, (Query.Types[0]).changeElementCount((Query.Types[0]).getElementCount().divideCoefficientBy(2))); })
-// CXX: .coreBitcastToType([](const LegalityQuery &) { return true; }, 0, [=](const LegalityQuery &Query) { return std::make_pair(0, LLT::integer((Query.Types[0]).getSizeInBits())); })
+// CXX: .coreBitcastToType([](const LegalityQuery &) { return true; }, 0, [=](const LegalityQuery &Query) { return std::make_pair(0, LLT::integer((Query.Types[0]).getSizeInBits().getKnownMinValue())); })
 // CXX: .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.Types[0]).getScalarSizeInBits() > 8); }, 0)
 // CXX: .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return (((Query.Types[0]).getElementType()).getScalarSizeInBits() > 8); }, 0)
 // CXX: .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.Types[0]).getNumElements() >= 2 && (Query.Types[0]).getNumElements() <= 16); }, 0)
 // CXX: .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.Types[0]).getScalarType()).isFloat16(); }, 0)
 // CXX: .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return (((Query.Types[0]).getNumElements() / 2) != 0); }, 0)
-// CXX: .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.Types[0]).getSizeInBits() >= 8); }, 0)
-// CXX: .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.MMODescrs[0]).MemoryTy.getSizeInBits() >= 8); }, 0)
+// CXX: .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.Types[0]).getSizeInBits().getKnownMinValue() >= 8); }, 0)
+// CXX: .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.MMODescrs[0]).MemoryTy.getSizeInBits().getKnownMinValue() >= 8); }, 0)
 // CXX: .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.Types[0]).getAddressSpace() == 0); }, 0)
 // CXX: .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return (Query.Types[0].isScalar() || Query.Types[0].isVector()); }, 0)
 // CXX: .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return Query.Types[0].isVector(); }, 0)
@@ -209,7 +213,7 @@ def MemRules : LegalizeRuleSet<["G_MEM"]> {
 // CXX: .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return (Is32) && (IsVector) && (!(((Query.Types[0]).getScalarSizeInBits() == 8))); }, 0)
 // CXX: .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return (((Query.Types[0]).getScalarSizeInBits() < 8)) || (((Query.Types[1]).getScalarSizeInBits() != 16)); }, 0)
 // CXX: .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return (Query.Types[0] == s32 || Query.Types[0] == s64); }, 0)
-// CXX: .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return llvm::isPowerOf2_32((Query.Types[0]).getSizeInBits()); }, 0)
+// CXX: .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return llvm::isPowerOf2_32((Query.Types[0]).getSizeInBits().getKnownMinValue()); }, 0)
 // CXX: .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return (Query.Types[0].isPointerVector()); }, 0)
 // CXX: .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.Types[0]).getScalarSizeInBits() <= 32); }, 0)
 // CXX: .coreWidenScalarToNextPow2([=](const LegalityQuery &Query) { return ((Query.Types[0]).getScalarSizeInBits() < 32); }, 0)
@@ -220,7 +224,7 @@ def MemRules : LegalizeRuleSet<["G_MEM"]> {
 // CXX: .coreMoreTo([=](const LegalityQuery &Query) { return (Query.Types[0].isVector()) && (!(Query.Types[0].isScalableVector())) && (((Query.Types[0]).getElementType() == s32)) && (((Query.Types[0]).getNumElements() < 4)); }, 0, [=](const LegalityQuery &Query) { return std::make_pair(0, LLT::fixed_vector(4, (Query.Types[0]).getElementType())); })
 // CXX: .coreFewerTo([=](const LegalityQuery &Query) { return (Query.Types[0].isVector()) && (!(Query.Types[0].isScalableVector())) && (((Query.Types[0]).getElementType() == s32)) && (((Query.Types[0]).getNumElements() > 4)); }, 0, [=](const LegalityQuery &Query) { return std::make_pair(0, LLT::scalarOrVector(ElementCount::getFixed(4), (Query.Types[0]).getElementType())); })
 // CXX: .coreFewerTo([](const LegalityQuery &) { return true; }, 0, [=](const LegalityQuery &Query) { return std::make_pair(0, LLT::scalarOrVector(ElementCount::getFixed(4), Query.Types[0])); })
-// CXX: .coreLowerIf([=](const LegalityQuery &Query) { return !(llvm::isPowerOf2_32(((Query.MMODescrs[0]).MemoryTy).getSizeInBytes())); })
+// CXX: .coreLowerIf([=](const LegalityQuery &Query) { return !(llvm::isPowerOf2_32(((Query.MMODescrs[0]).MemoryTy).getSizeInBytes().getKnownMinValue())); })
 // CXX: .coreLowerIf([=](const LegalityQuery &Query) { return !(((Query.MMODescrs[0]).MemoryTy).isByteSized()); })
 // CXX: .coreLibcallIf([=](const LegalityQuery &Query) { return !(Is32); });
 

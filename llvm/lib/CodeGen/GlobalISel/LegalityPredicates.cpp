@@ -222,8 +222,10 @@ LegalityPredicate LegalityPredicates::sameSize(unsigned TypeIdx0,
 
 LegalityPredicate LegalityPredicates::memSizeInBytesNotPow2(unsigned MMOIdx) {
   return [=](const LegalityQuery &Query) {
+    // getSizeInBytes() is a TypeSize: a scalable memory type must use its known
+    // minimum instead of the implicit (and fatal) conversion to an integer.
     return !llvm::has_single_bit<uint32_t>(
-        Query.MMODescrs[MMOIdx].MemoryTy.getSizeInBytes());
+        Query.MMODescrs[MMOIdx].MemoryTy.getSizeInBytes().getKnownMinValue());
   };
 }
 

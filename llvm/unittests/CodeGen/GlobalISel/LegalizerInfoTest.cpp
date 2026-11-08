@@ -393,6 +393,32 @@ TEST(LegalizerInfoTest, MMOAlignment) {
   }
 }
 
+TEST(LegalizerInfoTest, MMOScalableSizeNotPow2) {
+  using namespace TargetOpcode;
+
+  // getSizeInBytes() returns a TypeSize.  A scalable memory type must be read
+  // through getKnownMinValue(); the implicit conversion to an integer is fatal.
+  // nxv16s8 has a known minimum of 16 bytes, so it is a power of two and the
+  // predicate does not fire: the query falls through instead of aborting.
+  const LLT nxv16s8 = LLT::scalable_vector(16, 8);
+  const LLT s24 = LLT::scalar(24);
+  const LLT p0 = LLT::pointer(0, 64);
+
+  LegalizerInfo LI;
+  LI.getActionDefinitionsBuilder(G_STORE).lowerIfMemSizeNotPow2();
+
+  EXPECT_ACTION(Unsupported, 0, LLT(),
+                LegalityQuery(G_STORE, {nxv16s8, p0},
+                              LegalityQuery::MemDesc{
+                                  nxv16s8, 7, AtomicOrdering::NotAtomic,
+                                  AtomicOrdering::NotAtomic}));
+  EXPECT_ACTION(
+      Lower, 0, LLT(),
+      LegalityQuery(G_STORE, {s24, p0},
+                    LegalityQuery::MemDesc{s24, 8, AtomicOrdering::NotAtomic,
+                                           AtomicOrdering::NotAtomic}));
+}
+
 // This code sequence doesn't do anything, but it covers a previously uncovered
 // codepath that used to crash in MSVC x86_32 debug mode.
 TEST(LegalizerInfoTest, MSVCDebugMiscompile) {
