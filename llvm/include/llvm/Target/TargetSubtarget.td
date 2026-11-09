@@ -6,13 +6,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-// This file only declares records, so including it twice is harmless in
-// principle -- but TableGen rejects the duplicate defs, and a target .td that
-// needs both the legalizer schema and llvm/Target/Target.td (which includes
-// this file) does include it twice.  Guard it, as OptParser.td does.
-#ifndef LLVM_TARGET_TARGETSUBTARGET_TD
-#define LLVM_TARGET_TARGETSUBTARGET_TD
-
 class Register;
 class RegisterClass;
 
@@ -188,5 +181,3 @@ class ProcessorAlias<string n, string alias> {
   string Name = n;
   string Alias = alias;
 }
-
-#endif // LLVM_TARGET_TARGETSUBTARGET_TD

@@ -25,12 +25,6 @@ tablegen(LLVM X86GenPreLegalizeGICombiner.inc -gen-global-isel-combiner
 tablegen(LLVM X86GenPostLegalizeGICombiner.inc -gen-global-isel-combiner
               -combiners="X86PostLegalizerCombiner")
 
-set(LLVM_TARGET_DEFINITIONS GISel/X86LegalizerInfo.td)
-tablegen(LLVM X86LegalizerInfo.inc -gen-legalizer)
-tablegen(LLVM X86LegalizerInfo.core.json -gen-legalizer-core)
-tablegen(LLVM X86LegalizerTable.inc -gen-legalizer-table -legalizer-table-prefix=X86)
-tablegen(LLVM X86LegalizerTablePoints.inc -gen-legalizer-table-points -legalizer-table-prefix=X86)
-
 set(LLVM_TARGET_DEFINITIONS X86Options.td)
 tablegen(LLVM X86Options.inc -gen-opt-parser-defs)
 
@@ -109,7 +103,6 @@ set(sources
   GISel/X86CallLowering.cpp
   GISel/X86InstructionSelector.cpp
   GISel/X86LegalizerInfo.cpp
-  GISel/X86LegalizerTable.cpp
   GISel/X86PostLegalizerCombiner.cpp
   GISel/X86PreLegalizerCombiner.cpp
   GISel/X86RegisterBankInfo.cpp

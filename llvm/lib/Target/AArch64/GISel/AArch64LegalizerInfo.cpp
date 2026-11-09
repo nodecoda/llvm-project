@@ -35,6 +35,17 @@
 
 using namespace llvm;
 using namespace LegalizeActions;
+
+namespace {
+// LLT::getNumElements() is only defined for vectors: it reports a fatal error
+// for scalable vectors and asserts for scalars (a release build reads the
+// zero element count those types carry).  The rule chains below ask about
+// element counts for arbitrary query types, so spell the release-build answer
+// out once instead of crashing an assertions build.
+unsigned numElements(const LLT &Ty) {
+  return Ty.isVector() ? Ty.getElementCount().getKnownMinValue() : 0;
+}
+} // namespace
 using namespace LegalizeMutations;
 using namespace LegalityPredicates;
 using namespace MIPatternMatch;
@@ -189,17 +200,17 @@ AArch64LegalizerInfo::AArch64LegalizerInfo(const AArch64Subtarget &ST)
       .clampNumElements(0, v2s64, v2s64)
       .minScalarOrEltIf(
           [=](const LegalityQuery &Query) {
-            return Query.Types[0].getNumElements() <= 2;
+            return numElements(Query.Types[0]) <= 2;
           },
           0, s32)
       .minScalarOrEltIf(
           [=](const LegalityQuery &Query) {
-            return Query.Types[0].getNumElements() <= 4;
+            return numElements(Query.Types[0]) <= 4;
           },
           0, s16)
       .minScalarOrEltIf(
           [=](const LegalityQuery &Query) {
-            return Query.Types[0].getNumElements() <= 16;
+            return numElements(Query.Types[0]) <= 16;
           },
           0, s8)
       .scalarizeIf(scalarOrEltWiderThan(0, 64), 0)
@@ -215,17 +226,17 @@ AArch64LegalizerInfo::AArch64LegalizerInfo(const AArch64Subtarget &ST)
       .clampNumElements(0, v2s64, v2s64)
       .minScalarOrEltIf(
           [=](const LegalityQuery &Query) {
-            return Query.Types[0].getNumElements() <= 2;
+            return numElements(Query.Types[0]) <= 2;
           },
           0, s32)
       .minScalarOrEltIf(
           [=](const LegalityQuery &Query) {
-            return Query.Types[0].getNumElements() <= 4;
+            return numElements(Query.Types[0]) <= 4;
           },
           0, s16)
       .minScalarOrEltIf(
           [=](const LegalityQuery &Query) {
-            return Query.Types[0].getNumElements() <= 16;
+            return numElements(Query.Types[0]) <= 16;
           },
           0, s8)
       .scalarizeIf(scalarOrEltWiderThan(0, 64), 0)
@@ -1138,8 +1149,8 @@ AArch64LegalizerInfo::AArch64LegalizerInfo(const AArch64Subtarget &ST)
         LLT SrcTy = Query.Types[1];
         if (!DstTy.isFixedVector() || !SrcTy.isFixedVector())
           return false;
-        unsigned MoreElts = 1u << Log2_32_Ceil(DstTy.getNumElements());
-        return SrcTy.getNumElements() * MoreElts % DstTy.getNumElements() != 0;
+        unsigned MoreElts = 1u << Log2_32_Ceil(numElements(DstTy));
+        return numElements(SrcTy) * MoreElts % numElements(DstTy) != 0;
       })
       .moreElementsToNextPow2(0)
       .clampNumElements(0, v8s8, v16s8)
@@ -1247,25 +1258,25 @@ AArch64LegalizerInfo::AArch64LegalizerInfo(const AArch64Subtarget &ST)
             // We want to promote to <M x s1> to <M x s64> if that wouldn't
             // cause the total vec size to be > 128b.
             return Query.Types[1].isFixedVector() &&
-                   Query.Types[1].getNumElements() <= 2;
+                   numElements(Query.Types[1]) <= 2;
           },
           0, s64)
       .minScalarOrEltIf(
           [=](const LegalityQuery &Query) {
             return Query.Types[1].isFixedVector() &&
-                   Query.Types[1].getNumElements() <= 4;
+                   numElements(Query.Types[1]) <= 4;
           },
           0, s32)
       .minScalarOrEltIf(
           [=](const LegalityQuery &Query) {
             return Query.Types[1].isFixedVector() &&
-                   Query.Types[1].getNumElements() <= 8;
+                   numElements(Query.Types[1]) <= 8;
           },
           0, s16)
       .minScalarOrEltIf(
           [=](const LegalityQuery &Query) {
             return Query.Types[1].isFixedVector() &&
-                   Query.Types[1].getNumElements() <= 16;
+                   numElements(Query.Types[1]) <= 16;
           },
           0, s8)
       .minScalarOrElt(0, s8) // Worst case, we need at least s8.
@@ -1338,15 +1349,15 @@ AArch64LegalizerInfo::AArch64LegalizerInfo(const AArch64Subtarget &ST)
       })
       .moreElementsIf(
           [](const LegalityQuery &Query) {
-            return Query.Types[0].getNumElements() >
-                   Query.Types[1].getNumElements();
+            return numElements(Query.Types[0]) >
+                   numElements(Query.Types[1]);
           },
           changeTo(1, 0))
       .moreElementsToNextPow2(0)
       .moreElementsIf(
           [](const LegalityQuery &Query) {
-            return Query.Types[0].getNumElements() <
-                   Query.Types[1].getNumElements();
+            return numElements(Query.Types[0]) <
+                   numElements(Query.Types[1]);
           },
           changeTo(0, 1))
       .widenScalarOrEltToNextPow2OrMinSize(0, 8)
@@ -1384,7 +1395,7 @@ AArch64LegalizerInfo::AArch64LegalizerInfo(const AArch64Subtarget &ST)
                 0, DstTy.changeElementSize(SrcTy.getSizeInBits())
                        .changeElementCount(
                            DstTy.getElementCount().divideCoefficientBy(
-                               SrcTy.getNumElements())));
+                               numElements(SrcTy))));
           });
 
   getActionDefinitionsBuilder(G_EXTRACT_SUBVECTOR)
@@ -1531,7 +1542,7 @@ AArch64LegalizerInfo::AArch64LegalizerInfo(const AArch64Subtarget &ST)
           [=](const LegalityQuery &Query) {
             return Query.Types[1].isVector() &&
                    Query.Types[1].getElementType() != s8 &&
-                   Query.Types[1].getNumElements() & 1;
+                   numElements(Query.Types[1]) & 1;
           },
           LegalizeMutations::moreElementsToNextPow2(1))
       .clampMaxNumElements(1, s64, 2)
@@ -1551,10 +1562,10 @@ AArch64LegalizerInfo::AArch64LegalizerInfo(const AArch64Subtarget &ST)
             LLT SrcTy = Q.Types[1];
             if (SrcTy.isScalar())
               return false;
-            if (!isPowerOf2_32(SrcTy.getNumElements()))
+            if (!isPowerOf2_32(numElements(SrcTy)))
               return false;
             // We can usually perform 64b vector operations.
-            return SrcTy.getSizeInBits() > 64;
+            return SrcTy.getSizeInBits().getKnownMinValue() > 64;
           },
           [=](const LegalityQuery &Q) {
             LLT SrcTy = Q.Types[1];
@@ -1735,7 +1746,7 @@ bool AArch64LegalizerInfo::legalizeICMP(MachineInstr &MI,
 
   // Check the vector types are legal
   if (DstTy.getScalarSizeInBits() != SrcTy.getScalarSizeInBits() ||
-      DstTy.getNumElements() != SrcTy.getNumElements() ||
+      numElements(DstTy) != numElements(SrcTy) ||
       (DstTy.getSizeInBits() != 64 && DstTy.getSizeInBits() != 128))
     return false;
 
@@ -2760,7 +2771,7 @@ bool AArch64LegalizerInfo::legalizeFptrunc(MachineInstr &MI,
     return true;
   }
 
-  assert(SrcTy.isFixedVector() && isPowerOf2_32(SrcTy.getNumElements()) &&
+  assert(SrcTy.isFixedVector() && isPowerOf2_32(numElements(SrcTy)) &&
          "Expected a power of 2 elements");
 
   // We must mutate types here as FPTrunc may be used on a IEEE floating point
@@ -2775,7 +2786,7 @@ bool AArch64LegalizerInfo::legalizeFptrunc(MachineInstr &MI,
   SmallVector<Register> TruncOddDstRegs;
   SmallVector<Register> RegsToMerge;
 
-  unsigned ElemCount = SrcTy.getNumElements();
+  unsigned ElemCount = numElements(SrcTy);
 
   // Find the biggest size chunks we can work with
   int StepSize = ElemCount % 4 ? 2 : 4;
