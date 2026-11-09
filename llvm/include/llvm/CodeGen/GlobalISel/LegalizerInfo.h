@@ -1225,7 +1225,8 @@ public:
                  Predicate(Query);
         },
         [=](const LegalityQuery &Query) {
-          LLT T = Query.Types[SmallTypeIdx];
+          LLT T = Query.Types[TypeIdx].changeElementSize(
+              Query.Types[SmallTypeIdx].getScalarSizeInBits());
           return std::make_pair(TypeIdx, T);
         });
   }
