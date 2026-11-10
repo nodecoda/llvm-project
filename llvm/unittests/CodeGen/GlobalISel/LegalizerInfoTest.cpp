@@ -374,6 +374,52 @@ TEST(LegalizerInfoTest, MaxScalarEltSameAsIfLaneCount) {
   }
 }
 
+// The `*ScalarSameAs` shims must evaluate their own size comparison before the
+// free-form guard.  A guard that inspects the other slot is only safe on the
+// queries the builder itself accepts: with equal scalar sizes the plain
+// builder short-circuits, and a guard calling getElementType() on a scalar
+// pointer would otherwise assert.
+TEST(LegalizerInfoTest, ScalarSameAsGuardRunsAfterSizeComparison) {
+  bool Called = false;
+  auto Guard = [&](const LegalityQuery &) {
+    Called = true;
+    return true;
+  };
+
+  {
+    LegalizeRuleSet RS;
+    RS.coreMinScalarSameAs(Guard, 0, 1);
+    // v2s32 and p0 are both 32 bits, so the guard must not run at all.
+    LLT Types[] = {LLT::fixed_vector(2, 32), LLT::pointer(0, 32)};
+    EXPECT_EQ(RS.apply(LegalityQuery(0, Types)).Action, Unsupported);
+    EXPECT_FALSE(Called);
+
+    // When the comparison accepts the query the guard runs and the rule fires.
+    LLT Wider[] = {LLT::scalar(16), LLT::scalar(32)};
+    LegalizeActionStep Step = RS.apply(LegalityQuery(0, Wider));
+    EXPECT_TRUE(Called);
+    EXPECT_EQ(Step.Action, WidenScalar);
+    EXPECT_EQ(Step.TypeIdx, 0u);
+    EXPECT_EQ(Step.NewType, LLT::scalar(32));
+  }
+
+  Called = false;
+  {
+    LegalizeRuleSet RS;
+    RS.coreMaxScalarSameAs(Guard, 0, 1);
+    LLT Types[] = {LLT::fixed_vector(2, 32), LLT::pointer(0, 32)};
+    EXPECT_EQ(RS.apply(LegalityQuery(0, Types)).Action, Unsupported);
+    EXPECT_FALSE(Called);
+
+    LLT Narrower[] = {LLT::scalar(32), LLT::scalar(16)};
+    LegalizeActionStep Step = RS.apply(LegalityQuery(0, Narrower));
+    EXPECT_TRUE(Called);
+    EXPECT_EQ(Step.Action, NarrowScalar);
+    EXPECT_EQ(Step.TypeIdx, 0u);
+    EXPECT_EQ(Step.NewType, LLT::scalar(16));
+  }
+}
+
 TEST(LegalizerInfoTest, MMOAlignment) {
   using namespace TargetOpcode;
 
