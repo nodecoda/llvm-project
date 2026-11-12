@@ -1,0 +1,6 @@
+mnemonic: bne
+opcode: {repo: riscv-opcodes, extension: rv_i, key: bne}
+spec: rvtrim.core.b_type
+status: auto_full
+sched: [WriteJmp, ReadJmp, ReadJmp]
+flags: [isBranch, isTerminator]

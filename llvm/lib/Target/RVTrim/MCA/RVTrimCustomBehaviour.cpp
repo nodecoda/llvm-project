@@ -1,0 +1,359 @@
+//===------------------- RVTrimCustomBehaviour.cpp ---------------*-C++ -* -===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+/// \file
+///
+/// This file implements methods from the RVTrimCustomBehaviour class.
+///
+//===----------------------------------------------------------------------===//
+
+#include "RVTrimCustomBehaviour.h"
+#include "MCTargetDesc/RVTrimMCTargetDesc.h"
+#include "RVTrim.h"
+#include "TargetInfo/RVTrimTargetInfo.h"
+#include "llvm/MC/TargetRegistry.h"
+#include "llvm/Support/Compiler.h"
+#include "llvm/Support/Debug.h"
+#include "llvm/Support/DebugLog.h"
+
+#define DEBUG_TYPE "llvm-mca-rvtrim-custombehaviour"
+
+namespace llvm::RVTrim {
+struct VXMemOpInfo {
+  unsigned Log2IdxEEW : 3;
+  unsigned IsOrdered : 1;
+  unsigned IsStore : 1;
+  unsigned NFields : 4;
+  unsigned BaseInstr;
+};
+
+#define GET_RVTrimBaseVXMemOpTable_IMPL
+#include "RVTrimGenSearchableTables.inc"
+} // namespace llvm::RVTrim
+
+namespace llvm {
+namespace mca {
+
+const llvm::StringRef RVTrimLMULInstrument::DESC_NAME = "RVTrim-LMUL";
+
+bool RVTrimLMULInstrument::isDataValid(llvm::StringRef Data) {
+  // Return true if not one of the valid LMUL strings
+  return StringSwitch<bool>(Data)
+      .Cases({"M1", "M2", "M4", "M8", "MF2", "MF4", "MF8"}, true)
+      .Default(false);
+}
+
+uint8_t RVTrimLMULInstrument::getLMUL() const {
+  // assertion prevents us from needing llvm_unreachable in the StringSwitch
+  // below
+  assert(isDataValid(getData()) &&
+         "Cannot get LMUL because invalid Data value");
+  // These are the LMUL values that are used in RISC-V tablegen
+  return StringSwitch<uint8_t>(getData())
+      .Case("M1", 0b000)
+      .Case("M2", 0b001)
+      .Case("M4", 0b010)
+      .Case("M8", 0b011)
+      .Case("MF2", 0b111)
+      .Case("MF4", 0b110)
+      .Case("MF8", 0b101);
+}
+
+const llvm::StringRef RVTrimSEWInstrument::DESC_NAME = "RVTrim-SEW";
+
+bool RVTrimSEWInstrument::isDataValid(llvm::StringRef Data) {
+  // Return true if not one of the valid SEW strings
+  return StringSwitch<bool>(Data)
+      .Cases({"E8", "E16", "E32", "E64"}, true)
+      .Default(false);
+}
+
+uint8_t RVTrimSEWInstrument::getSEW() const {
+  // assertion prevents us from needing llvm_unreachable in the StringSwitch
+  // below
+  assert(isDataValid(getData()) && "Cannot get SEW because invalid Data value");
+  // These are the LMUL values that are used in RISC-V tablegen
+  return StringSwitch<uint8_t>(getData())
+      .Case("E8", 8)
+      .Case("E16", 16)
+      .Case("E32", 32)
+      .Case("E64", 64);
+}
+
+bool RVTrimInstrumentManager::supportsInstrumentType(
+    llvm::StringRef Type) const {
+  return Type == RVTrimLMULInstrument::DESC_NAME ||
+         Type == RVTrimSEWInstrument::DESC_NAME ||
+         InstrumentManager::supportsInstrumentType(Type);
+}
+
+UniqueInstrument
+RVTrimInstrumentManager::createInstrument(llvm::StringRef Desc,
+                                         llvm::StringRef Data) {
+  if (Desc == RVTrimLMULInstrument::DESC_NAME) {
+    if (!RVTrimLMULInstrument::isDataValid(Data)) {
+      LDBG() << "RVCB: Bad data for instrument kind " << Desc << ": " << Data
+             << '\n';
+      return nullptr;
+    }
+    return std::make_unique<RVTrimLMULInstrument>(Data);
+  }
+
+  if (Desc == RVTrimSEWInstrument::DESC_NAME) {
+    if (!RVTrimSEWInstrument::isDataValid(Data)) {
+      LDBG() << "RVCB: Bad data for instrument kind " << Desc << ": " << Data
+             << '\n';
+      return nullptr;
+    }
+    return std::make_unique<RVTrimSEWInstrument>(Data);
+  }
+
+  LDBG() << "RVCB: Creating default instrument for Desc: " << Desc << '\n';
+  return InstrumentManager::createInstrument(Desc, Data);
+}
+
+SmallVector<UniqueInstrument>
+RVTrimInstrumentManager::createInstruments(const MCInst &Inst) {
+  if (Inst.getOpcode() == RVTrim::VSETVLI ||
+      Inst.getOpcode() == RVTrim::VSETIVLI) {
+    LDBG() << "RVCB: Found VSETVLI and creating instrument for it: " << Inst
+           << "\n";
+    unsigned VTypeI = Inst.getOperand(2).getImm();
+    RISCVVType::VLMUL VLMUL = RISCVVType::getVLMUL(VTypeI);
+
+    StringRef LMUL;
+    switch (VLMUL) {
+    case RISCVVType::LMUL_1:
+      LMUL = "M1";
+      break;
+    case RISCVVType::LMUL_2:
+      LMUL = "M2";
+      break;
+    case RISCVVType::LMUL_4:
+      LMUL = "M4";
+      break;
+    case RISCVVType::LMUL_8:
+      LMUL = "M8";
+      break;
+    case RISCVVType::LMUL_F2:
+      LMUL = "MF2";
+      break;
+    case RISCVVType::LMUL_F4:
+      LMUL = "MF4";
+      break;
+    case RISCVVType::LMUL_F8:
+      LMUL = "MF8";
+      break;
+    case RISCVVType::LMUL_RESERVED:
+      llvm_unreachable("Cannot create instrument for LMUL_RESERVED");
+    }
+    SmallVector<UniqueInstrument> Instruments;
+    Instruments.emplace_back(
+        createInstrument(RVTrimLMULInstrument::DESC_NAME, LMUL));
+
+    unsigned SEW = RISCVVType::getSEW(VTypeI);
+    StringRef SEWStr;
+    switch (SEW) {
+    case 8:
+      SEWStr = "E8";
+      break;
+    case 16:
+      SEWStr = "E16";
+      break;
+    case 32:
+      SEWStr = "E32";
+      break;
+    case 64:
+      SEWStr = "E64";
+      break;
+    default:
+      llvm_unreachable("Cannot create instrument for SEW");
+    }
+    Instruments.emplace_back(
+        createInstrument(RVTrimSEWInstrument::DESC_NAME, SEWStr));
+
+    return Instruments;
+  }
+  return SmallVector<UniqueInstrument>();
+}
+
+static std::pair<uint8_t, uint8_t>
+getEEWAndEMUL(unsigned Opcode, RISCVVType::VLMUL LMUL, uint8_t SEW) {
+  uint8_t EEW;
+  switch (Opcode) {
+  case RVTrim::VLM_V:
+  case RVTrim::VSM_V:
+  case RVTrim::VLE8_V:
+  case RVTrim::VSE8_V:
+  case RVTrim::VLSE8_V:
+  case RVTrim::VSSE8_V:
+    EEW = 8;
+    break;
+  case RVTrim::VLE16_V:
+  case RVTrim::VSE16_V:
+  case RVTrim::VLSE16_V:
+  case RVTrim::VSSE16_V:
+    EEW = 16;
+    break;
+  case RVTrim::VLE32_V:
+  case RVTrim::VSE32_V:
+  case RVTrim::VLSE32_V:
+  case RVTrim::VSSE32_V:
+    EEW = 32;
+    break;
+  case RVTrim::VLE64_V:
+  case RVTrim::VSE64_V:
+  case RVTrim::VLSE64_V:
+  case RVTrim::VSSE64_V:
+    EEW = 64;
+    break;
+  default:
+    llvm_unreachable("Could not determine EEW from Opcode");
+  }
+
+  auto EMUL =
+      RISCVVType::getSameRatioLMUL(RISCVVType::getSEWLMULRatio(SEW, LMUL), EEW);
+  if (!EEW)
+    llvm_unreachable("Invalid SEW or LMUL for new ratio");
+  return std::make_pair(EEW, *EMUL);
+}
+
+static bool opcodeHasEEWAndEMULInfo(unsigned short Opcode) {
+  return Opcode == RVTrim::VLM_V || Opcode == RVTrim::VSM_V ||
+         Opcode == RVTrim::VLE8_V || Opcode == RVTrim::VSE8_V ||
+         Opcode == RVTrim::VLE16_V || Opcode == RVTrim::VSE16_V ||
+         Opcode == RVTrim::VLE32_V || Opcode == RVTrim::VSE32_V ||
+         Opcode == RVTrim::VLE64_V || Opcode == RVTrim::VSE64_V ||
+         Opcode == RVTrim::VLSE8_V || Opcode == RVTrim::VSSE8_V ||
+         Opcode == RVTrim::VLSE16_V || Opcode == RVTrim::VSSE16_V ||
+         Opcode == RVTrim::VLSE32_V || Opcode == RVTrim::VSSE32_V ||
+         Opcode == RVTrim::VLSE64_V || Opcode == RVTrim::VSSE64_V;
+}
+
+unsigned RVTrimInstrumentManager::getSchedClassID(
+    const MCInstrInfo &MCII, const MCInst &MCI,
+    const llvm::SmallVector<Instrument *> &IVec) const {
+  unsigned short Opcode = MCI.getOpcode();
+  unsigned SchedClassID = MCII.get(Opcode).getSchedClass();
+
+  // Unpack all possible RISC-V instruments from IVec.
+  RVTrimLMULInstrument *LI = nullptr;
+  RVTrimSEWInstrument *SI = nullptr;
+  for (auto &I : IVec) {
+    if (I->getDesc() == RVTrimLMULInstrument::DESC_NAME)
+      LI = static_cast<RVTrimLMULInstrument *>(I);
+    else if (I->getDesc() == RVTrimSEWInstrument::DESC_NAME)
+      SI = static_cast<RVTrimSEWInstrument *>(I);
+  }
+
+  // Need LMUL or LMUL, SEW in order to override opcode. If no LMUL is provided,
+  // then no option to override.
+  if (!LI) {
+    LDBG() << "RVCB: Did not use instrumentation to override Opcode.\n";
+    return SchedClassID;
+  }
+  uint8_t LMUL = LI->getLMUL();
+
+  // getBaseInfo works with (Opcode, LMUL, 0) if no SEW instrument,
+  // or (Opcode, LMUL, SEW) if SEW instrument is active, and depends on LMUL
+  // and SEW, or (Opcode, LMUL, 0) if does not depend on SEW.
+  uint8_t SEW = SI ? SI->getSEW() : 0;
+
+  std::optional<unsigned> VPOpcode;
+  if (const auto *VXMO = RVTrim::getVXMemOpInfo(Opcode)) {
+    if (!SEW)
+      return SchedClassID;
+
+    // Calculate the expected index EMUL. For indexed operations,
+    // the DataEEW and DataEMUL are equal to SEW and LMUL, respectively.
+    unsigned IndexEMUL = ((1 << VXMO->Log2IdxEEW) * LMUL) / SEW;
+
+    if (!VXMO->NFields) {
+      // Indexed Load / Store.
+      if (VXMO->IsStore) {
+        if (const auto *VXP = RVTrim::getVSXPseudo(
+                /*Masked=*/0, VXMO->IsOrdered, VXMO->Log2IdxEEW, LMUL,
+                IndexEMUL))
+          VPOpcode = VXP->Pseudo;
+      } else {
+        if (const auto *VXP = RVTrim::getVLXPseudo(
+                /*Masked=*/0, VXMO->IsOrdered, VXMO->Log2IdxEEW, LMUL,
+                IndexEMUL))
+          VPOpcode = VXP->Pseudo;
+      }
+    } else {
+      // Segmented Indexed Load / Store.
+      if (VXMO->IsStore) {
+        if (const auto *VXP = RVTrim::getVSXSEGPseudo(
+                VXMO->NFields, /*Masked=*/0, VXMO->IsOrdered, VXMO->Log2IdxEEW,
+                LMUL, IndexEMUL))
+          VPOpcode = VXP->Pseudo;
+      } else {
+        if (const auto *VXP = RVTrim::getVLXSEGPseudo(
+                VXMO->NFields, /*Masked=*/0, VXMO->IsOrdered, VXMO->Log2IdxEEW,
+                LMUL, IndexEMUL))
+          VPOpcode = VXP->Pseudo;
+      }
+    }
+  } else if (opcodeHasEEWAndEMULInfo(Opcode)) {
+    if (!SEW)
+      return SchedClassID;
+
+    RISCVVType::VLMUL VLMUL = static_cast<RISCVVType::VLMUL>(LMUL);
+    auto [EEW, EMUL] = getEEWAndEMUL(Opcode, VLMUL, SEW);
+    if (const auto *RVV =
+            RVTrimVInversePseudosTable::getBaseInfo(Opcode, EMUL, EEW))
+      VPOpcode = RVV->Pseudo;
+  } else {
+    // Check if it depends on LMUL and SEW
+    const auto *RVV = RVTrimVInversePseudosTable::getBaseInfo(Opcode, LMUL, SEW);
+    // Check if it depends only on LMUL
+    if (!RVV)
+      RVV = RVTrimVInversePseudosTable::getBaseInfo(Opcode, LMUL, 0);
+
+    if (RVV)
+      VPOpcode = RVV->Pseudo;
+  }
+
+  // Not a RVV instr
+  if (!VPOpcode) {
+    LDBG() << "RVCB: Could not find PseudoInstruction for Opcode "
+           << MCII.getName(Opcode)
+           << ", LMUL=" << (LI ? LI->getData() : "Unspecified")
+           << ", SEW=" << (SI ? SI->getData() : "Unspecified")
+           << ". Ignoring instrumentation and using original SchedClassID="
+           << SchedClassID << '\n';
+    return SchedClassID;
+  }
+
+  // Override using pseudo
+  LDBG() << "RVCB: Found Pseudo Instruction for Opcode " << MCII.getName(Opcode)
+         << ", LMUL=" << LI->getData()
+         << ", SEW=" << (SI ? SI->getData() : "Unspecified")
+         << ". Overriding original SchedClassID=" << SchedClassID << " with "
+         << MCII.getName(*VPOpcode) << '\n';
+  return MCII.get(*VPOpcode).getSchedClass();
+}
+
+} // namespace mca
+} // namespace llvm
+
+using namespace llvm;
+using namespace mca;
+
+static InstrumentManager *
+createRVTrimInstrumentManager(const MCSubtargetInfo &STI,
+                             const MCInstrInfo &MCII) {
+  return new RVTrimInstrumentManager(STI, MCII);
+}
+
+/// Extern function to initialize the targets for the RISC-V backend
+extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void
+LLVMInitializeRVTrimTargetMCA() {
+  TargetRegistry::RegisterInstrumentManager(getTheRVTrimTarget(),
+                                            createRVTrimInstrumentManager);
+}

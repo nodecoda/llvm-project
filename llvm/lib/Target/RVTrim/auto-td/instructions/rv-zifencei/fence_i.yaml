@@ -1,0 +1,8 @@
+mnemonic: fence.i
+opcode: {repo: riscv-opcodes, extension: rv_zifencei, key: fence_i}
+spec: rvtrim.core.nullary
+status: auto_full
+nullary: true
+fixed: {imm12: 0, rd: 0, rs1: 0}
+sched: []
+flags: [hasSideEffects]

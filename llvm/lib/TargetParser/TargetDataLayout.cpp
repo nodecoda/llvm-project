@@ -271,7 +271,7 @@ static std::string computeRISCVDataLayout(const Triple &TT, StringRef ABIName) {
                       ABIName.starts_with("l64pc128") ||
                       ABIName.starts_with("cheriot");
 
-  if (TT.isRISCV64()) {
+  if (TT.isRISCV64() || TT.isRVTrim64()) {
     Ret += "-p:64:64";
     if (IsPureCapABI)
       Ret += "-pe200:128:128:128:64";
@@ -518,6 +518,7 @@ std::string Triple::computeDataLayout(StringRef ABIName) const {
   case Triple::riscv64:
   case Triple::riscv32be:
   case Triple::riscv64be:
+  case Triple::rvtrim64:
     return computeRISCVDataLayout(*this, ABIName);
   case Triple::sparc:
   case Triple::sparcv9:

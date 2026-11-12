@@ -1,0 +1,6 @@
+mnemonic: slti
+opcode: {repo: riscv-opcodes, extension: rv_i, key: slti}
+spec: rvtrim.core.i_type
+status: auto_full
+sched: [WriteIALU, ReadIALU]
+flags: [IsSignExtendingOpW]

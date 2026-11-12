@@ -1,0 +1,7 @@
+mnemonic: ebreak
+opcode: {repo: riscv-opcodes, extension: rv_i, key: ebreak}
+spec: rvtrim.core.nullary
+status: auto_full
+nullary: true
+sched: []
+flags: [hasSideEffects, isTrap]

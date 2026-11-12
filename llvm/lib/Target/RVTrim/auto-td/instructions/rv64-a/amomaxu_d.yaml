@@ -1,0 +1,8 @@
+mnemonic: amomaxu.d
+opcode: {repo: riscv-opcodes, extension: rv64_a, key: amomaxu_d}
+spec: rvtrim.core.amo_type
+status: auto_full
+fixed: {aq: 0, rl: 0}
+predicate: [HasStdExtZaamo, IsRV64]
+sched: [WriteAtomicD, ReadAtomicDA, ReadAtomicDD]
+flags: [mayLoad, mayStore]

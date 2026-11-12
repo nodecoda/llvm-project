@@ -1,0 +1,7 @@
+mnemonic: sraw
+opcode: {repo: riscv-opcodes, extension: rv64_i, key: sraw}
+spec: rvtrim.core.r_type
+status: auto_full
+predicate: IsRV64
+sched: [WriteShiftReg32, ReadShiftReg32, ReadShiftReg32]
+flags: [IsSignExtendingOpW]

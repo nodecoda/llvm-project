@@ -1,0 +1,70 @@
+//===- RVTrimPassRegistry.def - Registry of RISC-V passes --------*- C++ -*-===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// This file is used as the registry of passes that are part of the RISC-V
+// backend.
+//
+//===----------------------------------------------------------------------===//
+
+// NOTE: NO INCLUDE GUARD DESIRED!
+
+#ifndef MODULE_PASS
+#define MODULE_PASS(NAME, CREATE_PASS)
+#endif
+MODULE_PASS("rvtrim-asm-printer-begin", RVTrimAsmPrinterBeginPass())
+MODULE_PASS("rvtrim-asm-printer-end", RVTrimAsmPrinterEndPass())
+MODULE_PASS("rvtrim-promote-constant", RVTrimPromoteConstantPass(this))
+#undef MODULE_PASS
+
+#ifndef FUNCTION_PASS
+#define FUNCTION_PASS(NAME, CREATE_PASS)
+#endif
+FUNCTION_PASS("rvtrim-codegenprepare", RVTrimCodeGenPreparePass(this))
+FUNCTION_PASS("rvtrim-gather-scatter-lowering",
+              RVTrimGatherScatterLoweringPass(this))
+FUNCTION_PASS("rvtrim-zacas-abi-fix", RVTrimZacasABIFixPass(this))
+#undef FUNCTION_PASS
+
+#ifndef MACHINE_FUNCTION_PASS
+#define MACHINE_FUNCTION_PASS(NAME, CREATE_PASS)
+#endif
+MACHINE_FUNCTION_PASS("rvtrim-asm-printer", RVTrimAsmPrinterPass())
+MACHINE_FUNCTION_PASS("rvtrim-dead-defs", RVTrimDeadRegisterDefinitionsPass())
+MACHINE_FUNCTION_PASS("rvtrim-expand-pseudo-atomics",
+                      RVTrimExpandPseudoAtomicsPass())
+MACHINE_FUNCTION_PASS("rvtrim-expand-pseudo-post-ra",
+                      RVTrimExpandPseudoPostRAPass())
+MACHINE_FUNCTION_PASS("rvtrim-expand-pseudo-pre-emit",
+                      RVTrimExpandPseudoPreEmitPass())
+MACHINE_FUNCTION_PASS("rvtrim-expand-pseudo-pre-ra",
+                      RVTrimExpandPseudoPreRAPass())
+MACHINE_FUNCTION_PASS("rvtrim-fold-mem-offset", RVTrimFoldMemOffsetPass())
+MACHINE_FUNCTION_PASS("rvtrim-indirect-branch-tracking",
+                      RVTrimIndirectBranchTrackingPass())
+MACHINE_FUNCTION_PASS("rvtrim-insert-read-write-csr",
+                      RVTrimInsertReadWriteCSRPass())
+MACHINE_FUNCTION_PASS("rvtrim-insert-vsetvli", RVTrimInsertVSETVLIPass())
+MACHINE_FUNCTION_PASS("rvtrim-insert-write-vxrm", RVTrimInsertWriteVXRMPass())
+MACHINE_FUNCTION_PASS("rvtrim-isel", RVTrimISelDAGToDAGPass(*this, getOptLevel()))
+MACHINE_FUNCTION_PASS("rvtrim-late-branch-opt", RVTrimLateBranchOptPass())
+MACHINE_FUNCTION_PASS("rvtrim-load-store-opt", RVTrimLoadStoreOptPass())
+MACHINE_FUNCTION_PASS("rvtrim-lpad-setup", RVTrimLandingPadSetupPass())
+MACHINE_FUNCTION_PASS("rvtrim-make-compressible", RVTrimMakeCompressiblePass())
+MACHINE_FUNCTION_PASS("rvtrim-merge-base-offset", RVTrimMergeBaseOffsetPass())
+MACHINE_FUNCTION_PASS("rvtrim-move-merge", RVTrimMoveMergePass())
+MACHINE_FUNCTION_PASS("rvtrim-opt-w-instrs", RVTrimOptWInstrsPass())
+MACHINE_FUNCTION_PASS("rvtrim-push-pop-opt", RVTrimPushPopOptPass())
+MACHINE_FUNCTION_PASS("rvtrim-qc-relax-marking", RVTrimQCRelaxMarkingPass())
+MACHINE_FUNCTION_PASS("rvtrim-redundant-copy-elimination",
+                      RVTrimRedundantCopyEliminationPass())
+MACHINE_FUNCTION_PASS("rvtrim-vector-peephole", RVTrimVectorPeepholePass())
+MACHINE_FUNCTION_PASS("rvtrim-vl-optimizer", RVTrimVLOptimizerPass())
+MACHINE_FUNCTION_PASS("rvtrim-vmv0-elimination", RVTrimVMV0EliminationPass())
+MACHINE_FUNCTION_PASS("rvtrim-pre-alloc-zilsd-opt",
+                      RVTrimPreAllocZilsdOptPass())
+#undef MACHINE_FUNCTION_PASS

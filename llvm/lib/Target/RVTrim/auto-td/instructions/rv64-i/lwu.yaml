@@ -1,0 +1,7 @@
+mnemonic: lwu
+opcode: {repo: riscv-opcodes, extension: rv64_i, key: lwu}
+spec: rvtrim.core.load_type
+status: auto_full
+predicate: IsRV64
+sched: [WriteLDW, ReadMemBase]
+flags: [canFoldAsLoad, isReMaterializable, mayLoad]

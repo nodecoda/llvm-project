@@ -1,0 +1,7 @@
+mnemonic: mulw
+opcode: {repo: riscv-opcodes, extension: rv64_m, key: mulw}
+spec: rvtrim.core.r_type
+status: auto_full
+predicate: [HasStdExtZmmul, IsRV64]
+sched: [WriteIMul32, ReadIMul32, ReadIMul32]
+flags: [isCommutable, IsSignExtendingOpW]

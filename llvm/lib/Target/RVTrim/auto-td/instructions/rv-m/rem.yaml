@@ -1,0 +1,6 @@
+mnemonic: rem
+opcode: {repo: riscv-opcodes, extension: rv_m, key: rem}
+spec: rvtrim.core.r_type
+status: auto_full
+predicate: HasStdExtM
+sched: [WriteIRem, ReadIRem, ReadIRem]

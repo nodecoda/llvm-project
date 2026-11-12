@@ -1,0 +1,6 @@
+mnemonic: lui
+opcode: {repo: riscv-opcodes, extension: rv_i, key: lui}
+spec: rvtrim.core.u_type_lui
+status: auto_full
+sched: [WriteIALU]
+flags: [IsSignExtendingOpW, isAsCheapAsAMove, isReMaterializable]

@@ -1,0 +1,6 @@
+mnemonic: csrrci
+opcode: {repo: riscv-opcodes, extension: rv_zicsr, key: csrrci}
+spec: rvtrim.core.csr_imm
+status: auto_full
+sched: [WriteCSR]
+flags: [hasSideEffects, hasNoSchedulingInfo]

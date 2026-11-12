@@ -1,0 +1,6 @@
+mnemonic: addi
+opcode: {repo: riscv-opcodes, extension: rv_i, key: addi}
+spec: rvtrim.core.i_type
+status: auto_full
+sched: [WriteIALU, ReadIALU]
+flags: [isAsCheapAsAMove, isReMaterializable]

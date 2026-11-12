@@ -840,6 +840,7 @@ getRelocationResolver(const ObjectFile &Obj) {
         return {supportsAmdgpu, resolveAmdgpu};
       case Triple::riscv64:
       case Triple::riscv64be:
+      case Triple::rvtrim64:
         return {supportsRISCV, resolveRISCV};
       default:
         if (isAMDGPU(Obj))

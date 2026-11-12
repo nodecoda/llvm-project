@@ -1,0 +1,8 @@
+mnemonic: lr.w.rl
+opcode: {repo: riscv-opcodes, extension: rv_a, key: lr_w}
+spec: rvtrim.core.lr_type
+status: auto_full
+fixed: {aq: 0, rl: 1}
+predicate: HasStdExtZalrsc
+sched: [WriteAtomicLDW, ReadAtomicLDW]
+flags: [IsSignExtendingOpW, mayLoad]

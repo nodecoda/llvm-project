@@ -1,0 +1,8 @@
+mnemonic: amoswap.w
+opcode: {repo: riscv-opcodes, extension: rv_a, key: amoswap_w}
+spec: rvtrim.core.amo_type
+status: auto_full
+fixed: {aq: 0, rl: 0}
+predicate: HasStdExtZaamo
+sched: [WriteAtomicW, ReadAtomicWA, ReadAtomicWD]
+flags: [IsSignExtendingOpW, mayLoad, mayStore]

@@ -1,0 +1,150 @@
+# Operand/effect categories shared by the RV64IMA base instructions.
+#
+# A category fixes *shape* only: which operand class fills which database
+# field, in which order.  Encodings still come exclusively from
+# third_party/riscv-opcodes; nothing here can influence a bit position.
+categories:
+
+  # --- register-register (OP / OP-32 / OP-M / AMO) -------------------------
+  r_type:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins:
+        - {role: lhs, field: rs1, reg_class: GPR}
+        - {role: rhs, field: rs2, reg_class: GPR}
+    effects: {}
+
+  # --- register-immediate (OP-IMM / OP-IMM-32) ----------------------------
+  i_type:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins:
+        - {role: lhs, field: rs1, reg_class: GPR}
+        - {role: imm, field: imm12, operand: simm12_lo}
+    effects: {}
+
+  # RV64 shifts encode a 6-bit amount in {25-20}; RV32 shifts a 5-bit amount
+  # in {24-20}.  The database calls these fields shamtd/shamtw.
+  i_type_shift64:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins:
+        - {role: lhs, field: rs1, reg_class: GPR}
+        - {role: imm, field: shamt, operand: uimmlog2xlen}
+    effects: {}
+
+  i_type_shift32:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins:
+        - {role: lhs, field: rs1, reg_class: GPR}
+        - {role: imm, field: shamt, operand: uimm5}
+    effects: {}
+
+  # --- upper immediates and jumps -----------------------------------------
+  u_type_lui:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins: [{role: imm, field: imm20, operand: uimm20_lui}]
+    effects: {}
+
+  u_type_auipc:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins: [{role: imm, field: imm20, operand: uimm20_auipc}]
+    effects: {}
+
+  j_type:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins: [{role: offset, field: imm20, operand: simm21_lsb0_jal}]
+    effects: {}
+
+  b_type:
+    operands:
+      ins:
+        - {role: lhs, field: rs1, reg_class: GPR}
+        - {role: rhs, field: rs2, reg_class: GPR}
+        - {role: offset, field: imm12, operand: bare_simm13_lsb0}
+    effects: {}
+
+  # --- memory --------------------------------------------------------------
+  # `base` + `offset` are folded into `${imm12}(${rs1})` in the asm string.
+  load_type:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins:
+        - {role: base, field: rs1, reg_class: BasePtr}
+        - {role: offset, field: imm12, operand: simm12_lo_optional}
+    effects: {may_load: true}
+
+  store_type:
+    operands:
+      ins:
+        - {role: rhs, field: rs2, reg_class: GPR}
+        - {role: base, field: rs1, reg_class: BasePtr}
+        - {role: offset, field: imm12, operand: simm12_lo_optional}
+    effects: {may_store: true}
+
+  jalr_type:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins:
+        - {role: base, field: rs1, reg_class: GPR}
+        - {role: offset, field: imm12, operand: simm12_lo_optional}
+    effects: {}
+
+  lr_type:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins: [{role: base, field: rs1, operand: GPRMemZeroOffset}]
+    effects: {may_load: true}
+
+  amo_type:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins:
+        - {role: rhs, field: rs2, reg_class: GPR}
+        - {role: base, field: rs1, operand: GPRMemZeroOffset}
+    effects: {may_load: true, may_store: true}
+
+  # sc.w is a store: it reads the reservation and writes memory, but the
+  # backend does not mark it mayLoad.
+  sc_type:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins:
+        - {role: rhs, field: rs2, reg_class: GPR}
+        - {role: base, field: rs1, operand: GPRMemZeroOffset}
+    effects: {may_store: true}
+
+  # --- Zicsr ---------------------------------------------------------------
+  # The CSR number occupies the I-format immediate slot; the database calls
+  # the field `csr`, the backend calls the operand `$imm12`.
+  csr_reg:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins:
+        - {role: csr, field: imm12, operand: csr_sysreg}
+        - {role: rhs, field: rs1, reg_class: GPR}
+    effects: {has_side_effects: true}
+
+  csr_imm:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins:
+        - {role: csr, field: imm12, operand: csr_sysreg}
+        - {role: rhs, field: zimm5, operand: uimm5}
+    effects: {has_side_effects: true}
+
+  # --- fences and traps ----------------------------------------------------
+  fence_type:
+    operands:
+      ins:
+        - {role: pred, field: pred, operand: fencearg}
+        - {role: succ, field: succ, operand: fencearg}
+    effects: {has_side_effects: true}
+
+  nullary:
+    operands: {}
+    effects: {has_side_effects: true}

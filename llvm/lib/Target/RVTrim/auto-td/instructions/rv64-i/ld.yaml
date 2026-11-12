@@ -1,0 +1,7 @@
+mnemonic: ld
+opcode: {repo: riscv-opcodes, extension: rv64_i, key: ld}
+spec: rvtrim.core.load_type
+status: auto_full
+predicate: IsRV64
+sched: [WriteLDD, ReadMemBase]
+flags: [canFoldAsLoad, isReMaterializable, mayLoad]

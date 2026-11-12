@@ -661,6 +661,7 @@ ELFObjectFileBase::getPltEntries(const MCSubtargetInfo &STI) const {
       break;
     case Triple::riscv32:
     case Triple::riscv64:
+    case Triple::rvtrim64:
       JumpSlotReloc = ELF::R_RISCV_JUMP_SLOT;
       break;
     case Triple::loongarch32:

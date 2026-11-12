@@ -1,0 +1,7 @@
+mnemonic: sd
+opcode: {repo: riscv-opcodes, extension: rv64_i, key: sd}
+spec: rvtrim.core.store_type
+status: auto_full
+predicate: IsRV64
+sched: [WriteSTD, ReadStoreData, ReadMemBase]
+flags: [mayStore]

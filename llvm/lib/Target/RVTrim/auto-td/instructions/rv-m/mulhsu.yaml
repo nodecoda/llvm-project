@@ -1,0 +1,6 @@
+mnemonic: mulhsu
+opcode: {repo: riscv-opcodes, extension: rv_m, key: mulhsu}
+spec: rvtrim.core.r_type
+status: auto_full
+predicate: HasStdExtZmmul
+sched: [WriteIMul, ReadIMul, ReadIMul]

@@ -1,0 +1,6 @@
+mnemonic: sh
+opcode: {repo: riscv-opcodes, extension: rv_i, key: sh}
+spec: rvtrim.core.store_type
+status: auto_full
+sched: [WriteSTH, ReadStoreData, ReadMemBase]
+flags: [mayStore]

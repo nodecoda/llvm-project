@@ -1,0 +1,8 @@
+mnemonic: sc.d
+opcode: {repo: riscv-opcodes, extension: rv64_a, key: sc_d}
+spec: rvtrim.core.sc_type
+status: auto_full
+fixed: {aq: 0, rl: 0}
+predicate: [HasStdExtZalrsc, IsRV64]
+sched: [WriteAtomicSTD, ReadAtomicSTD, ReadAtomicSTD]
+flags: [mayStore]

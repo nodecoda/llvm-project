@@ -1,0 +1,5 @@
+mnemonic: jal
+opcode: {repo: riscv-opcodes, extension: rv_i, key: jal}
+spec: rvtrim.core.j_type
+status: auto_full
+sched: [WriteJal]

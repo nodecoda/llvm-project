@@ -1,0 +1,5 @@
+mnemonic: jalr
+opcode: {repo: riscv-opcodes, extension: rv_i, key: jalr}
+spec: rvtrim.core.jalr_type
+status: auto_full
+sched: [WriteJalr, ReadJalr]

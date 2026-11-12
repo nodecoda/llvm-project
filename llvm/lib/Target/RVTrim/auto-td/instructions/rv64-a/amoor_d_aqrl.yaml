@@ -1,0 +1,8 @@
+mnemonic: amoor.d.aqrl
+opcode: {repo: riscv-opcodes, extension: rv64_a, key: amoor_d}
+spec: rvtrim.core.amo_type
+status: auto_full
+fixed: {aq: 1, rl: 1}
+predicate: [HasStdExtZaamo, IsRV64]
+sched: [WriteAtomicD, ReadAtomicDA, ReadAtomicDD]
+flags: [mayLoad, mayStore]

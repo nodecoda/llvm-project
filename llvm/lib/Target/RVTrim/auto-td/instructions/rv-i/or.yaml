@@ -1,0 +1,6 @@
+mnemonic: or
+opcode: {repo: riscv-opcodes, extension: rv_i, key: or}
+spec: rvtrim.core.r_type
+status: auto_full
+sched: [WriteIALU, ReadIALU, ReadIALU]
+flags: [isCommutable]

@@ -1,0 +1,31 @@
+# auto-td configuration for RVTrim (RV64IMA + Zicsr + Zifencei).
+#
+# The generated records use the canonical backend names (ADDI, LR_W_AQ, ...)
+# because they *are* the backend's definitions for these instructions.  Use
+# `--record-prefix RVTRIM_AUTO` to emit namespaced copies for a side-by-side
+# comparison against the hand-written RISCV records.
+record_prefix: ""
+base_class: RVInst
+
+domains:
+  rv-i:       {predicate: null}
+  rv64-i:     {predicate: IsRV64}
+  rv-m:       {predicate: null}
+  rv64-m:     {predicate: null}
+  rv-a:       {predicate: null}
+  rv64-a:     {predicate: null}
+  rv-zicsr:   {predicate: null}
+  rv-zifencei: {predicate: null}
+
+# Formats that cannot be inferred from the opcode field shape: instructions
+# whose only immediate lives inside the opcode (fence/ecall/ebreak/fence.i)
+# are still I-format in the backend.
+formats:
+  fence: InstFormatI
+  fence.i: InstFormatI
+  ecall: InstFormatI
+  ebreak: InstFormatI
+
+# Every instruction carries an explicit SchedRW (possibly empty), matching the
+# hand-written backend; do not invent a scheduling stub.
+emit_scheduling_stub: false

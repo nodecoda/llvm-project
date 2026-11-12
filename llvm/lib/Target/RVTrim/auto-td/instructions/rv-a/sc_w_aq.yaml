@@ -1,0 +1,8 @@
+mnemonic: sc.w.aq
+opcode: {repo: riscv-opcodes, extension: rv_a, key: sc_w}
+spec: rvtrim.core.sc_type
+status: auto_full
+fixed: {aq: 1, rl: 0}
+predicate: HasStdExtZalrsc
+sched: [WriteAtomicSTW, ReadAtomicSTW, ReadAtomicSTW]
+flags: [IsSignExtendingOpW, mayStore]

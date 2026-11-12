@@ -1,0 +1,6 @@
+mnemonic: slli
+opcode: {repo: riscv-opcodes, extension: rv64_i, key: slli}
+spec: rvtrim.core.i_type_shift64
+status: auto_full
+predicate: null
+sched: [WriteShiftImm, ReadShiftImm]

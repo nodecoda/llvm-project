@@ -1,0 +1,7 @@
+mnemonic: fence
+opcode: {repo: riscv-opcodes, extension: rv_i, key: fence}
+spec: rvtrim.core.fence_type
+status: auto_full
+fixed: {fm: 0, rd: 0, rs1: 0}
+sched: []
+flags: [hasSideEffects]

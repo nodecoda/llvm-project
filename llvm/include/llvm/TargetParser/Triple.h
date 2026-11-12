@@ -80,6 +80,7 @@ public:
     riscv64,     // RISC-V (64-bit, little endian): riscv64
     riscv32be,   // RISC-V (32-bit, big endian): riscv32be
     riscv64be,   // RISC-V (64-bit, big endian): riscv64be
+    rvtrim64,    // RVTrim: trimmed RV64IMA (little endian): rvtrim64
     sparc,       // Sparc: sparc
     sparcv9,     // Sparcv9: Sparcv9
     sparcel,     // Sparc: (endianness = little). NB: 'Sparcle' is a CPU variant
@@ -1179,6 +1180,10 @@ public:
 
   /// Tests whether the target is RISC-V (32- and 64-bit).
   bool isRISCV() const { return isRISCV32() || isRISCV64(); }
+
+  /// Tests whether the target is RVTrim (a trimmed RV64IMA profile).
+  bool isRVTrim() const { return getArch() == Triple::rvtrim64; }
+  bool isRVTrim64() const { return getArch() == Triple::rvtrim64; }
 
   /// Tests whether the target is 32-bit SPARC (little and big endian).
   bool isSPARC32() const {

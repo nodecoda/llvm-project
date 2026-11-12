@@ -1,0 +1,7 @@
+mnemonic: divw
+opcode: {repo: riscv-opcodes, extension: rv64_m, key: divw}
+spec: rvtrim.core.r_type
+status: auto_full
+predicate: [HasStdExtM, IsRV64]
+sched: [WriteIDiv32, ReadIDiv32, ReadIDiv32]
+flags: [IsSignExtendingOpW]

@@ -1,0 +1,6 @@
+mnemonic: divu
+opcode: {repo: riscv-opcodes, extension: rv_m, key: divu}
+spec: rvtrim.core.r_type
+status: auto_full
+predicate: HasStdExtM
+sched: [WriteIDiv, ReadIDiv, ReadIDiv]

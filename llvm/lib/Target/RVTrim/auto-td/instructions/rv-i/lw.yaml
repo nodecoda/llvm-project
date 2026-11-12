@@ -1,0 +1,6 @@
+mnemonic: lw
+opcode: {repo: riscv-opcodes, extension: rv_i, key: lw}
+spec: rvtrim.core.load_type
+status: auto_full
+sched: [WriteLDW, ReadMemBase]
+flags: [IsSignExtendingOpW, canFoldAsLoad, isReMaterializable, mayLoad]

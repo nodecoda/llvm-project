@@ -1,0 +1,920 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// This file contains one of the several passes that expand pseudo instructions
+// into target instructions. This pass is run at the last possible moment,
+// avoiding the possibility for other passes to break the requirements for
+// forward progress in the LR/SC block.
+//
+//===----------------------------------------------------------------------===//
+
+#include "RVTrim.h"
+#include "RVTrimExpandPseudoBase.h"
+#include "RVTrimInstrInfo.h"
+#include "RVTrimSubtarget.h"
+#include "llvm/CodeGen/LivePhysRegs.h"
+#include "llvm/CodeGen/MachineFunctionPass.h"
+#include "llvm/CodeGen/MachineInstrBuilder.h"
+
+using namespace llvm;
+
+#define RVTrim_EXPAND_PSEUDO_ATOMICS_NAME                                       \
+  "RISC-V Pseudo Instruction Expansion - Atomics"
+
+namespace {
+
+class RVTrimExpandPseudoAtomicsImpl final : public RVTrimExpandPseudoImplBase {
+  bool expandMI(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
+                MachineBasicBlock::iterator &NextMBBI) const override;
+
+  bool expandAtomicBinOp(MachineBasicBlock &MBB,
+                         MachineBasicBlock::iterator MBBI, AtomicRMWInst::BinOp,
+                         bool IsMasked, int Width,
+                         MachineBasicBlock::iterator &NextMBBI) const;
+
+  bool expandAtomicMinMaxOp(MachineBasicBlock &MBB,
+                            MachineBasicBlock::iterator MBBI,
+                            AtomicRMWInst::BinOp, bool IsMasked, int Width,
+                            MachineBasicBlock::iterator &NextMBBI) const;
+
+  bool expandAtomicCmpXchg(MachineBasicBlock &MBB,
+                           MachineBasicBlock::iterator MBBI, bool IsMasked,
+                           int Width,
+                           MachineBasicBlock::iterator &NextMBBI) const;
+
+  unsigned getLRForRMW32(AtomicOrdering Ordering) const;
+  unsigned getSCForRMW32(AtomicOrdering Ordering) const;
+  unsigned getLRForRMW64(AtomicOrdering Ordering) const;
+  unsigned getSCForRMW64(AtomicOrdering Ordering) const;
+  unsigned getLRForRMW(AtomicOrdering Ordering, int Width) const;
+  unsigned getSCForRMW(AtomicOrdering Ordering, int Width) const;
+
+  void doAtomicBinOpExpansion(MachineInstr &MI, MachineBasicBlock *LoopMBB,
+                              AtomicRMWInst::BinOp BinOp, int Width) const;
+  void insertMaskedMerge(DebugLoc DL, MachineBasicBlock *MBB, Register DestReg,
+                         Register OldValReg, Register NewValReg,
+                         Register MaskReg, Register ScratchReg) const;
+  void doMaskedAtomicBinOpExpansion(MachineInstr &MI,
+                                    MachineBasicBlock *LoopMBB,
+                                    AtomicRMWInst::BinOp BinOp,
+                                    int Width) const;
+  void insertSext(DebugLoc DL, MachineBasicBlock *MBB, Register ValReg,
+                  Register ShamtReg) const;
+  void doAtomicMinMaxOpExpansion(MachineInstr &MI,
+                                 MachineBasicBlock *LoopHeadMBB,
+                                 MachineBasicBlock *LoopIfBodyMBB,
+                                 MachineBasicBlock *LoopTailMBB,
+                                 AtomicRMWInst::BinOp BinOp, int Width) const;
+  void doMaskedAtomicMinMaxOpExpansion(MachineInstr &MI,
+                                       MachineBasicBlock *LoopHeadMBB,
+                                       MachineBasicBlock *LoopIfBodyMBB,
+                                       MachineBasicBlock *LoopTailMBB,
+                                       AtomicRMWInst::BinOp BinOp,
+                                       int Width) const;
+  bool tryToFoldBNEOnCmpXchgResult(MachineBasicBlock &MBB,
+                                   MachineBasicBlock::iterator MBBI,
+                                   Register DestReg, Register CmpValReg,
+                                   Register MaskReg,
+                                   MachineBasicBlock *&LoopHeadBNETarget) const;
+};
+
+class RVTrimExpandPseudoAtomicsLegacy : public MachineFunctionPass {
+public:
+  static char ID;
+
+  RVTrimExpandPseudoAtomicsLegacy() : MachineFunctionPass(ID) {}
+
+  bool runOnMachineFunction(MachineFunction &MF) override {
+    return RVTrimExpandPseudoAtomicsImpl().run(MF);
+  }
+
+  StringRef getPassName() const override {
+    return RVTrim_EXPAND_PSEUDO_ATOMICS_NAME;
+  }
+};
+
+} // anonymous namespace
+
+bool RVTrimExpandPseudoAtomicsImpl::expandMI(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
+    MachineBasicBlock::iterator &NextMBBI) const {
+  // RVTrimInstrInfo::getInstSizeInBytes expects that the total size of the
+  // expanded instructions for each pseudo is correct in the Size field of the
+  // tablegen definition for the pseudo.
+  switch (MBBI->getOpcode()) {
+  case RVTrim::PseudoAtomicSwap32:
+    return expandAtomicBinOp(MBB, MBBI, AtomicRMWInst::Xchg, false, 32,
+                             NextMBBI);
+  case RVTrim::PseudoAtomicSwap64:
+    return expandAtomicBinOp(MBB, MBBI, AtomicRMWInst::Xchg, false, 64,
+                             NextMBBI);
+  case RVTrim::PseudoAtomicLoadAdd32:
+    return expandAtomicBinOp(MBB, MBBI, AtomicRMWInst::Add, false, 32,
+                             NextMBBI);
+  case RVTrim::PseudoAtomicLoadAdd64:
+    return expandAtomicBinOp(MBB, MBBI, AtomicRMWInst::Add, false, 64,
+                             NextMBBI);
+  case RVTrim::PseudoAtomicLoadSub32:
+    return expandAtomicBinOp(MBB, MBBI, AtomicRMWInst::Sub, false, 32,
+                             NextMBBI);
+  case RVTrim::PseudoAtomicLoadSub64:
+    return expandAtomicBinOp(MBB, MBBI, AtomicRMWInst::Sub, false, 64,
+                             NextMBBI);
+  case RVTrim::PseudoAtomicLoadAnd32:
+    return expandAtomicBinOp(MBB, MBBI, AtomicRMWInst::And, false, 32,
+                             NextMBBI);
+  case RVTrim::PseudoAtomicLoadAnd64:
+    return expandAtomicBinOp(MBB, MBBI, AtomicRMWInst::And, false, 64,
+                             NextMBBI);
+  case RVTrim::PseudoAtomicLoadOr32:
+    return expandAtomicBinOp(MBB, MBBI, AtomicRMWInst::Or, false, 32, NextMBBI);
+  case RVTrim::PseudoAtomicLoadOr64:
+    return expandAtomicBinOp(MBB, MBBI, AtomicRMWInst::Or, false, 64, NextMBBI);
+  case RVTrim::PseudoAtomicLoadXor32:
+    return expandAtomicBinOp(MBB, MBBI, AtomicRMWInst::Xor, false, 32,
+                             NextMBBI);
+  case RVTrim::PseudoAtomicLoadXor64:
+    return expandAtomicBinOp(MBB, MBBI, AtomicRMWInst::Xor, false, 64,
+                             NextMBBI);
+  case RVTrim::PseudoAtomicLoadNand32:
+    return expandAtomicBinOp(MBB, MBBI, AtomicRMWInst::Nand, false, 32,
+                             NextMBBI);
+  case RVTrim::PseudoAtomicLoadNand64:
+    return expandAtomicBinOp(MBB, MBBI, AtomicRMWInst::Nand, false, 64,
+                             NextMBBI);
+  case RVTrim::PseudoAtomicLoadMin32:
+    return expandAtomicMinMaxOp(MBB, MBBI, AtomicRMWInst::Min, false, 32,
+                                NextMBBI);
+  case RVTrim::PseudoAtomicLoadMin64:
+    return expandAtomicMinMaxOp(MBB, MBBI, AtomicRMWInst::Min, false, 64,
+                                NextMBBI);
+  case RVTrim::PseudoAtomicLoadMax32:
+    return expandAtomicMinMaxOp(MBB, MBBI, AtomicRMWInst::Max, false, 32,
+                                NextMBBI);
+  case RVTrim::PseudoAtomicLoadMax64:
+    return expandAtomicMinMaxOp(MBB, MBBI, AtomicRMWInst::Max, false, 64,
+                                NextMBBI);
+  case RVTrim::PseudoAtomicLoadUMin32:
+    return expandAtomicMinMaxOp(MBB, MBBI, AtomicRMWInst::UMin, false, 32,
+                                NextMBBI);
+  case RVTrim::PseudoAtomicLoadUMin64:
+    return expandAtomicMinMaxOp(MBB, MBBI, AtomicRMWInst::UMin, false, 64,
+                                NextMBBI);
+  case RVTrim::PseudoAtomicLoadUMax32:
+    return expandAtomicMinMaxOp(MBB, MBBI, AtomicRMWInst::UMax, false, 32,
+                                NextMBBI);
+  case RVTrim::PseudoAtomicLoadUMax64:
+    return expandAtomicMinMaxOp(MBB, MBBI, AtomicRMWInst::UMax, false, 64,
+                                NextMBBI);
+  case RVTrim::PseudoMaskedAtomicSwap32:
+    return expandAtomicBinOp(MBB, MBBI, AtomicRMWInst::Xchg, true, 32,
+                             NextMBBI);
+  case RVTrim::PseudoMaskedAtomicLoadAdd32:
+    return expandAtomicBinOp(MBB, MBBI, AtomicRMWInst::Add, true, 32, NextMBBI);
+  case RVTrim::PseudoMaskedAtomicLoadSub32:
+    return expandAtomicBinOp(MBB, MBBI, AtomicRMWInst::Sub, true, 32, NextMBBI);
+  case RVTrim::PseudoMaskedAtomicLoadNand32:
+    return expandAtomicBinOp(MBB, MBBI, AtomicRMWInst::Nand, true, 32,
+                             NextMBBI);
+  case RVTrim::PseudoMaskedAtomicLoadMax32:
+    return expandAtomicMinMaxOp(MBB, MBBI, AtomicRMWInst::Max, true, 32,
+                                NextMBBI);
+  case RVTrim::PseudoMaskedAtomicLoadMin32:
+    return expandAtomicMinMaxOp(MBB, MBBI, AtomicRMWInst::Min, true, 32,
+                                NextMBBI);
+  case RVTrim::PseudoMaskedAtomicLoadUMax32:
+    return expandAtomicMinMaxOp(MBB, MBBI, AtomicRMWInst::UMax, true, 32,
+                                NextMBBI);
+  case RVTrim::PseudoMaskedAtomicLoadUMin32:
+    return expandAtomicMinMaxOp(MBB, MBBI, AtomicRMWInst::UMin, true, 32,
+                                NextMBBI);
+  case RVTrim::PseudoCmpXchg32:
+    return expandAtomicCmpXchg(MBB, MBBI, false, 32, NextMBBI);
+  case RVTrim::PseudoCmpXchg64:
+    return expandAtomicCmpXchg(MBB, MBBI, false, 64, NextMBBI);
+  case RVTrim::PseudoMaskedCmpXchg32:
+    return expandAtomicCmpXchg(MBB, MBBI, true, 32, NextMBBI);
+  }
+
+  return false;
+}
+
+unsigned
+RVTrimExpandPseudoAtomicsImpl::getLRForRMW32(AtomicOrdering Ordering) const {
+  switch (Ordering) {
+  default:
+    llvm_unreachable("Unexpected AtomicOrdering");
+  case AtomicOrdering::Monotonic:
+    return RVTrim::LR_W;
+  case AtomicOrdering::Acquire:
+    if (STI->hasStdExtZtso())
+      return RVTrim::LR_W;
+    return RVTrim::LR_W_AQ;
+  case AtomicOrdering::Release:
+    return RVTrim::LR_W;
+  case AtomicOrdering::AcquireRelease:
+    if (STI->hasStdExtZtso())
+      return RVTrim::LR_W;
+    return RVTrim::LR_W_AQ;
+  case AtomicOrdering::SequentiallyConsistent:
+    return RVTrim::LR_W_AQRL;
+  }
+}
+
+unsigned
+RVTrimExpandPseudoAtomicsImpl::getSCForRMW32(AtomicOrdering Ordering) const {
+  switch (Ordering) {
+  default:
+    llvm_unreachable("Unexpected AtomicOrdering");
+  case AtomicOrdering::Monotonic:
+    return RVTrim::SC_W;
+  case AtomicOrdering::Acquire:
+    return RVTrim::SC_W;
+  case AtomicOrdering::Release:
+    if (STI->hasStdExtZtso())
+      return RVTrim::SC_W;
+    return RVTrim::SC_W_RL;
+  case AtomicOrdering::AcquireRelease:
+    if (STI->hasStdExtZtso())
+      return RVTrim::SC_W;
+    return RVTrim::SC_W_RL;
+  case AtomicOrdering::SequentiallyConsistent:
+    return RVTrim::SC_W_RL;
+  }
+}
+
+unsigned
+RVTrimExpandPseudoAtomicsImpl::getLRForRMW64(AtomicOrdering Ordering) const {
+  switch (Ordering) {
+  default:
+    llvm_unreachable("Unexpected AtomicOrdering");
+  case AtomicOrdering::Monotonic:
+    return RVTrim::LR_D;
+  case AtomicOrdering::Acquire:
+    if (STI->hasStdExtZtso())
+      return RVTrim::LR_D;
+    return RVTrim::LR_D_AQ;
+  case AtomicOrdering::Release:
+    return RVTrim::LR_D;
+  case AtomicOrdering::AcquireRelease:
+    if (STI->hasStdExtZtso())
+      return RVTrim::LR_D;
+    return RVTrim::LR_D_AQ;
+  case AtomicOrdering::SequentiallyConsistent:
+    return RVTrim::LR_D_AQRL;
+  }
+}
+
+unsigned
+RVTrimExpandPseudoAtomicsImpl::getSCForRMW64(AtomicOrdering Ordering) const {
+  switch (Ordering) {
+  default:
+    llvm_unreachable("Unexpected AtomicOrdering");
+  case AtomicOrdering::Monotonic:
+    return RVTrim::SC_D;
+  case AtomicOrdering::Acquire:
+    return RVTrim::SC_D;
+  case AtomicOrdering::Release:
+    if (STI->hasStdExtZtso())
+      return RVTrim::SC_D;
+    return RVTrim::SC_D_RL;
+  case AtomicOrdering::AcquireRelease:
+    if (STI->hasStdExtZtso())
+      return RVTrim::SC_D;
+    return RVTrim::SC_D_RL;
+  case AtomicOrdering::SequentiallyConsistent:
+    return RVTrim::SC_D_RL;
+  }
+}
+
+unsigned RVTrimExpandPseudoAtomicsImpl::getLRForRMW(AtomicOrdering Ordering,
+                                                   int Width) const {
+  if (Width == 32)
+    return getLRForRMW32(Ordering);
+  if (Width == 64)
+    return getLRForRMW64(Ordering);
+  llvm_unreachable("Unexpected LR width\n");
+}
+
+unsigned RVTrimExpandPseudoAtomicsImpl::getSCForRMW(AtomicOrdering Ordering,
+                                                   int Width) const {
+  if (Width == 32)
+    return getSCForRMW32(Ordering);
+  if (Width == 64)
+    return getSCForRMW64(Ordering);
+  llvm_unreachable("Unexpected SC width\n");
+}
+
+void RVTrimExpandPseudoAtomicsImpl::doAtomicBinOpExpansion(
+    MachineInstr &MI, MachineBasicBlock *LoopMBB, AtomicRMWInst::BinOp BinOp,
+    int Width) const {
+  DebugLoc DL = MI.getDebugLoc();
+  Register DestReg = MI.getOperand(0).getReg();
+  Register ScratchReg = MI.getOperand(1).getReg();
+  Register AddrReg = MI.getOperand(2).getReg();
+  Register IncrReg = MI.getOperand(3).getReg();
+  AtomicOrdering Ordering =
+      static_cast<AtomicOrdering>(MI.getOperand(4).getImm());
+
+  // .loop:
+  //   lr.[w|d] dest, (addr)
+  //   binop scratch, dest, val
+  //   sc.[w|d] scratch, scratch, (addr)
+  //   bnez scratch, loop
+  BuildMI(LoopMBB, DL, TII->get(getLRForRMW(Ordering, Width)), DestReg)
+      .addReg(AddrReg);
+  switch (BinOp) {
+  default:
+    llvm_unreachable("Unexpected AtomicRMW BinOp");
+  case AtomicRMWInst::Xchg:
+    BuildMI(LoopMBB, DL, TII->get(RVTrim::ADDI), ScratchReg)
+        .addReg(IncrReg)
+        .addImm(0);
+    break;
+  case AtomicRMWInst::Add:
+    BuildMI(LoopMBB, DL, TII->get(RVTrim::ADD), ScratchReg)
+        .addReg(DestReg)
+        .addReg(IncrReg);
+    break;
+  case AtomicRMWInst::Sub:
+    BuildMI(LoopMBB, DL, TII->get(RVTrim::SUB), ScratchReg)
+        .addReg(DestReg)
+        .addReg(IncrReg);
+    break;
+  case AtomicRMWInst::And:
+    BuildMI(LoopMBB, DL, TII->get(RVTrim::AND), ScratchReg)
+        .addReg(DestReg)
+        .addReg(IncrReg);
+    break;
+  case AtomicRMWInst::Or:
+    BuildMI(LoopMBB, DL, TII->get(RVTrim::OR), ScratchReg)
+        .addReg(DestReg)
+        .addReg(IncrReg);
+    break;
+  case AtomicRMWInst::Xor:
+    BuildMI(LoopMBB, DL, TII->get(RVTrim::XOR), ScratchReg)
+        .addReg(DestReg)
+        .addReg(IncrReg);
+    break;
+  case AtomicRMWInst::Nand:
+    BuildMI(LoopMBB, DL, TII->get(RVTrim::AND), ScratchReg)
+        .addReg(DestReg)
+        .addReg(IncrReg);
+    BuildMI(LoopMBB, DL, TII->get(RVTrim::XORI), ScratchReg)
+        .addReg(ScratchReg)
+        .addImm(-1);
+    break;
+  case AtomicRMWInst::Max:
+    BuildMI(LoopMBB, DL, TII->get(RVTrim::MAX), ScratchReg)
+        .addReg(DestReg)
+        .addReg(IncrReg);
+    break;
+  case AtomicRMWInst::Min:
+    BuildMI(LoopMBB, DL, TII->get(RVTrim::MIN), ScratchReg)
+        .addReg(DestReg)
+        .addReg(IncrReg);
+    break;
+  case AtomicRMWInst::UMax:
+    BuildMI(LoopMBB, DL, TII->get(RVTrim::MAXU), ScratchReg)
+        .addReg(DestReg)
+        .addReg(IncrReg);
+    break;
+  case AtomicRMWInst::UMin:
+    BuildMI(LoopMBB, DL, TII->get(RVTrim::MINU), ScratchReg)
+        .addReg(DestReg)
+        .addReg(IncrReg);
+    break;
+  }
+  BuildMI(LoopMBB, DL, TII->get(getSCForRMW(Ordering, Width)), ScratchReg)
+      .addReg(ScratchReg)
+      .addReg(AddrReg);
+  BuildMI(LoopMBB, DL, TII->get(RVTrim::BNE))
+      .addReg(ScratchReg)
+      .addReg(RVTrim::X0)
+      .addMBB(LoopMBB);
+}
+
+void RVTrimExpandPseudoAtomicsImpl::insertMaskedMerge(
+    DebugLoc DL, MachineBasicBlock *MBB, Register DestReg, Register OldValReg,
+    Register NewValReg, Register MaskReg, Register ScratchReg) const {
+  assert(OldValReg != ScratchReg && "OldValReg and ScratchReg must be unique");
+  assert(OldValReg != MaskReg && "OldValReg and MaskReg must be unique");
+  assert(ScratchReg != MaskReg && "ScratchReg and MaskReg must be unique");
+
+  // We select bits from newval and oldval using:
+  // https://graphics.stanford.edu/~seander/bithacks.html#MaskedMerge
+  // r = oldval ^ ((oldval ^ newval) & masktargetdata);
+  BuildMI(MBB, DL, TII->get(RVTrim::XOR), ScratchReg)
+      .addReg(OldValReg)
+      .addReg(NewValReg);
+  BuildMI(MBB, DL, TII->get(RVTrim::AND), ScratchReg)
+      .addReg(ScratchReg)
+      .addReg(MaskReg);
+  BuildMI(MBB, DL, TII->get(RVTrim::XOR), DestReg)
+      .addReg(OldValReg)
+      .addReg(ScratchReg);
+}
+
+void RVTrimExpandPseudoAtomicsImpl::doMaskedAtomicBinOpExpansion(
+    MachineInstr &MI, MachineBasicBlock *LoopMBB, AtomicRMWInst::BinOp BinOp,
+    int Width) const {
+  DebugLoc DL = MI.getDebugLoc();
+  assert(Width == 32 && "Should never need to expand masked 64-bit operations");
+  Register DestReg = MI.getOperand(0).getReg();
+  Register ScratchReg = MI.getOperand(1).getReg();
+  Register AddrReg = MI.getOperand(2).getReg();
+  Register IncrReg = MI.getOperand(3).getReg();
+  Register MaskReg = MI.getOperand(4).getReg();
+  AtomicOrdering Ordering =
+      static_cast<AtomicOrdering>(MI.getOperand(5).getImm());
+
+  // .loop:
+  //   lr.w destreg, (alignedaddr)
+  //   binop scratch, destreg, incr
+  //   xor scratch, destreg, scratch
+  //   and scratch, scratch, masktargetdata
+  //   xor scratch, destreg, scratch
+  //   sc.w scratch, scratch, (alignedaddr)
+  //   bnez scratch, loop
+  BuildMI(LoopMBB, DL, TII->get(getLRForRMW32(Ordering)), DestReg)
+      .addReg(AddrReg);
+  switch (BinOp) {
+  default:
+    llvm_unreachable("Unexpected AtomicRMW BinOp");
+  case AtomicRMWInst::Xchg:
+    BuildMI(LoopMBB, DL, TII->get(RVTrim::ADDI), ScratchReg)
+        .addReg(IncrReg)
+        .addImm(0);
+    break;
+  case AtomicRMWInst::Add:
+    BuildMI(LoopMBB, DL, TII->get(RVTrim::ADD), ScratchReg)
+        .addReg(DestReg)
+        .addReg(IncrReg);
+    break;
+  case AtomicRMWInst::Sub:
+    BuildMI(LoopMBB, DL, TII->get(RVTrim::SUB), ScratchReg)
+        .addReg(DestReg)
+        .addReg(IncrReg);
+    break;
+  case AtomicRMWInst::Nand:
+    BuildMI(LoopMBB, DL, TII->get(RVTrim::AND), ScratchReg)
+        .addReg(DestReg)
+        .addReg(IncrReg);
+    BuildMI(LoopMBB, DL, TII->get(RVTrim::XORI), ScratchReg)
+        .addReg(ScratchReg)
+        .addImm(-1);
+    break;
+  }
+
+  insertMaskedMerge(DL, LoopMBB, ScratchReg, DestReg, ScratchReg, MaskReg,
+                    ScratchReg);
+
+  BuildMI(LoopMBB, DL, TII->get(getSCForRMW32(Ordering)), ScratchReg)
+      .addReg(ScratchReg)
+      .addReg(AddrReg);
+  BuildMI(LoopMBB, DL, TII->get(RVTrim::BNE))
+      .addReg(ScratchReg)
+      .addReg(RVTrim::X0)
+      .addMBB(LoopMBB);
+}
+
+bool RVTrimExpandPseudoAtomicsImpl::expandAtomicBinOp(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
+    AtomicRMWInst::BinOp BinOp, bool IsMasked, int Width,
+    MachineBasicBlock::iterator &NextMBBI) const {
+  MachineInstr &MI = *MBBI;
+  MachineFunction *MF = MBB.getParent();
+  auto LoopMBB = MF->CreateMachineBasicBlock(MBB.getBasicBlock());
+  auto DoneMBB = MF->CreateMachineBasicBlock(MBB.getBasicBlock());
+
+  // Insert new MBBs.
+  MF->insert(++MBB.getIterator(), LoopMBB);
+  MF->insert(++LoopMBB->getIterator(), DoneMBB);
+
+  // Set up successors and transfer remaining instructions to DoneMBB.
+  LoopMBB->addSuccessor(LoopMBB);
+  LoopMBB->addSuccessor(DoneMBB);
+  DoneMBB->splice(DoneMBB->end(), &MBB, MI, MBB.end());
+  DoneMBB->transferSuccessors(&MBB);
+  MBB.addSuccessor(LoopMBB);
+
+  if (!IsMasked)
+    doAtomicBinOpExpansion(MI, LoopMBB, BinOp, Width);
+  else
+    doMaskedAtomicBinOpExpansion(MI, LoopMBB, BinOp, Width);
+
+  NextMBBI = MBB.end();
+  MI.eraseFromParent();
+
+  LivePhysRegs LiveRegs;
+  computeAndAddLiveIns(LiveRegs, *LoopMBB);
+  computeAndAddLiveIns(LiveRegs, *DoneMBB);
+
+  return true;
+}
+
+void RVTrimExpandPseudoAtomicsImpl::insertSext(DebugLoc DL,
+                                              MachineBasicBlock *MBB,
+                                              Register ValReg,
+                                              Register ShamtReg) const {
+  BuildMI(MBB, DL, TII->get(RVTrim::SLL), ValReg)
+      .addReg(ValReg)
+      .addReg(ShamtReg);
+  BuildMI(MBB, DL, TII->get(RVTrim::SRA), ValReg)
+      .addReg(ValReg)
+      .addReg(ShamtReg);
+}
+
+void RVTrimExpandPseudoAtomicsImpl::doAtomicMinMaxOpExpansion(
+    MachineInstr &MI, MachineBasicBlock *LoopHeadMBB,
+    MachineBasicBlock *LoopIfBodyMBB, MachineBasicBlock *LoopTailMBB,
+    AtomicRMWInst::BinOp BinOp, int Width) const {
+  DebugLoc DL = MI.getDebugLoc();
+  Register DestReg = MI.getOperand(0).getReg();
+  Register ScratchReg = MI.getOperand(1).getReg();
+  Register AddrReg = MI.getOperand(2).getReg();
+  Register IncrReg = MI.getOperand(3).getReg();
+  AtomicOrdering Ordering =
+      static_cast<AtomicOrdering>(MI.getOperand(4).getImm());
+
+  // .loophead:
+  //   lr.[w|d] dest, (addr)
+  //   mv scratch, dest
+  //   ifnochangeneeded scratch, incr, .looptail
+  BuildMI(LoopHeadMBB, DL, TII->get(getLRForRMW(Ordering, Width)), DestReg)
+      .addReg(AddrReg);
+  BuildMI(LoopHeadMBB, DL, TII->get(RVTrim::ADDI), ScratchReg)
+      .addReg(DestReg)
+      .addImm(0);
+  switch (BinOp) {
+  default:
+    llvm_unreachable("Unexpected AtomicRMW BinOp");
+  case AtomicRMWInst::Max: {
+    BuildMI(LoopHeadMBB, DL, TII->get(RVTrim::BGE))
+        .addReg(ScratchReg)
+        .addReg(IncrReg)
+        .addMBB(LoopTailMBB);
+    break;
+  }
+  case AtomicRMWInst::Min: {
+    BuildMI(LoopHeadMBB, DL, TII->get(RVTrim::BGE))
+        .addReg(IncrReg)
+        .addReg(ScratchReg)
+        .addMBB(LoopTailMBB);
+    break;
+  }
+  case AtomicRMWInst::UMax:
+    BuildMI(LoopHeadMBB, DL, TII->get(RVTrim::BGEU))
+        .addReg(ScratchReg)
+        .addReg(IncrReg)
+        .addMBB(LoopTailMBB);
+    break;
+  case AtomicRMWInst::UMin:
+    BuildMI(LoopHeadMBB, DL, TII->get(RVTrim::BGEU))
+        .addReg(IncrReg)
+        .addReg(ScratchReg)
+        .addMBB(LoopTailMBB);
+    break;
+  }
+
+  // .loopifbody:
+  //   mv scratch, incr
+  BuildMI(LoopIfBodyMBB, DL, TII->get(RVTrim::ADDI), ScratchReg)
+      .addReg(IncrReg)
+      .addImm(0);
+
+  // .looptail:
+  //   sc.[w|d] scratch, scratch, (addr)
+  //   bnez scratch, loop
+  BuildMI(LoopTailMBB, DL, TII->get(getSCForRMW(Ordering, Width)), ScratchReg)
+      .addReg(ScratchReg)
+      .addReg(AddrReg);
+  BuildMI(LoopTailMBB, DL, TII->get(RVTrim::BNE))
+      .addReg(ScratchReg)
+      .addReg(RVTrim::X0)
+      .addMBB(LoopHeadMBB);
+}
+
+void RVTrimExpandPseudoAtomicsImpl::doMaskedAtomicMinMaxOpExpansion(
+    MachineInstr &MI, MachineBasicBlock *LoopHeadMBB,
+    MachineBasicBlock *LoopIfBodyMBB, MachineBasicBlock *LoopTailMBB,
+    AtomicRMWInst::BinOp BinOp, int Width) const {
+  DebugLoc DL = MI.getDebugLoc();
+  assert(Width == 32 && "Should never need to expand masked 64-bit operations");
+  Register DestReg = MI.getOperand(0).getReg();
+  Register Scratch1Reg = MI.getOperand(1).getReg();
+  Register Scratch2Reg = MI.getOperand(2).getReg();
+  Register AddrReg = MI.getOperand(3).getReg();
+  Register IncrReg = MI.getOperand(4).getReg();
+  Register MaskReg = MI.getOperand(5).getReg();
+  bool IsSigned = BinOp == AtomicRMWInst::Min || BinOp == AtomicRMWInst::Max;
+  AtomicOrdering Ordering =
+      static_cast<AtomicOrdering>(MI.getOperand(IsSigned ? 7 : 6).getImm());
+
+  //
+  // .loophead:
+  //   lr.w destreg, (alignedaddr)
+  //   and scratch2, destreg, mask
+  //   mv scratch1, destreg
+  //   [sext scratch2 if signed min/max]
+  //   ifnochangeneeded scratch2, incr, .looptail
+  BuildMI(LoopHeadMBB, DL, TII->get(getLRForRMW32(Ordering)), DestReg)
+      .addReg(AddrReg);
+  BuildMI(LoopHeadMBB, DL, TII->get(RVTrim::AND), Scratch2Reg)
+      .addReg(DestReg)
+      .addReg(MaskReg);
+  BuildMI(LoopHeadMBB, DL, TII->get(RVTrim::ADDI), Scratch1Reg)
+      .addReg(DestReg)
+      .addImm(0);
+
+  switch (BinOp) {
+  default:
+    llvm_unreachable("Unexpected AtomicRMW BinOp");
+  case AtomicRMWInst::Max: {
+    insertSext(DL, LoopHeadMBB, Scratch2Reg, MI.getOperand(6).getReg());
+    BuildMI(LoopHeadMBB, DL, TII->get(RVTrim::BGE))
+        .addReg(Scratch2Reg)
+        .addReg(IncrReg)
+        .addMBB(LoopTailMBB);
+    break;
+  }
+  case AtomicRMWInst::Min: {
+    insertSext(DL, LoopHeadMBB, Scratch2Reg, MI.getOperand(6).getReg());
+    BuildMI(LoopHeadMBB, DL, TII->get(RVTrim::BGE))
+        .addReg(IncrReg)
+        .addReg(Scratch2Reg)
+        .addMBB(LoopTailMBB);
+    break;
+  }
+  case AtomicRMWInst::UMax:
+    BuildMI(LoopHeadMBB, DL, TII->get(RVTrim::BGEU))
+        .addReg(Scratch2Reg)
+        .addReg(IncrReg)
+        .addMBB(LoopTailMBB);
+    break;
+  case AtomicRMWInst::UMin:
+    BuildMI(LoopHeadMBB, DL, TII->get(RVTrim::BGEU))
+        .addReg(IncrReg)
+        .addReg(Scratch2Reg)
+        .addMBB(LoopTailMBB);
+    break;
+  }
+
+  // .loopifbody:
+  //   xor scratch1, destreg, incr
+  //   and scratch1, scratch1, mask
+  //   xor scratch1, destreg, scratch1
+  insertMaskedMerge(DL, LoopIfBodyMBB, Scratch1Reg, DestReg, IncrReg, MaskReg,
+                    Scratch1Reg);
+
+  // .looptail:
+  //   sc.w scratch1, scratch1, (addr)
+  //   bnez scratch1, loop
+  BuildMI(LoopTailMBB, DL, TII->get(getSCForRMW32(Ordering)), Scratch1Reg)
+      .addReg(Scratch1Reg)
+      .addReg(AddrReg);
+  BuildMI(LoopTailMBB, DL, TII->get(RVTrim::BNE))
+      .addReg(Scratch1Reg)
+      .addReg(RVTrim::X0)
+      .addMBB(LoopHeadMBB);
+}
+
+bool RVTrimExpandPseudoAtomicsImpl::expandAtomicMinMaxOp(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
+    AtomicRMWInst::BinOp BinOp, bool IsMasked, int Width,
+    MachineBasicBlock::iterator &NextMBBI) const {
+  // Using MIN(U)/MAX(U) is preferrable if permitted
+  if (STI->hasPermissiveZalrsc() && STI->hasStdExtZbb() && !IsMasked)
+    return expandAtomicBinOp(MBB, MBBI, BinOp, IsMasked, Width, NextMBBI);
+
+  MachineInstr &MI = *MBBI;
+  MachineFunction *MF = MBB.getParent();
+  auto LoopHeadMBB = MF->CreateMachineBasicBlock(MBB.getBasicBlock());
+  auto LoopIfBodyMBB = MF->CreateMachineBasicBlock(MBB.getBasicBlock());
+  auto LoopTailMBB = MF->CreateMachineBasicBlock(MBB.getBasicBlock());
+  auto DoneMBB = MF->CreateMachineBasicBlock(MBB.getBasicBlock());
+
+  // Insert new MBBs.
+  MF->insert(++MBB.getIterator(), LoopHeadMBB);
+  MF->insert(++LoopHeadMBB->getIterator(), LoopIfBodyMBB);
+  MF->insert(++LoopIfBodyMBB->getIterator(), LoopTailMBB);
+  MF->insert(++LoopTailMBB->getIterator(), DoneMBB);
+
+  // Set up successors and transfer remaining instructions to DoneMBB.
+  LoopHeadMBB->addSuccessor(LoopIfBodyMBB);
+  LoopHeadMBB->addSuccessor(LoopTailMBB);
+  LoopIfBodyMBB->addSuccessor(LoopTailMBB);
+  LoopTailMBB->addSuccessor(LoopHeadMBB);
+  LoopTailMBB->addSuccessor(DoneMBB);
+  DoneMBB->splice(DoneMBB->end(), &MBB, MI, MBB.end());
+  DoneMBB->transferSuccessors(&MBB);
+  MBB.addSuccessor(LoopHeadMBB);
+
+  if (!IsMasked)
+    doAtomicMinMaxOpExpansion(MI, LoopHeadMBB, LoopIfBodyMBB, LoopTailMBB,
+                              BinOp, Width);
+  else
+    doMaskedAtomicMinMaxOpExpansion(MI, LoopHeadMBB, LoopIfBodyMBB, LoopTailMBB,
+                                    BinOp, Width);
+
+  NextMBBI = MBB.end();
+  MI.eraseFromParent();
+
+  LivePhysRegs LiveRegs;
+  computeAndAddLiveIns(LiveRegs, *LoopHeadMBB);
+  computeAndAddLiveIns(LiveRegs, *LoopIfBodyMBB);
+  computeAndAddLiveIns(LiveRegs, *LoopTailMBB);
+  computeAndAddLiveIns(LiveRegs, *DoneMBB);
+
+  return true;
+}
+
+// If a BNE on the cmpxchg comparison result immediately follows the cmpxchg
+// operation, it can be folded into the cmpxchg expansion by
+// modifying the branch within 'LoopHead' (which performs the same
+// comparison). This is a valid transformation because after altering the
+// LoopHead's BNE destination, the BNE following the cmpxchg becomes
+// redundant and and be deleted. In the case of a masked cmpxchg, an
+// appropriate AND and BNE must be matched.
+//
+// On success, returns true and deletes the matching BNE or AND+BNE, sets the
+// LoopHeadBNETarget argument to the target that should be used within the
+// loop head, and removes that block as a successor to MBB.
+bool RVTrimExpandPseudoAtomicsImpl::tryToFoldBNEOnCmpXchgResult(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI, Register DestReg,
+    Register CmpValReg, Register MaskReg,
+    MachineBasicBlock *&LoopHeadBNETarget) const {
+  SmallVector<MachineInstr *> ToErase;
+  auto E = MBB.end();
+  if (MBBI == E)
+    return false;
+  MBBI = skipDebugInstructionsForward(MBBI, E);
+
+  // If we have a masked cmpxchg, match AND dst, DestReg, MaskReg.
+  if (MaskReg.isValid()) {
+    if (MBBI == E || MBBI->getOpcode() != RVTrim::AND)
+      return false;
+    Register ANDOp1 = MBBI->getOperand(1).getReg();
+    Register ANDOp2 = MBBI->getOperand(2).getReg();
+    if (!(ANDOp1 == DestReg && ANDOp2 == MaskReg) &&
+        !(ANDOp1 == MaskReg && ANDOp2 == DestReg))
+      return false;
+    // We now expect the BNE to use the result of the AND as an operand.
+    DestReg = MBBI->getOperand(0).getReg();
+    ToErase.push_back(&*MBBI);
+    MBBI = skipDebugInstructionsForward(std::next(MBBI), E);
+  }
+
+  // Match BNE DestReg, MaskReg.
+  if (MBBI == E || MBBI->getOpcode() != RVTrim::BNE)
+    return false;
+  Register BNEOp0 = MBBI->getOperand(0).getReg();
+  Register BNEOp1 = MBBI->getOperand(1).getReg();
+  if (!(BNEOp0 == DestReg && BNEOp1 == CmpValReg) &&
+      !(BNEOp0 == CmpValReg && BNEOp1 == DestReg))
+    return false;
+
+  // Make sure the branch is the only user of the AND.
+  if (MaskReg.isValid()) {
+    if (BNEOp0 == DestReg && !MBBI->getOperand(0).isKill())
+      return false;
+    if (BNEOp1 == DestReg && !MBBI->getOperand(1).isKill())
+      return false;
+  }
+
+  ToErase.push_back(&*MBBI);
+  LoopHeadBNETarget = MBBI->getOperand(2).getMBB();
+  MBBI = skipDebugInstructionsForward(std::next(MBBI), E);
+  if (MBBI != E)
+    return false;
+
+  MBB.removeSuccessor(LoopHeadBNETarget);
+  for (auto *MI : ToErase)
+    MI->eraseFromParent();
+  return true;
+}
+
+bool RVTrimExpandPseudoAtomicsImpl::expandAtomicCmpXchg(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI, bool IsMasked,
+    int Width, MachineBasicBlock::iterator &NextMBBI) const {
+  MachineInstr &MI = *MBBI;
+  DebugLoc DL = MI.getDebugLoc();
+  MachineFunction *MF = MBB.getParent();
+  auto LoopHeadMBB = MF->CreateMachineBasicBlock(MBB.getBasicBlock());
+  auto LoopTailMBB = MF->CreateMachineBasicBlock(MBB.getBasicBlock());
+  auto DoneMBB = MF->CreateMachineBasicBlock(MBB.getBasicBlock());
+
+  Register DestReg = MI.getOperand(0).getReg();
+  Register ScratchReg = MI.getOperand(1).getReg();
+  Register AddrReg = MI.getOperand(2).getReg();
+  Register CmpValReg = MI.getOperand(3).getReg();
+  Register NewValReg = MI.getOperand(4).getReg();
+  Register MaskReg = IsMasked ? MI.getOperand(5).getReg() : Register();
+
+  MachineBasicBlock *LoopHeadBNETarget = DoneMBB;
+  tryToFoldBNEOnCmpXchgResult(MBB, std::next(MBBI), DestReg, CmpValReg, MaskReg,
+                              LoopHeadBNETarget);
+
+  // Insert new MBBs.
+  MF->insert(++MBB.getIterator(), LoopHeadMBB);
+  MF->insert(++LoopHeadMBB->getIterator(), LoopTailMBB);
+  MF->insert(++LoopTailMBB->getIterator(), DoneMBB);
+
+  // Set up successors and transfer remaining instructions to DoneMBB.
+  LoopHeadMBB->addSuccessor(LoopTailMBB);
+  LoopHeadMBB->addSuccessor(LoopHeadBNETarget);
+  LoopTailMBB->addSuccessor(DoneMBB);
+  LoopTailMBB->addSuccessor(LoopHeadMBB);
+  DoneMBB->splice(DoneMBB->end(), &MBB, MI, MBB.end());
+  DoneMBB->transferSuccessors(&MBB);
+  MBB.addSuccessor(LoopHeadMBB);
+
+  AtomicOrdering Ordering =
+      static_cast<AtomicOrdering>(MI.getOperand(IsMasked ? 6 : 5).getImm());
+
+  if (!IsMasked) {
+    // .loophead:
+    //   lr.[w|d] dest, (addr)
+    //   bne dest, cmpval, done
+    BuildMI(LoopHeadMBB, DL, TII->get(getLRForRMW(Ordering, Width)), DestReg)
+        .addReg(AddrReg);
+    BuildMI(LoopHeadMBB, DL, TII->get(RVTrim::BNE))
+        .addReg(DestReg)
+        .addReg(CmpValReg)
+        .addMBB(LoopHeadBNETarget);
+    // .looptail:
+    //   sc.[w|d] scratch, newval, (addr)
+    //   bnez scratch, loophead
+    BuildMI(LoopTailMBB, DL, TII->get(getSCForRMW(Ordering, Width)), ScratchReg)
+        .addReg(NewValReg)
+        .addReg(AddrReg);
+    BuildMI(LoopTailMBB, DL, TII->get(RVTrim::BNE))
+        .addReg(ScratchReg)
+        .addReg(RVTrim::X0)
+        .addMBB(LoopHeadMBB);
+  } else {
+    // .loophead:
+    //   lr.w dest, (addr)
+    //   and scratch, dest, mask
+    //   bne scratch, cmpval, done
+    Register MaskReg = MI.getOperand(5).getReg();
+    BuildMI(LoopHeadMBB, DL, TII->get(getLRForRMW(Ordering, Width)), DestReg)
+        .addReg(AddrReg);
+    BuildMI(LoopHeadMBB, DL, TII->get(RVTrim::AND), ScratchReg)
+        .addReg(DestReg)
+        .addReg(MaskReg);
+    BuildMI(LoopHeadMBB, DL, TII->get(RVTrim::BNE))
+        .addReg(ScratchReg)
+        .addReg(CmpValReg)
+        .addMBB(LoopHeadBNETarget);
+
+    // .looptail:
+    //   xor scratch, dest, newval
+    //   and scratch, scratch, mask
+    //   xor scratch, dest, scratch
+    //   sc.w scratch, scratch, (adrr)
+    //   bnez scratch, loophead
+    insertMaskedMerge(DL, LoopTailMBB, ScratchReg, DestReg, NewValReg, MaskReg,
+                      ScratchReg);
+    BuildMI(LoopTailMBB, DL, TII->get(getSCForRMW(Ordering, Width)), ScratchReg)
+        .addReg(ScratchReg)
+        .addReg(AddrReg);
+    BuildMI(LoopTailMBB, DL, TII->get(RVTrim::BNE))
+        .addReg(ScratchReg)
+        .addReg(RVTrim::X0)
+        .addMBB(LoopHeadMBB);
+  }
+
+  NextMBBI = MBB.end();
+  MI.eraseFromParent();
+
+  LivePhysRegs LiveRegs;
+  computeAndAddLiveIns(LiveRegs, *LoopHeadMBB);
+  computeAndAddLiveIns(LiveRegs, *LoopTailMBB);
+  computeAndAddLiveIns(LiveRegs, *DoneMBB);
+
+  return true;
+}
+
+char RVTrimExpandPseudoAtomicsLegacy::ID = 0;
+
+INITIALIZE_PASS(RVTrimExpandPseudoAtomicsLegacy, "rvtrim-expand-pseudo-atomics",
+                RVTrim_EXPAND_PSEUDO_ATOMICS_NAME, false, false)
+
+FunctionPass *llvm::createRVTrimExpandPseudoAtomicsLegacyPass() {
+  return new RVTrimExpandPseudoAtomicsLegacy();
+}
+
+PreservedAnalyses
+RVTrimExpandPseudoAtomicsPass::run(MachineFunction &MF,
+                                  MachineFunctionAnalysisManager &MFAM) {
+  bool Changed = RVTrimExpandPseudoAtomicsImpl().run(MF);
+  if (!Changed)
+    return PreservedAnalyses::all();
+  return getMachineFunctionPassPreservedAnalyses();
+}

@@ -1,0 +1,7 @@
+mnemonic: subw
+opcode: {repo: riscv-opcodes, extension: rv64_i, key: subw}
+spec: rvtrim.core.r_type
+status: auto_full
+predicate: IsRV64
+sched: [WriteIALU32, ReadIALU32, ReadIALU32]
+flags: [IsSignExtendingOpW]
