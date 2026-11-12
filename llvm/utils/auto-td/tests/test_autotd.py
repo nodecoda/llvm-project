@@ -18,7 +18,7 @@ from autotd import emit  # noqa: E402
 from autotd.check import validate  # noqa: E402
 from autotd.encoding import assignments, instruction_format  # noqa: E402
 from autotd.model import BitRange, InstrSpec, OpcodeRef, OpcodeRow, record_name_for  # noqa: E402
-from autotd.loader import load_instructions  # noqa: E402
+from autotd.loader import load_config, load_instructions  # noqa: E402
 from autotd.opcodes import OpcodeDatabase, parse_fixed, read_arg_lut  # noqa: E402
 
 ARG_LUT = textwrap.dedent(
@@ -458,6 +458,345 @@ class CliTest(FixtureCase):
         self.assertEqual(code, 0)
         for name in ("AutoTdInstrInfo.inc", "AutoTdManifests.inc", "AutoTdCoverage.md"):
             self.assertTrue((out / name).is_file(), name)
+
+
+
+# --- vector encodings -------------------------------------------------------
+#
+# The V encodings are not hand-written either: they come from the same
+# riscv-opcodes rows the backend's own td uses.  The golden bit assignments
+# below were compared against a llvm-tblgen -print-records dump of the
+# backend's V records (13/13 records bit-identical).
+
+V_ARG_LUT = textwrap.dedent(
+    """\
+    "rd", 11, 7
+    "rs1", 19, 15
+    "rs2", 24, 20
+    "vd", 11, 7
+    "vs3", 11, 7
+    "vs1", 19, 15
+    "vs2", 24, 20
+    "vm", 25, 25
+    "nf", 31, 29
+    "simm5", 19, 15
+    "zimm5", 19, 15
+    "zimm10", 29, 20
+    "zimm11", 30, 20
+    """
+)
+
+RV_V = textwrap.dedent(
+    """\
+    vsetivli     31=1 30=1 zimm10    zimm5 14..12=0x7 rd 6..0=0x57
+    vsetvli      31=0 zimm11          rs1 14..12=0x7 rd 6..0=0x57
+    vsetvl       31=1 30..25=0x0 rs2  rs1 14..12=0x7 rd 6..0=0x57
+    vle32.v        nf 28=0 27..26=0 vm 24..20=0 rs1 14..12=0x6  vd 6..0=0x07
+    vse32.v        nf 28=0 27..26=0 vm 24..20=0 rs1 14..12=0x6 vs3 6..0=0x27
+    vadd.vx        31..26=0x00 vm vs2 rs1 14..12=0x4 vd 6..0=0x57
+    vadd.vv         31..26=0x00 vm vs2 vs1 14..12=0x0 vd 6..0=0x57
+    vsub.vv         31..26=0x02 vm vs2 vs1 14..12=0x0 vd 6..0=0x57
+    vmseq.vv       31..26=0x18 vm vs2 vs1 14..12=0x0 vd 6..0=0x57
+    vadd.vi        31..26=0x00 vm vs2 simm5 14..12=0x3 vd 6..0=0x57
+    vmv1r.v        31..26=0x27 25=1 vs2 19..15=0 14..12=0x3 vd 6..0=0x57
+    vredsum.vs     31..26=0x00 vm vs2 vs1 14..12=0x2 vd 6..0=0x57
+    vmul.vv        31..26=0x25 vm vs2 vs1 14..12=0x2 vd 6..0=0x57
+    """
+)
+
+V_CONFIG = """\
+record_prefix: RVTRIM_AUTO
+base_class: RVInst
+
+domains:
+  rv-v: {predicate: HasVInstructions}
+
+formats:
+  vsetvli: InstFormatI
+  vsetivli: InstFormatI
+"""
+
+V_TAXONOMY = """\
+categories:
+  v_vv:
+    operands:
+      outs: [{role: dest, field: vd, reg_class: VR}]
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: vs1, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {}
+  v_vx:
+    operands:
+      outs: [{role: dest, field: vd, reg_class: VR}]
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: rs1, reg_class: GPR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {}
+  v_vi:
+    operands:
+      outs: [{role: dest, field: vd, reg_class: VR}]
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: imm, field: simm5, operand: simm5}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {}
+  v_load_unit:
+    operands:
+      outs: [{role: dest, field: vd, reg_class: VR}]
+      ins:
+        - {role: base, field: rs1, operand: GPRMemZeroOffset}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {may_load: true}
+  v_store_unit:
+    operands:
+      ins:
+        - {role: rhs, field: vs3, reg_class: VR}
+        - {role: base, field: rs1, operand: GPRMemZeroOffset}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {may_store: true}
+  v_setvli:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins:
+        - {role: lhs, field: rs1, reg_class: GPR}
+        - {role: imm, field: zimm11, operand: VTypeIOp11}
+    effects: {has_side_effects: true}
+  v_setivli:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins:
+        - {role: imm, field: zimm5, operand: uimm5}
+        - {role: vtype, field: zimm10, operand: VTypeIOp10}
+    effects: {has_side_effects: true}
+  v_setvl:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins:
+        - {role: lhs, field: rs1, reg_class: GPR}
+        - {role: rhs, field: rs2, reg_class: GPR}
+    effects: {has_side_effects: true}
+  v_mv1r:
+    operands:
+      outs: [{role: dest, field: vd, reg_class: VR}]
+      ins: [{role: src, field: vs2, reg_class: VR}]
+    effects: {}
+  v_red:
+    operands:
+      outs: [{role: dest, field: vd, reg_class: VR}]
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: vs1, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {}
+  v_cmp:
+    operands:
+      outs: [{role: dest, field: vd, reg_class: VR}]
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: vs1, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {}
+"""
+
+V_INSTRUCTIONS = {
+    "rv-v/vadd.vv.yaml": """\
+        mnemonic: vadd.vv
+        opcode: {repo: riscv-opcodes, extension: rv_v, key: vadd_vv}
+        spec: vector.alu.v_vv
+        """,
+    "rv-v/vadd.vx.yaml": """\
+        mnemonic: vadd.vx
+        opcode: {repo: riscv-opcodes, extension: rv_v, key: vadd_vx}
+        spec: vector.alu.v_vx
+        """,
+    "rv-v/vadd.vi.yaml": """\
+        mnemonic: vadd.vi
+        opcode: {repo: riscv-opcodes, extension: rv_v, key: vadd_vi}
+        spec: vector.alu.v_vi
+        """,
+    "rv-v/vsub.vv.yaml": """\
+        mnemonic: vsub.vv
+        opcode: {repo: riscv-opcodes, extension: rv_v, key: vsub_vv}
+        spec: vector.alu.v_vv
+        """,
+    "rv-v/vmul.vv.yaml": """\
+        mnemonic: vmul.vv
+        opcode: {repo: riscv-opcodes, extension: rv_v, key: vmul_vv}
+        spec: vector.alu.v_vv
+        """,
+    "rv-v/vle32.v.yaml": """\
+        mnemonic: vle32.v
+        opcode: {repo: riscv-opcodes, extension: rv_v, key: vle32_v}
+        spec: vector.mem.v_load_unit
+        """,
+    "rv-v/vse32.v.yaml": """\
+        mnemonic: vse32.v
+        opcode: {repo: riscv-opcodes, extension: rv_v, key: vse32_v}
+        spec: vector.mem.v_store_unit
+        """,
+    "rv-v/vsetvli.yaml": """\
+        mnemonic: vsetvli
+        opcode: {repo: riscv-opcodes, extension: rv_v, key: vsetvli}
+        spec: vector.ctrl.v_setvli
+        """,
+    "rv-v/vsetivli.yaml": """\
+        mnemonic: vsetivli
+        opcode: {repo: riscv-opcodes, extension: rv_v, key: vsetivli}
+        spec: vector.ctrl.v_setivli
+        """,
+    "rv-v/vsetvl.yaml": """\
+        mnemonic: vsetvl
+        opcode: {repo: riscv-opcodes, extension: rv_v, key: vsetvl}
+        spec: vector.ctrl.v_setvl
+        """,
+    "rv-v/vmv1r.v.yaml": """\
+        mnemonic: vmv1r.v
+        opcode: {repo: riscv-opcodes, extension: rv_v, key: vmv1r_v}
+        spec: vector.move.v_mv1r
+        """,
+    "rv-v/vredsum.vs.yaml": """\
+        mnemonic: vredsum.vs
+        opcode: {repo: riscv-opcodes, extension: rv_v, key: vredsum_vs}
+        spec: vector.red.v_red
+        """,
+    "rv-v/vmseq.vv.yaml": """\
+        mnemonic: vmseq.vv
+        opcode: {repo: riscv-opcodes, extension: rv_v, key: vmseq_vv}
+        spec: vector.cmp.v_cmp
+        """,
+}
+
+V_GOLDEN = {
+    "VADD_VV": [
+        "let Inst{31-26} = 0b000000;",
+        "let Inst{25} = vm;",
+        "let Inst{24-20} = vs2;",
+        "let Inst{19-15} = vs1;",
+        "let Inst{14-12} = 0b000;",
+        "let Inst{11-7} = vd;",
+        "let Inst{6-0} = 0b1010111;",
+    ],
+    "VADD_VX": [
+        "let Inst{19-15} = rs1;",
+        "let Inst{14-12} = 0b100;",
+    ],
+    "VADD_VI": [
+        "let Inst{19-15} = simm5;",
+        "let Inst{14-12} = 0b011;",
+    ],
+    "VSUB_VV": ["let Inst{31-26} = 0b000010;"],
+    "VMUL_VV": [
+        "let Inst{31-26} = 0b100101;",
+        "let Inst{14-12} = 0b010;",
+    ],
+    "VLE32_V": [
+        "let Inst{31-29} = 0b000;",
+        "let Inst{28} = 0b0;",
+        "let Inst{27-26} = 0b00;",
+        "let Inst{25} = vm;",
+        "let Inst{24-20} = 0b00000;",
+        "let Inst{19-15} = rs1;",
+        "let Inst{14-12} = 0b110;",
+        "let Inst{11-7} = vd;",
+        "let Inst{6-0} = 0b0000111;",
+    ],
+    "VSE32_V": [
+        "let Inst{11-7} = vs3;",
+        "let Inst{6-0} = 0b0100111;",
+    ],
+    "VSETVLI": [
+        "let Inst{31} = 0b0;",
+        "let Inst{30-20} = zimm11;",
+        "let Inst{19-15} = rs1;",
+        "let Inst{14-12} = 0b111;",
+        "let Inst{11-7} = rd;",
+    ],
+    "VSETIVLI": [
+        "let Inst{31} = 0b1;",
+        "let Inst{30} = 0b1;",
+        "let Inst{29-20} = zimm10;",
+        "let Inst{19-15} = zimm5;",
+    ],
+    "VSETVL": [
+        "let Inst{31} = 0b1;",
+        "let Inst{30-25} = 0b000000;",
+        "let Inst{24-20} = rs2;",
+        "let Inst{19-15} = rs1;",
+    ],
+    "VMV1R_V": [
+        "let Inst{31-26} = 0b100111;",
+        "let Inst{25} = 0b1;",
+        "let Inst{24-20} = vs2;",
+        "let Inst{19-15} = 0b00000;",
+        "let Inst{14-12} = 0b011;",
+    ],
+    "VREDSUM_VS": ["let Inst{14-12} = 0b010;"],
+    "VMSEQ_VV": [
+        "let Inst{31-26} = 0b011000;",
+        "let Inst{25} = vm;",
+    ],
+}
+
+
+def build_vector_fixture(root: Path) -> Path:
+    target = root / "Target"
+    (target / "auto-td" / "instructions" / "rv-v").mkdir(parents=True)
+    (target / "auto-td" / "taxonomy").mkdir(parents=True)
+    (target / "auto-td" / "config.yaml").write_text(V_CONFIG)
+    (target / "auto-td" / "taxonomy" / "vector.yaml").write_text(V_TAXONOMY)
+    for name, body in V_INSTRUCTIONS.items():
+        (target / "auto-td" / "instructions" / name).write_text(textwrap.dedent(body))
+
+    repo = root / "riscv-opcodes"
+    (repo / "extensions").mkdir(parents=True)
+    (repo / "arg_lut.csv").write_text(V_ARG_LUT)
+    (repo / "extensions" / "rv_v").write_text(RV_V)
+    return target
+
+
+class VectorFixtureCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.target = build_vector_fixture(self.root)
+        self.db = OpcodeDatabase()
+        self.db.add_repo("riscv-opcodes", self.root / "riscv-opcodes")
+        self.specs = load_instructions(self.target, self.db)
+        self.records = emit.render_instrinfo(self.specs, load_config(self.target))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def record_body(self, name: str) -> str:
+        start = self.records.index(f"def RVTRIM_AUTO_{name} :")
+        return self.records[start:self.records.index("\n}", start)]
+
+
+class VectorEncodingTest(VectorFixtureCase):
+    def test_fixture_validates(self):
+        self.assertEqual(len(self.specs), 13)
+        self.assertEqual(validate(self.specs, "RVTRIM_AUTO"), [])
+
+    def test_golden_encodings(self):
+        for name, lines in V_GOLDEN.items():
+            body = self.record_body(name)
+            for line in lines:
+                self.assertIn(line, body, f"{name}: {line}")
+
+    def test_nf_is_forced_to_zero(self):
+        for name in ("VLE32_V", "VSE32_V"):
+            self.assertIn("let Inst{31-29} = 0b000;", self.record_body(name))
+
+    def test_mask_bit_is_a_variable(self):
+        for name in ("VADD_VV", "VLE32_V", "VMSEQ_VV"):
+            self.assertIn("let Inst{25} = vm;", self.record_body(name))
+
+    def test_vsetivli_pins_bits_31_and_30(self):
+        body = self.record_body("VSETIVLI")
+        self.assertIn("let Inst{31} = 0b1;", body)
+        self.assertIn("let Inst{30} = 0b1;", body)
 
 
 if __name__ == "__main__":

@@ -142,6 +142,12 @@ classes declare the 12-/20-bit variable and scatter it themselves, so using the
 larger width would produce different records.  When a rule covers a whole
 variable the bare name is emitted (`imm12`, not `imm12{11-0}`).
 
+Vector fields need no rule of their own: `arg_lut.csv` already carries `vd`,
+`vs1`/`vs2`/`vs3`, `vm` (bit 25), `nf`, `simm5`, `zimm5`, `zimm10` and
+`zimm11`, so the generator emits them as-is.  `nf` is the one exception and is
+forced to zero, which is correct for the unit-stride forms a trimmed backend
+needs; segment forms would have to replace it with a real operand.
+
 Two more rules are structural, not name-based:
 
 * **carry-input mask** — if the taxonomy declares an operand whose class is a
@@ -198,14 +204,16 @@ also has to `set(LLVM_TARGET_DEPENDS <generated file>)`.
 
 ```console
 $ python3 -m unittest discover -s llvm/utils/auto-td/tests -p 'test_*.py'
-Ran 33 tests ... OK
+Ran 38 tests ... OK
 ```
 
 The suite covers the opcode reader, every encoding rule (including the B/J/S
-scatter rules), record naming, declared-empty `predicate`/`sched`, the emitter,
-the guards, and the CLI.
+scatter rules), the vector shapes (`v_vv`/`v_vx`/`v_vi`, unit-stride
+load/store, `vsetvli`/`vsetivli`/`vsetvl`, whole-register move, reduction and
+compare), record naming, declared-empty `predicate`/`sched`, the emitter, the
+guards, and the CLI.
 
-Three external cross-checks back the claims:
+Four external cross-checks back the claims:
 
 * running the tool over the reference corpus (50 instructions) reproduces the
   reference tool's output byte for byte (`AutoTdInstrInfo.inc` and
@@ -215,7 +223,10 @@ Three external cross-checks back the claims:
   with `tests/compare_riscv_records.py`, which compares every `Inst` bit after
   canonicalising record-local variable names;
 * the same 160 instructions assemble to byte-identical objects (and
-  disassemble identically) under `-triple=riscv64` and `-triple=rvtrim64`.
+  disassemble identically) under `-triple=riscv64` and `-triple=rvtrim64`;
+* 13 vector records generated from `rv_v` rows are bit-identical to the
+  backend's hand-written V records (`13 instructions compared, 0 mismatching`
+  with the same comparison script).
 
 ## Deliberate limitations
 
@@ -224,3 +235,7 @@ Three external cross-checks back the claims:
 * The pseudo matrix is a manifest, not generated TableGen.
 * Builtin prototypes are derived from `config.builtins.types`, not guessed from
   the instruction name.
+* Vector records are proven by a synthetic fixture, not wired into RVTrim's
+  build: the hand-written `RVTrimInstrInfoV.td` records still own those names,
+  and switching them over is a separate change that also has to move the
+  selection patterns.
