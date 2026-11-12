@@ -160,6 +160,39 @@ void validate(const Triple &TT, const FeatureBitset &FeatureBits) {
     reportFatalUsageError("RV32 and RV64 can't be combined");
 }
 
+RVTrimProfile getProfile(const MCSubtargetInfo &STI) {
+  if (STI.getFeatureBits()[RVTrim::FeatureStdExtZve64x])
+    return RVTrimProfile::BaseIMA_Zve64x;
+  return RVTrimProfile::BaseIMA;
+}
+
+static StringRef getProfileName(RVTrimProfile P) {
+  switch (P) {
+  case RVTrimProfile::BaseIMA:
+    return "RV64IMA";
+  case RVTrimProfile::BaseIMA_Zve64x:
+    return "RV64IMA_Zve64x";
+  }
+  llvm_unreachable("unknown RVTrim profile");
+}
+
+bool isExtensionAllowed(StringRef Ext, RVTrimProfile P) {
+  static constexpr StringLiteral BaseIMA[] = {
+      "i", "m", "a", "zicsr", "zifencei", "zmmul", "zaamo", "zalrsc"};
+  if (llvm::is_contained(BaseIMA, Ext))
+    return true;
+
+  if (P != RVTrimProfile::BaseIMA_Zve64x)
+    return false;
+
+  // zve64x implies zve32x and zvl64b; zve32x and zvl64b both imply zvl32b.
+  // Keep this list in sync with RISCVFeatures.td and the ImpliedExts table in
+  // RISCVISAInfo.cpp, which is what populates getExtensions().
+  static constexpr StringLiteral Vector[] = {"zve64x", "zve32x", "zvl64b",
+                                             "zvl32b"};
+  return llvm::is_contained(Vector, Ext);
+}
+
 void validateProfile(const MCSubtargetInfo &STI) {
   auto ISAInfoOrErr = parseFeatureBits(STI);
   if (!ISAInfoOrErr) {
@@ -168,14 +201,16 @@ void validateProfile(const MCSubtargetInfo &STI) {
     return;
   }
 
-  static constexpr StringLiteral Allowed[] = {
-      "i", "m", "a", "zicsr", "zifencei", "zmmul", "zaamo", "zalrsc"};
+  RVTrimProfile P = getProfile(STI);
   for (const auto &[Ext, Version] : (*ISAInfoOrErr)->getExtensions()) {
-    if (llvm::is_contained(Allowed, Ext))
+    if (isExtensionAllowed(Ext, P))
       continue;
     reportFatalUsageError(
-        Twine("RVTrim implements only RV64IMA (i, m, a, zicsr, zifencei); "
-              "extension '") + Ext + "' is outside the trimmed profile");
+        Twine("RVTrim implements only ") + getProfileName(P) +
+        (P == RVTrimProfile::BaseIMA_Zve64x
+             ? " (i, m, a, zicsr, zifencei, zve64x); extension '"
+             : " (i, m, a, zicsr, zifencei); extension '") +
+        Ext + "' is outside the trimmed profile");
   }
 }
 

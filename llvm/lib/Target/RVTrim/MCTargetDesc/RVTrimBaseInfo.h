@@ -753,9 +753,22 @@ namespace RVTrimFeatures {
 // triple. Exits with report_fatal_error if not.
 void validate(const Triple &TT, const FeatureBitset &FeatureBits);
 
-// Validates that the resolved subtarget features stay inside the RV64IMA
-// profile this target implements (i, m, a, zicsr, zifencei, plus the
-// extensions implied by m/a). Exits with report_fatal_error otherwise.
+// Profiles this target implements. A profile is derived from the resolved
+// subtarget features, never from the spelling of -mattr, so per-function
+// subtargets are validated against their own feature set.
+enum class RVTrimProfile {
+  BaseIMA,        // i, m, a, zicsr, zifencei (plus implied zmmul/zaamo/zalrsc)
+  BaseIMA_Zve64x, // BaseIMA + the integer vector extension and implications
+};
+
+// Returns the profile implied by \p STI's feature bits.
+RVTrimProfile getProfile(const MCSubtargetInfo &STI);
+
+// Returns true if \p Ext is part of \p P.
+bool isExtensionAllowed(StringRef Ext, RVTrimProfile P);
+
+// Validates that the resolved subtarget features stay inside the profile this
+// target implements. Exits with report_fatal_error otherwise.
 void validateProfile(const MCSubtargetInfo &STI);
 
 llvm::Expected<std::unique_ptr<RISCVISAInfo>>

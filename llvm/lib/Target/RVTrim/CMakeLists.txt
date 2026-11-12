@@ -5,6 +5,10 @@ add_llvm_component_group(RVTrim)
 #
 # The generated file is included by RVTrimInstrInfo.td, so it must exist before
 # any TableGen invocation that parses RVTrim.td.
+#
+# The backend implements two profiles: RV64IMA (default) and RV64IMA_Zve64x,
+# which adds the integer vector extension (zve64x). Both are enforced by
+# RVTrimFeatures::validateProfile().
 #===----------------------------------------------------------------------===//
 
 set(RVTRIM_AUTO_TD_DIR ${CMAKE_CURRENT_BINARY_DIR}/auto-td)
