@@ -120,6 +120,13 @@ void MiniRVSubtarget::initLibcallLoweringInfo(
   Info.setLibcallImpl(RTLIB::SREM_I128, RTLIB::impl___modti3);
   Info.setLibcallImpl(RTLIB::UREM_I128, RTLIB::impl___umodti3);
 
+  // The stack protector reads the guard from a global and calls
+  // __stack_chk_fail when the copy in the frame does not match.
+  Info.setLibcallImpl(RTLIB::STACK_CHECK_GUARD,
+                      RTLIB::impl___stack_chk_guard);
+  Info.setLibcallImpl(RTLIB::STACKPROTECTOR_CHECK_FAIL,
+                      RTLIB::impl___stack_chk_fail);
+
   // There is no floating-point unit, so every floating-point operation is
   // expanded into a call to the soft-float helpers.
   static const struct {
