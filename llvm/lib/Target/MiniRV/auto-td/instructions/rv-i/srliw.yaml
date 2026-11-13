@@ -1,0 +1,5 @@
+mnemonic: srliw
+opcode: {repo: riscv-opcodes, extension: rv_i, key: srliw}
+spec: minirv.core.i_type_shift32
+domain: rv-i
+status: auto_full

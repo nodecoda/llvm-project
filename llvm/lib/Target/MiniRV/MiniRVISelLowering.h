@@ -24,6 +24,8 @@ public:
 
   SDValue LowerBRCOND(SDValue Op, SelectionDAG &DAG) const;
 
+  SDValue LowerSELECT_CC(SDValue Op, SelectionDAG &DAG) const;
+
   SDValue LowerBranchCC(SDValue Chain, SDValue LHS, SDValue RHS,
                         ISD::CondCode CC, SDValue Dest, const SDLoc &DL,
                         SelectionDAG &DAG) const;
@@ -45,12 +47,20 @@ public:
   SDValue LowerCall(TargetLowering::CallLoweringInfo &CLI,
                     SmallVectorImpl<SDValue> &InVals) const override;
 
+  void ReplaceNodeResults(SDNode *N, SmallVectorImpl<SDValue> &Results,
+                          SelectionDAG &DAG) const override;
+
   bool CanLowerReturn(CallingConv::ID CallConv, MachineFunction &MF,
                       bool IsVarArg,
                       const SmallVectorImpl<ISD::OutputArg> &Outs,
                       LLVMContext &Context, const Type *RetTy) const override;
 
   const char *getTargetNodeName(unsigned Opcode) const override;
+
+  unsigned ComputeNumSignBitsForTargetNode(SDValue Op,
+                                           const APInt &DemandedElts,
+                                           const SelectionDAG &DAG,
+                                           unsigned Depth) const override;
 };
 
 } // end namespace llvm

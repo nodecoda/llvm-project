@@ -127,8 +127,8 @@ unsigned MiniRVInstrInfo::insertBranch(
 }
 
 MiniRVInstrInfo::MiniRVInstrInfo(const MiniRVSubtarget &STI)
-    : MiniRVGenInstrInfo(STI, RI, /*CallFrameSetupOpcode=*/0,
-                         /*CallFrameDestroyOpcode=*/0),
+    : MiniRVGenInstrInfo(STI, RI, MiniRV::ADJCALLSTACKDOWN,
+                         MiniRV::ADJCALLSTACKUP),
       RI() {}
 
 void MiniRVInstrInfo::storeRegToStackSlot(

@@ -47,9 +47,9 @@ void MiniRVDAGToDAGISel::Select(SDNode *N) {
   }
 
   // A constant has no pattern: the corpus has no "load immediate" record, so
-  // it is built from the two records that do exist, LUI and ADDI.  Anything
-  // wider than a signed 32-bit immediate would need shifts to assemble, which
-  // is why it is rejected rather than silently truncated.
+  // it is built from the records that do exist, LUI and ADDI.  Anything wider
+  // than 32 bits would need a full shift sequence to assemble, which is why it
+  // is rejected rather than silently truncated.
   if (N->getOpcode() == ISD::Constant) {
     auto Val = cast<ConstantSDNode>(N)->getSExtValue();
     SDLoc DL(N);
@@ -57,28 +57,46 @@ void MiniRVDAGToDAGISel::Select(SDNode *N) {
 
     if (isInt<12>(Val)) {
       SDValue Zero = CurDAG->getRegister(MiniRV::X0, VT);
-      ReplaceNode(
-          N, CurDAG->getMachineNode(MiniRV::ADDI, DL, VT, Zero,
-                                    CurDAG->getTargetConstant(Val, DL, VT)));
+      ReplaceNode(N, CurDAG->getMachineNode(
+                         MiniRV::ADDI, DL, VT, Zero,
+                         CurDAG->getTargetConstant(Val, DL, MVT::i64)));
       return;
     }
 
-    if (!isInt<32>(Val))
-      report_fatal_error("MiniRV cannot materialise a 64-bit constant");
+    // A zero-extended 32-bit constant with bit 31 set (the promoted form of an
+    // i32 immediate such as 0x80000000) is not a signed 32-bit value.  LUI
+    // sign-extends on RV64, so build the sign-extended form and clear the
+    // upper word with a shift pair afterwards.
+    bool ClearUpperWord = false;
+    if (!isInt<32>(Val)) {
+      if (!isUInt<32>(Val))
+        report_fatal_error("MiniRV cannot materialise a 64-bit constant");
+      Val -= int64_t(1) << 32;
+      ClearUpperWord = true;
+    }
 
     int64_t Hi = (Val + 0x800) >> 12;
     int64_t Lo = Val - (Hi << 12);
-    SDValue HiPart =
-        SDValue(CurDAG->getMachineNode(MiniRV::LUI, DL, VT,
-                                       CurDAG->getTargetConstant(Hi, DL, VT)),
-                0);
-    if (!Lo) {
-      ReplaceNode(N, HiPart.getNode());
-      return;
+    SDValue HiPart = SDValue(
+        CurDAG->getMachineNode(MiniRV::LUI, DL, VT,
+                               CurDAG->getTargetConstant(Hi, DL, MVT::i64)),
+        0);
+    SDValue Res = HiPart;
+    if (Lo)
+      Res = SDValue(
+          CurDAG->getMachineNode(MiniRV::ADDI, DL, VT, HiPart,
+                                 CurDAG->getTargetConstant(Lo, DL, MVT::i64)),
+          0);
+
+    if (ClearUpperWord) {
+      SDValue Shift32 = CurDAG->getTargetConstant(32, DL, MVT::i64);
+      Res = SDValue(CurDAG->getMachineNode(MiniRV::SLLI, DL, VT, Res, Shift32),
+                    0);
+      Res = SDValue(CurDAG->getMachineNode(MiniRV::SRLI, DL, VT, Res, Shift32),
+                    0);
     }
-    ReplaceNode(N,
-                CurDAG->getMachineNode(MiniRV::ADDI, DL, VT, HiPart,
-                                       CurDAG->getTargetConstant(Lo, DL, VT)));
+
+    ReplaceNode(N, Res.getNode());
     return;
   }
 

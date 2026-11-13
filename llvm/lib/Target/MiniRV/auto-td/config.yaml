@@ -1,6 +1,6 @@
-# auto-td configuration for MiniRV, a small RV64I target.
+# auto-td configuration for MiniRV, a small RV64IM target.
 #
-# The corpus covers the RV64I integer core: register-register, register-immediate,
+# The corpus covers the RV64IM integer core: register-register, register-immediate,
 # load, store, branch and jump instructions.  It exists to show that a second
 # target needs only this directory plus the llvm_autotd_generate() call in
 # CMakeLists.txt.
@@ -11,10 +11,12 @@ cpp_namespace: MiniRV
 
 domains:
   rv-i: {predicate: null}
+  rv-m: {predicate: null}
 
 # Coverage gate: every row of this extension file must be generated from a
 # YAML instruction.
 coverage:
   extensions:
     - rv_i
+    - rv_m
   retained_handwritten: []

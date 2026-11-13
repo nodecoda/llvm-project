@@ -92,6 +92,12 @@ static DecodeStatus DecodeUImm6(MCInst &MI, uint64_t Imm, uint64_t Address,
   return MCDisassembler::Success;
 }
 
+static DecodeStatus DecodeUImm5(MCInst &MI, uint64_t Imm, uint64_t Address,
+                               const MCDisassembler *Decoder) {
+  MI.addOperand(MCOperand::createImm(static_cast<int64_t>(Imm)));
+  return MCDisassembler::Success;
+}
+
 /// The B-format field holds bits [12:1] of the offset; bit 0 is always zero.
 static DecodeStatus DecodeSImm13Lsb0(MCInst &MI, uint64_t Imm, uint64_t Address,
                                     const MCDisassembler *Decoder) {

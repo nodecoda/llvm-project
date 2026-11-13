@@ -6,9 +6,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Lowering is intentionally narrow: the corpus covers 64-bit integer
-// arithmetic, and there is no memory, branch or call instruction, so anything
-// that would need one is reported instead of being miscompiled.
+// Lowering covers the RV64IM integer core: 64-bit and 32-bit arithmetic,
+// byte/halfword/word memory access, branches, selects, calls (including stack
+// arguments) and returns.  i8, i16 and i32 are promoted to i64, which keeps
+// the DAG free of sub-word types while the narrow memory instructions and the
+// *W arithmetic instructions still model the smaller widths.
 //
 //===----------------------------------------------------------------------===//
 
@@ -24,6 +26,8 @@
 #include "llvm/CodeGen/SelectionDAG.h"
 #include "llvm/Support/ErrorHandling.h"
 
+#include <tuple>
+
 using namespace llvm;
 
 #define GET_CALLING_CONV_IMPL
@@ -32,21 +36,50 @@ using namespace llvm;
 MiniRVTargetLowering::MiniRVTargetLowering(const TargetMachine &TM,
                                            const MiniRVSubtarget &STI)
     : TargetLowering(TM, STI) {
+  // Only XLEN is a legal integer type; i8/i16/i32 are promoted to i64.  The
+  // 32-bit operations that have a *W instruction are custom-lowered so that
+  // the promotion does not turn them into 64-bit operations.
   addRegisterClass(MVT::i64, &MiniRV::GPRRegClass);
 
-  // There is no multiply or divide instruction.
-  for (MVT VT : {MVT::i64}) {
-    setOperationAction(ISD::MUL, VT, Expand);
-    setOperationAction(ISD::SDIV, VT, Expand);
-    setOperationAction(ISD::UDIV, VT, Expand);
-    setOperationAction(ISD::SREM, VT, Expand);
-    setOperationAction(ISD::UREM, VT, Expand);
-  }
+  // RV64M supplies the multiply, divide and remainder instructions.
+  setOperationAction(ISD::MUL, MVT::i64, Legal);
+  setOperationAction(ISD::SDIV, MVT::i64, Legal);
+  setOperationAction(ISD::UDIV, MVT::i64, Legal);
+  setOperationAction(ISD::SREM, MVT::i64, Legal);
+  setOperationAction(ISD::UREM, MVT::i64, Legal);
+
+  // The *W instructions only exist for arithmetic and shifts.  The bitwise
+  // operations stay 64-bit instructions, so their i32 form is custom-lowered
+  // to a 64-bit operation followed by a sign extension of the low word.
+  for (unsigned Opc :
+       {ISD::ADD, ISD::SUB, ISD::SHL, ISD::SRL, ISD::SRA, ISD::MUL, ISD::SDIV,
+        ISD::UDIV, ISD::SREM, ISD::UREM, ISD::AND, ISD::OR, ISD::XOR})
+    setOperationAction(Opc, MVT::i32, Custom);
+
+  // Narrow loads and stores are promoted to i64; the extend/truncate flavour
+  // of the node selects LB/LBU/LH/LHU/LW/LWU and SB/SH/SW.
+  setLoadExtAction({ISD::SEXTLOAD, ISD::ZEXTLOAD, ISD::EXTLOAD}, MVT::i64,
+                   MVT::i8, Legal);
+  setLoadExtAction({ISD::SEXTLOAD, ISD::ZEXTLOAD, ISD::EXTLOAD}, MVT::i64,
+                   MVT::i16, Legal);
+  setLoadExtAction({ISD::SEXTLOAD, ISD::ZEXTLOAD, ISD::EXTLOAD}, MVT::i64,
+                   MVT::i32, Legal);
+  setTruncStoreAction(MVT::i64, MVT::i8, Legal);
+  setTruncStoreAction(MVT::i64, MVT::i16, Legal);
+  setTruncStoreAction(MVT::i64, MVT::i32, Legal);
+
+  // There is no conditional move in the corpus: a select is first rewritten
+  // to SELECT_CC, which is then lowered to mask arithmetic.
+  setOperationAction(ISD::SELECT, MVT::i64, Expand);
+  setOperationAction(ISD::SELECT, MVT::i32, Expand);
+  setOperationAction(ISD::SELECT_CC, MVT::i64, Custom);
+  setOperationAction(ISD::SELECT_CC, MVT::i32, Custom);
 
   setOperationAction(ISD::BRCOND, MVT::Other, Custom);
   // BR_CC is expanded into BRCOND plus a comparison, which is then fused back
   // into one branch by LowerBRCOND.
   setOperationAction(ISD::BR_CC, MVT::i64, Expand);
+  setOperationAction(ISD::BR_CC, MVT::i32, Expand);
 
   setStackPointerRegisterToSaveRestore(MiniRV::X2);
   setBooleanContents(ZeroOrOneBooleanContent);
@@ -68,8 +101,93 @@ SDValue MiniRVTargetLowering::LowerOperation(SDValue Op,
   switch (Op.getOpcode()) {
   case ISD::BRCOND:
     return LowerBRCOND(Op, DAG);
+  case ISD::SELECT_CC:
+    return LowerSELECT_CC(Op, DAG);
   default:
     llvm_unreachable("MiniRV does not custom-lower this operation");
+  }
+}
+
+/// Turn an i32 operation into its *W form.  The operands are any-extended:
+/// the W instructions only read the low 32 bits, and they write a
+/// sign-extended 32-bit result, which is the representation an i32 value has
+/// after promotion.
+void MiniRVTargetLowering::ReplaceNodeResults(SDNode *N,
+                                              SmallVectorImpl<SDValue> &Results,
+                                              SelectionDAG &DAG) const {
+  SDLoc DL(N);
+
+  auto LowerW = [&](unsigned Opcode) {
+    SDValue LHS = DAG.getNode(ISD::ANY_EXTEND, DL, MVT::i64, N->getOperand(0));
+    SDValue RHS = DAG.getNode(ISD::ANY_EXTEND, DL, MVT::i64, N->getOperand(1));
+    SDValue Res = DAG.getNode(Opcode, DL, MVT::i64, LHS, RHS);
+    Results.push_back(DAG.getNode(ISD::TRUNCATE, DL, N->getValueType(0), Res));
+  };
+
+  // The bitwise operations have no *W instruction.  They are done in 64 bits
+  // and the result is sign-extended from bit 31, which is the representation
+  // of an i32 value once promoted.  An operand that is a constant is
+  // re-extended from its low word first: the type legalizer may have
+  // zero-extended it, and a zero-extended 32-bit constant with bit 31 set
+  // does not fit the LUI+ADDI materialiser.
+  auto LowerBits = [&](unsigned Opcode) {
+    auto Promoted = [&](SDValue V) {
+      SDValue Ext = DAG.getNode(ISD::ANY_EXTEND, DL, MVT::i64, V);
+      if (auto *C = dyn_cast<ConstantSDNode>(Ext))
+        return DAG.getConstant(C->getAPIntValue().trunc(32).sext(64), DL,
+                               MVT::i64);
+      return Ext;
+    };
+    SDValue LHS = Promoted(N->getOperand(0));
+    SDValue RHS = Promoted(N->getOperand(1));
+    SDValue Res = DAG.getNode(Opcode, DL, MVT::i64, LHS, RHS);
+    Res = DAG.getNode(ISD::SIGN_EXTEND_INREG, DL, MVT::i64, Res,
+                      DAG.getValueType(MVT::i32));
+    Results.push_back(DAG.getNode(ISD::TRUNCATE, DL, N->getValueType(0), Res));
+  };
+
+  switch (N->getOpcode()) {
+  case ISD::ADD:
+    LowerW(MiniRVISD::ADDW);
+    break;
+  case ISD::SUB:
+    LowerW(MiniRVISD::SUBW);
+    break;
+  case ISD::SHL:
+    LowerW(MiniRVISD::SHLW);
+    break;
+  case ISD::SRL:
+    LowerW(MiniRVISD::SRLW);
+    break;
+  case ISD::SRA:
+    LowerW(MiniRVISD::SRAW);
+    break;
+  case ISD::MUL:
+    LowerW(MiniRVISD::MULW);
+    break;
+  case ISD::SDIV:
+    LowerW(MiniRVISD::DIVW);
+    break;
+  case ISD::UDIV:
+    LowerW(MiniRVISD::DIVUW);
+    break;
+  case ISD::SREM:
+    LowerW(MiniRVISD::REMW);
+    break;
+  case ISD::UREM:
+    LowerW(MiniRVISD::REMUW);
+    break;
+  case ISD::AND:
+    LowerBits(ISD::AND);
+    break;
+  case ISD::OR:
+    LowerBits(ISD::OR);
+    break;
+  case ISD::XOR:
+    LowerBits(ISD::XOR);
+    break;
+  default:
+    llvm_unreachable("MiniRV does not custom-lower this i32 operation");
   }
 }
 
@@ -107,6 +225,31 @@ SDValue MiniRVTargetLowering::LowerBranchCC(SDValue Chain, SDValue LHS,
                      DAG.getCondCode(CC), Dest);
 }
 
+/// A select has to be built from arithmetic: the corpus has no conditional
+/// move.  A comparison yields zero or one, so negating it produces an all-ones
+/// mask for the true value, and the result is
+///
+///     false ^ ((true ^ false) & mask)
+SDValue MiniRVTargetLowering::LowerSELECT_CC(SDValue Op,
+                                             SelectionDAG &DAG) const {
+  SDLoc DL(Op);
+  EVT VT = Op.getValueType();
+  assert(VT == getPointerTy(DAG.getDataLayout()) &&
+         "select_cc is legalised after type legalisation");
+
+  SDValue Cond = DAG.getNode(
+      ISD::SETCC, DL, VT, Op.getOperand(0), Op.getOperand(1),
+      DAG.getCondCode(cast<CondCodeSDNode>(Op.getOperand(4))->get()));
+  SDValue TrueVal = Op.getOperand(2);
+  SDValue FalseVal = Op.getOperand(3);
+
+  SDValue Mask =
+      DAG.getNode(ISD::SUB, DL, VT, DAG.getConstant(0, DL, VT), Cond);
+  SDValue Diff = DAG.getNode(ISD::XOR, DL, VT, TrueVal, FalseVal);
+  return DAG.getNode(ISD::XOR, DL, VT, FalseVal,
+                     DAG.getNode(ISD::AND, DL, VT, Diff, Mask));
+}
+
 /// A condition that is not a comparison is compared against zero.
 SDValue MiniRVTargetLowering::LowerBRCOND(SDValue Op, SelectionDAG &DAG) const {
   SDValue Chain = Op.getOperand(0);
@@ -135,16 +278,49 @@ SDValue MiniRVTargetLowering::LowerFormalArguments(
   CCInfo.AnalyzeFormalArguments(Ins, CC_MiniRV);
 
   MachineRegisterInfo &RegInfo = MF.getRegInfo();
+  EVT PtrVT = getPointerTy(DAG.getDataLayout());
   for (CCValAssign &VA : ArgLocs) {
-    if (!VA.isRegLoc())
-      report_fatal_error("MiniRV cannot read a stack argument yet");
+    SDValue Arg;
+    if (VA.isRegLoc()) {
+      // Go through a virtual register so that the physical argument register
+      // is recorded as live-in to the function.
+      Register VReg = RegInfo.createVirtualRegister(&MiniRV::GPRRegClass);
+      RegInfo.addLiveIn(VA.getLocReg(), VReg);
+      Arg = DAG.getCopyFromReg(Chain, DL, VReg, VA.getLocVT());
+      Chain = Arg.getValue(1);
+    } else {
+      assert(VA.isMemLoc() &&
+             "argument is neither in a register nor on the stack");
+      // Incoming stack arguments live above the return address, so a fixed
+      // object addressed from the incoming stack pointer reads them.  The
+      // calling convention assigns the register type, which is XLEN, so the
+      // original IR type says how much of the slot is defined: a narrow
+      // argument is read with LB/LH/LW, which also widens it to XLEN.
+      unsigned Offset = VA.getLocMemOffset();
+      const ISD::InputArg &IA = Ins[VA.getValNo()];
+      EVT ValVT = IA.ArgVT;
+      int FI;
+      if (ValVT.isInteger() && ValVT.getSizeInBits() < 64) {
+        FI = MF.getFrameInfo().CreateFixedObject(ValVT.getStoreSize(), Offset,
+                                                 /*IsImmutable=*/true);
+        SDValue FIN = DAG.getTargetFrameIndex(FI, PtrVT);
+        ISD::LoadExtType Ext =
+            IA.Flags.isZExt() ? ISD::ZEXTLOAD : ISD::SEXTLOAD;
+        Arg = DAG.getExtLoad(Ext, DL, VA.getLocVT(), Chain, FIN,
+                             MachinePointerInfo::getFixedStack(MF, FI), ValVT);
+      } else {
+        FI = MF.getFrameInfo().CreateFixedObject(VA.getLocVT().getStoreSize(),
+                                                 Offset, /*IsImmutable=*/true);
+        SDValue FIN = DAG.getTargetFrameIndex(FI, PtrVT);
+        Arg = DAG.getLoad(VA.getLocVT(), DL, Chain, FIN,
+                          MachinePointerInfo::getFixedStack(MF, FI));
+      }
+      Chain = Arg.getValue(1);
+    }
 
-    // Go through a virtual register so that the physical argument register is
-    // recorded as live-in to the function.
-    Register VReg = RegInfo.createVirtualRegister(&MiniRV::GPRRegClass);
-    RegInfo.addLiveIn(VA.getLocReg(), VReg);
-    SDValue Arg = DAG.getCopyFromReg(Chain, DL, VReg, VA.getLocVT());
-    Chain = Arg.getValue(1);
+    // The convention passes i8/i16/i32 values sign-extended in XLEN.
+    if (Arg.getValueType() != VA.getValVT())
+      Arg = DAG.getNode(ISD::TRUNCATE, DL, VA.getValVT(), Arg);
     InVals.push_back(Arg);
   }
 
@@ -176,7 +352,10 @@ MiniRVTargetLowering::LowerReturn(SDValue Chain, CallingConv::ID CallConv,
   for (unsigned I = 0; I != RVLocs.size(); ++I) {
     CCValAssign &VA = RVLocs[I];
     assert(VA.isRegLoc() && "MiniRV returns in registers only");
-    Chain = DAG.getCopyToReg(Chain, DL, VA.getLocReg(), OutVals[I], Glue);
+    SDValue Val = OutVals[I];
+    if (Val.getValueType() != VA.getLocVT())
+      Val = DAG.getNode(ISD::SIGN_EXTEND, DL, VA.getLocVT(), Val);
+    Chain = DAG.getCopyToReg(Chain, DL, VA.getLocReg(), Val, Glue);
     Glue = Chain.getValue(1);
     RetOps.push_back(DAG.getRegister(VA.getLocReg(), VA.getLocVT()));
   }
@@ -208,13 +387,16 @@ MiniRVTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
 
   MachineFunction &MF = DAG.getMachineFunction();
 
-  // Analyse the arguments: eight registers, nothing on the stack.
+  // Analyse the arguments: eight registers, the rest on the stack.
   SmallVector<CCValAssign, 16> ArgLocs;
   CCState CCInfo(CallConv, IsVarArg, MF, ArgLocs, *DAG.getContext());
   CCInfo.AnalyzeCallOperands(Outs, CC_MiniRV);
 
-  if (CCInfo.getStackSize() != 0)
-    report_fatal_error("MiniRV cannot pass arguments on the stack");
+  // The outgoing argument area is reserved in the prologue, so this only
+  // announces the maximum size to the frame machinery.
+  unsigned NumBytes = CCInfo.getStackSize();
+  if (NumBytes)
+    Chain = DAG.getCALLSEQ_START(Chain, NumBytes, 0, DL);
 
   // The callee has to be a symbol: the corpus has no way to compute the
   // address of a function, so an indirect call cannot be lowered.  A direct
@@ -228,16 +410,45 @@ MiniRVTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   else
     report_fatal_error("MiniRV can only call a direct symbol");
 
-  // Move the arguments into their registers, chaining the copies so that the
-  // call reads them in order.
-  SDValue Glue;
-  SmallVector<SDValue, 8> ArgRegs;
+  // Stack arguments are written first, then the register arguments are
+  // copied.  Keeping the stores on a TokenFactor (rather than chaining them
+  // through the argument copies) matches the shape the scheduler expects.
+  SDValue StackPtr;
+  SmallVector<SDValue, 8> MemOpChains;
+  SmallVector<std::tuple<Register, SDValue, EVT>, 8> RegsToPass;
   for (unsigned I = 0, E = ArgLocs.size(); I != E; ++I) {
     CCValAssign &VA = ArgLocs[I];
-    assert(VA.isRegLoc() && "stack argument in a call");
-    Chain = DAG.getCopyToReg(Chain, DL, VA.getLocReg(), OutVals[I], Glue);
+    SDValue Val = OutVals[I];
+    if (Val.getValueType() != VA.getLocVT())
+      Val = DAG.getNode(ISD::SIGN_EXTEND, DL, VA.getLocVT(), Val);
+
+    if (VA.isRegLoc()) {
+      RegsToPass.emplace_back(VA.getLocReg(), Val, VA.getLocVT());
+      continue;
+    }
+
+    assert(VA.isMemLoc() &&
+           "argument is neither in a register nor on the stack");
+    // With a reserved call frame the outgoing slots start at the current SP.
+    if (!StackPtr.getNode())
+      StackPtr = DAG.getCopyFromReg(Chain, DL, MiniRV::X2, PtrVT);
+    SDValue Address =
+        DAG.getNode(ISD::ADD, DL, PtrVT, StackPtr,
+                    DAG.getIntPtrConstant(VA.getLocMemOffset(), DL));
+    MemOpChains.push_back(
+        DAG.getStore(Chain, DL, Val, Address,
+                     MachinePointerInfo::getStack(MF, VA.getLocMemOffset())));
+  }
+
+  if (!MemOpChains.empty())
+    Chain = DAG.getNode(ISD::TokenFactor, DL, MVT::Other, MemOpChains);
+
+  SDValue Glue;
+  SmallVector<SDValue, 8> ArgRegs;
+  for (auto &[Reg, Val, VT] : RegsToPass) {
+    Chain = DAG.getCopyToReg(Chain, DL, Reg, Val, Glue);
     Glue = Chain.getValue(1);
-    ArgRegs.push_back(DAG.getRegister(VA.getLocReg(), VA.getLocVT()));
+    ArgRegs.push_back(DAG.getRegister(Reg, VT));
   }
 
   SDVTList NodeTys = DAG.getVTList(MVT::Other, MVT::Glue);
@@ -261,6 +472,13 @@ MiniRVTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   Chain = DAG.getNode(MiniRVISD::CALL, DL, NodeTys, Ops);
   Glue = Chain.getValue(1);
 
+  // Release the reserved call frame.  The pseudo is erased by PEI because the
+  // space was already allocated in the prologue.
+  if (NumBytes) {
+    Chain = DAG.getCALLSEQ_END(Chain, NumBytes, 0, Glue, DL);
+    Glue = Chain.getValue(1);
+  }
+
   // Copy the result out of x10.
   SmallVector<CCValAssign, 4> RVLocs;
   CCState RetCCInfo(CallConv, IsVarArg, MF, RVLocs, *DAG.getContext());
@@ -270,10 +488,37 @@ MiniRVTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
         DAG.getCopyFromReg(Chain, DL, VA.getLocReg(), VA.getLocVT(), Glue);
     Chain = Ret.getValue(1);
     Glue = Ret.getValue(2);
-    InVals.push_back(Ret.getValue(0));
+    SDValue Val = Ret.getValue(0);
+    if (Val.getValueType() != VA.getValVT())
+      Val = DAG.getNode(ISD::TRUNCATE, DL, VA.getValVT(), Val);
+    InVals.push_back(Val);
   }
 
   return Chain;
+}
+
+/// The *W target nodes all sign-extend bit 31 into the upper word, so the
+/// DAG combiner can drop the explicit sign extension that an i32 value needs
+/// after promotion.
+unsigned MiniRVTargetLowering::ComputeNumSignBitsForTargetNode(
+    SDValue Op, const APInt &DemandedElts, const SelectionDAG &DAG,
+    unsigned Depth) const {
+  switch (Op.getOpcode()) {
+  case MiniRVISD::ADDW:
+  case MiniRVISD::SUBW:
+  case MiniRVISD::SHLW:
+  case MiniRVISD::SRLW:
+  case MiniRVISD::SRAW:
+  case MiniRVISD::MULW:
+  case MiniRVISD::DIVW:
+  case MiniRVISD::DIVUW:
+  case MiniRVISD::REMW:
+  case MiniRVISD::REMUW:
+    // Bits 63..31 are all equal to bit 31.
+    return 33;
+  default:
+    return 1;
+  }
 }
 
 const char *MiniRVTargetLowering::getTargetNodeName(unsigned Opcode) const {
@@ -284,6 +529,26 @@ const char *MiniRVTargetLowering::getTargetNodeName(unsigned Opcode) const {
     return "MiniRVISD::CALL";
   case MiniRVISD::RET:
     return "MiniRVISD::RET";
+  case MiniRVISD::ADDW:
+    return "MiniRVISD::ADDW";
+  case MiniRVISD::SUBW:
+    return "MiniRVISD::SUBW";
+  case MiniRVISD::SHLW:
+    return "MiniRVISD::SHLW";
+  case MiniRVISD::SRLW:
+    return "MiniRVISD::SRLW";
+  case MiniRVISD::SRAW:
+    return "MiniRVISD::SRAW";
+  case MiniRVISD::MULW:
+    return "MiniRVISD::MULW";
+  case MiniRVISD::DIVW:
+    return "MiniRVISD::DIVW";
+  case MiniRVISD::DIVUW:
+    return "MiniRVISD::DIVUW";
+  case MiniRVISD::REMW:
+    return "MiniRVISD::REMW";
+  case MiniRVISD::REMUW:
+    return "MiniRVISD::REMUW";
   default:
     return nullptr;
   }

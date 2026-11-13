@@ -24,6 +24,7 @@ class MiniRVImmAsmOperand<string name, string predicate> : AsmOperandClass {
 def SImm12AsmOperand : MiniRVImmAsmOperand<"SImm12", "isSImm12">;
 def UImm20AsmOperand : MiniRVImmAsmOperand<"UImm20", "isUImm20">;
 def UImm6AsmOperand : MiniRVImmAsmOperand<"UImm6", "isUImm6">;
+def UImm5AsmOperand : MiniRVImmAsmOperand<"UImm5", "isUImm5">;
 
 // A branch target may be a label, so its parser predicate also accepts an
 // expression that is not an absolute constant.
@@ -53,10 +54,16 @@ def uimm20 : Operand<i64> {
   let DecoderMethod = "DecodeUImm20";
 }
 
-// Shift amounts are six bits on RV64 and are never negative.
+// Shift amounts are six bits on RV64 and are never negative.  The W-form
+// shifts take five bits.
 def uimm6 : Operand<i64>, ImmLeaf<i64, [{ return isUInt<6>(Imm); }]> {
   let ParserMatchClass = UImm6AsmOperand;
   let DecoderMethod = "DecodeUImm6";
+}
+
+def uimm5 : Operand<i64>, ImmLeaf<i64, [{ return isUInt<5>(Imm); }]> {
+  let ParserMatchClass = UImm5AsmOperand;
+  let DecoderMethod = "DecodeUImm5";
 }
 
 // Branch and jump targets are PC-relative offsets whose low bit is implicit.
@@ -104,6 +111,35 @@ def simm21_lsb0_bb : MiniRVTargetOperand {
 }
 
 include "auto-td/AutoTdInstrInfo.inc"
+
+//===----------------------------------------------------------------------===//
+// Call frame pseudos
+//===----------------------------------------------------------------------===//
+//
+// The outgoing argument area is reserved once, in the prologue: MiniRV has no
+// dynamic allocas, so hasReservedCallFrame() is true and these pseudos are
+// erased by PEI.  Their only job is to tell the frame machinery how much
+// space the largest call needs.
+
+def SDT_MiniRVCallSeqStart : SDCallSeqStart<[SDTCisVT<0, i64>,
+                                            SDTCisVT<1, i64>]>;
+def SDT_MiniRVCallSeqEnd : SDCallSeqEnd<[SDTCisVT<0, i64>, SDTCisVT<1, i64>]>;
+
+def callseq_start : SDNode<"ISD::CALLSEQ_START", SDT_MiniRVCallSeqStart,
+                           [SDNPHasChain, SDNPOutGlue]>;
+def callseq_end : SDNode<"ISD::CALLSEQ_END", SDT_MiniRVCallSeqEnd,
+                         [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue]>;
+
+let isCodeGenOnly = 1, Defs = [X2], Uses = [X2] in {
+def ADJCALLSTACKDOWN : MiniRVInst<(outs), (ins i64imm:$amt1, i64imm:$amt2),
+                                  "#ADJCALLSTACKDOWN", "$amt1, $amt2",
+                                  [(callseq_start timm:$amt1, timm:$amt2)],
+                                  InstFormatI>;
+def ADJCALLSTACKUP : MiniRVInst<(outs), (ins i64imm:$amt1, i64imm:$amt2),
+                                "#ADJCALLSTACKUP", "$amt1, $amt2",
+                                [(callseq_end timm:$amt1, timm:$amt2)],
+                                InstFormatI>;
+}
 
 //===----------------------------------------------------------------------===//
 // SelectionDAG support
@@ -170,30 +206,93 @@ def PseudoBR : MiniRVInst<(outs), (ins simm21_lsb0:$imm20), "j", "$imm20",
 }
 
 //===----------------------------------------------------------------------===//
+// 32-bit operations
+//===----------------------------------------------------------------------===//
+//
+// i32 is not a legal type: the type legalizer promotes it to i64.  These
+// target nodes preserve the fact that the operation was originally 32 bits
+// wide, so that the selector can pick the *W form instead of silently doing a
+// 64-bit operation (which would lose the 32-bit wraparound semantics).
+
+def SDT_MiniRVBinOpW : SDTypeProfile<1, 2, [SDTCisSameAs<0, 1>,
+                                            SDTCisSameAs<0, 2>,
+                                            SDTCisVT<0, i64>]>;
+
+def MiniRVaddw : SDNode<"MiniRVISD::ADDW", SDT_MiniRVBinOpW>;
+def MiniRVsubw : SDNode<"MiniRVISD::SUBW", SDT_MiniRVBinOpW>;
+def MiniRVshlw : SDNode<"MiniRVISD::SHLW", SDT_MiniRVBinOpW>;
+def MiniRVsrlw : SDNode<"MiniRVISD::SRLW", SDT_MiniRVBinOpW>;
+def MiniRVsraw : SDNode<"MiniRVISD::SRAW", SDT_MiniRVBinOpW>;
+def MiniRVmulw : SDNode<"MiniRVISD::MULW", SDT_MiniRVBinOpW>;
+def MiniRVdivw : SDNode<"MiniRVISD::DIVW", SDT_MiniRVBinOpW>;
+def MiniRVdivuw : SDNode<"MiniRVISD::DIVUW", SDT_MiniRVBinOpW>;
+def MiniRVremw : SDNode<"MiniRVISD::REMW", SDT_MiniRVBinOpW>;
+def MiniRVremuw : SDNode<"MiniRVISD::REMUW", SDT_MiniRVBinOpW>;
+
+def : Pat<(MiniRVaddw GPR:$rs1, GPR:$rs2), (ADDW GPR:$rs1, GPR:$rs2)>;
+def : Pat<(MiniRVaddw GPR:$rs1, simm12:$imm), (ADDIW GPR:$rs1, simm12:$imm)>;
+def : Pat<(MiniRVsubw GPR:$rs1, GPR:$rs2), (SUBW GPR:$rs1, GPR:$rs2)>;
+def : Pat<(MiniRVshlw GPR:$rs1, GPR:$rs2), (SLLW GPR:$rs1, GPR:$rs2)>;
+def : Pat<(MiniRVshlw GPR:$rs1, uimm5:$imm), (SLLIW GPR:$rs1, uimm5:$imm)>;
+def : Pat<(MiniRVsrlw GPR:$rs1, GPR:$rs2), (SRLW GPR:$rs1, GPR:$rs2)>;
+def : Pat<(MiniRVsrlw GPR:$rs1, uimm5:$imm), (SRLIW GPR:$rs1, uimm5:$imm)>;
+def : Pat<(MiniRVsraw GPR:$rs1, GPR:$rs2), (SRAW GPR:$rs1, GPR:$rs2)>;
+def : Pat<(MiniRVsraw GPR:$rs1, uimm5:$imm), (SRAIW GPR:$rs1, uimm5:$imm)>;
+def : Pat<(MiniRVmulw GPR:$rs1, GPR:$rs2), (MULW GPR:$rs1, GPR:$rs2)>;
+def : Pat<(MiniRVdivw GPR:$rs1, GPR:$rs2), (DIVW GPR:$rs1, GPR:$rs2)>;
+def : Pat<(MiniRVdivuw GPR:$rs1, GPR:$rs2), (DIVUW GPR:$rs1, GPR:$rs2)>;
+def : Pat<(MiniRVremw GPR:$rs1, GPR:$rs2), (REMW GPR:$rs1, GPR:$rs2)>;
+def : Pat<(MiniRVremuw GPR:$rs1, GPR:$rs2), (REMUW GPR:$rs1, GPR:$rs2)>;
+
+//===----------------------------------------------------------------------===//
 // Register-register arithmetic
 //===----------------------------------------------------------------------===//
 
-def : Pat<(add GPR:$rs1, GPR:$rs2), (ADD GPR:$rs1, GPR:$rs2)>;
-def : Pat<(sub GPR:$rs1, GPR:$rs2), (SUB GPR:$rs1, GPR:$rs2)>;
-def : Pat<(and GPR:$rs1, GPR:$rs2), (AND GPR:$rs1, GPR:$rs2)>;
-def : Pat<(or  GPR:$rs1, GPR:$rs2), (OR  GPR:$rs1, GPR:$rs2)>;
-def : Pat<(xor GPR:$rs1, GPR:$rs2), (XOR GPR:$rs1, GPR:$rs2)>;
-def : Pat<(shl GPR:$rs1, GPR:$rs2), (SLL GPR:$rs1, GPR:$rs2)>;
-def : Pat<(srl GPR:$rs1, GPR:$rs2), (SRL GPR:$rs1, GPR:$rs2)>;
-def : Pat<(sra GPR:$rs1, GPR:$rs2), (SRA GPR:$rs1, GPR:$rs2)>;
+def : Pat<(i64 (add GPR:$rs1, GPR:$rs2)), (ADD GPR:$rs1, GPR:$rs2)>;
+def : Pat<(i64 (sub GPR:$rs1, GPR:$rs2)), (SUB GPR:$rs1, GPR:$rs2)>;
+def : Pat<(i64 (and GPR:$rs1, GPR:$rs2)), (AND GPR:$rs1, GPR:$rs2)>;
+def : Pat<(i64 (or  GPR:$rs1, GPR:$rs2)), (OR  GPR:$rs1, GPR:$rs2)>;
+def : Pat<(i64 (xor GPR:$rs1, GPR:$rs2)), (XOR GPR:$rs1, GPR:$rs2)>;
+def : Pat<(i64 (shl GPR:$rs1, GPR:$rs2)), (SLL GPR:$rs1, GPR:$rs2)>;
+def : Pat<(i64 (srl GPR:$rs1, GPR:$rs2)), (SRL GPR:$rs1, GPR:$rs2)>;
+def : Pat<(i64 (sra GPR:$rs1, GPR:$rs2)), (SRA GPR:$rs1, GPR:$rs2)>;
+
+//===----------------------------------------------------------------------===//
+// Multiplication and division (RV64M)
+//===----------------------------------------------------------------------===//
+
+def : Pat<(i64 (mul GPR:$rs1, GPR:$rs2)), (MUL GPR:$rs1, GPR:$rs2)>;
+def : Pat<(i64 (sdiv GPR:$rs1, GPR:$rs2)), (DIV GPR:$rs1, GPR:$rs2)>;
+def : Pat<(i64 (udiv GPR:$rs1, GPR:$rs2)), (DIVU GPR:$rs1, GPR:$rs2)>;
+def : Pat<(i64 (srem GPR:$rs1, GPR:$rs2)), (REM GPR:$rs1, GPR:$rs2)>;
+def : Pat<(i64 (urem GPR:$rs1, GPR:$rs2)), (REMU GPR:$rs1, GPR:$rs2)>;
 
 //===----------------------------------------------------------------------===//
 // Register-immediate arithmetic and shifts
 //===----------------------------------------------------------------------===//
 
-def : Pat<(add GPR:$rs1, simm12:$imm), (ADDI GPR:$rs1, simm12:$imm)>;
-def : Pat<(and GPR:$rs1, simm12:$imm), (ANDI GPR:$rs1, simm12:$imm)>;
-def : Pat<(or  GPR:$rs1, simm12:$imm), (ORI  GPR:$rs1, simm12:$imm)>;
-def : Pat<(xor GPR:$rs1, simm12:$imm), (XORI GPR:$rs1, simm12:$imm)>;
+def : Pat<(i64 (add GPR:$rs1, simm12:$imm)), (ADDI GPR:$rs1, simm12:$imm)>;
+def : Pat<(i64 (and GPR:$rs1, simm12:$imm)), (ANDI GPR:$rs1, simm12:$imm)>;
+def : Pat<(i64 (or  GPR:$rs1, simm12:$imm)), (ORI  GPR:$rs1, simm12:$imm)>;
+def : Pat<(i64 (xor GPR:$rs1, simm12:$imm)), (XORI GPR:$rs1, simm12:$imm)>;
 
-def : Pat<(shl GPR:$rs1, uimm6:$imm), (SLLI GPR:$rs1, uimm6:$imm)>;
-def : Pat<(srl GPR:$rs1, uimm6:$imm), (SRLI GPR:$rs1, uimm6:$imm)>;
-def : Pat<(sra GPR:$rs1, uimm6:$imm), (SRAI GPR:$rs1, uimm6:$imm)>;
+def : Pat<(i64 (shl GPR:$rs1, uimm6:$imm)), (SLLI GPR:$rs1, uimm6:$imm)>;
+def : Pat<(i64 (srl GPR:$rs1, uimm6:$imm)), (SRLI GPR:$rs1, uimm6:$imm)>;
+def : Pat<(i64 (sra GPR:$rs1, uimm6:$imm)), (SRAI GPR:$rs1, uimm6:$imm)>;
+
+//===----------------------------------------------------------------------===//
+// Extensions
+//===----------------------------------------------------------------------===//
+
+// ADDIW is the "sign extend word" operation.
+// Zero-extending an i32 value is a mask; there is no 64-bit "and with
+// 0xffffffff" immediate, so shift the low word into place instead.
+def : Pat<(i64 (and GPR:$rs, 0xffffffff)), (SRLI (SLLI GPR:$rs, 32), 32)>;
+
+def : Pat<(sext_inreg GPR:$rs, i1), (SRAI (SLLI GPR:$rs, 63), 63)>;
+def : Pat<(sext_inreg GPR:$rs, i32), (ADDIW GPR:$rs, 0)>;
+def : Pat<(sext_inreg GPR:$rs, i16), (SRAI (SLLI GPR:$rs, 48), 48)>;
+def : Pat<(sext_inreg GPR:$rs, i8), (SRAI (SLLI GPR:$rs, 56), 56)>;
 
 //===----------------------------------------------------------------------===//
 // Comparisons.  There is no "set if equal" record, so equality is built from
@@ -215,12 +314,61 @@ def : Pat<(setuge GPR:$a, GPR:$b), (XORI (SLTU GPR:$a, GPR:$b), 1)>;
 // Memory
 //===----------------------------------------------------------------------===//
 
+// i8/i16/i32 accesses are promoted to i64 by the type legalizer, so every
+// pattern here has an i64 value type and the narrow instruction is chosen by
+// the extend/truncate flavour of the node.
 def : Pat<(i64 (load (add GPR:$base, simm12:$off))),
           (LD GPR:$base, simm12:$off)>;
 def : Pat<(i64 (load GPR:$base)), (LD GPR:$base, 0)>;
+// A frame index is used directly as the base operand; eliminateFrameIndex
+// turns it into X2 plus the resolved offset.
+def : Pat<(i64 (load tframeindex:$fi)), (LD tframeindex:$fi, 0)>;
+
+def : Pat<(i64 (sextloadi8 (add GPR:$base, simm12:$off))),
+          (LB GPR:$base, simm12:$off)>;
+def : Pat<(i64 (sextloadi8 GPR:$base)), (LB GPR:$base, 0)>;
+def : Pat<(i64 (zextloadi8 (add GPR:$base, simm12:$off))),
+          (LBU GPR:$base, simm12:$off)>;
+def : Pat<(i64 (zextloadi8 GPR:$base)), (LBU GPR:$base, 0)>;
+def : Pat<(i64 (extloadi8 (add GPR:$base, simm12:$off))),
+          (LBU GPR:$base, simm12:$off)>;
+def : Pat<(i64 (extloadi8 GPR:$base)), (LBU GPR:$base, 0)>;
+
+def : Pat<(i64 (sextloadi16 (add GPR:$base, simm12:$off))),
+          (LH GPR:$base, simm12:$off)>;
+def : Pat<(i64 (sextloadi16 GPR:$base)), (LH GPR:$base, 0)>;
+def : Pat<(i64 (zextloadi16 (add GPR:$base, simm12:$off))),
+          (LHU GPR:$base, simm12:$off)>;
+def : Pat<(i64 (zextloadi16 GPR:$base)), (LHU GPR:$base, 0)>;
+def : Pat<(i64 (extloadi16 (add GPR:$base, simm12:$off))),
+          (LHU GPR:$base, simm12:$off)>;
+def : Pat<(i64 (extloadi16 GPR:$base)), (LHU GPR:$base, 0)>;
+
+def : Pat<(i64 (sextloadi32 (add GPR:$base, simm12:$off))),
+          (LW GPR:$base, simm12:$off)>;
+def : Pat<(i64 (sextloadi32 GPR:$base)), (LW GPR:$base, 0)>;
+def : Pat<(i64 (zextloadi32 (add GPR:$base, simm12:$off))),
+          (LWU GPR:$base, simm12:$off)>;
+def : Pat<(i64 (zextloadi32 GPR:$base)), (LWU GPR:$base, 0)>;
+def : Pat<(i64 (extloadi32 (add GPR:$base, simm12:$off))),
+          (LWU GPR:$base, simm12:$off)>;
+def : Pat<(i64 (extloadi32 GPR:$base)), (LWU GPR:$base, 0)>;
+
 def : Pat<(store GPR:$val, (add GPR:$base, simm12:$off)),
           (SD GPR:$val, GPR:$base, simm12:$off)>;
 def : Pat<(store GPR:$val, GPR:$base), (SD GPR:$val, GPR:$base, 0)>;
+def : Pat<(store GPR:$val, tframeindex:$fi),
+          (SD GPR:$val, tframeindex:$fi, 0)>;
+
+def : Pat<(truncstorei32 GPR:$val, (add GPR:$base, simm12:$off)),
+          (SW GPR:$val, GPR:$base, simm12:$off)>;
+def : Pat<(truncstorei32 GPR:$val, GPR:$base), (SW GPR:$val, GPR:$base, 0)>;
+def : Pat<(truncstorei16 GPR:$val, (add GPR:$base, simm12:$off)),
+          (SH GPR:$val, GPR:$base, simm12:$off)>;
+def : Pat<(truncstorei16 GPR:$val, GPR:$base), (SH GPR:$val, GPR:$base, 0)>;
+def : Pat<(truncstorei8 GPR:$val, (add GPR:$base, simm12:$off)),
+          (SB GPR:$val, GPR:$base, simm12:$off)>;
+def : Pat<(truncstorei8 GPR:$val, GPR:$base), (SB GPR:$val, GPR:$base, 0)>;
 
 //===----------------------------------------------------------------------===//
 // Branches

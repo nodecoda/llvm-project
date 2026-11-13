@@ -31,6 +31,15 @@ categories:
         - {role: imm, field: shamt, operand: uimm6}
     effects: {}
 
+  # RV64 W-form shifts use a 5-bit amount in {24-20}.
+  i_type_shift32:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins:
+        - {role: lhs, field: rs1, reg_class: GPR}
+        - {role: imm, field: shamt, operand: uimm5}
+    effects: {}
+
   u_type:
     operands:
       outs: [{role: dest, field: rd, reg_class: GPR}]

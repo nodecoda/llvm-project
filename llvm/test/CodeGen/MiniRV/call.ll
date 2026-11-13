@@ -16,9 +16,9 @@ entry:
 
 ; CHECK-LABEL: caller:
 ; CHECK: addi x2, x2, -8
-; CHECK: sd x1, -8(x2)
+; CHECK: sd x1, 0(x2)
 ; CHECK: jal x1, callee
-; CHECK: ld x1, -8(x2)
+; CHECK: ld x1, 0(x2)
 ; CHECK: addi x2, x2, 8
 ; CHECK: jalr x0, 0(x1)
 define i64 @caller(i64 %a, i64 %b) {

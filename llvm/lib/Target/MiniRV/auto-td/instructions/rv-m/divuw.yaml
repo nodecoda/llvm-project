@@ -1,0 +1,5 @@
+mnemonic: divuw
+opcode: {repo: riscv-opcodes, extension: rv_m, key: divuw}
+spec: minirv.core.r_type
+domain: rv-m
+status: auto_full

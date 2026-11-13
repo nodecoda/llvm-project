@@ -142,6 +142,13 @@ public:
     return Imm->evaluateAsAbsolute(Val) && isUInt<6>(Val);
   }
 
+  bool isUImm5() const {
+    if (Kind != k_Imm)
+      return false;
+    int64_t Val;
+    return Imm->evaluateAsAbsolute(Val) && isUInt<5>(Val);
+  }
+
   /// A branch target is either an absolute offset with an implicit zero low
   /// bit, or a label whose value the assembler does not know yet.
   bool isBranchTarget() const {
@@ -226,6 +233,7 @@ bool MiniRVAsmParser::matchAndEmitInstruction(SMLoc Loc, unsigned &Opcode,
   case Match_InvalidSImm12:
   case Match_InvalidUImm20:
   case Match_InvalidUImm6:
+  case Match_InvalidUImm5:
   case Match_InvalidBranchTarget:
   case Match_InvalidJalTarget:
   case Match_InvalidOperand: {
@@ -243,6 +251,8 @@ bool MiniRVAsmParser::matchAndEmitInstruction(SMLoc Loc, unsigned &Opcode,
       return Error(ErrorLoc, "operand must be a 20-bit unsigned immediate");
     if (MatchResult == Match_InvalidUImm6)
       return Error(ErrorLoc, "operand must be a 6-bit unsigned immediate");
+    if (MatchResult == Match_InvalidUImm5)
+      return Error(ErrorLoc, "operand must be a 5-bit unsigned immediate");
     if (MatchResult == Match_InvalidBranchTarget)
       return Error(ErrorLoc, "operand must be a PC-relative branch target");
     if (MatchResult == Match_InvalidJalTarget)

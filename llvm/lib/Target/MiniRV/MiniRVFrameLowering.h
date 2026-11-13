@@ -32,6 +32,10 @@ public:
     return true;
   }
 
+  MachineBasicBlock::iterator
+  eliminateCallFramePseudoInstr(MachineFunction &MF, MachineBasicBlock &MBB,
+                                MachineBasicBlock::iterator MI) const override;
+
 protected:
   bool hasFPImpl(const MachineFunction &MF) const override;
 };

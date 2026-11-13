@@ -22,7 +22,7 @@
 using namespace llvm;
 
 MiniRVFrameLowering::MiniRVFrameLowering(const MiniRVSubtarget &STI)
-    : TargetFrameLowering(TargetFrameLowering::StackGrowsDown, Align(8), -8,
+    : TargetFrameLowering(TargetFrameLowering::StackGrowsDown, Align(8), 0,
                           Align(8)),
       STI(STI), TII(*STI.getInstrInfo()), TRI(*STI.getRegisterInfo()) {}
 
@@ -59,4 +59,12 @@ void MiniRVFrameLowering::emitEpilogue(MachineFunction &MF,
   BuildMI(MBB, MBBI, DL, TII.get(MiniRV::ADDI), MiniRV::X2)
       .addReg(MiniRV::X2)
       .addImm(static_cast<int64_t>(StackSize));
+}
+
+MachineBasicBlock::iterator MiniRVFrameLowering::eliminateCallFramePseudoInstr(
+    MachineFunction &MF, MachineBasicBlock &MBB,
+    MachineBasicBlock::iterator MI) const {
+  // The outgoing argument area is reserved in the prologue, so the pseudo has
+  // no work to do at the call site.
+  return MBB.erase(MI);
 }

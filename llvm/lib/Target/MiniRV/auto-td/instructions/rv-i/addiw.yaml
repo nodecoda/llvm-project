@@ -1,0 +1,5 @@
+mnemonic: addiw
+opcode: {repo: riscv-opcodes, extension: rv_i, key: addiw}
+spec: minirv.core.i_type
+domain: rv-i
+status: auto_full
