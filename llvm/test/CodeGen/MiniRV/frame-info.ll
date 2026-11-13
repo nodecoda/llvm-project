@@ -12,13 +12,13 @@ declare void @llvm.stackrestore.p0(ptr)
 declare ptr @opaque(ptr)
 
 ; CHECK-LABEL: frame:
-; CHECK:       addi x2, x2, -8
-; CHECK-NEXT:  sd x8, 0(x2)
-; CHECK-NEXT:  addi x8, x2, 8
+; CHECK:       addi x2, x2, -16
+; CHECK-NEXT:  sd x8, 8(x2)
+; CHECK-NEXT:  addi x8, x2, 16
 ; CHECK-NEXT:  addi x10, x8, 0
-; CHECK:       addi x2, x8, -8
-; CHECK-NEXT:  ld x8, 0(x2)
-; CHECK-NEXT:  addi x2, x2, 8
+; CHECK:       addi x2, x8, -16
+; CHECK-NEXT:  ld x8, 8(x2)
+; CHECK-NEXT:  addi x2, x2, 16
 ; CHECK-NEXT:  jalr x0, 0(x1)
 define ptr @frame() {
   %p = call ptr @llvm.frameaddress.p0(i32 0)
@@ -28,9 +28,9 @@ define ptr @frame() {
 ; Local objects are addressed through the frame pointer once it exists, so a
 ; frame address can be combined with an ordinary fixed-size alloca.
 ; CHECK-LABEL: frame_and_alloca:
-; CHECK:       addi x2, x2, -24
-; CHECK-NEXT:  sd x8, 16(x2)
-; CHECK-NEXT:  addi x8, x2, 24
+; CHECK:       addi x2, x2, -32
+; CHECK-NEXT:  sd x8, 24(x2)
+; CHECK-NEXT:  addi x8, x2, 32
 ; CHECK-NEXT:  addi [[A:x[0-9]+]], x8, -24
 ; CHECK-NEXT:  sd x10, 0([[A]])
 ; CHECK-NEXT:  add x10, x10, x8
@@ -77,9 +77,9 @@ define ptr @retaddr_after_call(ptr %x) {
 ; dynamic alloca in between moves the stack pointer, and the frame pointer
 ; keeps the fixed part of the frame reachable.
 ; CHECK-LABEL: save_restore:
-; CHECK:       addi x2, x2, -8
-; CHECK-NEXT:  sd x8, 0(x2)
-; CHECK-NEXT:  addi x8, x2, 8
+; CHECK:       addi x2, x2, -16
+; CHECK-NEXT:  sd x8, 8(x2)
+; CHECK-NEXT:  addi x8, x2, 16
 ; CHECK-NEXT:  addi [[SAVED:x[0-9]+]], x2, 0
 ; CHECK:       sub [[NEWSP:x[0-9]+]], x2,
 ; CHECK-NEXT:  addi x2, [[NEWSP]], 0

@@ -24,8 +24,10 @@
 using namespace llvm;
 
 MiniRVFrameLowering::MiniRVFrameLowering(const MiniRVSubtarget &STI)
-    : TargetFrameLowering(TargetFrameLowering::StackGrowsDown, Align(8), 0,
-                          Align(8)),
+    // Match the S128 stack alignment the data layout advertises: every call
+    // keeps the stack pointer a multiple of sixteen.
+    : TargetFrameLowering(TargetFrameLowering::StackGrowsDown, Align(16), 0,
+                          Align(16)),
       STI(STI), TII(*STI.getInstrInfo()), TRI(*STI.getRegisterInfo()) {}
 
 bool MiniRVFrameLowering::hasReservedCallFrame(
@@ -46,7 +48,8 @@ bool MiniRVFrameLowering::hasFPImpl(const MachineFunction &MF) const {
   // pointer and therefore cannot be recomputed from the stack pointer before
   // the frame size is known.
   return MF.getFrameInfo().hasVarSizedObjects() ||
-         MF.getFrameInfo().isFrameAddressTaken();
+         MF.getFrameInfo().isFrameAddressTaken() ||
+         MF.getSubtarget().getRegisterInfo()->hasStackRealignment(MF);
 }
 
 /// A function with a frame pointer keeps the frame pointer at the incoming
@@ -59,6 +62,17 @@ MiniRVFrameLowering::getFrameIndexReference(const MachineFunction &MF, int FI,
                                             Register &FrameReg) const {
   const MachineFrameInfo &MFI = MF.getFrameInfo();
   if (!hasFP(MF) || MFI.isCalleeSavedObjectIndex(FI)) {
+    FrameReg = MiniRV::X2;
+    return StackOffset::getFixed(MFI.getObjectOffset(FI) + MFI.getStackSize());
+  }
+
+  // When the stack is realigned, the prologue rounds the stack pointer down
+  // after setting the frame pointer.  The locals move down with it, so they
+  // are addressed from the rounded stack pointer; the frame pointer is only
+  // used to recompute the unrounded stack pointer and to reach the incoming
+  // arguments.
+  if (MF.getSubtarget().getRegisterInfo()->hasStackRealignment(MF) &&
+      !MFI.isFixedObjectIndex(FI)) {
     FrameReg = MiniRV::X2;
     return StackOffset::getFixed(MFI.getObjectOffset(FI) + MFI.getStackSize());
   }
@@ -140,6 +154,52 @@ void MiniRVFrameLowering::emitPrologue(MachineFunction &MF,
     ++InsertPt;
   adjustReg(MBB, InsertPt, DL, MiniRV::X8, MiniRV::X2,
             static_cast<int64_t>(StackSize), MachineInstr::FrameSetup);
+
+  // An object that asks for more than the ABI stack alignment needs the stack
+  // pointer rounded down.  This runs after the callee-saved spills, which are
+  // addressed relative to the unrounded SP; the epilogue restores that SP from
+  // the frame pointer before reloading them.
+  if (TRI.hasStackRealignment(MF)) {
+    // A variable-length allocation moves the stack pointer after the
+    // realignment, so a second base register would be needed to reach the
+    // locals.  Reject the combination rather than miscompile it.
+    if (MFI.hasVarSizedObjects())
+      report_fatal_error(
+          "MiniRV cannot realign the stack with variable-sized allocations");
+    realignStack(MBB, InsertPt, DL, MFI.getMaxAlign());
+  }
+}
+
+void MiniRVFrameLowering::realignStack(MachineBasicBlock &MBB,
+                                       MachineBasicBlock::iterator II,
+                                       const DebugLoc &DL,
+                                       Align MaxAlign) const {
+  int64_t Mask = -static_cast<int64_t>(MaxAlign.value());
+  if (isInt<12>(Mask)) {
+    BuildMI(MBB, II, DL, TII.get(MiniRV::ANDI), MiniRV::X2)
+        .addReg(MiniRV::X2)
+        .addImm(Mask)
+        .setMIFlag(MachineInstr::FrameSetup);
+    return;
+  }
+
+  // -MaxAlign is a 32-bit value with the low bits clear, so lui+addi can
+  // materialise it.  X6 is the scratch register adjustReg uses for the same
+  // reason: the destination still has to be read.
+  assert(isInt<32>(Mask) && "MiniRV cannot align the stack past 2 GiB");
+  int64_t Hi20 = (Mask + 0x800) >> 12;
+  int64_t Lo12 = Mask - (Hi20 << 12);
+  BuildMI(MBB, II, DL, TII.get(MiniRV::LUI), MiniRV::X6)
+      .addImm(Hi20)
+      .setMIFlag(MachineInstr::FrameSetup);
+  BuildMI(MBB, II, DL, TII.get(MiniRV::ADDI), MiniRV::X6)
+      .addReg(MiniRV::X6)
+      .addImm(Lo12)
+      .setMIFlag(MachineInstr::FrameSetup);
+  BuildMI(MBB, II, DL, TII.get(MiniRV::AND), MiniRV::X2)
+      .addReg(MiniRV::X2)
+      .addReg(MiniRV::X6)
+      .setMIFlag(MachineInstr::FrameSetup);
 }
 
 void MiniRVFrameLowering::emitEpilogue(MachineFunction &MF,
@@ -217,7 +277,11 @@ MachineBasicBlock::iterator MiniRVFrameLowering::eliminateCallFramePseudoInstr(
   // alloca moves the stack pointer, so the space cannot be reserved up front
   // -- the pseudo becomes the adjustment itself.
   if (!hasReservedCallFrame(MF)) {
-    int64_t Amount = MI->getOperand(0).getImm();
+    // The outgoing argument area is claimed here, so this is the only place
+    // that can keep the stack pointer a multiple of the ABI alignment.  Round
+    // the area up; the same rounded amount is released by the matching
+    // ADJCALLSTACKUP.
+    int64_t Amount = alignTo(MI->getOperand(0).getImm(), getStackAlign());
     if (Amount) {
       if (MI->getOpcode() == MiniRV::ADJCALLSTACKDOWN)
         Amount = -Amount;

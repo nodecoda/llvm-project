@@ -78,9 +78,9 @@ exit:
 ; va_list object is at the stack pointer and the argument area starts one slot
 ; above it.
 ; CHECK-LABEL: sum_stack:
-; CHECK:       addi x2, x2, -8
-; CHECK-NEXT:  addi [[AP:x[0-9]+]], x2, 0
-; CHECK-NEXT:  addi [[AREA:x[0-9]+]], x2, 8
+; CHECK:       addi x2, x2, -16
+; CHECK-NEXT:  addi [[AP:x[0-9]+]], x2, 8
+; CHECK-NEXT:  addi [[AREA:x[0-9]+]], x2, 16
 ; CHECK-NEXT:  sd [[AREA]], 0([[AP]])
 define i64 @sum_stack(i64 %a, i64 %b, i64 %c, i64 %d, i64 %e, i64 %f, i64 %g,
                       i64 %h, ...) {
@@ -104,9 +104,9 @@ exit:
 ; When the named arguments already overflow to the stack, the save area is
 ; empty and the va_list starts past those named slots.
 ; CHECK-LABEL: named_stack:
-; CHECK:       addi x2, x2, -8
-; CHECK-NEXT:  addi [[AP:x[0-9]+]], x2, 0
-; CHECK-NEXT:  addi [[AREA:x[0-9]+]], x2, 24
+; CHECK:       addi x2, x2, -16
+; CHECK-NEXT:  addi [[AP:x[0-9]+]], x2, 8
+; CHECK-NEXT:  addi [[AREA:x[0-9]+]], x2, 32
 ; CHECK-NEXT:  sd [[AREA]], 0([[AP]])
 define i64 @named_stack(i64 %a0, i64 %a1, i64 %a2, i64 %a3, i64 %a4, i64 %a5,
                         i64 %a6, i64 %a7, i64 %a8, i64 %a9, ...) {
@@ -134,12 +134,11 @@ exit:
 ; CHECK-NEXT:  sd x8, 8(x2)
 ; CHECK-NEXT:  addi x8, x2, 64
 ; CHECK-NEXT:  addi [[AREA:x[0-9]+]], x8, -48
-; CHECK-NEXT:  sd x12, 0([[AREA]])
-; CHECK-NEXT:  sd x13, 8([[AREA]])
-; CHECK-NEXT:  sd x14, 16([[AREA]])
-; CHECK-NEXT:  sd x15, 24([[AREA]])
-; CHECK-NEXT:  sd x16, 32([[AREA]])
-; CHECK-NEXT:  sd x17, 40([[AREA]])
+; CHECK:       sd x12, 0([[AREA]])
+; CHECK:       sd x14, 16([[AREA]])
+; CHECK:       sd x15, 24([[AREA]])
+; CHECK:       sd x16, 32([[AREA]])
+; CHECK:       sd x17, 40([[AREA]])
 ; CHECK:       addi [[AP:x[0-9]+]], x8, -64
 ; CHECK-NEXT:  sd [[AREA]], 0([[AP]])
 define i64 @vla_sum(i64 %n, i64 %m, ...) {
@@ -167,8 +166,8 @@ exit:
 ; va_copy is a pointer copy and va_end does nothing: the copy holds the slot
 ; the first va_arg read, while the original has already moved past it.
 ; CHECK-LABEL: copy_test:
-; CHECK:       addi x2, x2, -72
-; CHECK:       addi [[AREA:x[0-9]+]], x2, 16
+; CHECK:       addi x2, x2, -80
+; CHECK:       addi [[AREA:x[0-9]+]], x2, 24
 ; CHECK-DAG:   addi [[NEXT:x[0-9]+]], [[AREA]], 8
 ; CHECK-DAG:   sd [[AREA]], 0(
 ; CHECK-DAG:   sd [[NEXT]], 0(

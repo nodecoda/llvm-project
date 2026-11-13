@@ -9,16 +9,18 @@
 ; The size is rounded up to the stack alignment before it reaches the
 ; backend, so the allocation is a shift, a subtraction and a move.
 ; CHECK-LABEL: vla:
-; CHECK:       addi x2, x2, -8
-; CHECK-NEXT:  sd x8, 0(x2)
-; CHECK-NEXT:  addi x8, x2, 8
+; CHECK:       addi x2, x2, -16
+; CHECK-NEXT:  sd x8, 8(x2)
+; CHECK-NEXT:  addi x8, x2, 16
 ; CHECK:       slli [[SZ:x[0-9]+]], x10, 3
+; CHECK:       addi [[SZ]], [[SZ]], 15
+; CHECK-NEXT:  andi [[SZ]], [[SZ]], -16
 ; CHECK-NEXT:  sub [[NEWSP:x[0-9]+]], x2, [[SZ]]
 ; CHECK-NEXT:  addi x2, [[NEWSP]], 0
 ; CHECK:       sd x10, 8([[NEWSP]])
-; CHECK:       addi x2, x8, -8
-; CHECK-NEXT:  ld x8, 0(x2)
-; CHECK-NEXT:  addi x2, x2, 8
+; CHECK:       addi x2, x8, -16
+; CHECK-NEXT:  ld x8, 8(x2)
+; CHECK-NEXT:  addi x2, x2, 16
 ; CHECK-NEXT:  jalr x0, 0(x1)
 define i64 @vla(i64 %n) {
 entry:
@@ -34,10 +36,11 @@ declare i64 @nine(i64, i64, i64, i64, i64, i64, i64, i64, i64)
 ; The outgoing argument area is part of the prologue only when the stack
 ; pointer stays put.  Here the call sequence has to claim it at the call site.
 ; CHECK-LABEL: vla_call:
-; CHECK:       addi x2, x2, -8
+; CHECK:       sd x10, 8([[DYN:x[0-9]+]])
+; CHECK:       addi x2, x2, -16
 ; CHECK-NEXT:  sd x10, 0(x2)
 ; CHECK:       jal x1, nine
-; CHECK-NEXT:  addi x2, x2, 8
+; CHECK-NEXT:  addi x2, x2, 16
 define i64 @vla_call(i64 %n) {
 entry:
   %a = alloca i64, i64 %n, align 8
@@ -56,18 +59,18 @@ entry:
 ; caller's value.
 ; CHECK-LABEL: vla_big:
 ; CHECK:       lui x6, -1
-; CHECK-NEXT:  addi x6, x6, 1688
+; CHECK-NEXT:  addi x6, x6, 1680
 ; CHECK-NEXT:  add x2, x6, x2
 ; CHECK:       sd x8, 0([[SLOT:x[0-9]+]])
 ; CHECK:       lui x8, 1
-; CHECK-NEXT:  addi x8, x8, -1688
+; CHECK-NEXT:  addi x8, x8, -1680
 ; CHECK-NEXT:  add x8, x8, x2
 ; CHECK:       lui [[A:x[0-9]+]], -1
 ; CHECK-NEXT:  addi [[A]], [[A]], 1688
 ; CHECK-NEXT:  add [[A]], [[A]], x8
 ; CHECK:       sd {{x[0-9]+}}, 0([[A]])
 ; CHECK:       lui x2, -1
-; CHECK-NEXT:  addi x2, x2, 1688
+; CHECK-NEXT:  addi x2, x2, 1680
 ; CHECK-NEXT:  add x2, x2, x8
 define i64 @vla_big(i64 %n) {
 entry:

@@ -63,6 +63,11 @@ public:
                  const DebugLoc &DL, Register DestReg, Register SrcReg,
                  int64_t Val, MachineInstr::MIFlag Flag) const;
 
+  /// Round the stack pointer down to \p MaxAlign.  Used when an object asks
+  /// for more alignment than the ABI stack alignment provides.
+  void realignStack(MachineBasicBlock &MBB, MachineBasicBlock::iterator II,
+                    const DebugLoc &DL, Align MaxAlign) const;
+
   MachineBasicBlock::iterator
   eliminateCallFramePseudoInstr(MachineFunction &MF, MachineBasicBlock &MBB,
                                 MachineBasicBlock::iterator MI) const override;
