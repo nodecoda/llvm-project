@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "MiniRVTargetMachine.h"
+#include "MiniRVMachineFunctionInfo.h"
 #include "TargetInfo/MiniRVTargetInfo.h"
 #include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
 #include "llvm/MC/TargetRegistry.h"
@@ -38,3 +39,10 @@ MiniRVTargetMachine::MiniRVTargetMachine(const Target &T, const Triple &TT,
 }
 
 MiniRVTargetMachine::~MiniRVTargetMachine() = default;
+
+MachineFunctionInfo *MiniRVTargetMachine::createMachineFunctionInfo(
+    BumpPtrAllocator &Allocator, const Function &F,
+    const TargetSubtargetInfo *STI) const {
+  return MiniRVMachineFunctionInfo::create<MiniRVMachineFunctionInfo>(
+      Allocator, F, static_cast<const MiniRVSubtarget *>(STI));
+}

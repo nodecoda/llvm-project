@@ -28,6 +28,10 @@ public:
 
   SDValue LowerGlobalAddress(SDValue Op, SelectionDAG &DAG) const;
 
+  SDValue LowerVASTART(SDValue Op, SelectionDAG &DAG) const;
+
+  SDValue LowerVAARG(SDValue Op, SelectionDAG &DAG) const;
+
   SDValue LowerBranchCC(SDValue Chain, SDValue LHS, SDValue RHS,
                         ISD::CondCode CC, SDValue Dest, const SDLoc &DL,
                         SelectionDAG &DAG) const;

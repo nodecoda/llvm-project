@@ -8,14 +8,16 @@
 //
 // Lowering covers the RV64IM integer core: 64-bit and 32-bit arithmetic,
 // byte/halfword/word memory access, branches, selects, calls (including stack
-// arguments) and returns.  i8, i16 and i32 are promoted to i64, which keeps
-// the DAG free of sub-word types while the narrow memory instructions and the
-// *W arithmetic instructions still model the smaller widths.
+// arguments and variadic arguments) and returns.  i8, i16 and i32 are promoted
+// to i64, which keeps the DAG free of sub-word types while the narrow memory
+// instructions and the *W arithmetic instructions still model the smaller
+// widths.
 //
 //===----------------------------------------------------------------------===//
 
 #include "MiniRVISelLowering.h"
 #include "MiniRV.h"
+#include "MiniRVMachineFunctionInfo.h"
 #include "MiniRVSelectionDAGInfo.h"
 #include "MiniRVSubtarget.h"
 #include "MiniRVTargetMachine.h"
@@ -78,6 +80,14 @@ MiniRVTargetLowering::MiniRVTargetLowering(const TargetMachine &TM,
   // The address of a symbol is materialised with auipc+addi.
   setOperationAction(ISD::GlobalAddress, MVT::i64, Custom);
 
+  // A va_list is a pointer to the next argument slot.  va_start hands out the
+  // address of the register save area and va_arg advances the pointer by one
+  // slot; va_copy and va_end are just a pointer copy and a no-op.
+  setOperationAction(ISD::VASTART, MVT::Other, Custom);
+  setOperationAction(ISD::VAARG, MVT::Other, Custom);
+  setOperationAction(ISD::VACOPY, MVT::Other, Expand);
+  setOperationAction(ISD::VAEND, MVT::Other, Expand);
+
   setOperationAction(ISD::BRCOND, MVT::Other, Custom);
   // BR_CC is expanded into BRCOND plus a comparison, which is then fused back
   // into one branch by LowerBRCOND.
@@ -111,6 +121,10 @@ SDValue MiniRVTargetLowering::LowerOperation(SDValue Op,
   switch (Op.getOpcode()) {
   case ISD::GlobalAddress:
     return LowerGlobalAddress(Op, DAG);
+  case ISD::VASTART:
+    return LowerVASTART(Op, DAG);
+  case ISD::VAARG:
+    return LowerVAARG(Op, DAG);
   case ISD::BRCOND:
     return LowerBRCOND(Op, DAG);
   case ISD::SELECT_CC:
@@ -132,6 +146,61 @@ SDValue MiniRVTargetLowering::LowerGlobalAddress(SDValue Op,
   SDValue Sym =
       DAG.getTargetGlobalAddress(GV->getGlobal(), DL, PtrVT, GV->getOffset());
   return SDValue(DAG.getMachineNode(MiniRV::PseudoLA, DL, PtrVT, Sym), 0);
+}
+
+/// A va_list is the address of the next argument slot.  The slots of the
+/// unnamed arguments start at the register save area that LowerFormalArguments
+/// laid out just below the incoming stack pointer, so va_start only has to
+/// store that address into the va_list object.
+SDValue MiniRVTargetLowering::LowerVASTART(SDValue Op,
+                                           SelectionDAG &DAG) const {
+  MachineFunction &MF = DAG.getMachineFunction();
+  const auto *RVFI = MF.getInfo<MiniRVMachineFunctionInfo>();
+  SDLoc DL(Op);
+
+  SDValue FI = DAG.getFrameIndex(RVFI->getVarArgsFrameIndex(),
+                                 getPointerTy(MF.getDataLayout()));
+  const Value *SV = cast<SrcValueSDNode>(Op.getOperand(2))->getValue();
+  return DAG.getStore(Op.getOperand(0), DL, FI, Op.getOperand(1),
+                      MachinePointerInfo(SV));
+}
+
+/// Fetch one argument out of the slot array and bump the va_list past it.
+/// Every argument occupies at least one XLEN-sized slot regardless of its
+/// type, because the calling convention promotes the narrow integer types and
+/// passes them in whole registers.
+SDValue MiniRVTargetLowering::LowerVAARG(SDValue Op, SelectionDAG &DAG) const {
+  SDLoc DL(Op);
+  EVT VT = Op.getValueType();
+  EVT PtrVT = getPointerTy(DAG.getDataLayout());
+  const Value *SV = cast<SrcValueSDNode>(Op.getOperand(2))->getValue();
+
+  SDValue Chain = Op.getOperand(0);
+  SDValue VAListPtr = Op.getOperand(1);
+  SDValue VAList =
+      DAG.getLoad(PtrVT, DL, Chain, VAListPtr, MachinePointerInfo(SV));
+  Chain = VAList.getValue(1);
+
+  // An argument that needs more than one slot (a wide integer, say) advances
+  // by its rounded-up size; an over-aligned one first moves to the next
+  // multiple of its alignment, like the generic expansion does.
+  uint64_t SlotSize =
+      std::max<uint64_t>(8, VT.getStoreSize().getKnownMinValue());
+  SlotSize = alignTo(SlotSize, 8);
+  const MaybeAlign MA(Op.getConstantOperandVal(3));
+  if (MA && *MA > Align(8)) {
+    VAList = DAG.getNode(ISD::ADD, DL, PtrVT, VAList,
+                         DAG.getConstant(MA->value() - 1, DL, PtrVT));
+    VAList =
+        DAG.getNode(ISD::AND, DL, PtrVT, VAList,
+                    DAG.getSignedConstant(-(int64_t)MA->value(), DL, PtrVT));
+  }
+
+  SDValue Next = DAG.getNode(ISD::ADD, DL, PtrVT, VAList,
+                             DAG.getConstant(SlotSize, DL, PtrVT));
+  Chain = DAG.getStore(Chain, DL, Next, VAListPtr, MachinePointerInfo(SV));
+
+  return DAG.getLoad(VT, DL, Chain, VAList, MachinePointerInfo());
 }
 
 /// Turn an i32 operation into its *W form.  The operands are any-extended:
@@ -305,6 +374,7 @@ SDValue MiniRVTargetLowering::LowerFormalArguments(
 
   MachineRegisterInfo &RegInfo = MF.getRegInfo();
   EVT PtrVT = getPointerTy(DAG.getDataLayout());
+  SmallVector<SDValue, 8> OutChains;
   for (CCValAssign &VA : ArgLocs) {
     SDValue Arg;
     if (VA.isRegLoc()) {
@@ -348,6 +418,52 @@ SDValue MiniRVTargetLowering::LowerFormalArguments(
     if (Arg.getValueType() != VA.getValVT())
       Arg = DAG.getNode(ISD::TRUNCATE, DL, VA.getValVT(), Arg);
     InVals.push_back(Arg);
+  }
+
+  if (IsVarArg) {
+    // The unnamed arguments start at the first argument register that the
+    // named ones did not consume, and continue with the incoming stack
+    // arguments.  Saving those registers directly below the incoming stack
+    // pointer makes the two areas one contiguous array of XLEN-sized slots,
+    // which is the representation va_start hands out and va_arg walks.
+    static const MCPhysReg ArgRegs[] = {MiniRV::X10, MiniRV::X11, MiniRV::X12,
+                                        MiniRV::X13, MiniRV::X14, MiniRV::X15,
+                                        MiniRV::X16, MiniRV::X17};
+    constexpr unsigned NumArgRegs = 8;
+    unsigned Idx = CCInfo.getFirstUnallocated(ArgRegs);
+    int SaveSize = 8 * (NumArgRegs - Idx);
+
+    MachineFrameInfo &MFI = MF.getFrameInfo();
+    auto *RVFI = MF.getInfo<MiniRVMachineFunctionInfo>();
+    int FI;
+    if (SaveSize == 0) {
+      // Every argument register holds a named argument, so the first unnamed
+      // one is already on the stack.
+      FI = MFI.CreateFixedObject(8, CCInfo.getStackSize(),
+                                 /*IsImmutable=*/true);
+    } else {
+      FI = MFI.CreateFixedObject(SaveSize, -SaveSize, /*IsImmutable=*/true);
+      SDValue FIN = DAG.getFrameIndex(FI, PtrVT);
+      for (unsigned I = Idx; I != NumArgRegs; ++I) {
+        Register VReg = RegInfo.createVirtualRegister(&MiniRV::GPRRegClass);
+        RegInfo.addLiveIn(ArgRegs[I], VReg);
+        SDValue Arg = DAG.getCopyFromReg(Chain, DL, VReg, MVT::i64);
+        Chain = Arg.getValue(1);
+        OutChains.push_back(DAG.getStore(
+            Chain, DL, Arg, FIN,
+            MachinePointerInfo::getFixedStack(MF, FI, (I - Idx) * 8)));
+        FIN = DAG.getMemBasePlusOffset(FIN, TypeSize::getFixed(8), DL);
+      }
+    }
+
+    RVFI->setVarArgsFrameIndex(FI);
+  }
+
+  // The register stores hang off the argument chain, but they are independent
+  // of each other, so they are joined into one node.
+  if (!OutChains.empty()) {
+    OutChains.push_back(Chain);
+    Chain = DAG.getNode(ISD::TokenFactor, DL, MVT::Other, OutChains);
   }
 
   return Chain;
@@ -406,8 +522,9 @@ MiniRVTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   CallingConv::ID CallConv = CLI.CallConv;
   bool IsVarArg = CLI.IsVarArg;
 
-  if (IsVarArg)
-    report_fatal_error("MiniRV does not support variadic calls");
+  // A variadic call uses the same convention as any other call: the unnamed
+  // arguments are ordinary outgoing arguments, so nothing special is needed
+  // here.  The callee spills the argument registers it still needs.
 
   MachineFunction &MF = DAG.getMachineFunction();
 
