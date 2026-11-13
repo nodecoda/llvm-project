@@ -41,6 +41,30 @@ MiniRVAsmBackend::getFixupKindInfo(MCFixupKind Kind) const {
 void MiniRVAsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
                                   const MCValue &Target, uint8_t *Data,
                                   uint64_t Value, bool IsResolved) {
+  // Data fixups -- the debug frame uses a four-byte one -- are not
+  // instruction-shaped: write the value as a plain little-endian integer.
+  if (Fixup.getKind() < FirstTargetFixupKind) {
+    if (!IsResolved)
+      return;
+    switch (getFixupKindInfo(Fixup.getKind()).TargetSize) {
+    case 64:
+      support::endian::write64le(Data, Value);
+      break;
+    case 32:
+      support::endian::write32le(Data, Value);
+      break;
+    case 16:
+      support::endian::write16le(Data, Value);
+      break;
+    case 8:
+      *Data = static_cast<uint8_t>(Value);
+      break;
+    default:
+      llvm_unreachable("Unsupported data fixup size");
+    }
+    return;
+  }
+
   // An unresolved fixup becomes a relocation; the linker reads the addend from
   // the RELA entry, so the instruction keeps whatever the encoder wrote.
   if (!IsResolved)

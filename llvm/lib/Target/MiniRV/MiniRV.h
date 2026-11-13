@@ -16,6 +16,11 @@
 #include "llvm/IR/PassManager.h"
 #include "llvm/Target/TargetMachine.h"
 
+// The target-specific DAG opcodes (MiniRVISD::BRCC, MiniRVISD::RET) are
+// generated from the SDNode records in MiniRVInstrInfo.td.
+#define GET_SDNODE_ENUM
+#include "MiniRVGenSDNodeInfo.inc"
+
 namespace llvm {
 
 class MiniRVTargetMachine;

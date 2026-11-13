@@ -27,6 +27,7 @@ llvm_tablegen(MiniRVGenSubtargetInfo.inc -gen-subtarget)
 llvm_tablegen(MiniRVGenCallingConv.inc -gen-callingconv)
 llvm_tablegen(MiniRVGenDAGISel.inc -gen-dag-isel)
 llvm_tablegen(MiniRVGenSDNodeInfo.inc -gen-sd-node-info)
+llvm_tablegen(MiniRVGenMCPseudoLowering.inc -gen-pseudo-lowering)
 
 add_public_tablegen_target(MiniRVCommonTableGen)
 

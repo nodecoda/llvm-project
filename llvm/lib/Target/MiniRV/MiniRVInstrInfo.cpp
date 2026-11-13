@@ -20,6 +20,31 @@ MiniRVInstrInfo::MiniRVInstrInfo(const MiniRVSubtarget &STI)
                          /*CallFrameDestroyOpcode=*/0),
       RI() {}
 
+void MiniRVInstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
+                                          MachineBasicBlock::iterator MI,
+                                          Register SrcReg, bool IsKill,
+                                          int FrameIndex,
+                                          const TargetRegisterClass *RC,
+                                          Register VReg,
+                                          MachineInstr::MIFlag Flags) const {
+  // Every register in GPR is 64 bits wide, so one record covers all spills.
+  BuildMI(MBB, MI, MBB.findDebugLoc(MI), get(MiniRV::SD))
+      .addReg(SrcReg, getKillRegState(IsKill))
+      .addFrameIndex(FrameIndex)
+      .addImm(0);
+}
+
+void MiniRVInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
+                                           MachineBasicBlock::iterator MI,
+                                           Register DestReg, int FrameIndex,
+                                           const TargetRegisterClass *RC,
+                                           Register VReg, unsigned SubReg,
+                                           MachineInstr::MIFlag Flags) const {
+  BuildMI(MBB, MI, MBB.findDebugLoc(MI), get(MiniRV::LD), DestReg)
+      .addFrameIndex(FrameIndex)
+      .addImm(0);
+}
+
 void MiniRVInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
                                   MachineBasicBlock::iterator MI,
                                   const DebugLoc &DL, Register DestReg,

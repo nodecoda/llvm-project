@@ -118,9 +118,25 @@ def SDT_MiniRVBrCC : SDTypeProfile<0, 4, [SDTCisSameAs<0, 1>,
                                           SDTCisVT<3, OtherVT>]>;
 def MiniRVbrcc : SDNode<"MiniRVISD::BRCC", SDT_MiniRVBrCC, [SDNPHasChain]>;
 
-let isReturn = 1, isTerminator = 1, isBarrier = 1, isPseudo = 1,
-    hasNoSchedulingInfo = 1 in
-def PseudoRET : MiniRVInst<(outs), (ins), "ret", "", [(MiniRVret)], InstFormatI>;
+// The corpus has no return record either, but "jalr x0, x1, 0" is one.  The
+// pseudo carries the terminator flags and the expansion supplies the encoding.
+def PseudoRET : MiniRVInst<(outs), (ins), "ret", "", [(MiniRVret)], InstFormatI>,
+                PseudoInstExpansion<(JALR X0, X1, 0)> {
+  let isReturn = 1;
+  let isTerminator = 1;
+  let isBarrier = 1;
+  let hasNoSchedulingInfo = 1;
+}
+
+// The unconditional branch of this target: "jal x0, offset".
+def PseudoBR : MiniRVInst<(outs), (ins simm21_lsb0:$imm20), "j", "$imm20",
+                          [(br bb:$imm20)], InstFormatJ>,
+               PseudoInstExpansion<(JAL X0, simm21_lsb0:$imm20)> {
+  let isBranch = 1;
+  let isTerminator = 1;
+  let isBarrier = 1;
+  let hasNoSchedulingInfo = 1;
+}
 
 //===----------------------------------------------------------------------===//
 // Register-register arithmetic

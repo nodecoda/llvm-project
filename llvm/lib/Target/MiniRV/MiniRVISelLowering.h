@@ -22,6 +22,15 @@ public:
 
   SDValue LowerOperation(SDValue Op, SelectionDAG &DAG) const override;
 
+  SDValue LowerBRCOND(SDValue Op, SelectionDAG &DAG) const;
+
+  SDValue LowerBranchCC(SDValue Chain, SDValue LHS, SDValue RHS,
+                        ISD::CondCode CC, SDValue Dest, const SDLoc &DL,
+                        SelectionDAG &DAG) const;
+
+  EVT getSetCCResultType(const DataLayout &DL, LLVMContext &Context,
+                         EVT VT) const override;
+
   SDValue LowerFormalArguments(SDValue Chain, CallingConv::ID CallConv,
                                bool IsVarArg,
                                const SmallVectorImpl<ISD::InputArg> &Ins,

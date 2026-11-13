@@ -13,10 +13,13 @@
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/AsmPrinterAnalysis.h"
 #include "llvm/CodeGen/MachineFunctionAnalysisManager.h"
+#include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachinePassManager.h"
+#include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCStreamer.h"
+#include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Compiler.h"
 
@@ -34,6 +37,10 @@ public:
   bool runOnMachineFunction(MachineFunction &MF) override;
   void emitInstruction(const MachineInstr *MI) override;
 
+  // Wrapper needed for the tablegenned pseudo lowering.
+  bool lowerOperand(const MachineOperand &MO, MCOperand &MCOp) const;
+  bool lowerPseudoInstExpansion(const MachineInstr *MI, MCInst &Inst);
+
   static char ID;
 };
 
@@ -47,12 +54,33 @@ bool MiniRVAsmPrinter::runOnMachineFunction(MachineFunction &MF) {
   return false;
 }
 
+bool MiniRVAsmPrinter::lowerOperand(const MachineOperand &MO,
+                                    MCOperand &MCOp) const {
+  switch (MO.getType()) {
+  default:
+    return false;
+  case MachineOperand::MO_Register:
+    if (MO.isImplicit())
+      return false;
+    MCOp = MCOperand::createReg(MO.getReg());
+    return true;
+  case MachineOperand::MO_Immediate:
+    MCOp = MCOperand::createImm(MO.getImm());
+    return true;
+  case MachineOperand::MO_MachineBasicBlock:
+    MCOp = MCOperand::createExpr(
+        MCSymbolRefExpr::create(MO.getMBB()->getSymbol(), OutContext));
+    return true;
+  }
+}
+
+// PseudoRET and PseudoBR are lowered here, from the records that carry a
+// PseudoInstExpansion in MiniRVInstrInfo.td.
+#include "MiniRVGenMCPseudoLowering.inc"
+
 void MiniRVAsmPrinter::emitInstruction(const MachineInstr *MI) {
-  // The corpus has no return instruction: PseudoRET only marks the end of a
-  // function.  Print it for readability, but encode nothing into objects.
-  if (MI->getOpcode() == MiniRV::PseudoRET) {
-    if (OutStreamer->hasRawTextSupport())
-      OutStreamer->emitRawText("\tret");
+  if (MCInst Expanded; lowerPseudoInstExpansion(MI, Expanded)) {
+    EmitToStreamer(*OutStreamer, Expanded);
     return;
   }
 

@@ -43,6 +43,11 @@ MiniRVTargetLowering::MiniRVTargetLowering(const TargetMachine &TM,
     setOperationAction(ISD::UREM, VT, Expand);
   }
 
+  setOperationAction(ISD::BRCOND, MVT::Other, Custom);
+  // BR_CC is expanded into BRCOND plus a comparison, which is then fused back
+  // into one branch by LowerBRCOND.
+  setOperationAction(ISD::BR_CC, MVT::i64, Expand);
+
   setStackPointerRegisterToSaveRestore(MiniRV::X2);
   setBooleanContents(ZeroOrOneBooleanContent);
   setMaxAtomicSizeInBitsSupported(0);
@@ -50,9 +55,74 @@ MiniRVTargetLowering::MiniRVTargetLowering(const TargetMachine &TM,
   computeRegisterProperties(STI.getRegisterInfo());
 }
 
+EVT MiniRVTargetLowering::getSetCCResultType(const DataLayout &DL,
+                                             LLVMContext &Context,
+                                             EVT VT) const {
+  // There is no i1 register, so a comparison produces a full xlen value that
+  // is either zero or one (setBooleanContents() above).
+  return getPointerTy(DL);
+}
+
 SDValue MiniRVTargetLowering::LowerOperation(SDValue Op,
                                              SelectionDAG &DAG) const {
-  llvm_unreachable("MiniRV does not custom-lower this operation");
+  switch (Op.getOpcode()) {
+  case ISD::BRCOND:
+    return LowerBRCOND(Op, DAG);
+  default:
+    llvm_unreachable("MiniRV does not custom-lower this operation");
+  }
+}
+
+/// Build MiniRVISD::BRCC, which the patterns in MiniRVInstrInfo.td match
+/// directly against the branch records.
+SDValue MiniRVTargetLowering::LowerBranchCC(SDValue Chain, SDValue LHS,
+                                            SDValue RHS, ISD::CondCode CC,
+                                            SDValue Dest, const SDLoc &DL,
+                                            SelectionDAG &DAG) const {
+  // The corpus has the "less than" and "greater or equal" records only, so the
+  // two other ordered conditions swap their operands instead of asking for a
+  // record that does not exist.
+  switch (CC) {
+  case ISD::SETGT:
+    std::swap(LHS, RHS);
+    CC = ISD::SETLT;
+    break;
+  case ISD::SETLE:
+    std::swap(LHS, RHS);
+    CC = ISD::SETGE;
+    break;
+  case ISD::SETUGT:
+    std::swap(LHS, RHS);
+    CC = ISD::SETULT;
+    break;
+  case ISD::SETULE:
+    std::swap(LHS, RHS);
+    CC = ISD::SETUGE;
+    break;
+  default:
+    break;
+  }
+
+  return DAG.getNode(MiniRVISD::BRCC, DL, MVT::Other, Chain, LHS, RHS,
+                     DAG.getCondCode(CC), Dest);
+}
+
+/// A condition that is not a comparison is compared against zero.
+SDValue MiniRVTargetLowering::LowerBRCOND(SDValue Op,
+                                          SelectionDAG &DAG) const {
+  SDValue Chain = Op.getOperand(0);
+  SDValue Cond = Op.getOperand(1);
+  SDValue Dest = Op.getOperand(2);
+  SDLoc DL(Op);
+
+  if (Cond.getOpcode() == ISD::SETCC) {
+    ISD::CondCode CC = cast<CondCodeSDNode>(Cond.getOperand(2))->get();
+    return LowerBranchCC(Chain, Cond.getOperand(0), Cond.getOperand(1), CC,
+                         Dest, DL, DAG);
+  }
+
+  SDValue Zero = DAG.getConstant(0, DL, MVT::i64);
+  return LowerBranchCC(Chain, Cond, Zero, ISD::SETNE, Dest, DL, DAG);
 }
 
 SDValue MiniRVTargetLowering::LowerFormalArguments(
@@ -128,6 +198,8 @@ MiniRVTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
 
 const char *MiniRVTargetLowering::getTargetNodeName(unsigned Opcode) const {
   switch (Opcode) {
+  case MiniRVISD::BRCC:
+    return "MiniRVISD::BRCC";
   case MiniRVISD::RET:
     return "MiniRVISD::RET";
   default:

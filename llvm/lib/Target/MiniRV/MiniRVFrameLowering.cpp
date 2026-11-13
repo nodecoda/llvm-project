@@ -27,7 +27,10 @@ MiniRVFrameLowering::MiniRVFrameLowering(const MiniRVSubtarget &STI)
       STI(STI), TII(*STI.getInstrInfo()), TRI(*STI.getRegisterInfo()) {}
 
 bool MiniRVFrameLowering::hasFPImpl(const MachineFunction &MF) const {
-  return MF.getFrameInfo().isFrameAddressTaken();
+  // The stack pointer never moves after the prologue -- there are no calls and
+  // no dynamic allocas -- so frame indices can stay sp-relative and a frame
+  // pointer would only cost a register.
+  return false;
 }
 
 void MiniRVFrameLowering::emitPrologue(MachineFunction &MF,

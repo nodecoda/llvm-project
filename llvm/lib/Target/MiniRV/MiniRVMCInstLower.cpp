@@ -7,8 +7,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "MiniRVMCInstLower.h"
+#include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineInstr.h"
+#include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
+#include "llvm/MC/MCSymbol.h"
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace llvm;
@@ -19,7 +22,7 @@ void MiniRVMCInstLower::Lower(const MachineInstr *MI, MCInst &OutMI) const {
   for (const MachineOperand &MO : MI->operands()) {
     switch (MO.getType()) {
     default:
-      llvm_unreachable("MiniRV has no global, symbol or MBB operand");
+      llvm_unreachable("MiniRV has no global or symbol operand");
     case MachineOperand::MO_Register:
       if (MO.isImplicit())
         continue;
@@ -27,6 +30,10 @@ void MiniRVMCInstLower::Lower(const MachineInstr *MI, MCInst &OutMI) const {
       break;
     case MachineOperand::MO_Immediate:
       OutMI.addOperand(MCOperand::createImm(MO.getImm()));
+      break;
+    case MachineOperand::MO_MachineBasicBlock:
+      OutMI.addOperand(MCOperand::createExpr(
+          MCSymbolRefExpr::create(MO.getMBB()->getSymbol(), Ctx)));
       break;
     }
   }

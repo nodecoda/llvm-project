@@ -9,10 +9,8 @@
 #ifndef LLVM_LIB_TARGET_MINIRV_MINIRVSELECTIONDAGINFO_H
 #define LLVM_LIB_TARGET_MINIRV_MINIRVSELECTIONDAGINFO_H
 
+#include "MiniRV.h"
 #include "llvm/CodeGen/SelectionDAGTargetInfo.h"
-
-#define GET_SDNODE_ENUM
-#include "MiniRVGenSDNodeInfo.inc"
 
 namespace llvm {
 
