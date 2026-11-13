@@ -1,0 +1,28 @@
+# Operand/effect categories for the MiniRV demo corpus.
+#
+# A category fixes *shape* only: which operand class fills which database
+# field, in which order.  Encodings still come exclusively from the opcode
+# database.
+categories:
+
+  r_type:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins:
+        - {role: lhs, field: rs1, reg_class: GPR}
+        - {role: rhs, field: rs2, reg_class: GPR}
+    effects: {}
+
+  i_type:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins:
+        - {role: lhs, field: rs1, reg_class: GPR}
+        - {role: imm, field: imm12, operand: simm12}
+    effects: {}
+
+  u_type:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins: [{role: imm, field: imm20, operand: uimm20}]
+    effects: {}

@@ -1,0 +1,5 @@
+mnemonic: ori
+opcode: {repo: riscv-opcodes, extension: rv_i, key: ori}
+spec: minirv.core.i_type
+domain: rv-i
+status: auto_full

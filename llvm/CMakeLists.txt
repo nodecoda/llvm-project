@@ -578,6 +578,7 @@ set(LLVM_ALL_TARGETS
   PowerPC
   RISCV
   RVTrim
+  MiniRV
   Sparc
   SPIRV
   SystemZ

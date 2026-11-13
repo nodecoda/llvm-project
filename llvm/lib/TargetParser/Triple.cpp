@@ -121,6 +121,8 @@ StringRef Triple::getArchTypeName(ArchType Kind) {
     return "riscv64be";
   case rvtrim64:
     return "rvtrim64";
+  case minirv64:
+    return "minirv64";
   case shave:
     return "shave";
   case sparc:
@@ -364,6 +366,9 @@ StringRef Triple::getArchTypePrefix(ArchType Kind) {
   case rvtrim64:
     return "rvtrim";
 
+  case minirv64:
+    return "minirv";
+
   case ve:
     return "ve";
   case csky:
@@ -492,6 +497,7 @@ Triple::ArchType Triple::getArchTypeForLLVMName(StringRef Name) {
       .Case("riscv32be", riscv32be)
       .Case("riscv64be", riscv64be)
       .Case("rvtrim64", rvtrim64)
+      .Case("minirv64", minirv64)
       .Case("hexagon", hexagon)
       .Case("sparc", sparc)
       .Case("sparcel", sparcel)
@@ -647,6 +653,7 @@ Triple::ArchType Triple::parseArch(StringRef ArchName) {
           .Case("riscv32be", Triple::riscv32be)
           .Case("riscv64be", Triple::riscv64be)
           .Case("rvtrim64", Triple::rvtrim64)
+          .Case("minirv64", Triple::minirv64)
           .Case("hexagon", Triple::hexagon)
           .Cases({"s390x", "systemz"}, Triple::systemz)
           .Case("sparc", Triple::sparc)
@@ -1005,6 +1012,7 @@ static Triple::ObjectFormatType getDefaultFormat(const Triple &T) {
   case Triple::riscv32be:
   case Triple::riscv64be:
   case Triple::rvtrim64:
+  case Triple::minirv64:
   case Triple::shave:
   case Triple::sparc:
   case Triple::sparcel:
@@ -1803,6 +1811,7 @@ unsigned Triple::getArchPointerBitWidth(llvm::Triple::ArchType Arch) {
   case llvm::Triple::riscv64:
   case llvm::Triple::riscv64be:
   case llvm::Triple::rvtrim64:
+  case llvm::Triple::minirv64:
   case llvm::Triple::sparcv9:
   case llvm::Triple::spirv:
   case llvm::Triple::spir64:
@@ -2000,6 +2009,7 @@ Triple Triple::get64BitArchVariant() const {
   case Triple::riscv64:
   case Triple::riscv64be:
   case Triple::rvtrim64:
+  case Triple::minirv64:
   case Triple::sparcv9:
   case Triple::spir64:
   case Triple::spirv64:
@@ -2251,6 +2261,7 @@ bool Triple::isLittleEndian() const {
   case Triple::riscv32:
   case Triple::riscv64:
   case Triple::rvtrim64:
+  case Triple::minirv64:
   case Triple::shave:
   case Triple::sparcel:
   case Triple::spir64:
@@ -2507,7 +2518,7 @@ ExceptionHandling Triple::getDefaultExceptionHandling() const {
   }
 
   if (isAArch64() || isX86() || isPPC() || isMIPS() || isSPARC() || isBPF() ||
-      isRISCV() || isRVTrim() || isLoongArch())
+      isRISCV() || isRVTrim() || isMiniRV() || isLoongArch())
     return ExceptionHandling::DwarfCFI;
 
   switch (getArch()) {
@@ -2573,6 +2584,7 @@ LongDoubleFormat Triple::getDefaultLongDoubleFormat() const {
   case riscv32be:
   case riscv64be:
   case rvtrim64:
+  case minirv64:
   case sparcv9:
   case systemz:
   case ve:

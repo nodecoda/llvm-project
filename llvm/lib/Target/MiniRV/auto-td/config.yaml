@@ -1,0 +1,19 @@
+# auto-td configuration for MiniRV, a demo MC-only target.
+#
+# The corpus is deliberately small: eight R-type, four I-type and two U-type
+# instructions.  It exists to show that a second target needs only this
+# directory plus the llvm_autotd_generate() call in CMakeLists.txt.
+record_prefix: ""
+base_class: MiniRVInst
+# Namespace whose record references the coverage gate checks.
+cpp_namespace: MiniRV
+
+domains:
+  rv-i: {predicate: null}
+
+# Coverage gate: every row of this extension file must be generated from a
+# YAML instruction.
+coverage:
+  extensions:
+    - rv_i
+  retained_handwritten: []
