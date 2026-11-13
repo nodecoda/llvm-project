@@ -25,6 +25,8 @@ class Proc<string Name, list<SubtargetFeature> Features>
     : Processor<Name, NoItineraries, Features>;
 def : Proc<"generic", []>;
 
+include "MiniRVCallingConv.td"
+
 include "MiniRVInstrInfo.td"
 
 def MiniRVInstrInfo : InstrInfo;

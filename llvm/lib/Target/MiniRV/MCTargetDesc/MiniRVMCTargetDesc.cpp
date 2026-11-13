@@ -80,13 +80,3 @@ LLVMInitializeMiniRVTargetMC() {
   TargetRegistry::RegisterMCAsmBackend(T, createMiniRVAsmBackend);
   TargetRegistry::RegisterNullTargetStreamer(T, createNullTargetStreamer);
 }
-
-extern "C" void LLVMInitializeMiniRVTargetInfo();
-
-// This target has no TargetMachine, so LLVMInitializeMiniRVTarget (referenced
-// from Targets.def) is the MC entry point rather than a CodeGen one.
-extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void
-LLVMInitializeMiniRVTarget() {
-  LLVMInitializeMiniRVTargetInfo();
-  LLVMInitializeMiniRVTargetMC();
-}

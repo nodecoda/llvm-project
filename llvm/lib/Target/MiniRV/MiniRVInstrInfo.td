@@ -24,7 +24,9 @@ class MiniRVImmAsmOperand<string name, string predicate> : AsmOperandClass {
 def SImm12AsmOperand : MiniRVImmAsmOperand<"SImm12", "isSImm12">;
 def UImm20AsmOperand : MiniRVImmAsmOperand<"UImm20", "isUImm20">;
 
-def simm12 : Operand<i64> {
+// This is both an instruction operand and a DAG leaf matcher, so the same
+// record can be named on either side of a Pat.
+def simm12 : Operand<i64>, ImmLeaf<i64, [{ return isInt<12>(Imm); }]> {
   let ParserMatchClass = SImm12AsmOperand;
   let DecoderMethod = "DecodeSImm12";
 }
@@ -35,3 +37,34 @@ def uimm20 : Operand<i64> {
 }
 
 include "auto-td/AutoTdInstrInfo.inc"
+
+//===----------------------------------------------------------------------===//
+// SelectionDAG support
+//===----------------------------------------------------------------------===//
+//
+// The encodings and operand lists above come from auto-td; the patterns that
+// connect them to SelectionDAG nodes are written here, because a pattern is a
+// statement about semantics rather than about the opcode database.
+//
+//===----------------------------------------------------------------------===//
+
+def MiniRVret : SDNode<"MiniRVISD::RET", SDTNone,
+                       [SDNPHasChain, SDNPOptInGlue, SDNPVariadic]>;
+
+let isReturn = 1, isTerminator = 1, isBarrier = 1, isPseudo = 1,
+    hasNoSchedulingInfo = 1 in
+def PseudoRET : MiniRVInst<(outs), (ins), "ret", "", [(MiniRVret)], InstFormatI>;
+
+def : Pat<(add GPR:$rs1, GPR:$rs2), (ADD GPR:$rs1, GPR:$rs2)>;
+def : Pat<(sub GPR:$rs1, GPR:$rs2), (SUB GPR:$rs1, GPR:$rs2)>;
+def : Pat<(and GPR:$rs1, GPR:$rs2), (AND GPR:$rs1, GPR:$rs2)>;
+def : Pat<(or  GPR:$rs1, GPR:$rs2), (OR  GPR:$rs1, GPR:$rs2)>;
+def : Pat<(xor GPR:$rs1, GPR:$rs2), (XOR GPR:$rs1, GPR:$rs2)>;
+def : Pat<(shl GPR:$rs1, GPR:$rs2), (SLL GPR:$rs1, GPR:$rs2)>;
+def : Pat<(srl GPR:$rs1, GPR:$rs2), (SRL GPR:$rs1, GPR:$rs2)>;
+def : Pat<(sra GPR:$rs1, GPR:$rs2), (SRA GPR:$rs1, GPR:$rs2)>;
+
+def : Pat<(add GPR:$rs1, simm12:$imm), (ADDI GPR:$rs1, simm12:$imm)>;
+def : Pat<(and GPR:$rs1, simm12:$imm), (ANDI GPR:$rs1, simm12:$imm)>;
+def : Pat<(or  GPR:$rs1, simm12:$imm), (ORI  GPR:$rs1, simm12:$imm)>;
+def : Pat<(xor GPR:$rs1, simm12:$imm), (XORI GPR:$rs1, simm12:$imm)>;
