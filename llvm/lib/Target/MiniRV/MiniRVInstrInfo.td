@@ -312,6 +312,9 @@ def : Pat<(MiniRVremuw GPR:$rs1, GPR:$rs2), (REMUW GPR:$rs1, GPR:$rs2)>;
 
 def : Pat<(i64 (add GPR:$rs1, GPR:$rs2)), (ADD GPR:$rs1, GPR:$rs2)>;
 def : Pat<(i64 (sub GPR:$rs1, GPR:$rs2)), (SUB GPR:$rs1, GPR:$rs2)>;
+// Mask materialisation subtracts a setcc result from zero; the zero is the
+// x0 register, not a value that needs to be built.
+def : Pat<(i64 (sub 0, GPR:$rs2)), (SUB (i64 X0), GPR:$rs2)>;
 def : Pat<(i64 (and GPR:$rs1, GPR:$rs2)), (AND GPR:$rs1, GPR:$rs2)>;
 def : Pat<(i64 (or  GPR:$rs1, GPR:$rs2)), (OR  GPR:$rs1, GPR:$rs2)>;
 def : Pat<(i64 (xor GPR:$rs1, GPR:$rs2)), (XOR GPR:$rs1, GPR:$rs2)>;

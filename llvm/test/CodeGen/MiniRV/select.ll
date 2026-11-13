@@ -27,10 +27,10 @@ define signext i32 @sel_i1(i1 signext %c, i32 signext %a, i32 signext %b) {
 }
 
 ; CHECK-LABEL: selcmp:
-; CHECK:         slt     x3, x10, x11
-; CHECK:         sub     x3, x4, x3
-; CHECK:         xor     x4, x10, x11
-; CHECK:         and     x3, x4, x3
+; CHECK:         xor     x3, x10, x11
+; CHECK:         slt     x4, x10, x11
+; CHECK:         sub     x4, x0, x4
+; CHECK:         and     x3, x3, x4
 ; CHECK:         xor     x10, x11, x3
 define signext i32 @selcmp(i32 signext %a, i32 signext %b) {
   %c = icmp slt i32 %a, %b
