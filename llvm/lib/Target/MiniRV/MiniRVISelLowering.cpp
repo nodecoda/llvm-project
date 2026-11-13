@@ -101,6 +101,16 @@ MiniRVTargetLowering::MiniRVTargetLowering(const TargetMachine &TM,
       {ISD::CTPOP, ISD::CTLZ, ISD::CTTZ, ISD::BSWAP, ISD::BITREVERSE},
       MVT::i64, Expand);
 
+  // A 128-bit multiply is split into 64-bit pieces.  Mark the two-result
+  // multiply Expand so the type legalizer picks the MUL+MULH/MULHU form the
+  // corpus provides instead of asking the selector for UMUL_LOHI.
+  setOperationAction({ISD::UMUL_LOHI, ISD::SMUL_LOHI}, MVT::i64, Expand);
+
+  // A 128-bit shift is split into a pair of 64-bit shifts; the generic
+  // expansion needs the three "parts" nodes to be expandable.
+  setOperationAction({ISD::SHL_PARTS, ISD::SRL_PARTS, ISD::SRA_PARTS},
+                     MVT::i64, Expand);
+
   // A va_list is a pointer to the next argument slot.  va_start hands out the
   // address of the register save area and va_arg advances the pointer by one
   // slot; va_copy and va_end are just a pointer copy and a no-op.

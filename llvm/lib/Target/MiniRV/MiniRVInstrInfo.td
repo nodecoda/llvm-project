@@ -324,6 +324,10 @@ def : Pat<(i64 (sra GPR:$rs1, GPR:$rs2)), (SRA GPR:$rs1, GPR:$rs2)>;
 //===----------------------------------------------------------------------===//
 
 def : Pat<(i64 (mul GPR:$rs1, GPR:$rs2)), (MUL GPR:$rs1, GPR:$rs2)>;
+// The high-half multiplies are what the type legalizer needs to expand an i128
+// multiply into 64-bit pieces.
+def : Pat<(i64 (mulhs GPR:$rs1, GPR:$rs2)), (MULH GPR:$rs1, GPR:$rs2)>;
+def : Pat<(i64 (mulhu GPR:$rs1, GPR:$rs2)), (MULHU GPR:$rs1, GPR:$rs2)>;
 def : Pat<(i64 (sdiv GPR:$rs1, GPR:$rs2)), (DIV GPR:$rs1, GPR:$rs2)>;
 def : Pat<(i64 (udiv GPR:$rs1, GPR:$rs2)), (DIVU GPR:$rs1, GPR:$rs2)>;
 def : Pat<(i64 (srem GPR:$rs1, GPR:$rs2)), (REM GPR:$rs1, GPR:$rs2)>;
