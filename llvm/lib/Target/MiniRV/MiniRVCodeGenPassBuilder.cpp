@@ -9,6 +9,7 @@
 #include "MiniRV.h"
 #include "MiniRVAsmPrinter.h"
 #include "MiniRVTargetMachine.h"
+#include "llvm/CodeGen/AtomicExpand.h"
 #include "llvm/CodeGen/SelectionDAGISel.h"
 #include "llvm/IR/PassInstrumentation.h"
 #include "llvm/Passes/CodeGenPassBuilder.h"
@@ -32,11 +33,21 @@ public:
                                     PassInstrumentationCallbacks *PIC)
       : CodeGenPassBuilder(TM, Opts, PIC) {}
 
+  void addIRPasses(PassManagerWrapper &PMW) override;
   Error addInstSelector(PassManagerWrapper &PMW) override;
   void addAsmPrinterBegin(PassManagerWrapper &PMW) override;
   void addAsmPrinter(PassManagerWrapper &PMW) override;
   void addAsmPrinterEnd(PassManagerWrapper &PMW) override;
 };
+
+void MiniRVCodeGenPassBuilder::addIRPasses(PassManagerWrapper &PMW) {
+  // There is no A extension, so there is no legal atomic instruction.  Expand
+  // every atomic load, store, exchange, compare-exchange and read-modify-write
+  // into the corresponding libatomic entry point before instruction selection;
+  // without this the selector sees ATOMIC_* nodes it has no pattern for.
+  addFunctionPass(AtomicExpandPass(getTM()), PMW);
+  Base::addIRPasses(PMW);
+}
 
 Error MiniRVCodeGenPassBuilder::addInstSelector(PassManagerWrapper &PMW) {
   addMachineFunctionPass(MiniRVISelDAGToDAGPass(getTM(), getOptLevel()), PMW);

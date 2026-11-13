@@ -81,6 +81,9 @@ MiniRVTargetLowering::MiniRVTargetLowering(const TargetMachine &TM,
   // is just another symbol.  A switch becomes a table lookup followed by an
   // indirect branch.
   setOperationAction(ISD::GlobalAddress, MVT::i64, Custom);
+  // There is no TLS model, so reject thread-local globals explicitly rather
+  // than letting the selector report "Cannot select: GlobalTLSAddress".
+  setOperationAction(ISD::GlobalTLSAddress, MVT::i64, Custom);
   setOperationAction(ISD::JumpTable, MVT::i64, Custom);
   setOperationAction(ISD::BR_JT, MVT::Other, Expand);
 
@@ -121,7 +124,12 @@ MiniRVTargetLowering::MiniRVTargetLowering(const TargetMachine &TM,
 
   setStackPointerRegisterToSaveRestore(MiniRV::X2);
   setBooleanContents(ZeroOrOneBooleanContent);
+  // Every atomic operation is expanded into a libatomic call; see
+  // MiniRVSubtarget::initLibcallLoweringInfo.  An explicit fence is the one
+  // atomic construct AtomicExpandPass leaves alone, so mark it Expand and let
+  // the DAG legalizer emit its generic __sync_synchronize() call.
   setMaxAtomicSizeInBitsSupported(0);
+  setOperationAction(ISD::ATOMIC_FENCE, MVT::Other, Expand);
 
   computeRegisterProperties(STI.getRegisterInfo());
 }
@@ -150,6 +158,8 @@ SDValue MiniRVTargetLowering::LowerOperation(SDValue Op,
   switch (Op.getOpcode()) {
   case ISD::GlobalAddress:
     return LowerGlobalAddress(Op, DAG);
+  case ISD::GlobalTLSAddress:
+    report_fatal_error("MiniRV does not support thread-local storage");
   case ISD::JumpTable:
     return LowerJumpTable(Op, DAG);
   case ISD::FRAMEADDR:
