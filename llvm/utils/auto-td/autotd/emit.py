@@ -30,9 +30,26 @@ def _dag(spec: InstrSpec, config: dict, direction: str) -> str:
     return f"({direction} {rendered})"
 
 
+def _asm_operand_name(spec: InstrSpec, op) -> str:
+    """Name to print for an output operand.
+
+    A tied output is written as ``VR:$vd_wb`` in the DAG while the assembly
+    syntax prints the tied input (``$vd``), so prefer the input's name when an
+    input with the same role and field exists.
+    """
+    for inop in spec.ins:
+        if inop.role == op.role and inop.field == op.field:
+            return inop.var_name
+    return op.var_name
+
+
+def _is_tied_input(spec: InstrSpec, op) -> bool:
+    return any(out.role == op.role and out.field == op.field for out in spec.outs)
+
+
 def asm_string(spec: InstrSpec) -> str:
-    parts = [f"${op.var_name}" for op in spec.outs]
-    values = [op for op in spec.ins if not op.is_mask]
+    parts = [f"${_asm_operand_name(spec, op)}" for op in spec.outs]
+    values = [op for op in spec.ins if not op.is_mask and not _is_tied_input(spec, op)]
     base = next((op for op in values if op.role == "base"), None)
     offset = next((op for op in values if op.role == "offset"), None)
     folded = base is not None and offset is not None

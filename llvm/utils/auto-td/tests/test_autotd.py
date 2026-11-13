@@ -462,6 +462,37 @@ class OperandVarTest(unittest.TestCase):
         self.assertIn("simm5:$imm", "\n".join(emit.render_record(spec, {}, "T")))
 
 
+class TiedOperandAsmTest(unittest.TestCase):
+    """A tied output prints the input operand name, not the ``_wb`` name."""
+
+    def test_tied_output_uses_input_name_in_asm(self):
+        ranges = {
+            "vd": BitRange("vd", 11, 7),
+            "vs2": BitRange("vs2", 24, 20),
+            "vs1": BitRange("vs1", 19, 15),
+            "vm": BitRange("vm", 25, 25),
+        }
+        spec = InstrSpec(
+            mnemonic="demo.vv",
+            domain="d",
+            predicate="",
+            opcode=OpcodeRow("demo.vv", ("vm", "vs2", "vs1", "vd"), (), ranges, Path("mem.td")),
+            ref=OpcodeRef("repo", "ext", "demo.vv"),
+            spec_ref="s",
+            source=Path("mem.yaml"),
+            outs=(Operand("dest", "vd", reg_class="VR", var="vd_wb"),),
+            ins=(
+                Operand("dest", "vd", reg_class="VR"),
+                Operand("rhs", "vs1", reg_class="VR"),
+                Operand("lhs", "vs2", reg_class="VR"),
+                Operand("mask", "vm", operand_class="VMaskOp", is_mask=True),
+            ),
+            arg_lut=dict(ranges),
+        )
+        self.assertEqual(emit.asm_string(spec), "$vd, $vs1, $vs2$vm")
+        self.assertIn("(outs VR:$vd_wb)", "\n".join(emit.render_record(spec, {}, "T")))
+
+
 class RecordPropertyTest(FixtureCase):
     """Value-form ``lets`` and taxonomy ``flags`` must reach the record."""
 
