@@ -1,0 +1,6 @@
+mnemonic: vasubu.vv
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vasubu_vv}
+spec: rvtrim.vector.v_vv
+domain: rv-v
+status: auto_full
+sched: [WriteVAALUV_WorstCase, ReadVPassthru_WorstCase, ReadVAALUV_WorstCase, ReadVAALUV_WorstCase, ReadVMask]

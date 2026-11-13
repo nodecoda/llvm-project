@@ -73,3 +73,90 @@ categories:
       implicit_uses: [VL, VTYPE]
       flags: [UseNamedOperandTable, VMConstraint]
       lets: {ElementsDependOn: EltDepsNone}
+
+  v_vadc_vim:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: simm5, var: imm, operand: simm5}
+        - {role: mask, field: vm, operand: VMaskCarryInOp}
+    effects: {implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint], lets: {ElementsDependOn: EltDepsNone}}
+    # members: vadc.vim
+
+  v_vadc_vvm:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: vs1, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskCarryInOp}
+    effects: {implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint], lets: {ElementsDependOn: EltDepsNone}}
+    # members: vadc.vvm
+
+  v_vadc_vxm:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: rs1, reg_class: GPR}
+        - {role: mask, field: vm, operand: VMaskCarryInOp}
+    effects: {implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint], lets: {ElementsDependOn: EltDepsNone}}
+    # members: vadc.vxm
+
+  v_unary:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint], lets: {ElementsDependOn: EltDepsNone}}
+    # members: vsext.vf2, vsext.vf4, vsext.vf8, vzext.vf2, vzext.vf4, vzext.vf8
+
+  v_vwaddu_vv:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: vs1, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint], lets: {Constraints: '"@earlyclobber $vd"', DestEEW: EEWSEWx2, VS1VS2Constraint: WidenV, ElementsDependOn: EltDepsNone}}
+    # members: vwaddu.vv, vwadd.vv, vwsubu.vv, vwsub.vv
+
+  v_vwaddu_vx:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: rs1, reg_class: GPR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint], lets: {Constraints: '"@earlyclobber $vd"', DestEEW: EEWSEWx2, VS1VS2Constraint: WidenV, ElementsDependOn: EltDepsNone}}
+    # members: vwaddu.vx, vwadd.vx, vwsubu.vx, vwsub.vx
+
+  v_vwaddu_wv:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: vs1, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint], lets: {Constraints: '"@earlyclobber $vd"', DestEEW: EEWSEWx2, VS1VS2Constraint: WidenW, ElementsDependOn: EltDepsNone}}
+    # members: vwaddu.wv, vwadd.wv, vwsubu.wv, vwsub.wv
+
+  v_vwaddu_wx:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: rs1, reg_class: GPR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint], lets: {Constraints: '"@earlyclobber $vd"', DestEEW: EEWSEWx2, VS1VS2Constraint: WidenW, ElementsDependOn: EltDepsNone}}
+    # members: vwaddu.wx, vwadd.wx, vwsubu.wx, vwsub.wx

@@ -1,0 +1,6 @@
+mnemonic: vsadd.vx
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vsadd_vx}
+spec: rvtrim.vector.v_vx
+domain: rv-v
+status: auto_full
+sched: [WriteVSALUX_WorstCase, ReadVPassthru_WorstCase, ReadVSALUV_WorstCase, ReadVSALUX_WorstCase, ReadVMask]

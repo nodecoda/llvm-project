@@ -1,0 +1,6 @@
+mnemonic: vmaxu.vv
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vmaxu_vv}
+spec: rvtrim.vector.v_vv
+domain: rv-v
+status: auto_full
+sched: [WriteVIMinMaxV_WorstCase, ReadVPassthru_WorstCase, ReadVIMinMaxV_WorstCase, ReadVIMinMaxV_WorstCase, ReadVMask]

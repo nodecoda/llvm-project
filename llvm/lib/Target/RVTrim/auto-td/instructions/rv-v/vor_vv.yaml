@@ -1,0 +1,6 @@
+mnemonic: vor.vv
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vor_vv}
+spec: rvtrim.vector.v_vv
+domain: rv-v
+status: auto_full
+sched: [WriteVIALUV_WorstCase, ReadVPassthru_WorstCase, ReadVIALUV_WorstCase, ReadVIALUV_WorstCase, ReadVMask]

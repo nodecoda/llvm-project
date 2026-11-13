@@ -1068,39 +1068,10 @@ def : InstAlias<"vl8r.v $vd, $rs1", (VL8RE8_V VRM8:$vd, GPRMemZeroOffset:$rs1)>;
 
 let Predicates = [HasVInstructions] in {
 // Vector Single-Width Integer Add and Subtract
-let ElementsDependOn = EltDepsNone in {
-defm VSUB_V : VALU_IV_V_X<"vsub", 0b000010>;
-defm VRSUB_V : VALU_IV_X_I<"vrsub", 0b000011>;
-} // ElementsDependOn = EltDepsNone
 
 def : InstAlias<"vneg.v $vd, $vs$vm", (VRSUB_VX VR:$vd, VR:$vs, X0, VMaskOp:$vm)>;
 def : InstAlias<"vneg.v $vd, $vs", (VRSUB_VX VR:$vd, VR:$vs, X0, zero_reg)>;
 
-let ElementsDependOn = EltDepsNone in {
-// Vector Widening Integer Add/Subtract
-// Refer to 11.2 Widening Vector Arithmetic Instructions
-// The destination vector register group cannot overlap a source vector
-// register group of a different element width (including the mask register
-// if masked), otherwise an illegal instruction exception is raised.
-let Constraints = "@earlyclobber $vd", DestEEW = EEWSEWx2 in {
-let VS1VS2Constraint = WidenV in {
-defm VWADDU_V : VALU_MV_V_X<"vwaddu", 0b110000, "v">;
-defm VWSUBU_V : VALU_MV_V_X<"vwsubu", 0b110010, "v">;
-defm VWADD_V : VALU_MV_V_X<"vwadd", 0b110001, "v">;
-defm VWSUB_V : VALU_MV_V_X<"vwsub", 0b110011, "v">;
-} // VS1VS2Constraint = WidenV
-// Set earlyclobber for following instructions for second and mask operands.
-// This has the downside that the earlyclobber constraint is too coarse and
-// will impose unnecessary restrictions by not allowing the destination to
-// overlap with the first (wide) operand.
-let VS1VS2Constraint = WidenW in {
-defm VWADDU_W : VALU_MV_V_X<"vwaddu", 0b110100, "w">;
-defm VWSUBU_W : VALU_MV_V_X<"vwsubu", 0b110110, "w">;
-defm VWADD_W : VALU_MV_V_X<"vwadd", 0b110101, "w">;
-defm VWSUB_W : VALU_MV_V_X<"vwsub", 0b110111, "w">;
-} // VS1VS2Constraint = WidenW
-} // Constraints = "@earlyclobber $vd", DestEEW = EEWSEWx2
-} // ElementsDependOn = EltDepsNone
 
 def : InstAlias<"vwcvt.x.x.v $vd, $vs$vm",
                 (VWADD_VX VR:$vd, VR:$vs, X0, VMaskOp:$vm)>;
@@ -1114,15 +1085,8 @@ def : InstAlias<"vwcvtu.x.x.v $vd, $vs",
 let ElementsDependOn = EltDepsNone in {
 
 // Vector Integer Extension
-def VZEXT_VF8 : VEXT_MV_VS2<"vzext.vf8", 0b010010, 0b00010>;
-def VSEXT_VF8 : VEXT_MV_VS2<"vsext.vf8", 0b010010, 0b00011>;
-def VZEXT_VF4 : VEXT_MV_VS2<"vzext.vf4", 0b010010, 0b00100>;
-def VSEXT_VF4 : VEXT_MV_VS2<"vsext.vf4", 0b010010, 0b00101>;
-def VZEXT_VF2 : VEXT_MV_VS2<"vzext.vf2", 0b010010, 0b00110>;
-def VSEXT_VF2 : VEXT_MV_VS2<"vsext.vf2", 0b010010, 0b00111>;
 
 // Vector Integer Add-with-Carry / Subtract-with-Borrow Instructions
-defm VADC_V : VALUm_IV_V_X_I<"vadc", 0b010000>;
 defm VSBC_V : VALUm_IV_V_X<"vsbc", 0b010010>;
 let Constraints = "@earlyclobber $vd", VMConstraint = false,
     DestEEW = EEW1 in {
@@ -1133,9 +1097,6 @@ defm VMSBC_V : VALUNoVm_IV_V_X<"vmsbc", 0b010011>;
 } // Constraints = "@earlyclobber $vd", VMConstraint = false, DestEEW = EEW1
 
 // Vector Bitwise Logical Instructions
-defm VAND_V : VALU_IV_V_X_I<"vand", 0b001001>;
-defm VOR_V : VALU_IV_V_X_I<"vor", 0b001010>;
-defm VXOR_V : VALU_IV_V_X_I<"vxor", 0b001011>;
 
 } // ElementsDependOn = EltDepsNone
 
@@ -1232,10 +1193,6 @@ def PseudoVMSGE_VX_M_T : Pseudo<(outs VR:$vd, VRNoV0:$scratch),
 }
 
 // Vector Integer Min/Max Instructions
-defm VMINU_V : VMINMAX_IV_V_X<"vminu", 0b000100>;
-defm VMIN_V : VMINMAX_IV_V_X<"vmin", 0b000101>;
-defm VMAXU_V : VMINMAX_IV_V_X<"vmaxu", 0b000110>;
-defm VMAX_V : VMINMAX_IV_V_X<"vmax", 0b000111>;
 
 // Vector Single-Width Integer Multiply Instructions
 defm VMUL_V : VMUL_MV_V_X<"vmul", 0b100101>;
@@ -1279,16 +1236,8 @@ let hasSideEffects = 0, mayLoad = 0, mayStore = 0 in
 defm VMV_V : VMV_IV_V_X_I<"vmv.v", 0b010111>;
 
 // Vector Fixed-Point Arithmetic Instructions
-defm VSADDU_V : VSALU_IV_V_X_I<"vsaddu", 0b100000>;
-defm VSADD_V : VSALU_IV_V_X_I<"vsadd", 0b100001>;
-defm VSSUBU_V : VSALU_IV_V_X<"vssubu", 0b100010>;
-defm VSSUB_V : VSALU_IV_V_X<"vssub", 0b100011>;
 
 // Vector Single-Width Averaging Add and Subtract
-defm VAADDU_V : VAALU_MV_V_X<"vaaddu", 0b001000>;
-defm VAADD_V : VAALU_MV_V_X<"vaadd", 0b001001>;
-defm VASUBU_V : VAALU_MV_V_X<"vasubu", 0b001010>;
-defm VASUB_V : VAALU_MV_V_X<"vasub", 0b001011>;
 
 // Vector Single-Width Fractional Multiply with Rounding and Saturation
 defm VSMUL_V : VSMUL_IV_V_X<"vsmul", 0b100111>;

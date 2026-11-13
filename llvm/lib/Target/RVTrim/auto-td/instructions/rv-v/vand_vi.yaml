@@ -1,0 +1,6 @@
+mnemonic: vand.vi
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vand_vi}
+spec: rvtrim.vector.v_vi
+domain: rv-v
+status: auto_full
+sched: [WriteVIALUI_WorstCase, ReadVPassthru_WorstCase, ReadVIALUV_WorstCase, ReadVMask]

@@ -1,0 +1,6 @@
+mnemonic: vsext.vf2
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vsext_vf2}
+spec: rvtrim.vector.v_unary
+domain: rv-v
+status: auto_full
+sched: [WriteVExtV_WorstCase, ReadVPassthru_WorstCase, ReadVExtV_WorstCase, ReadVMask]
