@@ -1,0 +1,6 @@
+mnemonic: vsrl.vx
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vsrl_vx}
+spec: rvtrim.vector.v_vx
+domain: rv-v
+status: auto_full
+sched: [WriteVShiftX_WorstCase, ReadVPassthru_WorstCase, ReadVShiftV_WorstCase, ReadVShiftX_WorstCase, ReadVMask]

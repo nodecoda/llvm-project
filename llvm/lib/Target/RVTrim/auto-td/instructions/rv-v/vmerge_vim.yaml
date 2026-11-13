@@ -1,0 +1,6 @@
+mnemonic: vmerge.vim
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vmerge_vim}
+spec: rvtrim.vector.v_vadc_vim
+domain: rv-v
+status: auto_full
+sched: [WriteVIMergeI_WorstCase, ReadVPassthru_WorstCase, ReadVIMergeV_WorstCase, ReadVMask]

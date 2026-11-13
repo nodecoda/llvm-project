@@ -1,0 +1,6 @@
+mnemonic: vcompress.vm
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vcompress_vm}
+spec: rvtrim.vector.v_vcompress_vm
+domain: rv-v
+status: auto_full
+sched: [WriteVCompressV_WorstCase, ReadVPassthru_WorstCase, ReadVCompressV_WorstCase, ReadVCompressV_WorstCase, ReadVMask]

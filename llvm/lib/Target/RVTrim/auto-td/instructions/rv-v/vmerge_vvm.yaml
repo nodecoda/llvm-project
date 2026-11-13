@@ -1,0 +1,6 @@
+mnemonic: vmerge.vvm
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vmerge_vvm}
+spec: rvtrim.vector.v_vadc_vvm
+domain: rv-v
+status: auto_full
+sched: [WriteVIMergeV_WorstCase, ReadVPassthru_WorstCase, ReadVIMergeV_WorstCase, ReadVIMergeV_WorstCase, ReadVMask]

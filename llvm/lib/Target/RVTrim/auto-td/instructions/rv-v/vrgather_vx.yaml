@@ -1,0 +1,6 @@
+mnemonic: vrgather.vx
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vrgather_vx}
+spec: rvtrim.vector.v_vrgather_vx
+domain: rv-v
+status: auto_full
+sched: [WriteVRGatherVX_WorstCase, ReadVPassthru_WorstCase, ReadVRGatherVX_data_WorstCase, ReadVRGatherVX_index_WorstCase, ReadVMask]

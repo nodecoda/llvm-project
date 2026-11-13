@@ -1,0 +1,6 @@
+mnemonic: vwmaccsu.vv
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vwmaccsu_vv}
+spec: rvtrim.vector.v_vwmaccsu_vv
+domain: rv-v
+status: auto_full
+sched: [WriteVIWMulAddV_WorstCase, ReadVPassthru_WorstCase, ReadVIWMulAddV_WorstCase, ReadVIWMulAddV_WorstCase, ReadVIWMulAddV_WorstCase, ReadVMask]

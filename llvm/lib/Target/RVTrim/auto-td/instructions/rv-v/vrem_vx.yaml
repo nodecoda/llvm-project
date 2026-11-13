@@ -1,0 +1,6 @@
+mnemonic: vrem.vx
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vrem_vx}
+spec: rvtrim.vector.v_vx
+domain: rv-v
+status: auto_full
+sched: [WriteVIDivX_WorstCase, ReadVPassthru_WorstCase, ReadVIDivV_WorstCase, ReadVIDivX_WorstCase, ReadVMask]

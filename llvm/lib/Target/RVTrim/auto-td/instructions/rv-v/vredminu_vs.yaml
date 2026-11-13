@@ -1,0 +1,6 @@
+mnemonic: vredminu.vs
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vredminu_vs}
+spec: rvtrim.vector.v_vredand_vs
+domain: rv-v
+status: auto_full
+sched: [WriteVIRedMinMaxV_From_WorstCase, ReadVPassthru_WorstCase, ReadVIRedV, ReadVIRedV0, ReadVMask]

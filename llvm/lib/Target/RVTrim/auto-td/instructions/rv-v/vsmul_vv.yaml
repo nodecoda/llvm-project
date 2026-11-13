@@ -1,0 +1,6 @@
+mnemonic: vsmul.vv
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vsmul_vv}
+spec: rvtrim.vector.v_vv
+domain: rv-v
+status: auto_full
+sched: [WriteVSMulV_WorstCase, ReadVPassthru_WorstCase, ReadVSMulV_WorstCase, ReadVSMulV_WorstCase, ReadVMask]

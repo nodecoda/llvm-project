@@ -1072,7 +1072,6 @@ let Predicates = [HasVInstructions] in {
 def : InstAlias<"vneg.v $vd, $vs$vm", (VRSUB_VX VR:$vd, VR:$vs, X0, VMaskOp:$vm)>;
 def : InstAlias<"vneg.v $vd, $vs", (VRSUB_VX VR:$vd, VR:$vs, X0, zero_reg)>;
 
-
 def : InstAlias<"vwcvt.x.x.v $vd, $vs$vm",
                 (VWADD_VX VR:$vd, VR:$vs, X0, VMaskOp:$vm)>;
 def : InstAlias<"vwcvt.x.x.v $vd, $vs",
@@ -1086,25 +1085,6 @@ def : InstAlias<"vnot.v $vd, $vs$vm",
                 (VXOR_VI VR:$vd, VR:$vs, -1, VMaskOp:$vm)>;
 def : InstAlias<"vnot.v $vd, $vs",
                 (VXOR_VI VR:$vd, VR:$vs, -1, zero_reg)>;
-
-let ElementsDependOn = EltDepsNone in {
-
-// Vector Single-Width Bit Shift Instructions
-defm VSLL_V : VSHT_IV_V_X_I<"vsll", 0b100101>;
-defm VSRL_V : VSHT_IV_V_X_I<"vsrl", 0b101000>;
-defm VSRA_V : VSHT_IV_V_X_I<"vsra", 0b101001>;
-
-// Vector Narrowing Integer Right Shift Instructions
-// Refer to 11.3. Narrowing Vector Arithmetic Instructions
-// The destination vector register group cannot overlap the first source
-// vector register group (specified by vs2). The destination vector register
-// group cannot overlap the mask register if used, unless LMUL=1.
-let Constraints = "@earlyclobber $vd" in {
-defm VNSRL_W : VNSHT_IV_V_X_I<"vnsrl", 0b101100>;
-defm VNSRA_W : VNSHT_IV_V_X_I<"vnsra", 0b101101>;
-} // Constraints = "@earlyclobber $vd"
-
-} // ElementsDependOn = EltDepsNone
 
 def : InstAlias<"vncvt.x.x.w $vd, $vs$vm",
                 (VNSRL_WX VR:$vd, VR:$vs, X0, VMaskOp:$vm)>;
@@ -1160,66 +1140,6 @@ def PseudoVMSGE_VX_M_T : Pseudo<(outs VR:$vd, VRNoV0:$scratch),
                                 (ins VR:$vs2, GPR:$rs1, VMaskOp:$vm),
                                 [], "vmsge.vx", "$vd, $vs2, $rs1$vm, $scratch">;
 }
-
-// Vector Integer Min/Max Instructions
-
-// Vector Single-Width Integer Multiply Instructions
-defm VMUL_V : VMUL_MV_V_X<"vmul", 0b100101>;
-defm VMULH_V : VMUL_MV_V_X<"vmulh", 0b100111>;
-defm VMULHU_V : VMUL_MV_V_X<"vmulhu", 0b100100>;
-defm VMULHSU_V : VMUL_MV_V_X<"vmulhsu", 0b100110>;
-
-// Vector Integer Divide Instructions
-defm VDIVU_V : VDIV_MV_V_X<"vdivu", 0b100000>;
-defm VDIV_V : VDIV_MV_V_X<"vdiv", 0b100001>;
-defm VREMU_V : VDIV_MV_V_X<"vremu", 0b100010>;
-defm VREM_V : VDIV_MV_V_X<"vrem", 0b100011>;
-
-// Vector Widening Integer Multiply Instructions
-let Constraints = "@earlyclobber $vd", VS1VS2Constraint = WidenV,
-    DestEEW = EEWSEWx2 in {
-defm VWMUL_V : VWMUL_MV_V_X<"vwmul", 0b111011>;
-defm VWMULU_V : VWMUL_MV_V_X<"vwmulu", 0b111000>;
-defm VWMULSU_V : VWMUL_MV_V_X<"vwmulsu", 0b111010>;
-} // Constraints = "@earlyclobber $vd", VS1VS2Constraint = WidenV, DestEEW = EEWSEWx2
-
-// Vector Single-Width Integer Multiply-Add Instructions
-defm VMACC_V : VMAC_MV_V_X<"vmacc", 0b101101>;
-defm VNMSAC_V : VMAC_MV_V_X<"vnmsac", 0b101111>;
-defm VMADD_V : VMAC_MV_V_X<"vmadd", 0b101001>;
-defm VNMSUB_V : VMAC_MV_V_X<"vnmsub", 0b101011>;
-
-// Vector Widening Integer Multiply-Add Instructions
-let DestEEW = EEWSEWx2 in {
-defm VWMACCU_V : VWMAC_MV_V_X<"vwmaccu", 0b111100>;
-defm VWMACC_V : VWMAC_MV_V_X<"vwmacc", 0b111101>;
-defm VWMACCSU_V : VWMAC_MV_V_X<"vwmaccsu", 0b111111>;
-defm VWMACCUS_V : VWMAC_MV_X<"vwmaccus", 0b111110>;
-} // DestEEW = EEWSEWx2
-
-// Vector Integer Merge Instructions
-defm VMERGE_V : VMRG_IV_V_X_I<"vmerge", 0b010111>;
-
-// Vector Integer Move Instructions
-let hasSideEffects = 0, mayLoad = 0, mayStore = 0 in
-defm VMV_V : VMV_IV_V_X_I<"vmv.v", 0b010111>;
-
-// Vector Fixed-Point Arithmetic Instructions
-
-// Vector Single-Width Averaging Add and Subtract
-
-// Vector Single-Width Fractional Multiply with Rounding and Saturation
-defm VSMUL_V : VSMUL_IV_V_X<"vsmul", 0b100111>;
-
-// Vector Single-Width Scaling Shift Instructions
-defm VSSRL_V : VSSHF_IV_V_X_I<"vssrl", 0b101010>;
-defm VSSRA_V : VSSHF_IV_V_X_I<"vssra", 0b101011>;
-
-// Vector Narrowing Fixed-Point Clip Instructions
-let Constraints = "@earlyclobber $vd" in {
-defm VNCLIPU_W : VNCLP_IV_V_X_I<"vnclipu", 0b101110>;
-defm VNCLIP_W : VNCLP_IV_V_X_I<"vnclip", 0b101111>;
-} // Constraints = "@earlyclobber $vd"
 
 } // ElementsDependOn = EltDepsNone
 
@@ -1408,32 +1328,6 @@ def VFNCVT_ROD_F_F_W : VNCVTF_FV_VS2<"vfncvt.rod.f.f.w", 0b010010, 0b10101>;
 } // ElementsDependOn = EltDepsNone
 } // Predicates = HasVInstructionsAnyF]
 
-let Predicates = [HasVInstructions] in {
-
-// Vector Single-Width Integer Reduction Instructions
-let VMConstraint = false in {
-defm VREDSUM  : VRED_MV_V<"vredsum", 0b000000>;
-defm VREDMAXU : VREDMINMAX_MV_V<"vredmaxu", 0b000110>;
-defm VREDMAX  : VREDMINMAX_MV_V<"vredmax", 0b000111>;
-defm VREDMINU : VREDMINMAX_MV_V<"vredminu", 0b000100>;
-defm VREDMIN  : VREDMINMAX_MV_V<"vredmin", 0b000101>;
-defm VREDAND  : VRED_MV_V<"vredand", 0b000001>;
-defm VREDOR   : VRED_MV_V<"vredor", 0b000010>;
-defm VREDXOR  : VRED_MV_V<"vredxor", 0b000011>;
-} // VMConstraint = false
-
-// Vector Widening Integer Reduction Instructions
-let Constraints = "@earlyclobber $vd", VMConstraint = false, DestEEW = EEWSEWx2 in {
-// Set earlyclobber for following instructions for second and mask operands.
-// This has the downside that the earlyclobber constraint is too coarse and
-// will impose unnecessary restrictions by not allowing the destination to
-// overlap with the first (wide) operand.
-defm VWREDSUMU : VWRED_IV_V<"vwredsumu", 0b110000>;
-defm VWREDSUM : VWRED_IV_V<"vwredsum", 0b110001>;
-} // Constraints = "@earlyclobber $vd", VMConstraint = false, DestEEW = EEWSEWx2
-
-} // Predicates = [HasVInstructions]
-
 let Predicates = [HasVInstructionsAnyF] in {
 // Vector Single-Width Floating-Point Reduction Instructions
 let VMConstraint = false in {
@@ -1478,32 +1372,7 @@ def : InstAlias<"vmnot.m $vd, $vs",
 def : MnemonicAlias<"vmandnot.mm", "vmandn.mm">;
 def : MnemonicAlias<"vmornot.mm", "vmorn.mm">;
 
-
 def : MnemonicAlias<"vpopc.m", "vcpop.m">;
-
-
-
-let hasSideEffects = 0, mayLoad = 0, mayStore = 0,
-    ElementsDependOn = EltDepsNone in {
-
-// Integer Scalar Move Instructions
-def VMV_X_S : RVInstVUnaryRd<0b010000, 0b00000, OPMVV, (outs GPR:$rd),
-                             (ins VR:$vs2), "vmv.x.s", "$rd, $vs2">,
-              Sched<[WriteVMovXS, ReadVMovXS]> {
-  let vm = 1;
-  let Uses = [VTYPE];
-}
-def VMV_S_X : RVInstVX<0b010000, OPMVX, (outs VR:$vd_wb),
-                      (ins VR:$vd, GPR:$rs1), "vmv.s.x", "$vd, $rs1">,
-              Sched<[WriteVMovSX, ReadVMovSX_V, ReadVMovSX_X]> {
-  let vm = 1;
-  let vs2 = 0;
-
-  let Constraints = "$vd = $vd_wb";
-  let VMConstraint = false;
-}
-
-} // hasSideEffects = 0, mayLoad = 0, mayStore = 0, ElementsDependOn = EltDepsNone
 
 } // Predicates = [HasVInstructions]
 
@@ -1530,19 +1399,6 @@ def VFMV_S_F : RVInstVX<0b010000, OPFVF, (outs VR:$vd_wb),
 
 } // Predicates = [HasVInstructionsAnyF]
 
-let Predicates = [HasVInstructions] in {
-// Vector Slide Instructions
-let Constraints = "@earlyclobber $vd", VS1VS2Constraint = SlideUp,
-    ElementsDependOn = EltDepsNone in {
-defm VSLIDEUP_V : VSLD_IV_X_I<"vslideup", 0b001110, /*slidesUp=*/true>;
-defm VSLIDE1UP_V : VSLD1_MV_X<"vslide1up", 0b001110, /*slidesUp=*/true>;
-} // Constraints = "@earlyclobber $vd", VS1VS2Constraint = SlideUp, ElementsDependOn = EltDepsNone
-let ElementsDependOn = EltDepsNone, ReadsPastVL = 1 in
-defm VSLIDEDOWN_V : VSLD_IV_X_I<"vslidedown", 0b001111, /*slidesUp=*/false>;
-let ElementsDependOn = EltDepsVL, ReadsPastVL = 1 in
-defm VSLIDE1DOWN_V : VSLD1_MV_X<"vslide1down", 0b001111, /*slidesUp=*/false>;
-} // Predicates = [HasVInstructions]
-
 let Predicates = [HasVInstructionsAnyF] in {
 let Constraints = "@earlyclobber $vd", VS1VS2Constraint = SlideUp,
     ElementsDependOn = EltDepsNone in {
@@ -1553,19 +1409,6 @@ defm VFSLIDE1DOWN_V : VSLD1_FV_F<"vfslide1down", 0b001111, /*slidesUp=*/false>;
 } // Predicates = [HasVInstructionsAnyF]
 
 let Predicates = [HasVInstructions] in {
-// Vector Register Gather Instruction
-let Constraints = "@earlyclobber $vd", VS1VS2Constraint = Vrgather,
-    ReadsPastVL = 1, ElementsDependOn = EltDepsNone in {
-defm VRGATHER_V : VGTR_IV_V_X_I<"vrgather", 0b001100>;
-def VRGATHEREI16_VV : VALUVV<0b001110, OPIVV, "vrgatherei16.vv">,
-                      SchedBinaryMC<"WriteVRGatherEI16VV",
-                                    "ReadVRGatherEI16VV_data",
-                                    "ReadVRGatherEI16VV_index">;
-} // Constraints = "@earlyclobber $vd", VS1VS2Constraint = Vrgather, ReadsPastVL = 1, ElementsDependOn = EltDepsNone
-
-// Vector Compress Instruction
-let Constraints = "@earlyclobber $vd", VS1VS2Constraint = Vcompress in
-defm VCOMPRESS_V : VCPR_MV_Mask<"vcompress", 0b010111>;
 
 let hasSideEffects = 0, mayLoad = 0, mayStore = 0, isMoveReg = 1 in {
 // A future extension may relax the vector register alignment restrictions.

@@ -1,0 +1,6 @@
+mnemonic: vslideup.vx
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vslideup_vx}
+spec: rvtrim.vector.v_vslide1up_vx
+domain: rv-v
+status: auto_full
+sched: [WriteVSlideUpX_WorstCase, ReadVPassthru_WorstCase, ReadVISlideV_WorstCase, ReadVISlideX_WorstCase, ReadVMask]

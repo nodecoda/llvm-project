@@ -1,0 +1,6 @@
+mnemonic: vnclip.wx
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vnclip_wx}
+spec: rvtrim.vector.v_vnclipu_wx
+domain: rv-v
+status: auto_full
+sched: [WriteVNClipX_WorstCase, ReadVPassthru_WorstCase, ReadVNClipV_WorstCase, ReadVNClipX_WorstCase, ReadVMask]

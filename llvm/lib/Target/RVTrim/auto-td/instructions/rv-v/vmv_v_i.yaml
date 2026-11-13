@@ -1,0 +1,6 @@
+mnemonic: vmv.v.i
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vmv_v_i}
+spec: rvtrim.vector.v_vmv_v_i
+domain: rv-v
+status: auto_full
+sched: [WriteVIMovI_WorstCase]
