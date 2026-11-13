@@ -111,4 +111,12 @@ void MiniRVSubtarget::initLibcallLoweringInfo(
   };
   for (const auto &LC : AtomicCalls)
     Info.setLibcallImpl(LC.Op, LC.Impl);
+
+  // The ISA has no 128-bit divide, so the type legalizer asks for the
+  // quad-precision helpers from compiler-rt.  A 128-bit multiply is expanded
+  // inline from the 64-bit pieces instead of calling __multi3.
+  Info.setLibcallImpl(RTLIB::SDIV_I128, RTLIB::impl___divti3);
+  Info.setLibcallImpl(RTLIB::UDIV_I128, RTLIB::impl___udivti3);
+  Info.setLibcallImpl(RTLIB::SREM_I128, RTLIB::impl___modti3);
+  Info.setLibcallImpl(RTLIB::UREM_I128, RTLIB::impl___umodti3);
 }
