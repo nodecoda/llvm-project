@@ -733,6 +733,10 @@ include "RVTrimInstrFormatsC.td"
 include "RVTrimInstrFormatsV.td"
 include "RVTrimInstrFormatsXAIF.td"
 
+// Vector operands referenced by both hand-written and auto-td generated
+// V records.  Must precede auto-td/AutoTdInstrInfo.inc (see below).
+include "RVTrimInstrInfoVOperands.td"
+
 //===----------------------------------------------------------------------===//
 // Instruction Class Templates
 //===----------------------------------------------------------------------===//
