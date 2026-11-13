@@ -10,6 +10,7 @@
 #include "MiniRVAsmPrinter.h"
 #include "MiniRVTargetMachine.h"
 #include "llvm/CodeGen/AtomicExpand.h"
+#include "llvm/CodeGen/BranchRelaxation.h"
 #include "llvm/CodeGen/SelectionDAGISel.h"
 #include "llvm/IR/PassInstrumentation.h"
 #include "llvm/Passes/CodeGenPassBuilder.h"
@@ -34,6 +35,7 @@ public:
       : CodeGenPassBuilder(TM, Opts, PIC) {}
 
   void addIRPasses(PassManagerWrapper &PMW) override;
+  void addPreEmitPass(PassManagerWrapper &PMW) override;
   Error addInstSelector(PassManagerWrapper &PMW) override;
   void addAsmPrinterBegin(PassManagerWrapper &PMW) override;
   void addAsmPrinter(PassManagerWrapper &PMW) override;
@@ -47,6 +49,12 @@ void MiniRVCodeGenPassBuilder::addIRPasses(PassManagerWrapper &PMW) {
   // without this the selector sees ATOMIC_* nodes it has no pattern for.
   addFunctionPass(AtomicExpandPass(getTM()), PMW);
   Base::addIRPasses(PMW);
+}
+
+void MiniRVCodeGenPassBuilder::addPreEmitPass(PassManagerWrapper &PMW) {
+  // A conditional branch reaches 4 KiB and jal 1 MiB.  Split a block whose
+  // target is farther away instead of letting the immediate wrap around.
+  addMachineFunctionPass(BranchRelaxationPass(), PMW);
 }
 
 Error MiniRVCodeGenPassBuilder::addInstSelector(PassManagerWrapper &PMW) {

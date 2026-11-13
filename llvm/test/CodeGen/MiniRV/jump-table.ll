@@ -14,20 +14,27 @@
 ; CHECK-NEXT:  jalr x0, 0([[DST]])
 ;
 ; Every block the table refers to has to carry a label, even the one that is
-; the fallthrough of the indirect branch.
-; CHECK:       .LBB0_2:
-; CHECK:       .LBB0_9:
+; the fallthrough of the indirect branch.  The labels follow the layout order,
+; which is not the switch order, so capture them from the blocks themselves.
+; CHECK-DAG:   [[C0:.LBB[0-9]+_[0-9]+]]:{{.*}}# %c0
+; CHECK-DAG:   [[C1:.LBB[0-9]+_[0-9]+]]:{{.*}}# %c1
+; CHECK-DAG:   [[C2:.LBB[0-9]+_[0-9]+]]:{{.*}}# %c2
+; CHECK-DAG:   [[C3:.LBB[0-9]+_[0-9]+]]:{{.*}}# %c3
+; CHECK-DAG:   [[C4:.LBB[0-9]+_[0-9]+]]:{{.*}}# %c4
+; CHECK-DAG:   [[C5:.LBB[0-9]+_[0-9]+]]:{{.*}}# %c5
+; CHECK-DAG:   [[C6:.LBB[0-9]+_[0-9]+]]:{{.*}}# %c6
+; CHECK-DAG:   [[C7:.LBB[0-9]+_[0-9]+]]:{{.*}}# %c7
 ;
-; The entries are pointers to those blocks.
+; The entries are pointers to those blocks, in switch order.
 ; CHECK:       .LJTI0_0:
-; CHECK-NEXT:  .quad .LBB0_2
-; CHECK-NEXT:  .quad .LBB0_3
-; CHECK-NEXT:  .quad .LBB0_4
-; CHECK-NEXT:  .quad .LBB0_5
-; CHECK-NEXT:  .quad .LBB0_6
-; CHECK-NEXT:  .quad .LBB0_7
-; CHECK-NEXT:  .quad .LBB0_8
-; CHECK-NEXT:  .quad .LBB0_9
+; CHECK-NEXT:  .quad [[C0]]
+; CHECK-NEXT:  .quad [[C1]]
+; CHECK-NEXT:  .quad [[C2]]
+; CHECK-NEXT:  .quad [[C3]]
+; CHECK-NEXT:  .quad [[C4]]
+; CHECK-NEXT:  .quad [[C5]]
+; CHECK-NEXT:  .quad [[C6]]
+; CHECK-NEXT:  .quad [[C7]]
 define i64 @sw(i64 %x) {
 entry:
   switch i64 %x, label %def [

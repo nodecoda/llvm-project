@@ -180,6 +180,8 @@ void MiniRVAsmPrinter::emitSymbolAddress(const MachineInstr &MI) {
           OutContext);
   } else if (MO.isJTI())
     Target = MCSymbolRefExpr::create(GetJTISymbol(MO.getIndex()), OutContext);
+  else if (MO.isMBB())
+    Target = MCSymbolRefExpr::create(MO.getMBB()->getSymbol(), OutContext);
   else
     Target = MCSymbolRefExpr::create(
         GetExternalSymbolSymbol(MO.getSymbolName()), OutContext);

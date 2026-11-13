@@ -8,7 +8,10 @@
 
 #include "MiniRVInstrInfo.h"
 #include "MiniRVSubtarget.h"
+#include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
+#include "llvm/MC/MCAsmInfo.h"
+#include "llvm/Target/TargetMachine.h"
 
 using namespace llvm;
 
@@ -124,6 +127,108 @@ unsigned MiniRVInstrInfo::insertBranch(
     return 2;
   }
   return 1;
+}
+
+unsigned MiniRVInstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
+  if (MI.isMetaInstruction())
+    return 0;
+
+  switch (MI.getOpcode()) {
+  case TargetOpcode::INLINEASM:
+  case TargetOpcode::INLINEASM_BR: {
+    const MachineFunction &MF = *MI.getParent()->getParent();
+    return getInlineAsmLength(MI.getOperand(0).getSymbolName(),
+                              MF.getTarget().getMCAsmInfo());
+  }
+  case TargetOpcode::BUNDLE:
+    return getInstBundleSize(MI);
+  case MiniRV::PseudoLA:
+    // Expanded by the AsmPrinter into auipc + addi.
+    return 8;
+  case MiniRV::ADJCALLSTACKDOWN:
+  case MiniRV::ADJCALLSTACKUP:
+    return 0;
+  default:
+    // Every real MiniRV instruction is 32 bits wide; the remaining pseudos
+    // expand to exactly one of them.
+    return get(MI.getOpcode()).getSize();
+  }
+}
+
+MachineBasicBlock *
+MiniRVInstrInfo::getBranchDestBlock(const MachineInstr &MI) const {
+  assert(MI.getDesc().isBranch() && "Unexpected opcode!");
+  // Every MiniRV branch and jump carries its target as the last operand.
+  return MI.getOperand(MI.getNumExplicitOperands() - 1).getMBB();
+}
+
+bool MiniRVInstrInfo::isBranchOffsetInRange(unsigned BranchOp,
+                                            int64_t BrOffset) const {
+  switch (BranchOp) {
+  case MiniRV::BEQ:
+  case MiniRV::BNE:
+  case MiniRV::BLT:
+  case MiniRV::BGE:
+  case MiniRV::BLTU:
+  case MiniRV::BGEU:
+    return isInt<13>(BrOffset);
+  case MiniRV::JAL:
+  case MiniRV::PseudoBR:
+    return isInt<21>(BrOffset);
+  default:
+    llvm_unreachable("Unexpected opcode!");
+  }
+}
+
+bool MiniRVInstrInfo::reverseBranchCondition(
+    SmallVectorImpl<MachineOperand> &Cond) const {
+  assert(Cond.size() == 3 && "Invalid branch condition!");
+  unsigned Inverse;
+  switch (Cond[0].getImm()) {
+  case MiniRV::BEQ:
+    Inverse = MiniRV::BNE;
+    break;
+  case MiniRV::BNE:
+    Inverse = MiniRV::BEQ;
+    break;
+  case MiniRV::BLT:
+    Inverse = MiniRV::BGE;
+    break;
+  case MiniRV::BGE:
+    Inverse = MiniRV::BLT;
+    break;
+  case MiniRV::BLTU:
+    Inverse = MiniRV::BGEU;
+    break;
+  case MiniRV::BGEU:
+    Inverse = MiniRV::BLTU;
+    break;
+  default:
+    return true;
+  }
+  Cond[0].setImm(Inverse);
+  return false;
+}
+
+void MiniRVInstrInfo::insertIndirectBranch(MachineBasicBlock &MBB,
+                                           MachineBasicBlock &DestBB,
+                                           MachineBasicBlock &RestoreBB,
+                                           const DebugLoc &DL,
+                                           int64_t BrOffset,
+                                           RegScavenger *RS) const {
+  assert(MBB.empty() && "new block should be inserted for expanding "
+                        "unconditional branch");
+  assert(RestoreBB.empty() && "restore block should be inserted for restoring "
+                              "clobbered registers");
+  if (!isInt<32>(BrOffset))
+    report_fatal_error(
+        "branch offsets outside the signed 32-bit range are not supported");
+
+  // The reserved scratch register holds the address of the destination, so
+  // nothing live is clobbered and RestoreBB stays empty.
+  BuildMI(MBB, MBB.end(), DL, get(MiniRV::PseudoLA), MiniRV::X5)
+      .addMBB(&DestBB);
+  BuildMI(MBB, MBB.end(), DL, get(MiniRV::PseudoBRIND)).addReg(MiniRV::X5);
 }
 
 MiniRVInstrInfo::MiniRVInstrInfo(const MiniRVSubtarget &STI)
