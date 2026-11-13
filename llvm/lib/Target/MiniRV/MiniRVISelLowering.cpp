@@ -445,6 +445,56 @@ SDValue MiniRVTargetLowering::LowerBranchCC(SDValue Chain, SDValue LHS,
     break;
   }
 
+  // The DAG builder canonicalises comparisons against zero into comparisons
+  // against one ("x > 0" becomes "x >= 1", "x <= 0" becomes "x < 1").  Rewrite
+  // those back to a zero comparison so that the x0 forms can match; otherwise
+  // every such branch first materialises the constant one.
+  if (auto *C = dyn_cast<ConstantSDNode>(RHS)) {
+    int64_t V = C->getSExtValue();
+    SDValue X = LHS;
+    auto SetZeroLeft = [&](ISD::CondCode NewCC) {
+      LHS = DAG.getConstant(0, DL, MVT::i64);
+      RHS = X;
+      CC = NewCC;
+    };
+    switch (CC) {
+    case ISD::SETGT:
+      if (V == 0)
+        SetZeroLeft(ISD::SETLT); // x > 0  ==  0 < x
+      break;
+    case ISD::SETGE:
+      if (V == 1)
+        SetZeroLeft(ISD::SETLT); // x >= 1 ==  0 < x
+      break;
+    case ISD::SETLT:
+      if (V == 1)
+        SetZeroLeft(ISD::SETGE); // x < 1  ==  0 >= x
+      break;
+    case ISD::SETLE:
+      if (V == 0)
+        SetZeroLeft(ISD::SETGE); // x <= 0 ==  0 >= x
+      break;
+    case ISD::SETUGT:
+      if (V == 0)
+        SetZeroLeft(ISD::SETULT); // x >u 0  ==  0 <u x
+      break;
+    case ISD::SETUGE:
+      if (V == 1)
+        SetZeroLeft(ISD::SETULT); // x >=u 1 ==  0 <u x
+      break;
+    case ISD::SETULT:
+      if (V == 1)
+        SetZeroLeft(ISD::SETUGE); // x <u 1  ==  0 >=u x
+      break;
+    case ISD::SETULE:
+      if (V == 0)
+        SetZeroLeft(ISD::SETUGE); // x <=u 0 ==  0 >=u x
+      break;
+    default:
+      break;
+    }
+  }
+
   return DAG.getNode(MiniRVISD::BRCC, DL, MVT::Other, Chain, LHS, RHS,
                      DAG.getCondCode(CC), Dest);
 }

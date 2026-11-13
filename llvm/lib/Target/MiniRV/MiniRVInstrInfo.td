@@ -444,9 +444,12 @@ multiclass BccPat<CondCode Cond, MiniRVInst Inst> {
   def : Pat<(MiniRVbrcc GPR:$lhs, GPR:$rhs, Cond, bb:$dst),
             (Inst GPR:$lhs, GPR:$rhs, simm13_lsb0_bb:$dst)>;
   // Comparing against zero is common enough to deserve the x0 form; the
-  // register coalescer is not guaranteed to find it.
+  // register coalescer is not guaranteed to find it.  The DAG builder may put
+  // the zero on either side ("x > 0" becomes "0 < x").
   def : Pat<(MiniRVbrcc GPR:$lhs, 0, Cond, bb:$dst),
             (Inst GPR:$lhs, (i64 X0), simm13_lsb0_bb:$dst)>;
+  def : Pat<(MiniRVbrcc 0, GPR:$rhs, Cond, bb:$dst),
+            (Inst (i64 X0), GPR:$rhs, simm13_lsb0_bb:$dst)>;
 }
 
 defm : BccPat<SETEQ,  BEQ>;
