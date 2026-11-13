@@ -28,32 +28,129 @@ MiniRVFrameLowering::MiniRVFrameLowering(const MiniRVSubtarget &STI)
                           Align(8)),
       STI(STI), TII(*STI.getInstrInfo()), TRI(*STI.getRegisterInfo()) {}
 
+bool MiniRVFrameLowering::hasReservedCallFrame(
+    const MachineFunction &MF) const {
+  // A dynamic alloca moves the stack pointer, so the outgoing argument area
+  // cannot be reserved up front: the pseudo instructions at the call sites
+  // claim it instead.
+  return !MF.getFrameInfo().hasVarSizedObjects();
+}
+
 bool MiniRVFrameLowering::hasFPImpl(const MachineFunction &MF) const {
-  // The stack pointer never moves after the prologue -- there are no calls and
-  // no dynamic allocas -- so frame indices can stay sp-relative and a frame
-  // pointer would only cost a register.
-  return false;
+  // Without a variable-length allocation the stack pointer never moves, so
+  // frame indices can stay sp-relative and a frame pointer would only cost a
+  // register.  A dynamic alloca changes the stack pointer in the middle of the
+  // function, and the objects laid out by the prologue can only be reached
+  // through a second base register.  X8 (s0) is that register.
+  return MF.getFrameInfo().hasVarSizedObjects();
+}
+
+/// A function with a frame pointer keeps the frame pointer at the incoming
+/// stack pointer, so the objects the frame allocator placed below the incoming
+/// stack pointer are at their plain object offset, and the incoming arguments
+/// above it are too.  Without a frame pointer the stack pointer sits at the
+/// bottom of the frame and every object is that much higher.
+StackOffset
+MiniRVFrameLowering::getFrameIndexReference(const MachineFunction &MF, int FI,
+                                            Register &FrameReg) const {
+  const MachineFrameInfo &MFI = MF.getFrameInfo();
+  if (!hasFP(MF) || MFI.isCalleeSavedObjectIndex(FI)) {
+    FrameReg = MiniRV::X2;
+    return StackOffset::getFixed(MFI.getObjectOffset(FI) + MFI.getStackSize());
+  }
+
+  FrameReg = MiniRV::X8;
+  return StackOffset::getFixed(MFI.getObjectOffset(FI));
+}
+
+bool MiniRVFrameLowering::spillCalleeSavedRegisters(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator MI,
+    ArrayRef<CalleeSavedInfo> CSI, const TargetRegisterInfo *TRI) const {
+  for (const CalleeSavedInfo &CS : CSI) {
+    Register Reg = CS.getReg();
+    const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(Reg);
+    TII.storeRegToStackSlot(MBB, MI, Reg, /*IsKill=*/true, CS.getFrameIdx(), RC,
+                            Register(), MachineInstr::FrameSetup);
+  }
+  return true;
+}
+
+bool MiniRVFrameLowering::restoreCalleeSavedRegisters(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator MI,
+    MutableArrayRef<CalleeSavedInfo> CSI, const TargetRegisterInfo *TRI) const {
+  for (const CalleeSavedInfo &CS : reverse(CSI)) {
+    Register Reg = CS.getReg();
+    const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(Reg);
+    TII.loadRegFromStackSlot(MBB, MI, Reg, CS.getFrameIdx(), RC, Register(),
+                             /*SubReg=*/0, MachineInstr::FrameDestroy);
+  }
+  return true;
+}
+
+void MiniRVFrameLowering::determineCalleeSaves(MachineFunction &MF,
+                                               BitVector &SavedRegs,
+                                               RegScavenger *RS) const {
+  TargetFrameLowering::determineCalleeSaves(MF, SavedRegs, RS);
+
+  // The prologue overwrites the frame pointer, but that happens after the
+  // callee-saved spills have been placed, so the register machinery cannot
+  // see the clobber and has to be told about it.
+  if (hasFP(MF))
+    SavedRegs.set(MiniRV::X8);
 }
 
 void MiniRVFrameLowering::emitPrologue(MachineFunction &MF,
                                        MachineBasicBlock &MBB) const {
-  uint64_t StackSize = MF.getFrameInfo().getStackSize();
-  if (!StackSize)
+  const MachineFrameInfo &MFI = MF.getFrameInfo();
+  uint64_t StackSize = MFI.getStackSize();
+  bool HasFP = hasFP(MF);
+  if (!StackSize && !HasFP)
     return;
 
   if (!isInt<32>(StackSize))
     report_fatal_error("MiniRV frames must fit in a 32-bit immediate");
   DebugLoc DL =
       MBB.begin() != MBB.end() ? MBB.begin()->getDebugLoc() : DebugLoc();
+
   // The adjustment has to be the first thing in the function: the callee-saved
   // spills that PEI inserts afterwards use offsets relative to the new SP.
-  adjustReg(MBB, MBB.begin(), DL, MiniRV::X2, MiniRV::X2,
-            -static_cast<int64_t>(StackSize), MachineInstr::FrameSetup);
+  if (StackSize)
+    adjustReg(MBB, MBB.begin(), DL, MiniRV::X2, MiniRV::X2,
+              -static_cast<int64_t>(StackSize), MachineInstr::FrameSetup);
+
+  if (!HasFP)
+    return;
+
+  // The frame pointer is set to the incoming stack pointer and must be
+  // written after the old value has been spilled, so it goes behind the
+  // frame-setup instructions that PEI has already placed at the top of the
+  // block.
+  MachineBasicBlock::iterator InsertPt = MBB.begin();
+  while (InsertPt != MBB.end() &&
+         InsertPt->getFlag(MachineInstr::FrameSetup))
+    ++InsertPt;
+  adjustReg(MBB, InsertPt, DL, MiniRV::X8, MiniRV::X2,
+            static_cast<int64_t>(StackSize), MachineInstr::FrameSetup);
 }
 
 void MiniRVFrameLowering::emitEpilogue(MachineFunction &MF,
                                        MachineBasicBlock &MBB) const {
   uint64_t StackSize = MF.getFrameInfo().getStackSize();
+
+  if (hasFP(MF)) {
+    // The stack pointer may have been moved by a dynamic alloca, so the
+    // bottom of the fixed frame is recomputed from the frame pointer.  The
+    // callee-saved restores address their slots through the stack pointer,
+    // so this has to happen before them.
+    MachineBasicBlock::iterator MBBI = MBB.getFirstTerminator();
+    while (MBBI != MBB.begin() &&
+           std::prev(MBBI)->getFlag(MachineInstr::FrameDestroy))
+      --MBBI;
+    DebugLoc DL = MBBI != MBB.end() ? MBBI->getDebugLoc() : DebugLoc();
+    adjustReg(MBB, MBBI, DL, MiniRV::X2, MiniRV::X8,
+              -static_cast<int64_t>(StackSize), MachineInstr::FrameDestroy);
+  }
+
   if (!StackSize)
     return;
 
@@ -106,7 +203,18 @@ void MiniRVFrameLowering::adjustReg(MachineBasicBlock &MBB,
 MachineBasicBlock::iterator MiniRVFrameLowering::eliminateCallFramePseudoInstr(
     MachineFunction &MF, MachineBasicBlock &MBB,
     MachineBasicBlock::iterator MI) const {
-  // The outgoing argument area is reserved in the prologue, so the pseudo has
-  // no work to do at the call site.
+  // With a reserved call frame the outgoing argument area is already part of
+  // the prologue, so the pseudo has no work to do.  Otherwise -- a dynamic
+  // alloca moves the stack pointer, so the space cannot be reserved up front
+  // -- the pseudo becomes the adjustment itself.
+  if (!hasReservedCallFrame(MF)) {
+    int64_t Amount = MI->getOperand(0).getImm();
+    if (Amount) {
+      if (MI->getOpcode() == MiniRV::ADJCALLSTACKDOWN)
+        Amount = -Amount;
+      adjustReg(MBB, MI, MI->getDebugLoc(), MiniRV::X2, MiniRV::X2, Amount,
+                MachineInstr::NoFlags);
+    }
+  }
   return MBB.erase(MI);
 }

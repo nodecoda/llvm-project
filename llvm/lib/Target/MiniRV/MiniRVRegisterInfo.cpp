@@ -43,6 +43,12 @@ BitVector MiniRVRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   // X6 is the scratch used when a stack adjustment is both source and
   // destination, as it is in the prologue and epilogue.
   Reserved.set(MiniRV::X6);
+  // A variable-length allocation needs a frame pointer, because the stack
+  // pointer moves while the function runs.  Reserving it here keeps the
+  // register allocator away from it; a function without such an allocation
+  // does not need it and can use X8 like any other register.
+  if (MF.getFrameInfo().hasVarSizedObjects())
+    Reserved.set(MiniRV::X8);
   return Reserved;
 }
 
@@ -53,16 +59,21 @@ bool MiniRVRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
   MachineInstr &MI = *II;
   MachineFunction &MF = *MI.getParent()->getParent();
 
+  const auto *TFI = static_cast<const MiniRVFrameLowering *>(
+      MF.getSubtarget().getFrameLowering());
+
+  // The base register is the stack pointer, or the frame pointer when the
+  // function has one; the callee-saved slots always use the stack pointer.
   int FrameIndex = MI.getOperand(FIOperandNum).getIndex();
-  int64_t Offset = static_cast<int64_t>(
-                       MF.getFrameInfo().getObjectOffset(FrameIndex)) +
-                   static_cast<int64_t>(MF.getFrameInfo().getStackSize()) +
-                   MI.getOperand(FIOperandNum + 1).getImm();
+  Register FrameReg;
+  int64_t Offset =
+      TFI->getFrameIndexReference(MF, FrameIndex, FrameReg).getFixed() +
+      MI.getOperand(FIOperandNum + 1).getImm();
 
   // The common case: the resolved offset fits in the twelve bits of the
   // instruction's immediate field.
   if (isInt<12>(Offset)) {
-    MI.getOperand(FIOperandNum).ChangeToRegister(MiniRV::X2, /*isDef=*/false);
+    MI.getOperand(FIOperandNum).ChangeToRegister(FrameReg, /*isDef=*/false);
     MI.getOperand(FIOperandNum + 1).ChangeToImmediate(Offset);
     return false;
   }
@@ -72,8 +83,6 @@ bool MiniRVRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
   // object before register allocation; when it does not, PEI has to do it
   // here, after register allocation.
   MachineBasicBlock &MBB = *MI.getParent();
-  const auto *TFI = static_cast<const MiniRVFrameLowering *>(
-      MF.getSubtarget().getFrameLowering());
   DebugLoc DL = MI.getDebugLoc();
 
   // The instruction that materialises a base register is "addi <fi>, 0".
@@ -81,7 +90,7 @@ bool MiniRVRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
   // computed in place and the now-redundant copy dropped.
   if (MI.getOpcode() == MiniRV::ADDI) {
     Register Dest = MI.getOperand(0).getReg();
-    TFI->adjustReg(MBB, II, DL, Dest, MiniRV::X2, Offset,
+    TFI->adjustReg(MBB, II, DL, Dest, FrameReg, Offset,
                    MachineInstr::NoFlags);
     MI.eraseFromParent();
     return true;
@@ -89,7 +98,7 @@ bool MiniRVRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
 
   // A load or store: address it through the reserved scratch register with a
   // zero displacement.
-  TFI->adjustReg(MBB, II, DL, MiniRV::X5, MiniRV::X2, Offset,
+  TFI->adjustReg(MBB, II, DL, MiniRV::X5, FrameReg, Offset,
                  MachineInstr::NoFlags);
   MI.getOperand(FIOperandNum).ChangeToRegister(MiniRV::X5, /*isDef=*/false);
   MI.getOperand(FIOperandNum + 1).ChangeToImmediate(0);
@@ -99,8 +108,12 @@ bool MiniRVRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
 bool MiniRVRegisterInfo::requiresVirtualBaseRegisters(
     const MachineFunction &MF) const {
   // Large frames need a base register to reach objects more than 2047 bytes
-  // away from the stack pointer.
-  return true;
+  // away from the stack pointer.  A function with a variable-length
+  // allocation is laid out around a frame pointer instead, and the base
+  // register this pass would create is sp-relative, so it stays out of the
+  // way; eliminateFrameIndex() materialises the address of an object it
+  // cannot reach directly.
+  return !MF.getFrameInfo().hasVarSizedObjects();
 }
 
 int64_t MiniRVRegisterInfo::getFrameIndexInstrOffset(const MachineInstr *MI,
@@ -155,5 +168,9 @@ void MiniRVRegisterInfo::resolveFrameIndex(MachineInstr &MI, Register BaseReg,
 }
 
 Register MiniRVRegisterInfo::getFrameRegister(const MachineFunction &MF) const {
+  // The stack pointer is the frame register unless a variable-length
+  // allocation forced a real frame pointer.
+  if (MF.getFrameInfo().hasVarSizedObjects())
+    return MiniRV::X8;
   return MiniRV::X2;
 }

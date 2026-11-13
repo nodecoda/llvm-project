@@ -139,7 +139,8 @@ void MiniRVInstrInfo::storeRegToStackSlot(
   BuildMI(MBB, MI, MBB.findDebugLoc(MI), get(MiniRV::SD))
       .addReg(SrcReg, getKillRegState(IsKill))
       .addFrameIndex(FrameIndex)
-      .addImm(0);
+      .addImm(0)
+      .setMIFlag(Flags);
 }
 
 void MiniRVInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
@@ -150,7 +151,8 @@ void MiniRVInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
                                            MachineInstr::MIFlag Flags) const {
   BuildMI(MBB, MI, MBB.findDebugLoc(MI), get(MiniRV::LD), DestReg)
       .addFrameIndex(FrameIndex)
-      .addImm(0);
+      .addImm(0)
+      .setMIFlag(Flags);
 }
 
 void MiniRVInstrInfo::copyPhysReg(MachineBasicBlock &MBB,

@@ -28,9 +28,33 @@ public:
   void emitPrologue(MachineFunction &MF, MachineBasicBlock &MBB) const override;
   void emitEpilogue(MachineFunction &MF, MachineBasicBlock &MBB) const override;
 
-  bool hasReservedCallFrame(const MachineFunction &MF) const override {
-    return true;
-  }
+  /// The outgoing argument area is reserved in the prologue unless the
+  /// function has a variable-length allocation: a dynamic alloca moves the
+  /// stack pointer, so the space for the arguments has to be claimed at the
+  /// call site instead.
+  bool hasReservedCallFrame(const MachineFunction &MF) const override;
+
+  /// A frame index is addressed from the stack pointer when the function has
+  /// no frame pointer, and from X8 otherwise.  The callee-saved spill slots
+  /// are the exception: they are written before X8 is set up and read after
+  /// it has been restored, so they always use the stack pointer.
+  StackOffset getFrameIndexReference(const MachineFunction &MF, int FI,
+                                     Register &FrameReg) const override;
+
+  void determineCalleeSaves(MachineFunction &MF, BitVector &SavedRegs,
+                            RegScavenger *RS) const override;
+
+  /// The callee-saved spills and restores are marked as prologue and epilogue
+  /// code.  The prologue relies on the mark to find the point where the frame
+  /// pointer may be written, which is after the old value has been saved.
+  bool spillCalleeSavedRegisters(MachineBasicBlock &MBB,
+                                 MachineBasicBlock::iterator MI,
+                                 ArrayRef<CalleeSavedInfo> CSI,
+                                 const TargetRegisterInfo *TRI) const override;
+  bool restoreCalleeSavedRegisters(MachineBasicBlock &MBB,
+                                   MachineBasicBlock::iterator MI,
+                                   MutableArrayRef<CalleeSavedInfo> CSI,
+                                   const TargetRegisterInfo *TRI) const override;
 
   /// Add \p Val to \p SrcReg and put the result in \p DestReg.  A small
   /// adjustment is a single addi; anything that does not fit in twelve bits is

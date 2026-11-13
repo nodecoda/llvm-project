@@ -84,6 +84,13 @@ MiniRVTargetLowering::MiniRVTargetLowering(const TargetMachine &TM,
   setOperationAction(ISD::BR_CC, MVT::i64, Expand);
   setOperationAction(ISD::BR_CC, MVT::i32, Expand);
 
+  // A variable-length alloca moves the stack pointer at run time.  The
+  // generic expansion is exactly the sequence MiniRV needs: subtract the size
+  // (already rounded up to the stack alignment by the DAG builder) from the
+  // stack pointer and copy the result back into it.  A non-zero alignment
+  // operand is masked in by the same expansion.
+  setOperationAction(ISD::DYNAMIC_STACKALLOC, MVT::i64, Expand);
+
   setStackPointerRegisterToSaveRestore(MiniRV::X2);
   setBooleanContents(ZeroOrOneBooleanContent);
   setMaxAtomicSizeInBitsSupported(0);
