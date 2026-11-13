@@ -290,6 +290,27 @@ MiniRVFrameLowering::adjustReg(MachineBasicBlock &MBB,
   }
 
   assert(isInt<32>(Val) && "MiniRV cannot materialise a larger adjustment");
+
+  // Split the adjustment across two addis when it fits.  Both steps are
+  // multiples of the stack alignment, so the intermediate stack pointer stays
+  // aligned.  This is shorter than materialising the constant: a 2416-byte
+  // frame becomes addi -2048, addi -368 instead of lui+addi+add.
+  const int64_t Align = getStackAlign().value();
+  const int64_t MaxPosAdjStep = 2048 - Align;
+  if (Val > -4096 && Val <= 2 * MaxPosAdjStep) {
+    int64_t FirstAdj = Val < 0 ? -2048 : MaxPosAdjStep;
+    Val -= FirstAdj;
+    BuildMI(MBB, II, DL, TII.get(MiniRV::ADDI), DestReg)
+        .addReg(SrcReg)
+        .addImm(FirstAdj)
+        .setMIFlag(Flag);
+    auto MI = BuildMI(MBB, II, DL, TII.get(MiniRV::ADDI), DestReg)
+                  .addReg(DestReg)
+                  .addImm(Val)
+                  .setMIFlag(Flag);
+    return std::next(MI->getIterator());
+  }
+
   // Round the high part away from zero so that the low part always fits in
   // the signed twelve bits of addi.  When the destination is also the source
   // the materialised constant cannot be built in place -- lui would clobber

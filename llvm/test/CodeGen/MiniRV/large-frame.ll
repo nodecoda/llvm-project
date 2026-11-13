@@ -1,19 +1,19 @@
 ; RUN: llc < %s -mtriple=minirv64 -O2 | FileCheck %s
 
 ; A frame larger than the 12-bit signed immediate range cannot be allocated
-; with a single addi.  The adjustment is materialised with lui+addi and then
-; added to the stack pointer.
+; with a single addi.  Values that fit in two addis are split, keeping the
+; intermediate stack pointer aligned.
 
-; 2400 bytes: lui x6, -1 (0xfffff000) + 1696 = -2400, added to the stack
-; pointer.  The constant is built in x6 because the stack pointer is both
-; source and destination, and lui would destroy it.
+; 2400 bytes: addi -2048 followed by addi -352.  The object sits 2400 bytes
+; above the stack pointer, so its address is built the same way.
 ; CHECK-LABEL: big_array:
-; CHECK:       lui x6, -1
-; CHECK-NEXT:  addi x6, x6, 1696
-; CHECK-NEXT:  add x2, x6, x2
-; CHECK:       lui x6, 1
-; CHECK-NEXT:  addi x6, x6, -1696
-; CHECK-NEXT:  add x2, x6, x2
+; CHECK:       addi x2, x2, -2048
+; CHECK-NEXT:  addi x2, x2, -352
+; CHECK:       addi x3, x2, 2047
+; CHECK-NEXT:  addi x3, x3, 345
+; CHECK-NEXT:  sd x10, 0(x3)
+; CHECK:       addi x2, x2, 2032
+; CHECK-NEXT:  addi x2, x2, 368
 ; CHECK-NEXT:  jalr x0, 0(x1)
 define i64 @big_array(i64 %n) #0 {
 entry:
@@ -26,12 +26,15 @@ entry:
 
 ; An object more than 2047 bytes away from the stack pointer is reached
 ; through a base register that LocalStackSlotAllocation materialises before
-; register allocation.
+; register allocation.  The 4800-byte frame still needs lui+addi+add, but the
+; object address is two addis.
 ; CHECK-LABEL: two_arrays:
-; CHECK:       lui [[BASE:x[0-9]+]], 1
-; CHECK-NEXT:  addi [[BASE]], [[BASE]], -1696
-; CHECK-NEXT:  add [[BASE]], [[BASE]], x2
-; CHECK-NEXT:  sd x10, 0([[BASE]])
+; CHECK:       lui x6, -1
+; CHECK-NEXT:  addi x6, x6, -704
+; CHECK-NEXT:  add x2, x6, x2
+; CHECK-NEXT:  addi x3, x2, 2032
+; CHECK-NEXT:  addi x3, x3, 368
+; CHECK-NEXT:  sd x10, 0(x3)
 define i64 @two_arrays(i64 %n) #0 {
 entry:
   %a = alloca [300 x i64], align 8
@@ -51,18 +54,20 @@ entry:
 ; after the stack pointer has been lowered and restored before it is raised
 ; again.
 ; CHECK-LABEL: caller:
-; CHECK:       lui x6, -1
-; CHECK-NEXT:  addi x6, x6, 1680
-; CHECK-NEXT:  add x2, x6, x2
-; CHECK:       lui [[TMP:x[0-9]+]], 1
-; CHECK-NEXT:  addi [[TMP]], [[TMP]], -1688
-; CHECK-NEXT:  add [[TMP]], [[TMP]], x2
-; CHECK-NEXT:  sd x1, 0([[TMP]])
+; CHECK:       addi x2, x2, -2048
+; CHECK-NEXT:  addi x2, x2, -368
+; CHECK:       addi x5, x2, 2032
+; CHECK-NEXT:  addi x5, x5, 376
+; CHECK-NEXT:  sd x1, 0(x5)
 ; CHECK:       jal x1, callee
-; CHECK:       ld x1, 0(
-; CHECK:       lui x6, 1
-; CHECK-NEXT:  addi x6, x6, -1680
-; CHECK-NEXT:  add x2, x6, x2
+; CHECK:       addi x5, x2, 2032
+; CHECK-NEXT:  addi x5, x5, 368
+; CHECK-NEXT:  ld x8, 0(x5)
+; CHECK:       addi x5, x2, 2032
+; CHECK-NEXT:  addi x5, x5, 376
+; CHECK-NEXT:  ld x1, 0(x5)
+; CHECK:       addi x2, x2, 2032
+; CHECK-NEXT:  addi x2, x2, 384
 ; CHECK-NEXT:  jalr x0, 0(x1)
 define i64 @caller(i64 %n) #0 {
 entry:

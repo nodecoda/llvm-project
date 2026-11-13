@@ -51,6 +51,35 @@ void MiniRVDAGToDAGISel::Select(SDNode *N) {
     return;
   }
 
+  // A constant added to a value is usually folded into the immediate field of
+  // ADDI.  When it does not fit, build it as two addis if possible: this is
+  // one instruction shorter than materialising the constant with LUI+ADDI and
+  // adding it, and it covers the common "object + large constant offset" case.
+  if (N->getOpcode() == ISD::ADD) {
+    if (auto *C = dyn_cast<ConstantSDNode>(N->getOperand(1))) {
+      int64_t Val = C->getSExtValue();
+      if (!isInt<12>(Val) && Val >= -4096 && Val <= 4094) {
+        SDLoc DL(N);
+        EVT VT = N->getValueType(0);
+        int64_t First = Val < 0 ? -2048 : 2047;
+        SDValue Base = N->getOperand(0);
+        // Keep the frame index as a target frame index so that the first addi
+        // folds it in when PEI resolves the reference.
+        if (Base->getOpcode() == ISD::FrameIndex)
+          Base = CurDAG->getTargetFrameIndex(
+              cast<FrameIndexSDNode>(Base)->getIndex(), VT);
+        SDValue Partial = SDValue(
+            CurDAG->getMachineNode(MiniRV::ADDI, DL, VT, Base,
+                                   CurDAG->getTargetConstant(First, DL, MVT::i64)),
+            0);
+        ReplaceNode(N, CurDAG->getMachineNode(
+                           MiniRV::ADDI, DL, VT, Partial,
+                           CurDAG->getTargetConstant(Val - First, DL, MVT::i64)));
+        return;
+      }
+    }
+  }
+
   // A constant has no pattern: the corpus has no "load immediate" record, so
   // it is built from the records that do exist, LUI and ADDI.
   if (N->getOpcode() == ISD::Constant) {
