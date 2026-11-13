@@ -21,5 +21,5 @@ def CC_MiniRV : CallingConv<[
 
 def RetCC_MiniRV : CallingConv<[
   CCIfType<[i32], CCPromoteToType<i64>>,
-  CCIfType<[i64], CCAssignToReg<[X10]>>
+  CCIfType<[i64], CCAssignToReg<[X10, X11]>>
 ]>;

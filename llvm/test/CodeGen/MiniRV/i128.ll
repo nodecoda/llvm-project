@@ -2,10 +2,11 @@
 ; RUN: llc -mtriple=minirv64 -filetype=obj < %s -o %t.o
 ; RUN: llvm-objdump -d --triple=minirv64 %t.o | FileCheck %s --check-prefix=OBJ
 
-; A 128-bit value is held in two 64-bit registers and returned through the
-; sret pointer in x10.  The type legalizer splits the arithmetic into 64-bit
-; pieces; the pieces that need MULH/MULHU are selected by the patterns in
-; MiniRVInstrInfo.td, so this test also covers the auto-td multiply records.
+; A 128-bit value is held in two 64-bit registers.  The first argument is in
+; x10/x11 and the second in x12/x13, and the result comes back in x10/x11.
+; The type legalizer splits the arithmetic into 64-bit pieces; the pieces that
+; need MULH/MULHU are selected by the patterns in MiniRVInstrInfo.td, so this
+; test also covers the auto-td multiply records.
 
 ; Addition is a two-instruction carry chain: the low halves are added and the
 ; carry out (low < low) is folded into the high halves.
@@ -14,8 +15,6 @@
 ; CHECK:         add     {{x[0-9]+}}, {{x[0-9]+}}, {{x[0-9]+}}
 ; CHECK:         sltu    {{x[0-9]+}}, {{x[0-9]+}}, {{x[0-9]+}}
 ; CHECK:         add     {{x[0-9]+}}, {{x[0-9]+}}, {{x[0-9]+}}
-; CHECK:         sd      {{x[0-9]+}}, 8(x10)
-; CHECK:         sd      {{x[0-9]+}}, 0(x10)
 define i128 @add(i128 %a, i128 %b) {
   %r = add i128 %a, %b
   ret i128 %r
@@ -36,7 +35,7 @@ define i128 @sub(i128 %a, i128 %b) {
 ; CHECK-LABEL: mul:
 ; CHECK-DAG:     mulhu   {{x[0-9]+}}, {{x[0-9]+}}, {{x[0-9]+}}
 ; CHECK-DAG:     mul     {{x[0-9]+}}, {{x[0-9]+}}, {{x[0-9]+}}
-; CHECK:         sd      {{x[0-9]+}}, 8(x10)
+; CHECK:         jalr
 define i128 @mul(i128 %a, i128 %b) {
   %r = mul i128 %a, %b
   ret i128 %r
@@ -71,16 +70,17 @@ define i128 @ashr(i128 %a, i128 %s) {
   ret i128 %r
 }
 
-; Constant shift amounts that cross the 64-bit boundary lower to a plain
-; register move; small amounts lower to a funnel shift built from srli/slli.
+; A constant shift that crosses the 64-bit boundary is a plain register move.
 ; CHECK-LABEL: shl64:
 ; CHECK-NOT:     slli
-; CHECK:         sd      {{x[0-9]+}}, 8(x10)
+; CHECK:         addi    x11, x10, 0
+; CHECK:         addi    x10, x0, 0
 define i128 @shl64(i128 %a) {
   %r = shl i128 %a, 64
   ret i128 %r
 }
 
+; A small constant shift becomes a funnel shift built from srli/slli.
 ; CHECK-LABEL: lshr4:
 ; CHECK:         srli    {{x[0-9]+}}, {{x[0-9]+}}, 4
 ; CHECK:         slli    {{x[0-9]+}}, {{x[0-9]+}}, 60
@@ -91,8 +91,8 @@ define i128 @lshr4(i128 %a) {
 }
 
 ; CHECK-LABEL: ashr100:
-; CHECK:         srai    {{x[0-9]+}}, {{x[0-9]+}}, 63
 ; CHECK:         srai    {{x[0-9]+}}, {{x[0-9]+}}, 36
+; CHECK:         srai    {{x[0-9]+}}, {{x[0-9]+}}, 63
 define i128 @ashr100(i128 %a) {
   %r = ashr i128 %a, 100
   ret i128 %r
