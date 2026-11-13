@@ -1,0 +1,6 @@
+mnemonic: vsetvli
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vsetvli}
+spec: rvtrim.vector.vset_vli
+domain: rv-v
+status: auto_full
+sched: [WriteVSETVLI, ReadVSETVLI]

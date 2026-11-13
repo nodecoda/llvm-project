@@ -1012,20 +1012,7 @@ multiclass VWholeLoadN<int eew, int lmul, string opcodestr, RegisterClass VRC> {
 // Instructions
 //===----------------------------------------------------------------------===//
 
-let Predicates = [HasVInstructions] in {
-let hasSideEffects = 1, mayLoad = 0, mayStore = 0 in {
-def VSETVLI : RVInstVSetVLi<(outs GPR:$rd), (ins GPR:$rs1, VTypeIOp11:$vtypei),
-                            "vsetvli", "$rd, $rs1, $vtypei">,
-              Sched<[WriteVSETVLI, ReadVSETVLI]>;
-def VSETIVLI : RVInstVSetiVLi<(outs GPR:$rd), (ins uimm5:$uimm, VTypeIOp10:$vtypei),
-                              "vsetivli", "$rd, $uimm, $vtypei">,
-               Sched<[WriteVSETIVLI]>;
-
-def VSETVL : RVInstVSetVL<(outs GPR:$rd), (ins GPR:$rs1, GPR:$rs2),
-                          "vsetvl", "$rd, $rs1, $rs2">,
-             Sched<[WriteVSETVL, ReadVSETVL, ReadVSETVL]>;
-} // hasSideEffects = 1, mayLoad = 0, mayStore = 0
-} // Predicates = [HasVInstructions]
+// vsetvli/vsetivli/vsetvl are generated from auto-td/opcodes.
 
 let ElementsDependOn = EltDepsNone in
 foreach eew = [8, 16, 32, 64] in {
