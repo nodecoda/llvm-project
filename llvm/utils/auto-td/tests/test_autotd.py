@@ -475,6 +475,61 @@ class RecordPropertyTest(FixtureCase):
         self.assertEqual(dict(specs["add"].effects.lets)["VMConstraint"], "0")
 
 
+class RecordPropsToolTest(unittest.TestCase):
+    """The local property-diff helper must keep parsing tblgen dumps."""
+
+    DUMP = textwrap.dedent(
+        """\
+        def DEMO_VV {
+          list<Register> Uses = [VL, VTYPE];
+          list<Register> Defs = [];
+          list<SchedReadWrite> SchedRW = [WriteVIALUV_WorstCase, ReadVMask];
+          list<Predicate> Predicates = [HasVInstructions];
+          string AsmString = "demo.vv\t$vd, $vs2$vm";
+          string Constraints = "@earlyclobber $vd";
+          bit VMConstraint = 1;
+          bit UseNamedOperandTable = 1;
+          bit ReadsPastVL = 0;
+          RVTrimVConstraint VS1VS2Constraint = WidenV;
+          EEW DestEEW = EEWSEWx2;
+          EltDeps ElementsDependOn = EltDepsNone;
+          bits<3> VLMul = { 0, 0, 0 };
+          InstFormat Format = InstFormatR;
+          dag OutOperandList = (outs VR:$vd);
+          dag InOperandList = (ins VR:$vs2, VMaskOp:$vm);
+        }
+        def OTHER {
+          bit VMConstraint = 0;
+        }
+        """
+    )
+
+    def test_properties_are_extracted(self):
+        import compare_record_props
+
+        records = compare_record_props.parse_dump(self.DUMP, {"DEMO_VV"})
+        self.assertEqual(set(records), {"DEMO_VV"})
+        props = records["DEMO_VV"]
+        self.assertEqual(props["Uses"], ["VL", "VTYPE"])
+        self.assertEqual(props["Defs"], [])
+        self.assertEqual(props["SchedRW"], ["WriteVIALUV_WorstCase", "ReadVMask"])
+        self.assertEqual(props["Constraints"], "@earlyclobber $vd")
+        self.assertEqual(props["VMConstraint"], 1)
+        self.assertEqual(props["VS1VS2Constraint"], "WidenV")
+        self.assertEqual(props["DestEEW"], "EEWSEWx2")
+        self.assertEqual(props["VLMul"], "0,0,0")
+
+    def test_names_come_from_the_opcode_file(self):
+        import compare_record_props
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rv_v"
+            path.write_text("# comment\nvadd.vv 1 2 3\n\nvsetvli 1 2\n")
+            self.assertEqual(
+                compare_record_props.names_from_opcodes(path), ["VADD_VV", "VSETVLI"]
+            )
+
+
 class CliTest(FixtureCase):
     def test_check_only_passes(self):
         from autotd.cli import main
