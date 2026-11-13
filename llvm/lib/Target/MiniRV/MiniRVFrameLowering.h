@@ -32,6 +32,13 @@ public:
     return true;
   }
 
+  /// Add \p Val to \p SrcReg and put the result in \p DestReg.  A small
+  /// adjustment is a single addi; anything that does not fit in twelve bits is
+  /// materialised with lui+addi and added.
+  void adjustReg(MachineBasicBlock &MBB, MachineBasicBlock::iterator II,
+                 const DebugLoc &DL, Register DestReg, Register SrcReg,
+                 int64_t Val, MachineInstr::MIFlag Flag) const;
+
   MachineBasicBlock::iterator
   eliminateCallFramePseudoInstr(MachineFunction &MF, MachineBasicBlock &MBB,
                                 MachineBasicBlock::iterator MI) const override;

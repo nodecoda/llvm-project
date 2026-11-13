@@ -100,6 +100,21 @@ void MiniRVDAGToDAGISel::Select(SDNode *N) {
     return;
   }
 
+  // A frame index used as a value is the address of a stack object.  It
+  // becomes "addi <fi>, 0"; PEI turns the frame index into the stack pointer
+  // plus the resolved offset, and materialises the offset in a register when
+  // it does not fit in the immediate field.
+  if (N->getOpcode() == ISD::FrameIndex) {
+    SDLoc DL(N);
+    EVT VT = N->getValueType(0);
+    SDValue FI = CurDAG->getTargetFrameIndex(
+        cast<FrameIndexSDNode>(N)->getIndex(), VT);
+    ReplaceNode(N, CurDAG->getMachineNode(
+                       MiniRV::ADDI, DL, VT, FI,
+                       CurDAG->getTargetConstant(0, DL, MVT::i64)));
+    return;
+  }
+
   SelectCode(N);
 }
 

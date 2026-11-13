@@ -29,6 +29,17 @@ public:
                            unsigned FIOperandNum,
                            RegScavenger *RS = nullptr) const override;
   Register getFrameRegister(const MachineFunction &MF) const override;
+
+  bool requiresVirtualBaseRegisters(const MachineFunction &MF) const override;
+  bool needsFrameBaseReg(MachineInstr *MI, int64_t Offset) const override;
+  bool isFrameOffsetLegal(const MachineInstr *MI, Register BaseReg,
+                          int64_t Offset) const override;
+  int64_t getFrameIndexInstrOffset(const MachineInstr *MI,
+                                   int Idx) const override;
+  Register materializeFrameBaseRegister(MachineBasicBlock *MBB, int FrameIdx,
+                                        int64_t Offset) const override;
+  void resolveFrameIndex(MachineInstr &MI, Register BaseReg,
+                         int64_t Offset) const override;
 };
 
 } // end namespace llvm
