@@ -50,24 +50,19 @@ entry:
 }
 
 ; The return address and the frame's other callee-saved registers live at the
-; top of the frame, out of reach of a 12-bit displacement.  They are spilled
-; after the stack pointer has been lowered and restored before it is raised
-; again.
+; top of the frame, out of reach of a 12-bit displacement.  The stack pointer
+; is lowered in two steps, with the spills in between, so that they are
+; addressed from the intermediate stack pointer.
 ; CHECK-LABEL: caller:
-; CHECK:       addi x2, x2, -2048
-; CHECK-NEXT:  addi x2, x2, -368
-; CHECK:       addi x5, x2, 2032
-; CHECK-NEXT:  addi x5, x5, 376
-; CHECK-NEXT:  sd x1, 0(x5)
+; CHECK:       addi x2, x2, -2032
+; CHECK-NEXT:  sd x1, 2024(x2)
+; CHECK-NEXT:  sd x8, 2016(x2)
+; CHECK-NEXT:  addi x2, x2, -384
 ; CHECK:       jal x1, callee
-; CHECK:       addi x5, x2, 2032
-; CHECK-NEXT:  addi x5, x5, 368
-; CHECK-NEXT:  ld x8, 0(x5)
-; CHECK:       addi x5, x2, 2032
-; CHECK-NEXT:  addi x5, x5, 376
-; CHECK-NEXT:  ld x1, 0(x5)
-; CHECK:       addi x2, x2, 2032
-; CHECK-NEXT:  addi x2, x2, 384
+; CHECK:       addi x2, x2, 384
+; CHECK-NEXT:  ld x8, 2016(x2)
+; CHECK-NEXT:  ld x1, 2024(x2)
+; CHECK-NEXT:  addi x2, x2, 2032
 ; CHECK-NEXT:  jalr x0, 0(x1)
 define i64 @caller(i64 %n) #0 {
 entry:

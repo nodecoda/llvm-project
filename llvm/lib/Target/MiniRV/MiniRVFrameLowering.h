@@ -56,6 +56,12 @@ public:
                                    MutableArrayRef<CalleeSavedInfo> CSI,
                                    const TargetRegisterInfo *TRI) const override;
 
+  /// When a large frame has callee-saved spills, adjust the stack pointer in
+  /// two steps so that the spill slots are within a 12-bit displacement of
+  /// the intermediate stack pointer.  Returns the first step, or zero when
+  /// the adjustment is not split.
+  uint64_t getFirstSPAdjustAmount(const MachineFunction &MF) const;
+
   /// Add \p Val to \p SrcReg and put the result in \p DestReg.  A small
   /// adjustment is a single addi; anything that does not fit in twelve bits is
   /// materialised with lui+addi and added.  Returns the insertion point just

@@ -62,7 +62,15 @@ StackOffset
 MiniRVFrameLowering::getFrameIndexReference(const MachineFunction &MF, int FI,
                                             Register &FrameReg) const {
   const MachineFrameInfo &MFI = MF.getFrameInfo();
-  if (!hasFP(MF) || MFI.isCalleeSavedObjectIndex(FI)) {
+  if (MFI.isCalleeSavedObjectIndex(FI)) {
+    // A large frame is allocated in two steps and the spills happen between
+    // them, so their slots are relative to the intermediate stack pointer.
+    uint64_t Adjust = getFirstSPAdjustAmount(MF);
+    FrameReg = MiniRV::X2;
+    return StackOffset::getFixed(MFI.getObjectOffset(FI) +
+                                 (Adjust ? Adjust : MFI.getStackSize()));
+  }
+  if (!hasFP(MF)) {
     FrameReg = MiniRV::X2;
     return StackOffset::getFixed(MFI.getObjectOffset(FI) + MFI.getStackSize());
   }
@@ -126,6 +134,20 @@ void MiniRVFrameLowering::determineCalleeSaves(MachineFunction &MF,
     SavedRegs.set(MiniRV::X8);
 }
 
+uint64_t
+MiniRVFrameLowering::getFirstSPAdjustAmount(const MachineFunction &MF) const {
+  const MachineFrameInfo &MFI = MF.getFrameInfo();
+  uint64_t StackSize = MFI.getStackSize();
+  if (isInt<12>(StackSize) || MFI.getCalleeSavedInfo().empty())
+    return 0;
+  // Realignment moves the stack pointer again; keep the single adjustment.
+  if (MF.getSubtarget().getRegisterInfo()->hasStackRealignment(MF))
+    return 0;
+  // 2048 itself would need a split in the epilogue; 2048 minus the alignment
+  // stays aligned and leaves every spill slot within reach.
+  return 2048 - getStackAlign().value();
+}
+
 void MiniRVFrameLowering::emitPrologue(MachineFunction &MF,
                                        MachineBasicBlock &MBB) const {
   const MachineFrameInfo &MFI = MF.getFrameInfo();
@@ -142,14 +164,18 @@ void MiniRVFrameLowering::emitPrologue(MachineFunction &MF,
 
   // The adjustment has to be the first thing in the function: the callee-saved
   // spills that PEI inserts afterwards use offsets relative to the new SP.
+  // A large frame is adjusted in two steps so that those spills stay within
+  // the 12-bit displacement of the intermediate SP.
+  uint64_t FirstSPAdjust = getFirstSPAdjustAmount(MF);
+  uint64_t FirstAdjust = FirstSPAdjust ? FirstSPAdjust : StackSize;
   MachineBasicBlock::iterator AfterSP = MBB.begin();
-  if (StackSize) {
+  if (FirstAdjust) {
     AfterSP = adjustReg(MBB, MBB.begin(), DL, MiniRV::X2, MiniRV::X2,
-                        -static_cast<int64_t>(StackSize),
+                        -static_cast<int64_t>(FirstAdjust),
                         MachineInstr::FrameSetup);
     if (NeedsCFI)
       CFIInstBuilder(MBB, AfterSP, MachineInstr::FrameSetup)
-          .buildDefCFAOffset(StackSize);
+          .buildDefCFAOffset(FirstAdjust);
   }
 
   // The frame pointer is set to the incoming stack pointer and must be
@@ -164,12 +190,27 @@ void MiniRVFrameLowering::emitPrologue(MachineFunction &MF,
   // The spill slots only have their final offsets after PEI has laid out the
   // frame, so the unwind table is described here rather than while the stores
   // are emitted.  The offsets are relative to the CFA, which is the incoming
-  // stack pointer either way.
+  // stack pointer either way.  Describe the spills before the second half of
+  // a split adjustment so that the unwind state is correct as soon as each
+  // register has been written.
   if (NeedsCFI) {
     CFIInstBuilder CFIBuilder(MBB, InsertPt, MachineInstr::FrameSetup);
     for (const CalleeSavedInfo &CS : MFI.getCalleeSavedInfo())
       CFIBuilder.buildOffset(CS.getReg(),
                              MFI.getObjectOffset(CS.getFrameIdx()));
+  }
+
+  // The second half of a split adjustment goes after the spills, which are
+  // addressed from the intermediate stack pointer.
+  if (FirstSPAdjust) {
+    uint64_t SecondAdjust = StackSize - FirstSPAdjust;
+    AfterSP = adjustReg(MBB, InsertPt, DL, MiniRV::X2, MiniRV::X2,
+                        -static_cast<int64_t>(SecondAdjust),
+                        MachineInstr::FrameSetup);
+    if (NeedsCFI)
+      CFIInstBuilder(MBB, AfterSP, MachineInstr::FrameSetup)
+          .buildDefCFAOffset(StackSize);
+    InsertPt = AfterSP;
   }
 
   if (!HasFP)
@@ -236,17 +277,21 @@ void MiniRVFrameLowering::emitEpilogue(MachineFunction &MF,
   uint64_t StackSize = MF.getFrameInfo().getStackSize();
   bool NeedsCFI = MF.needsFrameMoves();
 
+  // The restores of the callee-saved registers are the frame-destroy
+  // instructions at the top of the block; everything else comes before them.
+  MachineBasicBlock::iterator RestorePt = MBB.getFirstTerminator();
+  while (RestorePt != MBB.begin() &&
+         std::prev(RestorePt)->getFlag(MachineInstr::FrameDestroy))
+    --RestorePt;
+  DebugLoc DL =
+      RestorePt != MBB.end() ? RestorePt->getDebugLoc() : DebugLoc();
+
   if (hasFP(MF)) {
     // The stack pointer may have been moved by a dynamic alloca, so the
     // bottom of the fixed frame is recomputed from the frame pointer.  The
     // callee-saved restores address their slots through the stack pointer,
     // so this has to happen before them.
-    MachineBasicBlock::iterator MBBI = MBB.getFirstTerminator();
-    while (MBBI != MBB.begin() &&
-           std::prev(MBBI)->getFlag(MachineInstr::FrameDestroy))
-      --MBBI;
-    DebugLoc DL = MBBI != MBB.end() ? MBBI->getDebugLoc() : DebugLoc();
-    auto AfterSP = adjustReg(MBB, MBBI, DL, MiniRV::X2, MiniRV::X8,
+    auto AfterSP = adjustReg(MBB, RestorePt, DL, MiniRV::X2, MiniRV::X8,
                              -static_cast<int64_t>(StackSize),
                              MachineInstr::FrameDestroy);
     // The stack pointer is the CFA base again; the offset still accounts for
@@ -254,15 +299,39 @@ void MiniRVFrameLowering::emitEpilogue(MachineFunction &MF,
     if (NeedsCFI)
       CFIInstBuilder(MBB, AfterSP, MachineInstr::FrameDestroy)
           .buildDefCFARegister(MiniRV::X2);
+    RestorePt = AfterSP;
   }
 
   if (!StackSize)
     return;
 
+  // A split frame releases its second half before the restores, so that the
+  // spill slots are at the same intermediate stack pointer as in the
+  // prologue, and its first half afterwards.
+  uint64_t FirstSPAdjust = getFirstSPAdjustAmount(MF);
+  if (FirstSPAdjust) {
+    uint64_t SecondAdjust = StackSize - FirstSPAdjust;
+    auto AfterSecond =
+        adjustReg(MBB, RestorePt, DL, MiniRV::X2, MiniRV::X2,
+                  static_cast<int64_t>(SecondAdjust),
+                  MachineInstr::FrameDestroy);
+    if (NeedsCFI)
+      CFIInstBuilder(MBB, AfterSecond, MachineInstr::FrameDestroy)
+          .buildDefCFAOffset(FirstSPAdjust);
+    MachineBasicBlock::iterator MBBI = MBB.getLastNonDebugInstr();
+    auto AfterFirst = adjustReg(MBB, MBBI, DL, MiniRV::X2, MiniRV::X2,
+                                static_cast<int64_t>(FirstSPAdjust),
+                                MachineInstr::FrameDestroy);
+    if (NeedsCFI)
+      CFIInstBuilder(MBB, AfterFirst, MachineInstr::FrameDestroy)
+          .buildDefCFAOffset(0);
+    return;
+  }
+
   // The restores of the callee-saved registers sit between the adjustment and
   // the return, so the SP must be released after them.
   MachineBasicBlock::iterator MBBI = MBB.getLastNonDebugInstr();
-  DebugLoc DL = MBBI->getDebugLoc();
+  DL = MBBI->getDebugLoc();
   auto AfterSP = adjustReg(MBB, MBBI, DL, MiniRV::X2, MiniRV::X2,
                            static_cast<int64_t>(StackSize),
                            MachineInstr::FrameDestroy);

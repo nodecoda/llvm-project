@@ -58,11 +58,9 @@ entry:
 ; the spill of the incoming one, which is what makes the spill store the
 ; caller's value.
 ; CHECK-LABEL: vla_big:
-; CHECK:       addi x2, x2, -2048
-; CHECK-NEXT:  addi x2, x2, -368
-; CHECK:       addi x5, x2, 2032
-; CHECK-NEXT:  addi x5, x5, 376
-; CHECK-NEXT:  sd x8, 0(x5)
+; CHECK:       addi x2, x2, -2032
+; CHECK-NEXT:  sd x8, 2024(x2)
+; CHECK-NEXT:  addi x2, x2, -384
 ; CHECK:       addi x8, x2, 2032
 ; CHECK-NEXT:  addi x8, x8, 384
 ; CHECK:       addi [[A:x[0-9]+]], x8, -2048
@@ -70,6 +68,9 @@ entry:
 ; CHECK:       sd {{x[0-9]+}}, 0([[A]])
 ; CHECK:       addi x2, x8, -2048
 ; CHECK-NEXT:  addi x2, x2, -368
+; CHECK-NEXT:  addi x2, x2, 384
+; CHECK:       ld x8, 2024(x2)
+; CHECK-NEXT:  addi x2, x2, 2032
 define i64 @vla_big(i64 %n) #0 {
 entry:
   %fixed = alloca [300 x i64], align 8
