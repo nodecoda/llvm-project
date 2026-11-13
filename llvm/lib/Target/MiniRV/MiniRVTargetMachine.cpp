@@ -35,6 +35,12 @@ MiniRVTargetMachine::MiniRVTargetMachine(const Target &T, const Triple &TT,
                                getEffectiveCodeModel(CM, CodeModel::Small), OL),
       TLOF(std::make_unique<TargetLoweringObjectFileELF>()),
       Subtarget(TT, CPU, FS, *this) {
+  // There is no unwinder, no personality routine and no exception register.
+  // The ELF default would enable DwarfCFI; disabling it makes the codegen
+  // pipeline run LowerInvoke, which turns an invoke into a call and leaves the
+  // landing pad unreachable.
+  setSupportsExceptionModel(ExceptionHandling::DwarfCFI, false);
+  setSupportsExceptionModel(ExceptionHandling::SjLj, false);
   initAsmInfo();
 }
 
