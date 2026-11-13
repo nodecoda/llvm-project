@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "MiniRVAsmPrinter.h"
+#include "MCTargetDesc/MiniRVInstPrinter.h"
 #include "MiniRVMCInstLower.h"
 #include "MiniRVTargetMachine.h"
 #include "TargetInfo/MiniRVTargetInfo.h"
@@ -39,11 +40,18 @@ public:
   bool runOnMachineFunction(MachineFunction &MF) override;
   void emitInstruction(const MachineInstr *MI) override;
 
+  bool PrintAsmOperand(const MachineInstr *MI, unsigned OpNo,
+                       const char *ExtraCode, raw_ostream &O) override;
+  bool PrintAsmMemoryOperand(const MachineInstr *MI, unsigned OpNo,
+                             const char *ExtraCode, raw_ostream &O) override;
+
   // Wrapper needed for the tablegenned pseudo lowering.
   bool lowerOperand(const MachineOperand &MO, MCOperand &MCOp) const;
   bool lowerPseudoInstExpansion(const MachineInstr *MI, MCInst &Inst);
 
   void emitSymbolAddress(const MachineInstr &MI);
+
+  void printOperand(const MachineInstr *MI, unsigned OpNo, raw_ostream &O);
 
   static char ID;
 };
@@ -88,6 +96,69 @@ bool MiniRVAsmPrinter::lowerOperand(const MachineOperand &MO,
         MCSymbolRefExpr::create(MO.getMCSymbol(), OutContext));
     return true;
   }
+}
+
+/// Print one machine operand the way it appears in an ordinary instruction.
+/// Inline asm operands are machine operands too, but the generic printer only
+/// knows the operand modifiers, not the target's register names.
+void MiniRVAsmPrinter::printOperand(const MachineInstr *MI, unsigned OpNo,
+                                    raw_ostream &O) {
+  const MachineOperand &MO = MI->getOperand(OpNo);
+  switch (MO.getType()) {
+  case MachineOperand::MO_Register:
+    O << MiniRVInstPrinter::getRegisterName(MO.getReg());
+    return;
+  case MachineOperand::MO_Immediate:
+    O << MO.getImm();
+    return;
+  case MachineOperand::MO_MachineBasicBlock:
+    O << *MO.getMBB()->getSymbol();
+    return;
+  case MachineOperand::MO_GlobalAddress:
+    O << *getSymbol(MO.getGlobal());
+    return;
+  case MachineOperand::MO_ExternalSymbol:
+    O << *GetExternalSymbolSymbol(MO.getSymbolName());
+    return;
+  case MachineOperand::MO_MCSymbol:
+    O << *MO.getMCSymbol();
+    return;
+  default:
+    llvm_unreachable("Unsupported operand in inline asm");
+  }
+}
+
+/// A plain operand is printed like an ordinary instruction operand; the
+/// modifiers the generic printer understands (c, n, ...) keep working.
+bool MiniRVAsmPrinter::PrintAsmOperand(const MachineInstr *MI, unsigned OpNo,
+                                       const char *ExtraCode,
+                                       raw_ostream &O) {
+  if (!AsmPrinter::PrintAsmOperand(MI, OpNo, ExtraCode, O))
+    return false;
+  if (ExtraCode && ExtraCode[0])
+    return true; // Unknown modifier.
+
+  printOperand(MI, OpNo, O);
+  return false;
+}
+
+/// The memory operand is a base register followed by a displacement, the same
+/// pair the address selection produces for an ordinary load or store.
+bool MiniRVAsmPrinter::PrintAsmMemoryOperand(const MachineInstr *MI,
+                                             unsigned OpNo,
+                                             const char *ExtraCode,
+                                             raw_ostream &O) {
+  if (ExtraCode && ExtraCode[0])
+    return true; // Unknown modifier.
+
+  const MachineOperand &Base = MI->getOperand(OpNo);
+  const MachineOperand &Disp = MI->getOperand(OpNo + 1);
+  if (!Base.isReg() || !Disp.isImm())
+    return true;
+
+  O << Disp.getImm() << '('
+    << MiniRVInstPrinter::getRegisterName(Base.getReg()) << ')';
+  return false;
 }
 
 /// Emit "auipc rd, %pcrel_hi(sym)" followed by "addi rd, rd, %pcrel_lo(L)".

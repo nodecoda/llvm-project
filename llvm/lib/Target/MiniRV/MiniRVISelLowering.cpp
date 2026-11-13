@@ -128,6 +128,17 @@ EVT MiniRVTargetLowering::getSetCCResultType(const DataLayout &DL,
   return getPointerTy(DL);
 }
 
+/// The only register class is the general one, so "r" selects a GPR.  Without
+/// this override the generic code has no way to map the constraint letter to a
+/// class and rejects every register operand.
+std::pair<unsigned, const TargetRegisterClass *>
+MiniRVTargetLowering::getRegForInlineAsmConstraint(
+    const TargetRegisterInfo *TRI, StringRef Constraint, MVT VT) const {
+  if (Constraint.size() == 1 && Constraint[0] == 'r')
+    return std::make_pair(0U, &MiniRV::GPRRegClass);
+  return TargetLowering::getRegForInlineAsmConstraint(TRI, Constraint, VT);
+}
+
 SDValue MiniRVTargetLowering::LowerOperation(SDValue Op,
                                              SelectionDAG &DAG) const {
   switch (Op.getOpcode()) {

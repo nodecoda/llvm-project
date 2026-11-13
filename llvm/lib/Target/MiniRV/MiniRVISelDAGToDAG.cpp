@@ -17,6 +17,7 @@
 #include "MiniRVTargetMachine.h"
 #include "llvm/CodeGen/SelectionDAGISel.h"
 #include "llvm/CodeGen/SelectionDAGNodes.h"
+#include "llvm/IR/InlineAsm.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 
@@ -36,6 +37,10 @@ public:
 #include "MiniRVGenDAGISel.inc"
 
   void Select(SDNode *N) override;
+
+  bool SelectInlineAsmMemoryOperand(
+      const SDValue &Op, InlineAsm::ConstraintCode ConstraintID,
+      std::vector<SDValue> &OutOps) override;
 };
 
 } // end anonymous namespace
@@ -116,6 +121,35 @@ void MiniRVDAGToDAGISel::Select(SDNode *N) {
   }
 
   SelectCode(N);
+}
+
+/// A memory operand is a base register plus a displacement, which is the same
+/// addressing mode as an ordinary load or store.  The assembler prints the
+/// pair as "disp(base)".  A constant added to the address is folded into the
+/// displacement when it fits the signed twelve bits of the immediate field.
+bool MiniRVDAGToDAGISel::SelectInlineAsmMemoryOperand(
+    const SDValue &Op, InlineAsm::ConstraintCode ConstraintID,
+    std::vector<SDValue> &OutOps) {
+  switch (ConstraintID) {
+  case InlineAsm::ConstraintCode::m:
+  case InlineAsm::ConstraintCode::o: {
+    SDValue Base = Op;
+    int64_t Disp = 0;
+    if (Op.getOpcode() == ISD::ADD) {
+      if (auto *C = dyn_cast<ConstantSDNode>(Op.getOperand(1));
+          C && isInt<12>(C->getSExtValue())) {
+        Base = Op.getOperand(0);
+        Disp = C->getSExtValue();
+      }
+    }
+    OutOps.push_back(Base);
+    OutOps.push_back(
+        CurDAG->getTargetConstant(Disp, SDLoc(Op), MVT::i64));
+    return false;
+  }
+  default:
+    return true;
+  }
 }
 
 MiniRVISelDAGToDAGPass::MiniRVISelDAGToDAGPass(MiniRVTargetMachine &TM,

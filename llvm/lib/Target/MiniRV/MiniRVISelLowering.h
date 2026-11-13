@@ -45,6 +45,10 @@ public:
   EVT getSetCCResultType(const DataLayout &DL, LLVMContext &Context,
                          EVT VT) const override;
 
+  std::pair<unsigned, const TargetRegisterClass *>
+  getRegForInlineAsmConstraint(const TargetRegisterInfo *TRI,
+                               StringRef Constraint, MVT VT) const override;
+
   SDValue LowerFormalArguments(SDValue Chain, CallingConv::ID CallConv,
                                bool IsVarArg,
                                const SmallVectorImpl<ISD::InputArg> &Ins,
