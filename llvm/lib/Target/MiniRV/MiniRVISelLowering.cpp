@@ -483,6 +483,12 @@ SDValue MiniRVTargetLowering::LowerFormalArguments(
     SelectionDAG &DAG, SmallVectorImpl<SDValue> &InVals) const {
   MachineFunction &MF = DAG.getMachineFunction();
 
+  // A scalable vector has no fixed byte size and needs a vector unit, so it
+  // cannot be assigned to a register or a stack slot.
+  for (const ISD::InputArg &IA : Ins)
+    if (IA.ArgVT.isScalableVector())
+      report_fatal_error("MiniRV does not support scalable vectors");
+
   SmallVector<CCValAssign, 16> ArgLocs;
   CCState CCInfo(CallConv, IsVarArg, MF, ArgLocs, *DAG.getContext());
   CCInfo.AnalyzeFormalArguments(Ins, CC_MiniRV);
@@ -642,6 +648,11 @@ MiniRVTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   // here.  The callee spills the argument registers it still needs.
 
   MachineFunction &MF = DAG.getMachineFunction();
+
+  // See LowerFormalArguments: a scalable vector cannot be passed.
+  for (const ISD::OutputArg &OA : Outs)
+    if (OA.ArgVT.isScalableVector())
+      report_fatal_error("MiniRV does not support scalable vectors");
 
   // Analyse the arguments: eight registers, the rest on the stack.
   SmallVector<CCValAssign, 16> ArgLocs;
