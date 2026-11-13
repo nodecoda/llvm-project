@@ -19,6 +19,7 @@
 #include "RVTrimSelectionDAGInfo.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/IR/IntrinsicsRISCV.h"
+#include "llvm/IR/IntrinsicsRVTrim.h"
 #include "llvm/Support/Alignment.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
@@ -2280,6 +2281,14 @@ void RVTrimDAGToDAGISel::Select(SDNode *Node) {
       // By default we do not custom select any intrinsic.
     default:
       break;
+    case Intrinsic::rvtrim_vfexp: {
+      // The record has no mask operand (vm is fixed to 1), so the machine node
+      // takes the source alone.
+      SDValue Src = Node->getOperand(1);
+      ReplaceNode(Node, CurDAG->getMachineNode(RVTrim::YUSHUXIN_VFEXP, DL,
+                                               Node->getValueType(0), Src));
+      return;
+    }
     case Intrinsic::riscv_vmsgeu:
     case Intrinsic::riscv_vmsge: {
       SDValue Src1 = Node->getOperand(1);

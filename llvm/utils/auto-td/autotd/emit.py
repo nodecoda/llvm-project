@@ -8,7 +8,7 @@ base class.  That is what makes the records diffable and what removes the
 
 from __future__ import annotations
 
-from .encoding import assignments, field_declarations, instruction_format
+from .encoding import assignments, constant_fields, field_declarations, instruction_format
 from .model import InstrSpec
 
 
@@ -115,6 +115,7 @@ def render_record(spec: InstrSpec, config: dict, prefix: str) -> list[str]:
     ]
     lines += _flags(spec, config)
     lines += [f"  {decl}" for decl in field_declarations(spec)]
+    lines += [f"  let {name} = {value};" for name, value in constant_fields(spec)]
     lines += [f"  let {item.range_text()} = {item.expr};" for item in items]
     lines.append("}")
     return lines

@@ -1,6 +1,6 @@
 # RUN: llvm-mc -triple=rvtrim64 -mattr=+zve64x,+xtinyv -show-encoding %s \
 # RUN:   | FileCheck %s --check-prefix=ENC
-# RUN: printf '0x8b,0x10,0x20,0xaa\n0x8b,0x10,0x20,0xa8\n' \
+# RUN: printf '0x8b,0x10,0x20,0xaa\n' \
 # RUN:   | llvm-mc -triple=rvtrim64 -mattr=+zve64x,+xtinyv -disassemble \
 # RUN:   | FileCheck %s --check-prefix=DIS
 # RUN: not llvm-mc -triple=rvtrim64 -mattr=+zve64x -show-encoding %s 2>&1 \
@@ -19,10 +19,7 @@
 # ENC: yushuxin.vfexp v1, v2{{.*}}# encoding: [0x8b,0x10,0x20,0xaa]
 yushuxin.vfexp v1, v2
 
-# ENC: yushuxin.vfexp v1, v2, v0.t{{.*}}# encoding: [0x8b,0x10,0x20,0xa8]
-yushuxin.vfexp v1, v2, v0.t
-
+# The instruction has no masked form: vm is fixed to 1.
 # DIS: yushuxin.vfexp v1, v2
-# DIS: yushuxin.vfexp v1, v2, v0.t
 
 # NOEXT: instruction requires the following: 'XTinyV' (YSX tiny vector extension)

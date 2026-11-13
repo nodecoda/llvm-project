@@ -117,6 +117,17 @@ categories:
     effects: {implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint], lets: {ElementsDependOn: EltDepsNone}}
     # members: vsext.vf2, vsext.vf4, vsext.vf8, vzext.vf2, vzext.vf4, vzext.vf8
 
+  # Same shape as v_unary, but the instruction has no mask operand at all and
+  # encodes vm=1.  Used by vendor instructions whose only form is unmasked.
+  v_unary_nomask:
+    operands:
+      outs: [{role: dest, field: vd, reg_class: VR}]
+      ins: [{role: lhs, field: vs2, reg_class: VR}]
+    effects:
+      implicit_uses: [VL, VTYPE]
+      flags: [UseNamedOperandTable]
+      lets: {ElementsDependOn: EltDepsNone}
+
   v_vwaddu_vv:
     operands:
       outs:

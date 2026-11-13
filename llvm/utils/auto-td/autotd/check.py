@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from .encoding import FIELD_RULES, LITERAL_ZERO_FIELDS
+from .encoding import FIELD_RULES, LITERAL_ONE_FIELDS, LITERAL_ZERO_FIELDS
 from .model import InstrSpec
 from .taxonomy import category_key
 
@@ -105,7 +105,8 @@ def _check_fields(spec: InstrSpec) -> list[str]:
             continue
         problems.append(f"{where}: operand field '{op.field}' is not in the opcode row")
 
-    covered = operand_fields | set(spec.fixed_fields) | set(FIELD_RULES) | LITERAL_ZERO_FIELDS
+    covered = (operand_fields | set(spec.fixed_fields) | set(FIELD_RULES) |
+               LITERAL_ZERO_FIELDS | LITERAL_ONE_FIELDS)
     for name in spec.opcode.fields:
         if name not in covered:
             problems.append(f"{where}: opcode field '{name}' is neither an operand nor fixed")

@@ -270,9 +270,27 @@ class EncodingTest(FixtureCase):
         spec.opcode = OpcodeRow("demo.vreduce", ("vm", "rs2", "nf", "rd"), spec.opcode.fixed, ranges, spec.opcode.origin)
         self.assertEqual({i.range_text(): i.expr for i in assignments(spec)}["Inst{31-29}"], "0b000")
 
-    def test_carry_mask_replaces_constant_zero(self):
+    def test_unconsumed_vm_field_is_forced_to_one(self):
+        spec = self.specs["demo.vreduce"]
+        # A category without a mask operand leaves vm unconsumed; an
+        # instruction with no mask operand is unmasked, i.e. vm=1.
+        spec.ins = tuple(op for op in spec.ins if op.field != "vm")
+        self.assertEqual({i.range_text(): i.expr for i in assignments(spec)}["Inst{25}"], "0b1")
+
+    def test_carry_mask_uses_the_named_field(self):
         bits = self.bits("demo.vreduce")
         self.assertEqual(bits["Inst{25}"], "vm")
+
+    def test_carry_mask_does_not_rewrite_a_fixed_slot(self):
+        spec = self.specs["demo.vreduce"]
+        # vadc.vim and friends spell the always-masked slot as `25=0`: the v0
+        # operand is implicit, so the bit stays constant.
+        ranges = dict(spec.opcode.ranges)
+        ranges.pop("vm")
+        spec.opcode = OpcodeRow(
+            "demo.vreduce", ("rs2", "rd"), ("25=0",), ranges, spec.opcode.origin
+        )
+        self.assertEqual({i.range_text(): i.expr for i in assignments(spec)}["Inst{25}"], "0b0")
 
     def test_b_type_scatters_the_immediate(self):
         bits = self.bits("beq")

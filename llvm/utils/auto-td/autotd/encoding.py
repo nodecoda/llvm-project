@@ -87,6 +87,10 @@ FIELD_RULES: dict[str, FieldRule] = {
 
 #: Fields this backend always encodes as zero (no assembly surface).
 LITERAL_ZERO_FIELDS = frozenset({"nf"})
+# Fields that encode "no operand here" as an all-ones constant.  A
+# category without a mask operand means the instruction is unmasked,
+# which is vm=1 on RISC-V.
+LITERAL_ONE_FIELDS = frozenset({"vm"})
 
 
 def assignments(spec: InstrSpec) -> list[BitAssignment]:
@@ -96,6 +100,7 @@ def assignments(spec: InstrSpec) -> list[BitAssignment]:
     # database field it consumes (vsetivli's ``zimm5`` is ``$uimm``).
     renamed = {op.field: op.var_name for op in (*spec.outs, *spec.ins) if op.var_name != op.field}
 
+    consumed = {op.field for op in (*spec.outs, *spec.ins)}
     for name in spec.opcode.fields:
         rng = spec.opcode.range_of(name)
         if rng is None:
@@ -109,6 +114,9 @@ def assignments(spec: InstrSpec) -> list[BitAssignment]:
             continue
         if name in LITERAL_ZERO_FIELDS:
             result.append(BitAssignment(rng.msb, rng.lsb, literal(0, rng.width)))
+            continue
+        if name in LITERAL_ONE_FIELDS and name not in consumed:
+            result.append(BitAssignment(rng.msb, rng.lsb, literal(1, rng.width)))
             continue
         rule = FIELD_RULES.get(name)
         if rule is not None:
@@ -130,11 +138,19 @@ def assignments(spec: InstrSpec) -> list[BitAssignment]:
 
 
 def _carry_mask(spec: InstrSpec):
-    """(field-name, BitRange) of a carry-input mask operand, if any."""
+    """(field-name, BitRange) of a carry-input mask operand, if any.
+
+    Only a real field of the opcode row can carry the operand.  Rows such as
+    ``vadc.vim`` spell the always-masked slot as a fixed ``25=0``; there the v0
+    operand is implicit and the bit must stay constant, exactly as the
+    hand-written backend encodes it.
+    """
     for operand in spec.ins:
         if not operand.is_carry_mask:
             continue
-        rng = spec.opcode.range_of(operand.field) or spec.arg_lut.get(operand.field)
+        if operand.field not in spec.opcode.fields:
+            continue
+        rng = spec.opcode.range_of(operand.field)
         if rng is not None:
             return operand.field, rng
     return None
@@ -158,7 +174,39 @@ def field_declarations(spec: InstrSpec) -> list[str]:
         full = spec.arg_lut.get(name)
         declared = max(width, rule_widths.get(name, 0))
         widths[name] = max(widths.get(name, 0), full.width if full else declared)
+    # A carry-input mask is a register operand, but a row such as ``vadc.vim``
+    # pins its bit instead of naming a field.  TableGen still requires a field
+    # with the operand's name, so declare it; it is simply not in ``Inst``.
+    for operand in spec.ins:
+        if not operand.is_carry_mask or operand.field in widths:
+            continue
+        rng = spec.opcode.range_of(operand.field) or spec.arg_lut.get(operand.field)
+        if rng is not None:
+            widths[operand.field] = rng.width
     return [f"bit {n};" if w == 1 else f"bits<{w}> {n};" for n, w in widths.items()]
+
+
+def constant_fields(spec: InstrSpec) -> list[tuple[str, str]]:
+    """Fields that must be declared with a constant value.
+
+    A carry-input mask is a register operand, but a row such as ``vadc.vim``
+    pins its bit instead of naming a field.  TableGen requires a field with the
+    operand's name *and* a value; leaving it unset makes the disassembler treat
+    the operand as unencodable.  The constant is the row's fixed value.
+    """
+    result: list[tuple[str, str]] = []
+    for operand in spec.ins:
+        if not operand.is_carry_mask or operand.field in spec.opcode.fields:
+            continue
+        rng = spec.arg_lut.get(operand.field)
+        if rng is None:
+            continue
+        for token in spec.opcode.fixed:
+            msb, lsb, value = parse_fixed(token)
+            if (msb, lsb) == (rng.msb, rng.lsb):
+                result.append((operand.field, literal(value, rng.width)))
+                break
+    return result
 
 
 def _declared_name(item: BitAssignment) -> tuple[str | None, int]:
