@@ -34,3 +34,35 @@ define i64 @wide() {
 define i64 @rounded() {
   ret i64 16779264
 }
+
+; A 64-bit value is built from its two words.  The low word is materialised
+; zero-extended, the high word is materialised and shifted into place, and the
+; two are combined with an or.
+; 0x0123456789ABCDEF: high word 0x01234567, low word 0x89ABCDEF.
+; CHECK-LABEL: wide64:
+; CHECK:         lui     [[HI:x[0-9]+]], 4660
+; CHECK-NEXT:    addi    [[HI]], [[HI]], 1383
+; CHECK-NEXT:    slli    [[HI]], [[HI]], 32
+; CHECK-NEXT:    lui     [[LO:x[0-9]+]], -484675
+; CHECK-NEXT:    addi    [[LO]], [[LO]], -529
+; CHECK-NEXT:    slli    [[LO]], [[LO]], 32
+; CHECK-NEXT:    srli    [[LO]], [[LO]], 32
+; CHECK-NEXT:    or      x10, [[HI]], [[LO]]
+define i64 @wide64() {
+  ret i64 81985529216486895
+}
+
+; 0xFFFFFFFF7FFFFFFF: the low word 0x7FFFFFFF fits in the signed 32-bit range;
+; the high word 0xFFFFFFFF needs the upper-word clearing pair.
+; CHECK-LABEL: negative64:
+; CHECK:         lui     [[LO:x[0-9]+]], 524288
+; CHECK-NEXT:    addi    [[LO]], [[LO]], -1
+; CHECK-NEXT:    lui     [[HI:x[0-9]+]], 0
+; CHECK-NEXT:    addi    [[HI]], [[HI]], -1
+; CHECK-NEXT:    slli    [[HI]], [[HI]], 32
+; CHECK-NEXT:    srli    [[HI]], [[HI]], 32
+; CHECK-NEXT:    slli    [[HI]], [[HI]], 32
+; CHECK-NEXT:    or      x10, [[HI]], [[LO]]
+define i64 @negative64() {
+  ret i64 -2147483649
+}

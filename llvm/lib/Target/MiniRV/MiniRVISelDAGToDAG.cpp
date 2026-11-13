@@ -52,9 +52,7 @@ void MiniRVDAGToDAGISel::Select(SDNode *N) {
   }
 
   // A constant has no pattern: the corpus has no "load immediate" record, so
-  // it is built from the records that do exist, LUI and ADDI.  Anything wider
-  // than 32 bits would need a full shift sequence to assemble, which is why it
-  // is rejected rather than silently truncated.
+  // it is built from the records that do exist, LUI and ADDI.
   if (N->getOpcode() == ISD::Constant) {
     auto Val = cast<ConstantSDNode>(N)->getSExtValue();
     SDLoc DL(N);
@@ -68,37 +66,50 @@ void MiniRVDAGToDAGISel::Select(SDNode *N) {
       return;
     }
 
-    // A zero-extended 32-bit constant with bit 31 set (the promoted form of an
-    // i32 immediate such as 0x80000000) is not a signed 32-bit value.  LUI
-    // sign-extends on RV64, so build the sign-extended form and clear the
-    // upper word with a shift pair afterwards.
-    bool ClearUpperWord = false;
-    if (!isInt<32>(Val)) {
-      if (!isUInt<32>(Val))
-        report_fatal_error("MiniRV cannot materialise a 64-bit constant");
-      Val -= int64_t(1) << 32;
-      ClearUpperWord = true;
-    }
+    // LUI sign-extends on RV64, so a word with bit 31 set is built in its
+    // sign-extended form and the upper word is then cleared with a shift pair.
+    // The result is the zero-extended 32-bit pattern.
+    auto BuildWord = [&](uint32_t Word) -> SDValue {
+      int64_t V = Word;
+      bool ClearUpperWord = Word >= 0x80000000u;
+      if (ClearUpperWord)
+        V -= int64_t(1) << 32;
 
-    int64_t Hi = (Val + 0x800) >> 12;
-    int64_t Lo = Val - (Hi << 12);
-    SDValue HiPart = SDValue(
-        CurDAG->getMachineNode(MiniRV::LUI, DL, VT,
-                               CurDAG->getTargetConstant(Hi, DL, MVT::i64)),
-        0);
-    SDValue Res = HiPart;
-    if (Lo)
-      Res = SDValue(
-          CurDAG->getMachineNode(MiniRV::ADDI, DL, VT, HiPart,
-                                 CurDAG->getTargetConstant(Lo, DL, MVT::i64)),
+      int64_t Hi = (V + 0x800) >> 12;
+      int64_t Lo = V - (Hi << 12);
+      SDValue Res = SDValue(
+          CurDAG->getMachineNode(MiniRV::LUI, DL, VT,
+                                 CurDAG->getTargetConstant(Hi, DL, MVT::i64)),
           0);
+      if (Lo)
+        Res = SDValue(
+            CurDAG->getMachineNode(MiniRV::ADDI, DL, VT, Res,
+                                   CurDAG->getTargetConstant(Lo, DL, MVT::i64)),
+            0);
+      if (ClearUpperWord) {
+        SDValue Shift32 = CurDAG->getTargetConstant(32, DL, MVT::i64);
+        Res = SDValue(
+            CurDAG->getMachineNode(MiniRV::SLLI, DL, VT, Res, Shift32), 0);
+        Res = SDValue(
+            CurDAG->getMachineNode(MiniRV::SRLI, DL, VT, Res, Shift32), 0);
+      }
+      return Res;
+    };
 
-    if (ClearUpperWord) {
-      SDValue Shift32 = CurDAG->getTargetConstant(32, DL, MVT::i64);
-      Res = SDValue(CurDAG->getMachineNode(MiniRV::SLLI, DL, VT, Res, Shift32),
-                    0);
-      Res = SDValue(CurDAG->getMachineNode(MiniRV::SRLI, DL, VT, Res, Shift32),
-                    0);
+    // A value outside the 32-bit range is the low word combined with the high
+    // word shifted into place.
+    SDValue Res;
+    if (isInt<32>(Val) || isUInt<32>(Val)) {
+      Res = BuildWord(static_cast<uint32_t>(Val));
+    } else {
+      uint64_t UV = cast<ConstantSDNode>(N)->getZExtValue();
+      SDValue Lo = BuildWord(static_cast<uint32_t>(UV));
+      SDValue Hi = BuildWord(static_cast<uint32_t>(UV >> 32));
+      Hi = SDValue(CurDAG->getMachineNode(
+                       MiniRV::SLLI, DL, VT, Hi,
+                       CurDAG->getTargetConstant(32, DL, MVT::i64)),
+                   0);
+      Res = SDValue(CurDAG->getMachineNode(MiniRV::OR, DL, VT, Hi, Lo), 0);
     }
 
     ReplaceNode(N, Res.getNode());

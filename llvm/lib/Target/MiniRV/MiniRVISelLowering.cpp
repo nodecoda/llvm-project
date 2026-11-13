@@ -92,6 +92,12 @@ MiniRVTargetLowering::MiniRVTargetLowering(const TargetMachine &TM,
   setOperationAction(ISD::FRAMEADDR, MVT::i64, Custom);
   setOperationAction(ISD::RETURNADDR, MVT::i64, Custom);
 
+  // The bit-manipulation intrinsics expand to shifts and arithmetic, which the
+  // corpus has.  Without an action they would be rejected by the selector.
+  setOperationAction(
+      {ISD::CTPOP, ISD::CTLZ, ISD::CTTZ, ISD::BSWAP, ISD::BITREVERSE},
+      MVT::i64, Expand);
+
   // A va_list is a pointer to the next argument slot.  va_start hands out the
   // address of the register save area and va_arg advances the pointer by one
   // slot; va_copy and va_end are just a pointer copy and a no-op.
