@@ -40,6 +40,12 @@ void MiniRVSubtarget::initLibcallLoweringInfo(
   Info.setLibcallImpl(RTLIB::MEMMOVE, RTLIB::impl_memmove);
   Info.setLibcallImpl(RTLIB::MEMSET, RTLIB::impl_memset);
 
+  // llvm.experimental.deoptimize needs a patchpoint at the call site and the
+  // __llvm_deoptimize runtime entry.  Name the entry so the lowering reaches
+  // the patchpoint, where the AsmPrinter rejects it; without a name the
+  // generic code only prints an error and drops the call.
+  Info.setLibcallImpl(RTLIB::DEOPTIMIZE, RTLIB::impl___llvm_deoptimize);
+
   // The base ISA has no A extension, so AtomicExpandPass turns every atomic
   // load, store, exchange, compare-exchange and read-modify-write into one of
   // libatomic's __atomic_* entry points.  The sized variants exist for the C

@@ -209,11 +209,12 @@ void MiniRVAsmPrinter::emitSymbolAddress(const MachineInstr &MI) {
 #include "MiniRVGenMCPseudoLowering.inc"
 
 void MiniRVAsmPrinter::emitInstruction(const MachineInstr *MI) {
-  // Stack maps and patchpoints need a target-specific lowering that records
-  // the map and pads the code; the pseudo has no encoding, so reject it
-  // instead of letting the instruction printer assert.
+  // Stack maps, patchpoints and statepoints need a target-specific lowering
+  // that records the map and pads the code; the pseudo has no encoding, so
+  // reject it instead of letting the instruction printer assert.
   if (MI->getOpcode() == TargetOpcode::STACKMAP ||
-      MI->getOpcode() == TargetOpcode::PATCHPOINT)
+      MI->getOpcode() == TargetOpcode::PATCHPOINT ||
+      MI->getOpcode() == TargetOpcode::STATEPOINT)
     report_fatal_error("MiniRV does not support stack maps");
 
   if (MI->getOpcode() == MiniRV::PseudoLA) {

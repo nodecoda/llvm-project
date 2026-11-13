@@ -190,8 +190,9 @@ SDValue MiniRVTargetLowering::LowerOperation(SDValue Op,
     return SDValue();
   }
   case ISD::READCYCLECOUNTER:
-  case ISD::READSTEADYCOUNTER:
     report_fatal_error("MiniRV has no cycle counter");
+  case ISD::READSTEADYCOUNTER:
+    report_fatal_error("MiniRV has no steady counter");
   case ISD::LOCAL_RECOVER:
     report_fatal_error(
         "MiniRV does not support llvm.localescape/llvm.localrecover");
