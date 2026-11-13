@@ -150,6 +150,50 @@ define double @sitofp128(i128 %a) {
   ret double %r
 }
 
+; long double is IEEE quad here, so it uses the tf helpers.
+; CHECK-LABEL: fadd128:
+; CHECK:         jal     x1, __addtf3
+define fp128 @fadd128(fp128 %a, fp128 %b) {
+  %r = fadd fp128 %a, %b
+  ret fp128 %r
+}
+
+; CHECK-LABEL: fptosi128f:
+; CHECK:         jal     x1, __fixtfdi
+define i64 @fptosi128f(fp128 %a) {
+  %r = fptosi fp128 %a to i64
+  ret i64 %r
+}
+
+; CHECK-LABEL: sitofp128f:
+; CHECK:         jal     x1, __floatditf
+define fp128 @sitofp128f(i64 %a) {
+  %r = sitofp i64 %a to fp128
+  ret fp128 %r
+}
+
+; CHECK-LABEL: trunc128:
+; CHECK:         jal     x1, __trunctfdf2
+define double @trunc128(fp128 %a) {
+  %r = fptrunc fp128 %a to double
+  ret double %r
+}
+
+; CHECK-LABEL: ext128:
+; CHECK:         jal     x1, __extenddftf2
+define fp128 @ext128(double %a) {
+  %r = fpext double %a to fp128
+  ret fp128 %r
+}
+
+; CHECK-LABEL: cmp128:
+; CHECK:         jal     x1, __lttf2
+define i32 @cmp128(fp128 %a, fp128 %b) {
+  %c = fcmp olt fp128 %a, %b
+  %r = zext i1 %c to i32
+  ret i32 %r
+}
+
 ; The helpers must be relocations against real symbols.
 ; OBJ-LABEL: <fadd64>:
 ; OBJ:         R_RISCV_JAL  __adddf3
