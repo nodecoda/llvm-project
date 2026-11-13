@@ -673,10 +673,11 @@ MiniRVTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   }
 
   // The outgoing argument area is reserved in the prologue, so this only
-  // announces the maximum size to the frame machinery.
+  // announces the maximum size to the frame machinery.  The sequence is
+  // emitted even when it is empty, because the stack-map lowering expects a
+  // callseq around every patchpoint.
   unsigned NumBytes = CCInfo.getStackSize();
-  if (NumBytes)
-    Chain = DAG.getCALLSEQ_START(Chain, NumBytes, 0, DL);
+  Chain = DAG.getCALLSEQ_START(Chain, NumBytes, 0, DL);
 
   // A direct callee becomes a target node so that the pattern can match it.
   // Anything else is an address that is already in a register and is called
@@ -766,10 +767,8 @@ MiniRVTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
 
   // Release the reserved call frame.  The pseudo is erased by PEI because the
   // space was already allocated in the prologue.
-  if (NumBytes) {
-    Chain = DAG.getCALLSEQ_END(Chain, NumBytes, 0, Glue, DL);
-    Glue = Chain.getValue(1);
-  }
+  Chain = DAG.getCALLSEQ_END(Chain, NumBytes, 0, Glue, DL);
+  Glue = Chain.getValue(1);
 
   // Copy the result out of x10.
   SmallVector<CCValAssign, 4> RVLocs;
