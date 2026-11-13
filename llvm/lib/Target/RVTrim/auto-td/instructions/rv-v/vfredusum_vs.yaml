@@ -1,0 +1,7 @@
+mnemonic: vfredusum.vs
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vfredusum_vs}
+spec: rvtrim.vector.v_vfredosum_vs
+domain: rv-v
+status: auto_full
+sched: [WriteVFRedV_From_WorstCase, ReadVPassthru_WorstCase, ReadVFRedV, ReadVFRedV0, ReadVMask]
+predicate: [HasVInstructionsAnyF]

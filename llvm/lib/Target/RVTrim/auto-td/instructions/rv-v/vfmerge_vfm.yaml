@@ -1,0 +1,7 @@
+mnemonic: vfmerge.vfm
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vfmerge_vfm}
+spec: rvtrim.vector.v_vfmerge_vfm
+domain: rv-v
+status: auto_full
+sched: [WriteVFMergeV_WorstCase, ReadVPassthru_WorstCase, ReadVFMergeV_WorstCase, ReadVFMergeF_WorstCase, ReadVMask]
+predicate: [HasVInstructionsAnyF]

@@ -1,0 +1,7 @@
+mnemonic: vfmv.s.f
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vfmv_s_f}
+spec: rvtrim.vector.v_vfmv_s_f
+domain: rv-v
+status: auto_full
+sched: [WriteVMovSF, ReadVMovSF_V, ReadVMovSF_F]
+predicate: [HasVInstructionsAnyF]

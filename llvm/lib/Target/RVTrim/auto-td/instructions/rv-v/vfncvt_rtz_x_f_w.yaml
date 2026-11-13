@@ -1,0 +1,7 @@
+mnemonic: vfncvt.rtz.x.f.w
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vfncvt_rtz_x_f_w}
+spec: rvtrim.vector.v_unary_8
+domain: rv-v
+status: auto_full
+sched: [WriteVFNCvtFToIV_WorstCase, ReadVPassthru_WorstCase, ReadVFNCvtFToIV_WorstCase, ReadVMask]
+predicate: [HasVInstructionsAnyF]

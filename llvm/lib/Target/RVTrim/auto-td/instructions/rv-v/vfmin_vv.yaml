@@ -1,0 +1,7 @@
+mnemonic: vfmin.vv
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vfmin_vv}
+spec: rvtrim.vector.v_vfmax_vv
+domain: rv-v
+status: auto_full
+sched: [WriteVFMinMaxV_WorstCase, ReadVPassthru_WorstCase, ReadVFMinMaxV_WorstCase, ReadVFMinMaxV_WorstCase, ReadVMask]
+predicate: [HasVInstructionsAnyF]

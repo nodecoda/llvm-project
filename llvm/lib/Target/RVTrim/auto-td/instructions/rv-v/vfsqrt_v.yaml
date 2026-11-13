@@ -1,0 +1,7 @@
+mnemonic: vfsqrt.v
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vfsqrt_v}
+spec: rvtrim.vector.v_unary_5
+domain: rv-v
+status: auto_full
+sched: [WriteVFSqrtV_WorstCase, ReadVPassthru_WorstCase, ReadVFSqrtV_WorstCase, ReadVMask]
+predicate: [HasVInstructionsAnyF]

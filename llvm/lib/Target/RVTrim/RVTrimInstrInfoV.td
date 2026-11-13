@@ -1105,89 +1105,6 @@ def PseudoVMSGE_VX_M_T : Pseudo<(outs VR:$vd, VRNoV0:$scratch),
 
 let Predicates = [HasVInstructionsAnyF] in {
 
-let ElementsDependOn = EltDepsNone in {
-
-// Vector Single-Width Floating-Point Add/Subtract Instructions
-let Uses = [FRM, VL, VTYPE], mayRaiseFPException = true in {
-defm VFADD_V : VALU_FV_V_F<"vfadd", 0b000000>;
-defm VFSUB_V : VALU_FV_V_F<"vfsub", 0b000010>;
-defm VFRSUB_V : VALU_FV_F<"vfrsub", 0b100111>;
-}
-
-// Vector Widening Floating-Point Add/Subtract Instructions
-let Constraints = "@earlyclobber $vd",
-    Uses = [FRM, VL, VTYPE],
-    mayRaiseFPException = true,
-    DestEEW = EEWSEWx2 in {
-let VS1VS2Constraint = WidenV in {
-defm VFWADD_V : VWALU_FV_V_F<"vfwadd", 0b110000, "v">;
-defm VFWSUB_V : VWALU_FV_V_F<"vfwsub", 0b110010, "v">;
-} // VS1VS2Constraint = WidenV
-// Set earlyclobber for following instructions for second and mask operands.
-// This has the downside that the earlyclobber constraint is too coarse and
-// will impose unnecessary restrictions by not allowing the destination to
-// overlap with the first (wide) operand.
-let VS1VS2Constraint = WidenW in {
-defm VFWADD_W : VWALU_FV_V_F<"vfwadd", 0b110100, "w">;
-defm VFWSUB_W : VWALU_FV_V_F<"vfwsub", 0b110110, "w">;
-} // VS1VS2Constraint = WidenW
-} // Constraints = "@earlyclobber $vd", Uses = [FRM, VL, VTYPE], mayRaiseFPException = true, DestEEW = EEWSEWx2
-
-// Vector Single-Width Floating-Point Multiply/Divide Instructions
-let Uses = [FRM, VL, VTYPE], mayRaiseFPException = true in {
-defm VFMUL_V : VMUL_FV_V_F<"vfmul", 0b100100>;
-defm VFDIV_V : VDIV_FV_V_F<"vfdiv", 0b100000>;
-defm VFRDIV_V : VDIV_FV_F<"vfrdiv", 0b100001>;
-}
-
-// Vector Widening Floating-Point Multiply
-let Constraints = "@earlyclobber $vd", VS1VS2Constraint = WidenV,
-    Uses = [FRM, VL, VTYPE], mayRaiseFPException = true, DestEEW = EEWSEWx2 in {
-defm VFWMUL_V : VWMUL_FV_V_F<"vfwmul", 0b111000>;
-} // Constraints = "@earlyclobber $vd", VS1VS2Constraint = WidenV, Uses = [FRM, VL, VTYPE], mayRaiseFPException = true, DestEEW = EEWSEWx2
-
-// Vector Single-Width Floating-Point Fused Multiply-Add Instructions
-let Uses = [FRM, VL, VTYPE], mayRaiseFPException = true in {
-defm VFMACC_V : VMAC_FV_V_F<"vfmacc", 0b101100>;
-defm VFNMACC_V : VMAC_FV_V_F<"vfnmacc", 0b101101>;
-defm VFMSAC_V : VMAC_FV_V_F<"vfmsac", 0b101110>;
-defm VFNMSAC_V : VMAC_FV_V_F<"vfnmsac", 0b101111>;
-defm VFMADD_V : VMAC_FV_V_F<"vfmadd", 0b101000>;
-defm VFNMADD_V : VMAC_FV_V_F<"vfnmadd", 0b101001>;
-defm VFMSUB_V : VMAC_FV_V_F<"vfmsub", 0b101010>;
-defm VFNMSUB_V : VMAC_FV_V_F<"vfnmsub", 0b101011>;
-}
-
-// Vector Widening Floating-Point Fused Multiply-Add Instructions
-let Uses = [FRM, VL, VTYPE], mayRaiseFPException = true, DestEEW = EEWSEWx2 in {
-defm VFWMACC_V : VWMAC_FV_V_F<"vfwmacc", 0b111100>;
-defm VFWNMACC_V : VWMAC_FV_V_F<"vfwnmacc", 0b111101>;
-defm VFWMSAC_V : VWMAC_FV_V_F<"vfwmsac", 0b111110>;
-defm VFWNMSAC_V : VWMAC_FV_V_F<"vfwnmsac", 0b111111>;
-} // Uses = [FRM, VL, VTYPE], mayRaiseFPException = true, DestEEW = EEWSEWx2
-
-// Vector Floating-Point Square-Root Instruction
-let Uses = [FRM, VL, VTYPE], mayRaiseFPException = true in {
-def VFSQRT_V : VSQR_FV_VS2<"vfsqrt.v", 0b010011, 0b00000>;
-def VFREC7_V : VRCP_FV_VS2<"vfrec7.v", 0b010011, 0b00101>;
-}
-
-let mayRaiseFPException = true in
-def VFRSQRT7_V : VRCP_FV_VS2<"vfrsqrt7.v", 0b010011, 0b00100>;
-
-// Vector Floating-Point MIN/MAX Instructions
-let mayRaiseFPException = true in {
-defm VFMIN_V : VMINMAX_FV_V_F<"vfmin", 0b000100>;
-defm VFMAX_V : VMINMAX_FV_V_F<"vfmax", 0b000110>;
-}
-
-// Vector Floating-Point Sign-Injection Instructions
-defm VFSGNJ_V : VSGNJ_FV_V_F<"vfsgnj", 0b001000>;
-defm VFSGNJN_V : VSGNJ_FV_V_F<"vfsgnjn", 0b001001>;
-defm VFSGNJX_V : VSGNJ_FV_V_F<"vfsgnjx", 0b001010>;
-
-} // ElementsDependOn = EltDepsNone
-
 def : InstAlias<"vfneg.v $vd, $vs$vm",
                 (VFSGNJN_VV VR:$vd, VR:$vs, VR:$vs, VMaskOp:$vm)>;
 def : InstAlias<"vfneg.v $vd, $vs",
@@ -1197,121 +1114,16 @@ def : InstAlias<"vfabs.v $vd, $vs$vm",
 def : InstAlias<"vfabs.v $vd, $vs",
                 (VFSGNJX_VV VR:$vd, VR:$vs, VR:$vs, zero_reg)>;
 
-// Vector Floating-Point Compare Instructions
-let VMConstraint = false, mayRaiseFPException = true, DestEEW = EEW1,
-    ElementsDependOn = EltDepsNone in {
-defm VMFEQ_V : VCMP_FV_V_F<"vmfeq", 0b011000>;
-defm VMFNE_V : VCMP_FV_V_F<"vmfne", 0b011100>;
-defm VMFLT_V : VCMP_FV_V_F<"vmflt", 0b011011>;
-defm VMFLE_V : VCMP_FV_V_F<"vmfle", 0b011001>;
-defm VMFGT_V : VCMP_FV_F<"vmfgt", 0b011101>;
-defm VMFGE_V : VCMP_FV_F<"vmfge", 0b011111>;
-} // VMConstraint = false, mayRaiseFPException = true, DestEEW = EEW1, ElementsDependOn = EltDepsNone
-
 def : InstAlias<"vmfgt.vv $vd, $va, $vb$vm",
                 (VMFLT_VV VR:$vd, VR:$vb, VR:$va, VMaskOp:$vm), 0>;
 def : InstAlias<"vmfge.vv $vd, $va, $vb$vm",
                 (VMFLE_VV VR:$vd, VR:$vb, VR:$va, VMaskOp:$vm), 0>;
 
-let ElementsDependOn = EltDepsNone in {
-
-// Vector Floating-Point Classify Instruction
-def VFCLASS_V : VCLS_FV_VS2<"vfclass.v", 0b010011, 0b10000>;
-
-let hasSideEffects = 0, mayLoad = 0, mayStore = 0 in {
-
-// Vector Floating-Point Merge Instruction
-def VFMERGE_VFM : RVInstVX<0b010111, OPFVF, (outs VR:$vd),
-                           (ins VR:$vs2, FPR32:$rs1, VMaskCarryInOp:$vm),
-                           "vfmerge.vfm", "$vd, $vs2, $rs1, $vm">,
-                  SchedBinaryMC<"WriteVFMergeV", "ReadVFMergeV", "ReadVFMergeF"> {
-  let vm = 0;
-}
-
-// Vector Floating-Point Move Instruction
-def VFMV_V_F : RVInstVX<0b010111, OPFVF, (outs VR:$vd),
-                       (ins FPR32:$rs1), "vfmv.v.f", "$vd, $rs1">,
-               SchedUnaryMC<"WriteVFMovV", "ReadVFMovF", forceMasked=0> {
-  let vm = 1;
-  let vs2 = 0;
-
-  let VMConstraint = false;
-}
-
-} // hasSideEffects = 0, mayLoad = 0, mayStore = 0
-
-// Single-Width Floating-Point/Integer Type-Convert Instructions
-let mayRaiseFPException = true in {
-let Uses = [FRM, VL, VTYPE] in {
-def VFCVT_XU_F_V : VCVTI_FV_VS2<"vfcvt.xu.f.v", 0b010010, 0b00000>;
-def VFCVT_X_F_V : VCVTI_FV_VS2<"vfcvt.x.f.v", 0b010010, 0b00001>;
-}
-def VFCVT_RTZ_XU_F_V : VCVTI_FV_VS2<"vfcvt.rtz.xu.f.v", 0b010010, 0b00110>;
-def VFCVT_RTZ_X_F_V : VCVTI_FV_VS2<"vfcvt.rtz.x.f.v", 0b010010, 0b00111>;
-let Uses = [FRM, VL, VTYPE] in {
-def VFCVT_F_XU_V : VCVTF_IV_VS2<"vfcvt.f.xu.v", 0b010010, 0b00010>;
-def VFCVT_F_X_V : VCVTF_IV_VS2<"vfcvt.f.x.v", 0b010010, 0b00011>;
-}
-} // mayRaiseFPException = true
-
-// Widening Floating-Point/Integer Type-Convert Instructions
-let Constraints = "@earlyclobber $vd", VS1VS2Constraint = WidenCvt,
-    mayRaiseFPException = true, DestEEW = EEWSEWx2 in {
-let Uses = [FRM, VL, VTYPE] in {
-def VFWCVT_XU_F_V : VWCVTI_FV_VS2<"vfwcvt.xu.f.v", 0b010010, 0b01000>;
-def VFWCVT_X_F_V : VWCVTI_FV_VS2<"vfwcvt.x.f.v", 0b010010, 0b01001>;
-}
-def VFWCVT_RTZ_XU_F_V : VWCVTI_FV_VS2<"vfwcvt.rtz.xu.f.v", 0b010010, 0b01110>;
-def VFWCVT_RTZ_X_F_V : VWCVTI_FV_VS2<"vfwcvt.rtz.x.f.v", 0b010010, 0b01111>;
-def VFWCVT_F_XU_V : VWCVTF_IV_VS2<"vfwcvt.f.xu.v", 0b010010, 0b01010>;
-def VFWCVT_F_X_V : VWCVTF_IV_VS2<"vfwcvt.f.x.v", 0b010010, 0b01011>;
-def VFWCVT_F_F_V : VWCVTF_FV_VS2<"vfwcvt.f.f.v", 0b010010, 0b01100>;
-} // Constraints = "@earlyclobber $vd", VS1VS2Constraint = WidenCvt, DestEEW = EEWSEWx2
-
-// Narrowing Floating-Point/Integer Type-Convert Instructions
-let Constraints = "@earlyclobber $vd", mayRaiseFPException = true in {
-let Uses = [FRM, VL, VTYPE] in {
-def VFNCVT_XU_F_W : VNCVTI_FV_VS2<"vfncvt.xu.f.w", 0b010010, 0b10000>;
-def VFNCVT_X_F_W : VNCVTI_FV_VS2<"vfncvt.x.f.w", 0b010010, 0b10001>;
-}
-def VFNCVT_RTZ_XU_F_W : VNCVTI_FV_VS2<"vfncvt.rtz.xu.f.w", 0b010010, 0b10110>;
-def VFNCVT_RTZ_X_F_W : VNCVTI_FV_VS2<"vfncvt.rtz.x.f.w", 0b010010, 0b10111>;
-let Uses = [FRM, VL, VTYPE] in {
-def VFNCVT_F_XU_W : VNCVTF_IV_VS2<"vfncvt.f.xu.w", 0b010010, 0b10010>;
-def VFNCVT_F_X_W : VNCVTF_IV_VS2<"vfncvt.f.x.w", 0b010010, 0b10011>;
-def VFNCVT_F_F_W : VNCVTF_FV_VS2<"vfncvt.f.f.w", 0b010010, 0b10100>;
-}
-def VFNCVT_ROD_F_F_W : VNCVTF_FV_VS2<"vfncvt.rod.f.f.w", 0b010010, 0b10101>;
-} // Constraints = "@earlyclobber $vd", mayRaiseFPException = true
-} // ElementsDependOn = EltDepsNone
 } // Predicates = HasVInstructionsAnyF]
 
 let Predicates = [HasVInstructionsAnyF] in {
-// Vector Single-Width Floating-Point Reduction Instructions
-let VMConstraint = false in {
-let Uses = [FRM, VL, VTYPE], mayRaiseFPException = true in {
-defm VFREDOSUM : VREDO_FV_V<"vfredosum", 0b000011>;
-defm VFREDUSUM : VRED_FV_V<"vfredusum", 0b000001>;
-}
-let mayRaiseFPException = true in {
-defm VFREDMAX : VREDMINMAX_FV_V<"vfredmax", 0b000111>;
-defm VFREDMIN : VREDMINMAX_FV_V<"vfredmin", 0b000101>;
-}
-} // VMConstraint = false
 
 def : MnemonicAlias<"vfredsum.vs", "vfredusum.vs">;
-
-// Vector Widening Floating-Point Reduction Instructions
-let Constraints = "@earlyclobber $vd", VMConstraint = false, DestEEW = EEWSEWx2 in {
-// Set earlyclobber for following instructions for second and mask operands.
-// This has the downside that the earlyclobber constraint is too coarse and
-// will impose unnecessary restrictions by not allowing the destination to
-// overlap with the first (wide) operand.
-let Uses = [FRM, VL, VTYPE], mayRaiseFPException = true in {
-defm VFWREDOSUM : VWREDO_FV_V<"vfwredosum", 0b110011>;
-defm VFWREDUSUM : VWRED_FV_V<"vfwredusum", 0b110001>;
-}
-} // Constraints = "@earlyclobber $vd", VMConstraint = false, DestEEW = EEWSEWx2
 
 def : MnemonicAlias<"vfwredsum.vs", "vfwredusum.vs">;
 } // Predicates = [HasVInstructionsAnyF]
@@ -1333,38 +1145,6 @@ def : MnemonicAlias<"vmornot.mm", "vmorn.mm">;
 def : MnemonicAlias<"vpopc.m", "vcpop.m">;
 
 } // Predicates = [HasVInstructions]
-
-let Predicates = [HasVInstructionsAnyF] in {
-
-let hasSideEffects = 0, mayLoad = 0, mayStore = 0, vm = 1,
-    ElementsDependOn = EltDepsNone in {
-// Floating-Point Scalar Move Instructions
-def VFMV_F_S : RVInstVUnaryRd<0b010000, 0b00000, OPFVV, (outs FPR32:$rd),
-                              (ins VR:$vs2), "vfmv.f.s", "$rd, $vs2">,
-               Sched<[WriteVMovFS, ReadVMovFS]> {
-  let Uses = [VTYPE];
-}
-def VFMV_S_F : RVInstVX<0b010000, OPFVF, (outs VR:$vd_wb),
-                       (ins VR:$vd, FPR32:$rs1), "vfmv.s.f", "$vd, $rs1">,
-               Sched<[WriteVMovSF, ReadVMovSF_V, ReadVMovSF_F]> {
-  let vs2 = 0;
-
-  let Constraints = "$vd = $vd_wb";
-  let VMConstraint = false;
-}
-
-} // hasSideEffects = 0, mayLoad = 0, mayStore = 0, vm = 1
-
-} // Predicates = [HasVInstructionsAnyF]
-
-let Predicates = [HasVInstructionsAnyF] in {
-let Constraints = "@earlyclobber $vd", VS1VS2Constraint = SlideUp,
-    ElementsDependOn = EltDepsNone in {
-defm VFSLIDE1UP_V : VSLD1_FV_F<"vfslide1up", 0b001110, /*slidesUp=*/true>;
-} // Constraints = "@earlyclobber $vd", VS1VS2Constraint = SlideUp
-let ElementsDependOn = EltDepsVL, ReadsPastVL = 1 in
-defm VFSLIDE1DOWN_V : VSLD1_FV_F<"vfslide1down", 0b001111, /*slidesUp=*/false>;
-} // Predicates = [HasVInstructionsAnyF]
 
 let ElementsDependOn = EltDepsNone in {
 let Predicates = [HasVInstructions] in {

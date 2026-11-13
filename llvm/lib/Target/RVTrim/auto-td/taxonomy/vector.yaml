@@ -701,3 +701,296 @@ categories:
         - {role: vlmax, field: rs2, reg_class: GPR}
         - {role: mask, field: vm, operand: VMaskOp}
     effects: {may_store: true, implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable], lets: {ElementsDependOn: EltDepsNone}}
+
+  v_vfadd_vf:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: rs1, reg_class: FPR32}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [FRM, VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint, mayRaiseFPException], lets: {ElementsDependOn: EltDepsNone}}
+
+  v_vfadd_vv:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: vs1, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [FRM, VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint, mayRaiseFPException], lets: {ElementsDependOn: EltDepsNone}}
+
+  v_unary_5:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [FRM, VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint, mayRaiseFPException], lets: {ElementsDependOn: EltDepsNone}}
+
+  v_unary_6:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint, mayRaiseFPException], lets: {ElementsDependOn: EltDepsNone}}
+
+  v_vfmacc_vf:
+    operands:
+      outs:
+        - {role: dest, field: vd, var: vd_wb, reg_class: VR}
+      ins:
+        - {role: dest, field: vd, reg_class: VR}
+        - {role: rhs, field: rs1, reg_class: FPR32}
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [FRM, VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint, mayRaiseFPException], lets: {Constraints: '"$vd = $vd_wb"', ElementsDependOn: EltDepsNone}}
+
+  v_vfmacc_vv:
+    operands:
+      outs:
+        - {role: dest, field: vd, var: vd_wb, reg_class: VR}
+      ins:
+        - {role: dest, field: vd, reg_class: VR}
+        - {role: rhs, field: vs1, reg_class: VR}
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [FRM, VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint, mayRaiseFPException], lets: {Constraints: '"$vd = $vd_wb"', ElementsDependOn: EltDepsNone}}
+
+  v_vfmax_vf:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: rs1, reg_class: FPR32}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint, mayRaiseFPException], lets: {ElementsDependOn: EltDepsNone}}
+
+  v_vfmax_vv:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: vs1, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint, mayRaiseFPException], lets: {ElementsDependOn: EltDepsNone}}
+
+  v_vfmerge_vfm:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: rs1, reg_class: FPR32}
+        - {role: mask, field: vm, operand: VMaskCarryInOp}
+    effects: {implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint], lets: {ElementsDependOn: EltDepsNone}}
+
+  v_vfmv_f_s:
+    operands:
+      outs:
+        - {role: dest, field: rd, reg_class: FPR32}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+    effects: {implicit_uses: [VTYPE], flags: [UseNamedOperandTable], lets: {ElementsDependOn: EltDepsNone}}
+
+  v_vfmv_s_f:
+    operands:
+      outs:
+        - {role: dest, field: vd, var: vd_wb, reg_class: VR}
+      ins:
+        - {role: dest, field: vd, reg_class: VR}
+        - {role: rhs, field: rs1, reg_class: FPR32}
+    effects: {implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable], lets: {Constraints: '"$vd = $vd_wb"', ElementsDependOn: EltDepsNone}}
+
+  v_vfmv_v_f:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: rhs, field: rs1, reg_class: FPR32}
+    effects: {implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable], lets: {ElementsDependOn: EltDepsNone}}
+
+  v_unary_7:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [FRM, VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint, mayRaiseFPException], lets: {Constraints: '"@earlyclobber $vd"', ElementsDependOn: EltDepsNone}}
+
+  v_unary_8:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint, mayRaiseFPException], lets: {Constraints: '"@earlyclobber $vd"', ElementsDependOn: EltDepsNone}}
+
+  v_vfredmax_vs:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: vs1, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable, mayRaiseFPException]}
+
+  v_vfredosum_vs:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: vs1, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [FRM, VL, VTYPE], flags: [UseNamedOperandTable, mayRaiseFPException]}
+
+  v_vfsgnjn_vf:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: rs1, reg_class: FPR32}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint], lets: {ElementsDependOn: EltDepsNone}}
+
+  v_vfslide1down_vf:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: rs1, reg_class: FPR32}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint, ReadsPastVL], lets: {ElementsDependOn: EltDepsVL}}
+
+  v_vfslide1up_vf:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: rs1, reg_class: FPR32}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint], lets: {Constraints: '"@earlyclobber $vd"', VS1VS2Constraint: SlideUp, ElementsDependOn: EltDepsNone}}
+
+  v_vfwadd_vf:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: rs1, reg_class: FPR32}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [FRM, VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint, mayRaiseFPException], lets: {Constraints: '"@earlyclobber $vd"', DestEEW: EEWSEWx2, VS1VS2Constraint: WidenV, ElementsDependOn: EltDepsNone}}
+
+  v_vfwadd_vv:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: vs1, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [FRM, VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint, mayRaiseFPException], lets: {Constraints: '"@earlyclobber $vd"', DestEEW: EEWSEWx2, VS1VS2Constraint: WidenV, ElementsDependOn: EltDepsNone}}
+
+  v_vfwadd_wf:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: rs1, reg_class: FPR32}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [FRM, VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint, mayRaiseFPException], lets: {Constraints: '"@earlyclobber $vd"', DestEEW: EEWSEWx2, VS1VS2Constraint: WidenW, ElementsDependOn: EltDepsNone}}
+
+  v_vfwadd_wv:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: vs1, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [FRM, VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint, mayRaiseFPException], lets: {Constraints: '"@earlyclobber $vd"', DestEEW: EEWSEWx2, VS1VS2Constraint: WidenW, ElementsDependOn: EltDepsNone}}
+
+  v_unary_9:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint, mayRaiseFPException], lets: {Constraints: '"@earlyclobber $vd"', DestEEW: EEWSEWx2, VS1VS2Constraint: WidenCvt, ElementsDependOn: EltDepsNone}}
+
+  v_unary_10:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [FRM, VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint, mayRaiseFPException], lets: {Constraints: '"@earlyclobber $vd"', DestEEW: EEWSEWx2, VS1VS2Constraint: WidenCvt, ElementsDependOn: EltDepsNone}}
+
+  v_vfwmacc_vf:
+    operands:
+      outs:
+        - {role: dest, field: vd, var: vd_wb, reg_class: VR}
+      ins:
+        - {role: dest, field: vd, reg_class: VR}
+        - {role: rhs, field: rs1, reg_class: FPR32}
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [FRM, VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint, mayRaiseFPException], lets: {Constraints: '"@earlyclobber $vd_wb, $vd = $vd_wb"', DestEEW: EEWSEWx2, VS1VS2Constraint: WidenV, ElementsDependOn: EltDepsNone}}
+
+  v_vfwmacc_vv:
+    operands:
+      outs:
+        - {role: dest, field: vd, var: vd_wb, reg_class: VR}
+      ins:
+        - {role: dest, field: vd, reg_class: VR}
+        - {role: rhs, field: vs1, reg_class: VR}
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [FRM, VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint, mayRaiseFPException], lets: {Constraints: '"@earlyclobber $vd_wb, $vd = $vd_wb"', DestEEW: EEWSEWx2, VS1VS2Constraint: WidenV, ElementsDependOn: EltDepsNone}}
+
+  v_vfwredosum_vs:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: vs1, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [FRM, VL, VTYPE], flags: [UseNamedOperandTable, mayRaiseFPException], lets: {Constraints: '"@earlyclobber $vd"', DestEEW: EEWSEWx2}}
+
+  v_vmfeq_vf:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: rs1, reg_class: FPR32}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable, mayRaiseFPException], lets: {DestEEW: EEW1, ElementsDependOn: EltDepsNone}}
+
+  v_vmfeq_vv:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: vs1, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable, mayRaiseFPException], lets: {DestEEW: EEW1, ElementsDependOn: EltDepsNone}}

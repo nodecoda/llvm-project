@@ -1,0 +1,7 @@
+mnemonic: vfslide1up.vf
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vfslide1up_vf}
+spec: rvtrim.vector.v_vfslide1up_vf
+domain: rv-v
+status: auto_full
+sched: [WriteVFSlide1Up_WorstCase, ReadVPassthru_WorstCase, ReadVFSlideV_WorstCase, ReadVFSlideF_WorstCase, ReadVMask]
+predicate: [HasVInstructionsAnyF]

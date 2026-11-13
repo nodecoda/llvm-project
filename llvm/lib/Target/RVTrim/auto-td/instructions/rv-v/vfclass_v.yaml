@@ -1,0 +1,7 @@
+mnemonic: vfclass.v
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vfclass_v}
+spec: rvtrim.vector.v_unary
+domain: rv-v
+status: auto_full
+sched: [WriteVFClassV_WorstCase, ReadVPassthru_WorstCase, ReadVFClassV_WorstCase, ReadVMask]
+predicate: [HasVInstructionsAnyF]
