@@ -7,8 +7,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "MiniRVMCInstLower.h"
+#include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineInstr.h"
+#include "llvm/IR/GlobalValue.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCSymbol.h"
@@ -22,7 +24,7 @@ void MiniRVMCInstLower::Lower(const MachineInstr *MI, MCInst &OutMI) const {
   for (const MachineOperand &MO : MI->operands()) {
     switch (MO.getType()) {
     default:
-      llvm_unreachable("MiniRV has no global or symbol operand");
+      llvm_unreachable("MiniRV has no such operand");
     case MachineOperand::MO_Register:
       if (MO.isImplicit())
         continue;
@@ -34,6 +36,14 @@ void MiniRVMCInstLower::Lower(const MachineInstr *MI, MCInst &OutMI) const {
     case MachineOperand::MO_MachineBasicBlock:
       OutMI.addOperand(MCOperand::createExpr(
           MCSymbolRefExpr::create(MO.getMBB()->getSymbol(), Ctx)));
+      break;
+    case MachineOperand::MO_GlobalAddress:
+      OutMI.addOperand(MCOperand::createExpr(
+          MCSymbolRefExpr::create(Printer.getSymbol(MO.getGlobal()), Ctx)));
+      break;
+    case MachineOperand::MO_ExternalSymbol:
+      OutMI.addOperand(MCOperand::createExpr(MCSymbolRefExpr::create(
+          Printer.GetExternalSymbolSymbol(MO.getSymbolName()), Ctx)));
       break;
     }
   }

@@ -89,6 +89,14 @@ def simm21_lsb0 : MiniRVTargetOperand,
   let DecoderMethod = "DecodeSImm21Lsb0";
 }
 
+// A call target is a symbol rather than an offset, so it is typed as a
+// pointer; the assembler still treats it as a PC-relative expression.
+def bare_symbol : Operand<iPTR> {
+  let PrintMethod = "printBranchOperand";
+  let ParserMatchClass = JalTargetAsmOperand;
+  let OperandType = "OPERAND_PCREL";
+}
+
 def simm21_lsb0_bb : MiniRVTargetOperand {
   let ParserMatchClass = JalTargetAsmOperand;
   let EncoderMethod = "getJalTargetOpValue";
@@ -118,20 +126,43 @@ def SDT_MiniRVBrCC : SDTypeProfile<0, 4, [SDTCisSameAs<0, 1>,
                                           SDTCisVT<3, OtherVT>]>;
 def MiniRVbrcc : SDNode<"MiniRVISD::BRCC", SDT_MiniRVBrCC, [SDNPHasChain]>;
 
+// The call node.  It carries the chain and the glue that holds the argument
+// copies, exactly like the branch node carries its comparison.
+def SDT_MiniRVCall : SDTypeProfile<0, 1, [SDTCisVT<0, iPTR>]>;
+def MiniRVcall : SDNode<"MiniRVISD::CALL", SDT_MiniRVCall,
+                        [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue,
+                         SDNPVariadic]>;
+
 // The corpus has no return record either, but "jalr x0, x1, 0" is one.  The
 // pseudo carries the terminator flags and the expansion supplies the encoding.
 def PseudoRET : MiniRVInst<(outs), (ins), "ret", "", [(MiniRVret)], InstFormatI>,
                 PseudoInstExpansion<(JALR X0, X1, 0)> {
+  let isCodeGenOnly = 1;
   let isReturn = 1;
   let isTerminator = 1;
   let isBarrier = 1;
   let hasNoSchedulingInfo = 1;
 }
 
+// A direct call is "jal x1, offset": the link register is written, the offset
+// is PC-relative, and the record is the one the corpus already has.  The
+// pseudo exists only to give the instruction the call flags.
+let isCall = 1, Defs = [X1], hasNoSchedulingInfo = 1 in
+def PseudoCALL : MiniRVInst<(outs), (ins bare_symbol:$dst), "jal", "x1, $dst",
+                            [(MiniRVcall tglobaladdr:$dst)], InstFormatJ>,
+                 PseudoInstExpansion<(JAL X1, simm21_lsb0:$dst)> {
+  // The expansion prints as a real "jal x1, target", so the pseudo must not
+  // be matched by the assembler -- that spelling belongs to JAL.
+  let isCodeGenOnly = 1;
+}
+
+def : Pat<(MiniRVcall texternalsym:$dst), (PseudoCALL texternalsym:$dst)>;
+
 // The unconditional branch of this target: "jal x0, offset".
 def PseudoBR : MiniRVInst<(outs), (ins simm21_lsb0:$imm20), "j", "$imm20",
                           [(br bb:$imm20)], InstFormatJ>,
                PseudoInstExpansion<(JAL X0, simm21_lsb0:$imm20)> {
+  let isCodeGenOnly = 1;
   let isBranch = 1;
   let isTerminator = 1;
   let isBarrier = 1;

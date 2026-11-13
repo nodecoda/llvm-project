@@ -12,10 +12,11 @@
 #include "TargetInfo/MiniRVTargetInfo.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/AsmPrinterAnalysis.h"
-#include "llvm/CodeGen/MachineFunctionAnalysisManager.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
+#include "llvm/CodeGen/MachineFunctionAnalysisManager.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachinePassManager.h"
+#include "llvm/IR/GlobalValue.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCStreamer.h"
@@ -70,6 +71,14 @@ bool MiniRVAsmPrinter::lowerOperand(const MachineOperand &MO,
   case MachineOperand::MO_MachineBasicBlock:
     MCOp = MCOperand::createExpr(
         MCSymbolRefExpr::create(MO.getMBB()->getSymbol(), OutContext));
+    return true;
+  case MachineOperand::MO_GlobalAddress:
+    MCOp = MCOperand::createExpr(
+        MCSymbolRefExpr::create(getSymbol(MO.getGlobal()), OutContext));
+    return true;
+  case MachineOperand::MO_ExternalSymbol:
+    MCOp = MCOperand::createExpr(MCSymbolRefExpr::create(
+        GetExternalSymbolSymbol(MO.getSymbolName()), OutContext));
     return true;
   }
 }

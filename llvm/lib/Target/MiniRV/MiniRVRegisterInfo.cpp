@@ -21,15 +21,18 @@ MiniRVRegisterInfo::MiniRVRegisterInfo() : MiniRVGenRegisterInfo(MiniRV::X1) {}
 
 const MCPhysReg *
 MiniRVRegisterInfo::getCalleeSavedRegs(const MachineFunction *MF) const {
-  // Everything except x0/x1/x2 is caller-saved.
-  static const MCPhysReg CalleeSavedRegs[] = {0};
-  return CalleeSavedRegs;
+  return CSR_MiniRV_SaveList;
+}
+
+const uint32_t *
+MiniRVRegisterInfo::getCallPreservedMask(const MachineFunction &MF,
+                                         CallingConv::ID CC) const {
+  return CSR_MiniRV_RegMask;
 }
 
 BitVector MiniRVRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   BitVector Reserved(getNumRegs());
   Reserved.set(MiniRV::X0); // zero
-  Reserved.set(MiniRV::X1); // return address; the corpus has no call
   Reserved.set(MiniRV::X2); // stack pointer
   return Reserved;
 }

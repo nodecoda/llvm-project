@@ -75,13 +75,14 @@ f:
   ret i64 %b
 }
 
-; A loop exercises the same records plus the unconditional jump and the
-; pseudo return, which expands to jalr x0, 0(x1).
+; A loop exercises the same records plus the pseudo return, which expands to
+; jalr x0, 0(x1).  The fallthrough jump the selector emits is removed by the
+; branch folder, so the loop ends with the comparison alone.
 
 ; CHECK-LABEL: sum_to:
 ; CHECK: add x{{[0-9]+}}, x{{[0-9]+}}, x{{[0-9]+}}
 ; CHECK: bne x{{[0-9]+}}, x{{[0-9]+}}, .LBB6_1
-; CHECK: jal x0, .LBB6_2
+; CHECK-NOT: jal
 ; CHECK: jalr x0, 0(x1)
 define i64 @sum_to(i64 %n) {
 entry:

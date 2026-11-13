@@ -20,8 +20,7 @@ MiniRVAsmBackend::createObjectTargetWriter() const {
   return createMiniRVELFObjectWriter(OSABI);
 }
 
-MCFixupKindInfo
-MiniRVAsmBackend::getFixupKindInfo(MCFixupKind Kind) const {
+MCFixupKindInfo MiniRVAsmBackend::getFixupKindInfo(MCFixupKind Kind) const {
   static const MCFixupKindInfo Infos[] = {
       // The bit positions inside the instruction are not contiguous, so
       // applyFixup() does the placement itself; these entries only describe
@@ -67,8 +66,10 @@ void MiniRVAsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
 
   // An unresolved fixup becomes a relocation; the linker reads the addend from
   // the RELA entry, so the instruction keeps whatever the encoder wrote.
-  if (!IsResolved)
+  if (!IsResolved) {
+    maybeAddReloc(F, Fixup, Target, Value, IsResolved);
     return;
+  }
 
   uint32_t Insn = support::endian::read32le(Data);
   switch (Fixup.getKind()) {

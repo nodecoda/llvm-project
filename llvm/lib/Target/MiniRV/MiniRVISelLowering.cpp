@@ -108,8 +108,7 @@ SDValue MiniRVTargetLowering::LowerBranchCC(SDValue Chain, SDValue LHS,
 }
 
 /// A condition that is not a comparison is compared against zero.
-SDValue MiniRVTargetLowering::LowerBRCOND(SDValue Op,
-                                          SelectionDAG &DAG) const {
+SDValue MiniRVTargetLowering::LowerBRCOND(SDValue Op, SelectionDAG &DAG) const {
   SDValue Chain = Op.getOperand(0);
   SDValue Cond = Op.getOperand(1);
   SDValue Dest = Op.getOperand(2);
@@ -138,8 +137,7 @@ SDValue MiniRVTargetLowering::LowerFormalArguments(
   MachineRegisterInfo &RegInfo = MF.getRegInfo();
   for (CCValAssign &VA : ArgLocs) {
     if (!VA.isRegLoc())
-      report_fatal_error("MiniRV has no load instruction to read a stack "
-                         "argument");
+      report_fatal_error("MiniRV cannot read a stack argument yet");
 
     // Go through a virtual register so that the physical argument register is
     // recorded as live-in to the function.
@@ -193,13 +191,97 @@ MiniRVTargetLowering::LowerReturn(SDValue Chain, CallingConv::ID CallConv,
 SDValue
 MiniRVTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
                                 SmallVectorImpl<SDValue> &InVals) const {
-  report_fatal_error("MiniRV has no call instruction");
+  SelectionDAG &DAG = CLI.DAG;
+  SDLoc &DL = CLI.DL;
+  SmallVectorImpl<ISD::OutputArg> &Outs = CLI.Outs;
+  SmallVectorImpl<SDValue> &OutVals = CLI.OutVals;
+  SmallVectorImpl<ISD::InputArg> &Ins = CLI.Ins;
+  SDValue Chain = CLI.Chain;
+  SDValue Callee = CLI.Callee;
+  CallingConv::ID CallConv = CLI.CallConv;
+  bool IsVarArg = CLI.IsVarArg;
+
+  if (CLI.IsTailCall)
+    report_fatal_error("MiniRV does not lower tail calls");
+  if (IsVarArg)
+    report_fatal_error("MiniRV does not support variadic calls");
+
+  MachineFunction &MF = DAG.getMachineFunction();
+
+  // Analyse the arguments: eight registers, nothing on the stack.
+  SmallVector<CCValAssign, 16> ArgLocs;
+  CCState CCInfo(CallConv, IsVarArg, MF, ArgLocs, *DAG.getContext());
+  CCInfo.AnalyzeCallOperands(Outs, CC_MiniRV);
+
+  if (CCInfo.getStackSize() != 0)
+    report_fatal_error("MiniRV cannot pass arguments on the stack");
+
+  // The callee has to be a symbol: the corpus has no way to compute the
+  // address of a function, so an indirect call cannot be lowered.  A direct
+  // callee becomes a target node so that the patterns can match it.
+  EVT PtrVT = getPointerTy(DAG.getDataLayout());
+  if (GlobalAddressSDNode *G = dyn_cast<GlobalAddressSDNode>(Callee))
+    Callee =
+        DAG.getTargetGlobalAddress(G->getGlobal(), DL, PtrVT, G->getOffset());
+  else if (ExternalSymbolSDNode *S = dyn_cast<ExternalSymbolSDNode>(Callee))
+    Callee = DAG.getTargetExternalSymbol(S->getSymbol(), PtrVT);
+  else
+    report_fatal_error("MiniRV can only call a direct symbol");
+
+  // Move the arguments into their registers, chaining the copies so that the
+  // call reads them in order.
+  SDValue Glue;
+  SmallVector<SDValue, 8> ArgRegs;
+  for (unsigned I = 0, E = ArgLocs.size(); I != E; ++I) {
+    CCValAssign &VA = ArgLocs[I];
+    assert(VA.isRegLoc() && "stack argument in a call");
+    Chain = DAG.getCopyToReg(Chain, DL, VA.getLocReg(), OutVals[I], Glue);
+    Glue = Chain.getValue(1);
+    ArgRegs.push_back(DAG.getRegister(VA.getLocReg(), VA.getLocVT()));
+  }
+
+  SDVTList NodeTys = DAG.getVTList(MVT::Other, MVT::Glue);
+  SmallVector<SDValue, 8> Ops;
+  Ops.push_back(Chain);
+  Ops.push_back(Callee);
+
+  // Naming the argument registers here makes them implicit uses of the call,
+  // which keeps the copies that fill them alive.
+  append_range(Ops, ArgRegs);
+
+  // The register mask tells the allocator which registers survive the call.
+  const uint32_t *Mask =
+      MF.getSubtarget().getRegisterInfo()->getCallPreservedMask(MF, CallConv);
+  assert(Mask && "MiniRV is missing a call-preserved register mask");
+  Ops.push_back(DAG.getRegisterMask(Mask));
+
+  // The glue goes last on a variadic call node.
+  if (Glue.getNode())
+    Ops.push_back(Glue);
+  Chain = DAG.getNode(MiniRVISD::CALL, DL, NodeTys, Ops);
+  Glue = Chain.getValue(1);
+
+  // Copy the result out of x10.
+  SmallVector<CCValAssign, 4> RVLocs;
+  CCState RetCCInfo(CallConv, IsVarArg, MF, RVLocs, *DAG.getContext());
+  RetCCInfo.AnalyzeCallResult(Ins, RetCC_MiniRV);
+  for (CCValAssign &VA : RVLocs) {
+    SDValue Ret =
+        DAG.getCopyFromReg(Chain, DL, VA.getLocReg(), VA.getLocVT(), Glue);
+    Chain = Ret.getValue(1);
+    Glue = Ret.getValue(2);
+    InVals.push_back(Ret.getValue(0));
+  }
+
+  return Chain;
 }
 
 const char *MiniRVTargetLowering::getTargetNodeName(unsigned Opcode) const {
   switch (Opcode) {
   case MiniRVISD::BRCC:
     return "MiniRVISD::BRCC";
+  case MiniRVISD::CALL:
+    return "MiniRVISD::CALL";
   case MiniRVISD::RET:
     return "MiniRVISD::RET";
   default:

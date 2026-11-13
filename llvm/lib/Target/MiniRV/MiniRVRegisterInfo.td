@@ -17,3 +17,10 @@ foreach i = 0-31 in {
 }
 
 def GPR : RegisterClass<"MiniRV", [i64], 64, (sequence "X%u", 0, 31)>;
+
+// The RISC-V psABI callee-saved set.  X1 is not preserved by a call in the
+// ABI, but a function that makes a call has to keep its own return address
+// somewhere, so listing it here makes the callee-saved machinery spill it
+// exactly when the function clobbers it.
+def CSR_MiniRV : CalleeSavedRegs<(add X1, (sequence "X%u", 8, 9),
+                                     (sequence "X%u", 18, 27))>;

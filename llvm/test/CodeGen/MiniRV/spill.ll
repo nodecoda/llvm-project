@@ -5,10 +5,11 @@
 ; spills; the frame is adjusted with the only stack instruction in the corpus.
 
 ; CHECK-LABEL: spill:
-; CHECK: addi x2, x2, -96
+; CHECK: addi x2, x2, -{{[0-9]+}}
+; CHECK: sd x1, {{-?[0-9]+\(x2\)}}
 ; CHECK: sd x{{[0-9]+}}, {{-?[0-9]+\(x2\)}}
 ; CHECK: ld x{{[0-9]+}}, {{-?[0-9]+\(x2\)}}
-; CHECK: addi x2, x2, 96
+; CHECK: addi x2, x2, {{[0-9]+}}
 ; CHECK: jalr x0, 0(x1)
 define i64 @spill(ptr %p) {
 entry:
