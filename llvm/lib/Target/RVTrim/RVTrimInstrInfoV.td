@@ -1082,7 +1082,6 @@ def : InstAlias<"vl8r.v $vd, $rs1", (VL8RE8_V VRM8:$vd, GPRMemZeroOffset:$rs1)>;
 let Predicates = [HasVInstructions] in {
 // Vector Single-Width Integer Add and Subtract
 let ElementsDependOn = EltDepsNone in {
-defm VADD_V : VALU_IV_V_X_I<"vadd", 0b000000>;
 defm VSUB_V : VALU_IV_V_X<"vsub", 0b000010>;
 defm VRSUB_V : VALU_IV_X_I<"vrsub", 0b000011>;
 } // ElementsDependOn = EltDepsNone

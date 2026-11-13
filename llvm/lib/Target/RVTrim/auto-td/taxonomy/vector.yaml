@@ -67,7 +67,7 @@ categories:
       outs: [{role: dest, field: vd, reg_class: VR}]
       ins:
         - {role: lhs, field: vs2, reg_class: VR}
-        - {role: rhs, field: zimm5, var: imm, operand: simm5}
+        - {role: rhs, field: simm5, var: imm, operand: simm5}
         - {role: mask, field: vm, operand: VMaskOp}
     effects:
       implicit_uses: [VL, VTYPE]
