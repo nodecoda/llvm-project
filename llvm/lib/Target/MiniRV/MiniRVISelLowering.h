@@ -30,6 +30,10 @@ public:
 
   SDValue LowerJumpTable(SDValue Op, SelectionDAG &DAG) const;
 
+  SDValue LowerFRAMEADDR(SDValue Op, SelectionDAG &DAG) const;
+
+  SDValue LowerRETURNADDR(SDValue Op, SelectionDAG &DAG) const;
+
   SDValue LowerVASTART(SDValue Op, SelectionDAG &DAG) const;
 
   SDValue LowerVAARG(SDValue Op, SelectionDAG &DAG) const;

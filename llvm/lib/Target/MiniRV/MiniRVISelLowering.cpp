@@ -84,6 +84,14 @@ MiniRVTargetLowering::MiniRVTargetLowering(const TargetMachine &TM,
   setOperationAction(ISD::JumpTable, MVT::i64, Custom);
   setOperationAction(ISD::BR_JT, MVT::Other, Expand);
 
+  // A stack save is a copy of the stack pointer and a restore writes it back;
+  // the generic expansion does exactly that because the stack pointer register
+  // is declared above.  The frame address needs a frame pointer, and the
+  // return address is the link register the prologue preserves.
+  setOperationAction({ISD::STACKSAVE, ISD::STACKRESTORE}, MVT::Other, Expand);
+  setOperationAction(ISD::FRAMEADDR, MVT::i64, Custom);
+  setOperationAction(ISD::RETURNADDR, MVT::i64, Custom);
+
   // A va_list is a pointer to the next argument slot.  va_start hands out the
   // address of the register save area and va_arg advances the pointer by one
   // slot; va_copy and va_end are just a pointer copy and a no-op.
@@ -127,6 +135,10 @@ SDValue MiniRVTargetLowering::LowerOperation(SDValue Op,
     return LowerGlobalAddress(Op, DAG);
   case ISD::JumpTable:
     return LowerJumpTable(Op, DAG);
+  case ISD::FRAMEADDR:
+    return LowerFRAMEADDR(Op, DAG);
+  case ISD::RETURNADDR:
+    return LowerRETURNADDR(Op, DAG);
   case ISD::VASTART:
     return LowerVASTART(Op, DAG);
   case ISD::VAARG:
@@ -163,6 +175,43 @@ SDValue MiniRVTargetLowering::LowerJumpTable(SDValue Op,
   EVT PtrVT = getPointerTy(DAG.getDataLayout());
   SDValue Sym = DAG.getTargetJumpTable(N->getIndex(), PtrVT);
   return SDValue(DAG.getMachineNode(MiniRV::PseudoLA, DL, PtrVT, Sym), 0);
+}
+
+/// The frame address is the incoming stack pointer.  Without a frame pointer
+/// the stack pointer has moved by the frame size by the time this runs, and
+/// the frame size is not known yet, so asking for the frame address is what
+/// makes the function keep a frame pointer.
+SDValue MiniRVTargetLowering::LowerFRAMEADDR(SDValue Op,
+                                             SelectionDAG &DAG) const {
+  if (Op.getConstantOperandVal(0) != 0)
+    report_fatal_error("MiniRV cannot walk the frame chain");
+
+  MachineFunction &MF = DAG.getMachineFunction();
+  MF.getFrameInfo().setFrameAddressIsTaken(true);
+
+  SDLoc DL(Op);
+  EVT VT = Op.getValueType();
+  Register FrameReg =
+      MF.getSubtarget().getRegisterInfo()->getFrameRegister(MF);
+  return DAG.getCopyFromReg(DAG.getEntryNode(), DL, FrameReg, VT);
+}
+
+/// The return address of the current function is the link register as it was
+/// on entry.  It is a live-in value: a leaf function still has it in place,
+/// and a function that makes a call copies it to a callee-saved register
+/// before the call clobbers X1.
+SDValue MiniRVTargetLowering::LowerRETURNADDR(SDValue Op,
+                                              SelectionDAG &DAG) const {
+  if (Op.getConstantOperandVal(0) != 0)
+    report_fatal_error("MiniRV cannot walk the frame chain");
+
+  MachineFunction &MF = DAG.getMachineFunction();
+  MF.getFrameInfo().setReturnAddressIsTaken(true);
+
+  SDLoc DL(Op);
+  EVT VT = Op.getValueType();
+  Register Reg = MF.addLiveIn(MiniRV::X1, getRegClassFor(MVT::i64));
+  return DAG.getCopyFromReg(DAG.getEntryNode(), DL, Reg, VT);
 }
 
 /// A va_list is the address of the next argument slot.  The slots of the

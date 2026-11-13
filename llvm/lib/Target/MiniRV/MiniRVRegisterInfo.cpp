@@ -43,11 +43,12 @@ BitVector MiniRVRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   // X6 is the scratch used when a stack adjustment is both source and
   // destination, as it is in the prologue and epilogue.
   Reserved.set(MiniRV::X6);
-  // A variable-length allocation needs a frame pointer, because the stack
-  // pointer moves while the function runs.  Reserving it here keeps the
-  // register allocator away from it; a function without such an allocation
-  // does not need it and can use X8 like any other register.
-  if (MF.getFrameInfo().hasVarSizedObjects())
+  // A frame pointer is needed when the stack pointer moves while the function
+  // runs or when the function asks for its frame address.  Reserving it here
+  // keeps the register allocator away from it, and lets the frame address be
+  // read before the prologue has written it; a function that needs neither
+  // can use X8 like any other register.
+  if (MF.getSubtarget().getFrameLowering()->hasFP(MF))
     Reserved.set(MiniRV::X8);
   return Reserved;
 }
@@ -168,9 +169,9 @@ void MiniRVRegisterInfo::resolveFrameIndex(MachineInstr &MI, Register BaseReg,
 }
 
 Register MiniRVRegisterInfo::getFrameRegister(const MachineFunction &MF) const {
-  // The stack pointer is the frame register unless a variable-length
-  // allocation forced a real frame pointer.
-  if (MF.getFrameInfo().hasVarSizedObjects())
+  // The stack pointer is the frame register unless the function needs a real
+  // frame pointer, which is exactly the case the frame lowering reports.
+  if (MF.getSubtarget().getFrameLowering()->hasFP(MF))
     return MiniRV::X8;
   return MiniRV::X2;
 }

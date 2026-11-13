@@ -41,8 +41,12 @@ bool MiniRVFrameLowering::hasFPImpl(const MachineFunction &MF) const {
   // frame indices can stay sp-relative and a frame pointer would only cost a
   // register.  A dynamic alloca changes the stack pointer in the middle of the
   // function, and the objects laid out by the prologue can only be reached
-  // through a second base register.  X8 (s0) is that register.
-  return MF.getFrameInfo().hasVarSizedObjects();
+  // through a second base register.  X8 (s0) is that register.  The same
+  // register answers llvm.frameaddress, whose value is the incoming stack
+  // pointer and therefore cannot be recomputed from the stack pointer before
+  // the frame size is known.
+  return MF.getFrameInfo().hasVarSizedObjects() ||
+         MF.getFrameInfo().isFrameAddressTaken();
 }
 
 /// A function with a frame pointer keeps the frame pointer at the incoming
@@ -66,10 +70,15 @@ MiniRVFrameLowering::getFrameIndexReference(const MachineFunction &MF, int FI,
 bool MiniRVFrameLowering::spillCalleeSavedRegisters(
     MachineBasicBlock &MBB, MachineBasicBlock::iterator MI,
     ArrayRef<CalleeSavedInfo> CSI, const TargetRegisterInfo *TRI) const {
+  // llvm.returnaddress reads X1 after the prologue has spilled it, so the
+  // spill cannot claim to kill the incoming value in that case; the machine
+  // verifier would reject the later use of a killed register.
+  bool RetAddrTaken = MBB.getParent()->getFrameInfo().isReturnAddressTaken();
   for (const CalleeSavedInfo &CS : CSI) {
     Register Reg = CS.getReg();
     const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(Reg);
-    TII.storeRegToStackSlot(MBB, MI, Reg, /*IsKill=*/true, CS.getFrameIdx(), RC,
+    bool IsKill = !(Reg == MiniRV::X1 && RetAddrTaken);
+    TII.storeRegToStackSlot(MBB, MI, Reg, IsKill, CS.getFrameIdx(), RC,
                             Register(), MachineInstr::FrameSetup);
   }
   return true;
