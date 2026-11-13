@@ -1,0 +1,6 @@
+mnemonic: vmsne.vx
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vmsne_vx}
+spec: rvtrim.vector.v_vmseq_vx
+domain: rv-v
+status: auto_full
+sched: [WriteVICmpX_WorstCase, ReadVPassthru_WorstCase, ReadVICmpV_WorstCase, ReadVICmpX_WorstCase, ReadVMask]

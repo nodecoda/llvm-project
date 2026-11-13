@@ -1,0 +1,6 @@
+mnemonic: vmadc.vi
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vmadc_vi}
+spec: rvtrim.vector.v_vmadc_vi
+domain: rv-v
+status: auto_full
+sched: [WriteVICALUMI_WorstCase, ReadVICALUV_WorstCase]

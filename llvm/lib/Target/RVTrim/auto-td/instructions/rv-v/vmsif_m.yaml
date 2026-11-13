@@ -1,0 +1,6 @@
+mnemonic: vmsif.m
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vmsif_m}
+spec: rvtrim.vector.v_unary_3
+domain: rv-v
+status: auto_full
+sched: [WriteVMSFSV_WorstCase, ReadVPassthru_WorstCase, ReadVMSFSV_WorstCase, ReadVMask]

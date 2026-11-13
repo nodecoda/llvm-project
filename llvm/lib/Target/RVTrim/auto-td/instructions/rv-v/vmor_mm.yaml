@@ -1,0 +1,6 @@
+mnemonic: vmor.mm
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vmor_mm}
+spec: rvtrim.vector.v_vmandn_mm
+domain: rv-v
+status: auto_full
+sched: [WriteVMALUV_WorstCase, ReadVMALUV_WorstCase, ReadVMALUV_WorstCase]

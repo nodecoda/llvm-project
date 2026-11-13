@@ -1,0 +1,6 @@
+mnemonic: vmadc.vim
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vmadc_vim}
+spec: rvtrim.vector.v_vmadc_vim
+domain: rv-v
+status: auto_full
+sched: [WriteVICALUMI_WorstCase, ReadVPassthru_WorstCase, ReadVICALUV_WorstCase, ReadVMask]

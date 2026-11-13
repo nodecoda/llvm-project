@@ -1,0 +1,6 @@
+mnemonic: viota.m
+opcode: {repo: riscv-opcodes, extension: rv_v, key: viota_m}
+spec: rvtrim.vector.v_unary_2
+domain: rv-v
+status: auto_full
+sched: [WriteVIotaV_WorstCase, ReadVPassthru_WorstCase, ReadVIotaV_WorstCase, ReadVMask]

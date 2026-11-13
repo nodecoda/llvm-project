@@ -1082,24 +1082,6 @@ def : InstAlias<"vwcvtu.x.x.v $vd, $vs$vm",
 def : InstAlias<"vwcvtu.x.x.v $vd, $vs",
                 (VWADDU_VX VR:$vd, VR:$vs, X0, zero_reg)>;
 
-let ElementsDependOn = EltDepsNone in {
-
-// Vector Integer Extension
-
-// Vector Integer Add-with-Carry / Subtract-with-Borrow Instructions
-defm VSBC_V : VALUm_IV_V_X<"vsbc", 0b010010>;
-let Constraints = "@earlyclobber $vd", VMConstraint = false,
-    DestEEW = EEW1 in {
-defm VMADC_V : VALUm_IV_V_X_I<"vmadc", 0b010001>;
-defm VMADC_V : VALUNoVm_IV_V_X_I<"vmadc", 0b010001>;
-defm VMSBC_V : VALUm_IV_V_X<"vmsbc", 0b010011>;
-defm VMSBC_V : VALUNoVm_IV_V_X<"vmsbc", 0b010011>;
-} // Constraints = "@earlyclobber $vd", VMConstraint = false, DestEEW = EEW1
-
-// Vector Bitwise Logical Instructions
-
-} // ElementsDependOn = EltDepsNone
-
 def : InstAlias<"vnot.v $vd, $vs$vm",
                 (VXOR_VI VR:$vd, VR:$vs, -1, VMaskOp:$vm)>;
 def : InstAlias<"vnot.v $vd, $vs",
@@ -1128,19 +1110,6 @@ def : InstAlias<"vncvt.x.x.w $vd, $vs$vm",
                 (VNSRL_WX VR:$vd, VR:$vs, X0, VMaskOp:$vm)>;
 def : InstAlias<"vncvt.x.x.w $vd, $vs",
                 (VNSRL_WX VR:$vd, VR:$vs, X0, zero_reg)>;
-
-// Vector Integer Comparison Instructions
-let VMConstraint = false, DestEEW = EEW1,
-    ElementsDependOn = EltDepsNone in {
-defm VMSEQ_V : VCMP_IV_V_X_I<"vmseq", 0b011000>;
-defm VMSNE_V : VCMP_IV_V_X_I<"vmsne", 0b011001>;
-defm VMSLTU_V : VCMP_IV_V_X<"vmsltu", 0b011010>;
-defm VMSLT_V : VCMP_IV_V_X<"vmslt", 0b011011>;
-defm VMSLEU_V : VCMP_IV_V_X_I<"vmsleu", 0b011100>;
-defm VMSLE_V : VCMP_IV_V_X_I<"vmsle", 0b011101>;
-defm VMSGTU_V : VCMP_IV_X_I<"vmsgtu", 0b011110>;
-defm VMSGT_V : VCMP_IV_X_I<"vmsgt", 0b011111>;
-} // VMConstraint = false, DestEEW = EEW1, ElementsDependOn = EltDepsNone
 
 def : InstAlias<"vmsgtu.vv $vd, $va, $vb$vm",
                 (VMSLTU_VV VR:$vd, VR:$vb, VR:$va, VMaskOp:$vm), 0>;
@@ -1496,18 +1465,6 @@ def : MnemonicAlias<"vfwredsum.vs", "vfwredusum.vs">;
 } // Predicates = [HasVInstructionsAnyF]
 
 let Predicates = [HasVInstructions] in {
-// Vector Mask-Register Logical Instructions
-let VMConstraint = false, DestEEW = EEW1,
-    ElementsDependOn = EltDepsNone in {
-defm VMAND_M : VMALU_MV_Mask<"vmand", 0b011001, "m">;
-defm VMNAND_M : VMALU_MV_Mask<"vmnand", 0b011101, "m">;
-defm VMANDN_M : VMALU_MV_Mask<"vmandn", 0b011000, "m">;
-defm VMXOR_M : VMALU_MV_Mask<"vmxor", 0b011011, "m">;
-defm VMOR_M : VMALU_MV_Mask<"vmor", 0b011010, "m">;
-defm VMNOR_M : VMALU_MV_Mask<"vmnor", 0b011110, "m">;
-defm VMORN_M : VMALU_MV_Mask<"vmorn", 0b011100, "m">;
-defm VMXNOR_M : VMALU_MV_Mask<"vmxnor", 0b011111, "m">;
-}
 
 def : InstAlias<"vmmv.m $vd, $vs",
                 (VMAND_MM VR:$vd, VR:$vs, VR:$vs)>;
@@ -1521,48 +1478,13 @@ def : InstAlias<"vmnot.m $vd, $vs",
 def : MnemonicAlias<"vmandnot.mm", "vmandn.mm">;
 def : MnemonicAlias<"vmornot.mm", "vmorn.mm">;
 
-let hasSideEffects = 0, mayLoad = 0, mayStore = 0 in {
-
-// Vector mask population count vcpop
-def VCPOP_M : RVInstVUnaryRd<0b010000, 0b10000, OPMVV, (outs GPR:$rd),
-                             (ins VR:$vs2, VMaskOp:$vm),
-                             "vcpop.m", "$rd, $vs2$vm">,
-              SchedUnaryMC<"WriteVMPopV", "ReadVMPopV">;
-
-// vfirst find-first-set mask bit
-def VFIRST_M : RVInstVUnaryRd<0b010000, 0b10001, OPMVV, (outs GPR:$rd),
-                              (ins VR:$vs2, VMaskOp:$vm),
-                              "vfirst.m", "$rd, $vs2$vm">,
-              SchedUnaryMC<"WriteVMFFSV", "ReadVMFFSV">;
-
-} // hasSideEffects = 0, mayLoad = 0, mayStore = 0, VMConstraint = false
 
 def : MnemonicAlias<"vpopc.m", "vcpop.m">;
 
-let Constraints = "@earlyclobber $vd", VS1VS2Constraint = Iota, ElementsDependOn = EltDepsMask in {
 
-let DestEEW = EEW1 in {
-// vmsbf.m set-before-first mask bit
-def VMSBF_M : VMSFS_MV_VS2<"vmsbf.m", 0b010100, 0b00001>;
-// vmsif.m set-including-first mask bit
-def VMSIF_M : VMSFS_MV_VS2<"vmsif.m", 0b010100, 0b00011>;
-// vmsof.m set-only-first mask bit
-def VMSOF_M : VMSFS_MV_VS2<"vmsof.m", 0b010100, 0b00010>;
-} // DestEEW = EEW1
-// Vector Iota Instruction
-def VIOTA_M : VIOTA_MV_VS2<"viota.m", 0b010100, 0b10000>;
 
-} // Constraints = "@earlyclobber $vd", VS1VS2Constraint = Iota, ElementsDependOn = EltDepsMask
-
-// Vector Element Index Instruction
 let hasSideEffects = 0, mayLoad = 0, mayStore = 0,
     ElementsDependOn = EltDepsNone in {
-
-def VID_V : RVInstVUnary<0b010100, 0b10001, OPMVV, (outs VR:$vd),
-                         (ins VMaskOp:$vm), "vid.v", "$vd$vm">,
-            SchedNullaryMC<"WriteVIdxV"> {
-  let vs2 = 0;
-}
 
 // Integer Scalar Move Instructions
 def VMV_X_S : RVInstVUnaryRd<0b010000, 0b00000, OPMVV, (outs GPR:$rd),
