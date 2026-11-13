@@ -1,8 +1,9 @@
-# auto-td configuration for MiniRV, a demo MC-only target.
+# auto-td configuration for MiniRV, a small RV64I target.
 #
-# The corpus is deliberately small: eight R-type, four I-type and two U-type
-# instructions.  It exists to show that a second target needs only this
-# directory plus the llvm_autotd_generate() call in CMakeLists.txt.
+# The corpus covers the RV64I integer core: register-register, register-immediate,
+# load, store, branch and jump instructions.  It exists to show that a second
+# target needs only this directory plus the llvm_autotd_generate() call in
+# CMakeLists.txt.
 record_prefix: ""
 base_class: MiniRVInst
 # Namespace whose record references the coverage gate checks.

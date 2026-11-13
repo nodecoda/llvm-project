@@ -48,6 +48,9 @@ class MiniRVAsmParser : public MCTargetAsmParser {
 
   bool ParseOperand(OperandVector &Operands);
 
+  bool ParseMemOperand(SMLoc StartLoc, const MCExpr *Offset,
+                       OperandVector &Operands);
+
   MCAsmParser &getParser() const { return Parser; }
   AsmLexer &getLexer() const { return Parser.getLexer(); }
 
@@ -132,6 +135,33 @@ public:
     return Imm->evaluateAsAbsolute(Val) && isUInt<20>(Val);
   }
 
+  bool isUImm6() const {
+    if (Kind != k_Imm)
+      return false;
+    int64_t Val;
+    return Imm->evaluateAsAbsolute(Val) && isUInt<6>(Val);
+  }
+
+  /// A branch target is either an absolute offset with an implicit zero low
+  /// bit, or a label whose value the assembler does not know yet.
+  bool isBranchTarget() const {
+    if (Kind != k_Imm)
+      return false;
+    int64_t Val;
+    if (Imm->evaluateAsAbsolute(Val))
+      return isShiftedInt<12, 1>(Val);
+    return true;
+  }
+
+  bool isJalTarget() const {
+    if (Kind != k_Imm)
+      return false;
+    int64_t Val;
+    if (Imm->evaluateAsAbsolute(Val))
+      return isShiftedInt<20, 1>(Val);
+    return true;
+  }
+
   StringRef getToken() const {
     assert(Kind == k_Tok && "Invalid access!");
     return Tok;
@@ -195,6 +225,9 @@ bool MiniRVAsmParser::matchAndEmitInstruction(SMLoc Loc, unsigned &Opcode,
     return Error(Loc, "invalid instruction mnemonic");
   case Match_InvalidSImm12:
   case Match_InvalidUImm20:
+  case Match_InvalidUImm6:
+  case Match_InvalidBranchTarget:
+  case Match_InvalidJalTarget:
   case Match_InvalidOperand: {
     SMLoc ErrorLoc = Loc;
     if (ErrorInfo != ~0U) {
@@ -208,6 +241,12 @@ bool MiniRVAsmParser::matchAndEmitInstruction(SMLoc Loc, unsigned &Opcode,
       return Error(ErrorLoc, "operand must be a 12-bit signed immediate");
     if (MatchResult == Match_InvalidUImm20)
       return Error(ErrorLoc, "operand must be a 20-bit unsigned immediate");
+    if (MatchResult == Match_InvalidUImm6)
+      return Error(ErrorLoc, "operand must be a 6-bit unsigned immediate");
+    if (MatchResult == Match_InvalidBranchTarget)
+      return Error(ErrorLoc, "operand must be a PC-relative branch target");
+    if (MatchResult == Match_InvalidJalTarget)
+      return Error(ErrorLoc, "operand must be a PC-relative jump target");
     return Error(ErrorLoc, "invalid operand for instruction");
   }
   default:
@@ -247,6 +286,36 @@ ParseStatus MiniRVAsmParser::tryParseRegister(MCRegister &Reg, SMLoc &StartLoc,
   return ParseStatus::Failure;
 }
 
+/// Parse an optional ``(reg)`` suffix after a memory offset.  The offset and
+/// the base register are handed to the matcher as two operands, in the order
+/// the assembly string mentions them, which is what the generated matcher
+/// expects.
+bool MiniRVAsmParser::ParseMemOperand(SMLoc StartLoc, const MCExpr *Offset,
+                                      OperandVector &Operands) {
+  if (getLexer().isNot(AsmToken::LParen))
+    return true;
+  SMLoc LParenLoc = getLexer().getLoc();
+  getLexer().Lex(); // Eat '('.
+
+  MCRegister RegNo;
+  SMLoc RegStart, RegEnd;
+  if (parseRegister(RegNo, RegStart, RegEnd))
+    return true;
+
+  if (getLexer().isNot(AsmToken::RParen))
+    return Error(getLexer().getLoc(), "expected ')' in memory operand");
+  SMLoc RParenLoc = getLexer().getLoc();
+  getLexer().Lex(); // Eat ')'.
+
+  // The parentheses are operands too: the generated matcher treats them as
+  // literal tokens, which is how it knows this is a memory reference.
+  Operands.push_back(MiniRVOperand::CreateImm(Offset, StartLoc, LParenLoc));
+  Operands.push_back(MiniRVOperand::CreateToken("(", LParenLoc));
+  Operands.push_back(MiniRVOperand::CreateReg(RegNo, RegStart, RegEnd));
+  Operands.push_back(MiniRVOperand::CreateToken(")", RParenLoc));
+  return false;
+}
+
 bool MiniRVAsmParser::ParseOperand(OperandVector &Operands) {
   switch (getLexer().getKind()) {
   default:
@@ -258,7 +327,21 @@ bool MiniRVAsmParser::ParseOperand(OperandVector &Operands) {
       Operands.push_back(MiniRVOperand::CreateReg(RegNo, StartLoc, EndLoc));
       return false;
     }
-    return true;
+
+    // Not a register, so it is a label used as a branch or jump target.
+    SMLoc SymLoc = getParser().getTok().getLoc();
+    const MCExpr *Val;
+    if (getParser().parseExpression(Val))
+      return true;
+    Operands.push_back(
+        MiniRVOperand::CreateImm(Val, SymLoc, getParser().getTok().getLoc()));
+    return false;
+  }
+  case AsmToken::LParen: {
+    // "ld x1, (x2)": a memory operand with a zero offset.
+    SMLoc StartLoc = getLexer().getLoc();
+    const MCExpr *Zero = MCConstantExpr::create(0, getContext());
+    return ParseMemOperand(StartLoc, Zero, Operands);
   }
   case AsmToken::Integer:
   case AsmToken::Plus:
@@ -267,6 +350,10 @@ bool MiniRVAsmParser::ParseOperand(OperandVector &Operands) {
     const MCExpr *Val;
     if (getParser().parseExpression(Val))
       return true;
+
+    if (getLexer().is(AsmToken::LParen))
+      return ParseMemOperand(StartLoc, Val, Operands);
+
     Operands.push_back(
         MiniRVOperand::CreateImm(Val, StartLoc, getParser().getTok().getLoc()));
     return false;

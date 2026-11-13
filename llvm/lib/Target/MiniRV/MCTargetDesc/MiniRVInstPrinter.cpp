@@ -40,4 +40,11 @@ void MiniRVInstPrinter::printOperand(const MCInst *MI, unsigned OpNo,
   }
 }
 
+/// A branch target prints as the expression the assembler was given (a label)
+/// or as the resolved offset.
+void MiniRVInstPrinter::printBranchOperand(const MCInst *MI, uint64_t Address,
+                                           unsigned OpNo, raw_ostream &O) {
+  printOperand(MI, OpNo, O);
+}
+
 #include "MiniRVGenAsmWriter.inc"

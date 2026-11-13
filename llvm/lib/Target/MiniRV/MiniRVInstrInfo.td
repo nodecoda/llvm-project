@@ -23,6 +23,23 @@ class MiniRVImmAsmOperand<string name, string predicate> : AsmOperandClass {
 
 def SImm12AsmOperand : MiniRVImmAsmOperand<"SImm12", "isSImm12">;
 def UImm20AsmOperand : MiniRVImmAsmOperand<"UImm20", "isUImm20">;
+def UImm6AsmOperand : MiniRVImmAsmOperand<"UImm6", "isUImm6">;
+
+// A branch target may be a label, so its parser predicate also accepts an
+// expression that is not an absolute constant.
+def BranchTargetAsmOperand : AsmOperandClass {
+  let Name = "BranchTarget";
+  let PredicateMethod = "isBranchTarget";
+  let RenderMethod = "addImmOperands";
+  let DiagnosticType = "InvalidBranchTarget";
+}
+
+def JalTargetAsmOperand : AsmOperandClass {
+  let Name = "JalTarget";
+  let PredicateMethod = "isJalTarget";
+  let RenderMethod = "addImmOperands";
+  let DiagnosticType = "InvalidJalTarget";
+}
 
 // This is both an instruction operand and a DAG leaf matcher, so the same
 // record can be named on either side of a Pat.
@@ -34,6 +51,48 @@ def simm12 : Operand<i64>, ImmLeaf<i64, [{ return isInt<12>(Imm); }]> {
 def uimm20 : Operand<i64> {
   let ParserMatchClass = UImm20AsmOperand;
   let DecoderMethod = "DecodeUImm20";
+}
+
+// Shift amounts are six bits on RV64 and are never negative.
+def uimm6 : Operand<i64>, ImmLeaf<i64, [{ return isUInt<6>(Imm); }]> {
+  let ParserMatchClass = UImm6AsmOperand;
+  let DecoderMethod = "DecodeUImm6";
+}
+
+// Branch and jump targets are PC-relative offsets whose low bit is implicit.
+// The value handed to the encoder is the byte offset; getBranchTargetOpValue()
+// turns it into the scrambled immediate the format requires.
+class MiniRVTargetOperand : Operand<OtherVT> {
+  let PrintMethod = "printBranchOperand";
+  let OperandType = "OPERAND_PCREL";
+}
+
+def simm13_lsb0 : MiniRVTargetOperand,
+                 ImmLeaf<i64, [{ return isShiftedInt<12, 1>(Imm); }]> {
+  let ParserMatchClass = BranchTargetAsmOperand;
+  let EncoderMethod = "getBranchTargetOpValue";
+  let DecoderMethod = "DecodeSImm13Lsb0";
+}
+
+// The same operand without the leaf matcher, because a branch pattern supplies
+// a basic block (``bb:$dst``) rather than an immediate.
+def simm13_lsb0_bb : MiniRVTargetOperand {
+  let ParserMatchClass = BranchTargetAsmOperand;
+  let EncoderMethod = "getBranchTargetOpValue";
+  let DecoderMethod = "DecodeSImm13Lsb0";
+}
+
+def simm21_lsb0 : MiniRVTargetOperand,
+                  ImmLeaf<i64, [{ return isShiftedInt<20, 1>(Imm); }]> {
+  let ParserMatchClass = JalTargetAsmOperand;
+  let EncoderMethod = "getJalTargetOpValue";
+  let DecoderMethod = "DecodeSImm21Lsb0";
+}
+
+def simm21_lsb0_bb : MiniRVTargetOperand {
+  let ParserMatchClass = JalTargetAsmOperand;
+  let EncoderMethod = "getJalTargetOpValue";
+  let DecoderMethod = "DecodeSImm21Lsb0";
 }
 
 include "auto-td/AutoTdInstrInfo.inc"
@@ -51,9 +110,21 @@ include "auto-td/AutoTdInstrInfo.inc"
 def MiniRVret : SDNode<"MiniRVISD::RET", SDTNone,
                        [SDNPHasChain, SDNPOptInGlue, SDNPVariadic]>;
 
+// The target-specific branch node.  ISD::BRCOND is lowered into this so that a
+// comparison and its branch become one instruction, which is the only way to
+// use the corpus' branch records.
+def SDT_MiniRVBrCC : SDTypeProfile<0, 4, [SDTCisSameAs<0, 1>,
+                                          SDTCisVT<2, OtherVT>,
+                                          SDTCisVT<3, OtherVT>]>;
+def MiniRVbrcc : SDNode<"MiniRVISD::BRCC", SDT_MiniRVBrCC, [SDNPHasChain]>;
+
 let isReturn = 1, isTerminator = 1, isBarrier = 1, isPseudo = 1,
     hasNoSchedulingInfo = 1 in
 def PseudoRET : MiniRVInst<(outs), (ins), "ret", "", [(MiniRVret)], InstFormatI>;
+
+//===----------------------------------------------------------------------===//
+// Register-register arithmetic
+//===----------------------------------------------------------------------===//
 
 def : Pat<(add GPR:$rs1, GPR:$rs2), (ADD GPR:$rs1, GPR:$rs2)>;
 def : Pat<(sub GPR:$rs1, GPR:$rs2), (SUB GPR:$rs1, GPR:$rs2)>;
@@ -64,7 +135,62 @@ def : Pat<(shl GPR:$rs1, GPR:$rs2), (SLL GPR:$rs1, GPR:$rs2)>;
 def : Pat<(srl GPR:$rs1, GPR:$rs2), (SRL GPR:$rs1, GPR:$rs2)>;
 def : Pat<(sra GPR:$rs1, GPR:$rs2), (SRA GPR:$rs1, GPR:$rs2)>;
 
+//===----------------------------------------------------------------------===//
+// Register-immediate arithmetic and shifts
+//===----------------------------------------------------------------------===//
+
 def : Pat<(add GPR:$rs1, simm12:$imm), (ADDI GPR:$rs1, simm12:$imm)>;
 def : Pat<(and GPR:$rs1, simm12:$imm), (ANDI GPR:$rs1, simm12:$imm)>;
 def : Pat<(or  GPR:$rs1, simm12:$imm), (ORI  GPR:$rs1, simm12:$imm)>;
 def : Pat<(xor GPR:$rs1, simm12:$imm), (XORI GPR:$rs1, simm12:$imm)>;
+
+def : Pat<(shl GPR:$rs1, uimm6:$imm), (SLLI GPR:$rs1, uimm6:$imm)>;
+def : Pat<(srl GPR:$rs1, uimm6:$imm), (SRLI GPR:$rs1, uimm6:$imm)>;
+def : Pat<(sra GPR:$rs1, uimm6:$imm), (SRAI GPR:$rs1, uimm6:$imm)>;
+
+//===----------------------------------------------------------------------===//
+// Comparisons.  There is no "set if equal" record, so equality is built from
+// the two records that do exist: XOR, then compare against zero.
+//===----------------------------------------------------------------------===//
+
+def : Pat<(seteq GPR:$a, GPR:$b), (SLTIU (XOR GPR:$a, GPR:$b), 1)>;
+def : Pat<(setne GPR:$a, GPR:$b), (SLTU X0, (XOR GPR:$a, GPR:$b))>;
+def : Pat<(setlt GPR:$a, GPR:$b), (SLT GPR:$a, GPR:$b)>;
+def : Pat<(setle GPR:$a, GPR:$b), (XORI (SLT GPR:$b, GPR:$a), 1)>;
+def : Pat<(setgt GPR:$a, GPR:$b), (SLT GPR:$b, GPR:$a)>;
+def : Pat<(setge GPR:$a, GPR:$b), (XORI (SLT GPR:$a, GPR:$b), 1)>;
+def : Pat<(setult GPR:$a, GPR:$b), (SLTU GPR:$a, GPR:$b)>;
+def : Pat<(setule GPR:$a, GPR:$b), (XORI (SLTU GPR:$b, GPR:$a), 1)>;
+def : Pat<(setugt GPR:$a, GPR:$b), (SLTU GPR:$b, GPR:$a)>;
+def : Pat<(setuge GPR:$a, GPR:$b), (XORI (SLTU GPR:$a, GPR:$b), 1)>;
+
+//===----------------------------------------------------------------------===//
+// Memory
+//===----------------------------------------------------------------------===//
+
+def : Pat<(i64 (load (add GPR:$base, simm12:$off))),
+          (LD GPR:$base, simm12:$off)>;
+def : Pat<(i64 (load GPR:$base)), (LD GPR:$base, 0)>;
+def : Pat<(store GPR:$val, (add GPR:$base, simm12:$off)),
+          (SD GPR:$val, GPR:$base, simm12:$off)>;
+def : Pat<(store GPR:$val, GPR:$base), (SD GPR:$val, GPR:$base, 0)>;
+
+//===----------------------------------------------------------------------===//
+// Branches
+//===----------------------------------------------------------------------===//
+
+multiclass BccPat<CondCode Cond, MiniRVInst Inst> {
+  def : Pat<(MiniRVbrcc GPR:$lhs, GPR:$rhs, Cond, bb:$dst),
+            (Inst GPR:$lhs, GPR:$rhs, simm13_lsb0_bb:$dst)>;
+  // Comparing against zero is common enough to deserve the x0 form; the
+  // register coalescer is not guaranteed to find it.
+  def : Pat<(MiniRVbrcc GPR:$lhs, 0, Cond, bb:$dst),
+            (Inst GPR:$lhs, (i64 X0), simm13_lsb0_bb:$dst)>;
+}
+
+defm : BccPat<SETEQ,  BEQ>;
+defm : BccPat<SETNE,  BNE>;
+defm : BccPat<SETLT,  BLT>;
+defm : BccPat<SETGE,  BGE>;
+defm : BccPat<SETULT, BLTU>;
+defm : BccPat<SETUGE, BGEU>;

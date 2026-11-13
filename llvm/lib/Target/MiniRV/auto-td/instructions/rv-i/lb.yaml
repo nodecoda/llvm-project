@@ -1,0 +1,5 @@
+mnemonic: lb
+opcode: {repo: riscv-opcodes, extension: rv_i, key: lb}
+spec: minirv.core.load_type
+domain: rv-i
+status: auto_full

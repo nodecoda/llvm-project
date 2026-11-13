@@ -36,6 +36,14 @@ public:
                              SmallVectorImpl<MCFixup> &Fixups,
                              const MCSubtargetInfo &STI) const;
 
+  unsigned getBranchTargetOpValue(const MCInst &MI, unsigned OpNo,
+                                  SmallVectorImpl<MCFixup> &Fixups,
+                                  const MCSubtargetInfo &STI) const;
+
+  unsigned getJalTargetOpValue(const MCInst &MI, unsigned OpNo,
+                               SmallVectorImpl<MCFixup> &Fixups,
+                               const MCSubtargetInfo &STI) const;
+
   uint64_t getBinaryCodeForInstr(const MCInst &MI,
                                  SmallVectorImpl<MCFixup> &Fixups,
                                  const MCSubtargetInfo &STI) const;
@@ -60,6 +68,37 @@ unsigned MiniRVMCCodeEmitter::getMachineOpValue(
   if (MO.isImm())
     return static_cast<unsigned>(MO.getImm());
   llvm_unreachable("MiniRV has no symbol operands");
+}
+
+/// A branch immediate is the byte offset divided by two, packed into the
+/// twelve bits the format has room for.  A target that is not known yet is
+/// left to the assembler through a fixup.
+unsigned MiniRVMCCodeEmitter::getBranchTargetOpValue(
+    const MCInst &MI, unsigned OpNo, SmallVectorImpl<MCFixup> &Fixups,
+    const MCSubtargetInfo &STI) const {
+  const MCOperand &MO = MI.getOperand(OpNo);
+  if (MO.isImm())
+    return static_cast<unsigned>(MO.getImm() >> 1) & 0xfff;
+
+  assert(MO.isExpr() && "Unexpected branch operand");
+  Fixups.push_back(MCFixup::create(0, MO.getExpr(),
+                                   MCFixupKind(MiniRV::fixup_minirv_branch),
+                                   /*PCRel=*/true));
+  return 0;
+}
+
+unsigned MiniRVMCCodeEmitter::getJalTargetOpValue(
+    const MCInst &MI, unsigned OpNo, SmallVectorImpl<MCFixup> &Fixups,
+    const MCSubtargetInfo &STI) const {
+  const MCOperand &MO = MI.getOperand(OpNo);
+  if (MO.isImm())
+    return static_cast<unsigned>(MO.getImm() >> 1) & 0xfffff;
+
+  assert(MO.isExpr() && "Unexpected jump operand");
+  Fixups.push_back(MCFixup::create(0, MO.getExpr(),
+                                   MCFixupKind(MiniRV::fixup_minirv_jal),
+                                   /*PCRel=*/true));
+  return 0;
 }
 
 MCCodeEmitter *llvm::createMiniRVMCCodeEmitter(const MCInstrInfo &MCII,

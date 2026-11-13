@@ -21,8 +21,58 @@ categories:
         - {role: imm, field: imm12, operand: simm12}
     effects: {}
 
+  # RV64 shifts encode a 6-bit amount in {25-20}; the database calls the field
+  # shamtd.
+  i_type_shift64:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins:
+        - {role: lhs, field: rs1, reg_class: GPR}
+        - {role: imm, field: shamt, operand: uimm6}
+    effects: {}
+
   u_type:
     operands:
       outs: [{role: dest, field: rd, reg_class: GPR}]
       ins: [{role: imm, field: imm20, operand: uimm20}]
+    effects: {}
+
+  # `base` + `offset` are folded into `${imm12}(${rs1})` in the asm string.
+  load_type:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins:
+        - {role: base, field: rs1, reg_class: GPR}
+        - {role: offset, field: imm12, operand: simm12}
+    effects: {may_load: true}
+
+  store_type:
+    operands:
+      ins:
+        - {role: rhs, field: rs2, reg_class: GPR}
+        - {role: base, field: rs1, reg_class: GPR}
+        - {role: offset, field: imm12, operand: simm12}
+    effects: {may_store: true}
+
+  # A branch target is a PC-relative offset with an implicit zero low bit.
+  b_type:
+    operands:
+      ins:
+        - {role: lhs, field: rs1, reg_class: GPR}
+        - {role: rhs, field: rs2, reg_class: GPR}
+        - {role: offset, field: imm12, operand: simm13_lsb0}
+    effects: {}
+
+  j_type:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins: [{role: offset, field: imm20, operand: simm21_lsb0}]
+    effects: {}
+
+  jalr_type:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins:
+        - {role: base, field: rs1, reg_class: GPR}
+        - {role: offset, field: imm12, operand: simm12}
     effects: {}

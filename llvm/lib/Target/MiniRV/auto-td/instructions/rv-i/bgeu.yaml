@@ -1,0 +1,5 @@
+mnemonic: bgeu
+opcode: {repo: riscv-opcodes, extension: rv_i, key: bgeu}
+spec: minirv.core.b_type
+domain: rv-i
+status: auto_full

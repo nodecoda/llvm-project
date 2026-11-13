@@ -1,0 +1,5 @@
+mnemonic: srai
+opcode: {repo: riscv-opcodes, extension: rv_i, key: srai}
+spec: minirv.core.i_type_shift64
+domain: rv-i
+status: auto_full

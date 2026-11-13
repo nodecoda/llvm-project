@@ -1,0 +1,5 @@
+mnemonic: sltiu
+opcode: {repo: riscv-opcodes, extension: rv_i, key: sltiu}
+spec: minirv.core.i_type
+domain: rv-i
+status: auto_full

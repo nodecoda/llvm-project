@@ -1,0 +1,5 @@
+mnemonic: jal
+opcode: {repo: riscv-opcodes, extension: rv_i, key: jal}
+spec: minirv.core.j_type
+domain: rv-i
+status: auto_full

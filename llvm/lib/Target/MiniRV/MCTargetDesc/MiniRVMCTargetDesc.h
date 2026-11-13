@@ -9,10 +9,24 @@
 #ifndef LLVM_LIB_TARGET_MINIRV_MCTARGETDESC_MINIRVMCTARGETDESC_H
 #define LLVM_LIB_TARGET_MINIRV_MCTARGETDESC_MINIRVMCTARGETDESC_H
 
+#include "llvm/MC/MCFixup.h"
 #include <cstdint>
 #include <memory>
 
 namespace llvm {
+
+namespace MiniRV {
+
+/// Target-specific fixup kinds.  Branch and jump immediates are not
+/// contiguous in the instruction word, so the assembler needs to know how to
+/// place them instead of using a generic fixup.
+enum Fixups {
+  fixup_minirv_branch = FirstTargetFixupKind,
+  fixup_minirv_jal,
+  NumTargetFixupKinds
+};
+
+} // namespace MiniRV
 
 class MCAsmBackend;
 class MCCodeEmitter;

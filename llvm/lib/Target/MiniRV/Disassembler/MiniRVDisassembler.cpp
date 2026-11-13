@@ -23,6 +23,7 @@
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/Endian.h"
+#include "llvm/Support/MathExtras.h"
 
 using namespace llvm;
 using namespace llvm::MCD;
@@ -82,6 +83,28 @@ static DecodeStatus DecodeSImm12(MCInst &MI, uint64_t Imm, uint64_t Address,
   if (Imm & (1U << 11))
     Imm |= ~((1ULL << 12) - 1);
   MI.addOperand(MCOperand::createImm(static_cast<int64_t>(Imm)));
+  return MCDisassembler::Success;
+}
+
+static DecodeStatus DecodeUImm6(MCInst &MI, uint64_t Imm, uint64_t Address,
+                               const MCDisassembler *Decoder) {
+  MI.addOperand(MCOperand::createImm(static_cast<int64_t>(Imm)));
+  return MCDisassembler::Success;
+}
+
+/// The B-format field holds bits [12:1] of the offset; bit 0 is always zero.
+static DecodeStatus DecodeSImm13Lsb0(MCInst &MI, uint64_t Imm, uint64_t Address,
+                                    const MCDisassembler *Decoder) {
+  MI.addOperand(
+      MCOperand::createImm(static_cast<int64_t>(SignExtend64<12>(Imm) << 1)));
+  return MCDisassembler::Success;
+}
+
+/// The J-format field holds bits [20:1] of the offset; bit 0 is always zero.
+static DecodeStatus DecodeSImm21Lsb0(MCInst &MI, uint64_t Imm, uint64_t Address,
+                                    const MCDisassembler *Decoder) {
+  MI.addOperand(
+      MCOperand::createImm(static_cast<int64_t>(SignExtend64<20>(Imm) << 1)));
   return MCDisassembler::Success;
 }
 

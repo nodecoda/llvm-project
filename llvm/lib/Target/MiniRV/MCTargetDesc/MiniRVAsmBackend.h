@@ -9,6 +9,7 @@
 #ifndef LLVM_LIB_TARGET_MINIRV_MCTARGETDESC_MINIRVASMBACKEND_H
 #define LLVM_LIB_TARGET_MINIRV_MCTARGETDESC_MINIRVASMBACKEND_H
 
+#include "MiniRVMCTargetDesc.h"
 #include "llvm/MC/MCAsmBackend.h"
 
 namespace llvm {
@@ -20,8 +21,11 @@ public:
   MiniRVAsmBackend(uint8_t OSABI)
       : MCAsmBackend(llvm::endianness::little), OSABI(OSABI) {}
 
-  void applyFixup(const MCFragment &, const MCFixup &, const MCValue &,
-                  uint8_t *, uint64_t, bool) override {}
+  MCFixupKindInfo getFixupKindInfo(MCFixupKind Kind) const override;
+
+  void applyFixup(const MCFragment &F, const MCFixup &Fixup,
+                  const MCValue &Target, uint8_t *Data, uint64_t Value,
+                  bool IsResolved) override;
 
   std::unique_ptr<MCObjectTargetWriter>
   createObjectTargetWriter() const override;

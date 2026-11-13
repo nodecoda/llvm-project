@@ -12,7 +12,10 @@ class InstFormat<bits<5> val> {
 }
 def InstFormatR : InstFormat<1>;
 def InstFormatI : InstFormat<3>;
+def InstFormatS : InstFormat<4>;
+def InstFormatB : InstFormat<5>;
 def InstFormatU : InstFormat<6>;
+def InstFormatJ : InstFormat<7>;
 
 // The base class auto-td records derive from.  It deliberately declares no
 // encoding bits: every Inst bit of a generated record comes from the opcode

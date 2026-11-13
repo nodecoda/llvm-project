@@ -30,6 +30,8 @@ public:
 
 private:
   void printOperand(const MCInst *MI, unsigned OpNo, raw_ostream &O);
+  void printBranchOperand(const MCInst *MI, uint64_t Address, unsigned OpNo,
+                          raw_ostream &O);
 };
 
 } // namespace llvm

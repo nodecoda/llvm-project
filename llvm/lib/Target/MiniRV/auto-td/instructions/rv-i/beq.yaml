@@ -1,0 +1,5 @@
+mnemonic: beq
+opcode: {repo: riscv-opcodes, extension: rv_i, key: beq}
+spec: minirv.core.b_type
+domain: rv-i
+status: auto_full

@@ -19,5 +19,11 @@ add x1, x2
 # CHECK: error: invalid operand for instruction
 add x1, x2, x3, x4
 
+# CHECK: error: operand must be a 6-bit unsigned immediate
+slli x1, x2, 64
+
+# CHECK: error: operand must be a PC-relative branch target
+beq x1, x2, 3
+
 # CHECK: error: invalid instruction mnemonic
 frob x1, x2

@@ -22,10 +22,16 @@ public:
                                 /*HasRelocationAddend=*/true) {}
 
 protected:
-  unsigned getRelocType(const MCFixup &, const MCValue &,
+  unsigned getRelocType(const MCFixup &Fixup, const MCValue &,
                         bool) const override {
-    // No target fixups are created by this corpus.
-    llvm_unreachable("MiniRV has no target fixups");
+    switch (Fixup.getKind()) {
+    case MiniRV::fixup_minirv_branch:
+      return ELF::R_RISCV_BRANCH;
+    case MiniRV::fixup_minirv_jal:
+      return ELF::R_RISCV_JAL;
+    default:
+      llvm_unreachable("Unknown fixup kind!");
+    }
   }
 };
 } // end anonymous namespace
