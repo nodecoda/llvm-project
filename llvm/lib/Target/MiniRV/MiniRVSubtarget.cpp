@@ -119,4 +119,57 @@ void MiniRVSubtarget::initLibcallLoweringInfo(
   Info.setLibcallImpl(RTLIB::UDIV_I128, RTLIB::impl___udivti3);
   Info.setLibcallImpl(RTLIB::SREM_I128, RTLIB::impl___modti3);
   Info.setLibcallImpl(RTLIB::UREM_I128, RTLIB::impl___umodti3);
+
+  // There is no floating-point unit, so every floating-point operation is
+  // expanded into a call to the soft-float helpers.
+  static const struct {
+    RTLIB::Libcall Op;
+    RTLIB::LibcallImpl Impl;
+  } FloatCalls[] = {
+      // Arithmetic.
+      {RTLIB::ADD_F32, RTLIB::impl___addsf3},
+      {RTLIB::SUB_F32, RTLIB::impl___subsf3},
+      {RTLIB::MUL_F32, RTLIB::impl___mulsf3},
+      {RTLIB::DIV_F32, RTLIB::impl___divsf3},
+      {RTLIB::ADD_F64, RTLIB::impl___adddf3},
+      {RTLIB::SUB_F64, RTLIB::impl___subdf3},
+      {RTLIB::MUL_F64, RTLIB::impl___muldf3},
+      {RTLIB::DIV_F64, RTLIB::impl___divdf3},
+      // Conversions between the two widths and to/from the integer registers.
+      {RTLIB::FPEXT_F32_F64, RTLIB::impl___extendsfdf2},
+      {RTLIB::FPROUND_F64_F32, RTLIB::impl___truncdfsf2},
+      {RTLIB::FPTOSINT_F32_I32, RTLIB::impl___fixsfsi},
+      {RTLIB::FPTOSINT_F32_I64, RTLIB::impl___fixsfdi},
+      {RTLIB::FPTOSINT_F64_I32, RTLIB::impl___fixdfsi},
+      {RTLIB::FPTOSINT_F64_I64, RTLIB::impl___fixdfdi},
+      {RTLIB::FPTOUINT_F32_I32, RTLIB::impl___fixunssfsi},
+      {RTLIB::FPTOUINT_F32_I64, RTLIB::impl___fixunssfdi},
+      {RTLIB::FPTOUINT_F64_I32, RTLIB::impl___fixunsdfsi},
+      {RTLIB::FPTOUINT_F64_I64, RTLIB::impl___fixunsdfdi},
+      {RTLIB::SINTTOFP_I32_F32, RTLIB::impl___floatsisf},
+      {RTLIB::SINTTOFP_I32_F64, RTLIB::impl___floatsidf},
+      {RTLIB::SINTTOFP_I64_F32, RTLIB::impl___floatdisf},
+      {RTLIB::SINTTOFP_I64_F64, RTLIB::impl___floatdidf},
+      {RTLIB::UINTTOFP_I32_F32, RTLIB::impl___floatunsisf},
+      {RTLIB::UINTTOFP_I32_F64, RTLIB::impl___floatunsidf},
+      {RTLIB::UINTTOFP_I64_F32, RTLIB::impl___floatundisf},
+      {RTLIB::UINTTOFP_I64_F64, RTLIB::impl___floatundidf},
+      // Comparisons return a three-way -1/0/1 result.
+      {RTLIB::FCMP3_PRED_OEQ_F32, RTLIB::impl___eqsf2},
+      {RTLIB::FCMP3_PRED_UNE_F32, RTLIB::impl___nesf2},
+      {RTLIB::FCMP3_PRED_OGE_F32, RTLIB::impl___gesf2},
+      {RTLIB::FCMP3_PRED_OLT_F32, RTLIB::impl___ltsf2},
+      {RTLIB::FCMP3_PRED_OLE_F32, RTLIB::impl___lesf2},
+      {RTLIB::FCMP3_PRED_OGT_F32, RTLIB::impl___gtsf2},
+      {RTLIB::FCMP3_PRED_OEQ_F64, RTLIB::impl___eqdf2},
+      {RTLIB::FCMP3_PRED_UNE_F64, RTLIB::impl___nedf2},
+      {RTLIB::FCMP3_PRED_OGE_F64, RTLIB::impl___gedf2},
+      {RTLIB::FCMP3_PRED_OLT_F64, RTLIB::impl___ltdf2},
+      {RTLIB::FCMP3_PRED_OLE_F64, RTLIB::impl___ledf2},
+      {RTLIB::FCMP3_PRED_OGT_F64, RTLIB::impl___gtdf2},
+      {RTLIB::UO_F32, RTLIB::impl___unordsf2},
+      {RTLIB::UO_F64, RTLIB::impl___unorddf2},
+  };
+  for (const auto &LC : FloatCalls)
+    Info.setLibcallImpl(LC.Op, LC.Impl);
 }
