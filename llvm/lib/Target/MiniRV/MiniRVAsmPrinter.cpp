@@ -169,10 +169,16 @@ void MiniRVAsmPrinter::emitSymbolAddress(const MachineInstr &MI) {
   const MachineOperand &MO = MI.getOperand(1);
 
   const MCExpr *Target;
-  if (MO.isGlobal())
-    Target = MCSymbolRefExpr::create(getSymbol(MO.getGlobal()), MO.getOffset(),
-                                     OutContext);
-  else if (MO.isJTI())
+  if (MO.isGlobal()) {
+    Target = MCSymbolRefExpr::create(getSymbol(MO.getGlobal()), OutContext);
+    // A global address can carry a constant offset (a memcpy split into
+    // pieces addresses the tail of a constant with one).  Fold it into the
+    // expression so that the relocation sees sym+offset.
+    if (MO.getOffset())
+      Target = MCBinaryExpr::createAdd(
+          Target, MCConstantExpr::create(MO.getOffset(), OutContext),
+          OutContext);
+  } else if (MO.isJTI())
     Target = MCSymbolRefExpr::create(GetJTISymbol(MO.getIndex()), OutContext);
   else
     Target = MCSymbolRefExpr::create(
