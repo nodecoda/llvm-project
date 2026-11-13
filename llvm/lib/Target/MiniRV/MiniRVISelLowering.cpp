@@ -84,6 +84,9 @@ MiniRVTargetLowering::MiniRVTargetLowering(const TargetMachine &TM,
   // There is no TLS model, so reject thread-local globals explicitly rather
   // than letting the selector report "Cannot select: GlobalTLSAddress".
   setOperationAction(ISD::GlobalTLSAddress, MVT::i64, Custom);
+  // Route the intrinsics through LowerOperation so that llvm.thread.pointer
+  // can be rejected; see there.
+  setOperationAction(ISD::INTRINSIC_WO_CHAIN, MVT::Other, Custom);
   setOperationAction(ISD::JumpTable, MVT::i64, Custom);
   setOperationAction(ISD::BR_JT, MVT::Other, Expand);
 
@@ -170,6 +173,15 @@ SDValue MiniRVTargetLowering::LowerOperation(SDValue Op,
     return LowerGlobalAddress(Op, DAG);
   case ISD::GlobalTLSAddress:
     report_fatal_error("MiniRV does not support thread-local storage");
+  case ISD::INTRINSIC_WO_CHAIN: {
+    // llvm.thread.pointer reads the thread pointer register, which does not
+    // exist here; reject it with the same diagnostic as a TLS global.  Any
+    // other intrinsic falls back to the selector.
+    unsigned IID = cast<ConstantSDNode>(Op.getOperand(0))->getZExtValue();
+    if (IID == Intrinsic::thread_pointer)
+      report_fatal_error("MiniRV does not support thread-local storage");
+    return SDValue();
+  }
   case ISD::JumpTable:
     return LowerJumpTable(Op, DAG);
   case ISD::FRAMEADDR:
