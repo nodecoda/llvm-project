@@ -81,6 +81,12 @@ Error MiniRVTargetMachine::buildCodeGenPipeline(
     raw_pwrite_stream *DwoOut, CodeGenFileType FileType,
     const CGPassBuilderOption &Opt, MCContext &Ctx,
     PassInstrumentationCallbacks *PIC) {
-  auto CGPB = MiniRVCodeGenPassBuilder(*this, Opt, PIC);
+  // Fold a loop's terminating condition into an existing induction variable
+  // when that is cheap.  This is what turns a counted loop that also walks a
+  // pointer into a pointer comparison and drops the counter.  The new pass
+  // manager leaves it off by default; the RISC-V pipeline enables it.
+  CGPassBuilderOption Options = Opt;
+  Options.EnableLoopTermFold = true;
+  auto CGPB = MiniRVCodeGenPassBuilder(*this, Options, PIC);
   return CGPB.buildPipeline(MPM, MAM, Out, DwoOut, FileType, Ctx);
 }
