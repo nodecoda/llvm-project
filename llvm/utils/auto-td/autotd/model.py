@@ -73,6 +73,13 @@ class Operand:
     operand_class: str | None = None
     is_mask: bool = False
     is_carry_mask: bool = False
+    #: TableGen variable name when the backend calls the operand something
+    #: other than the database field (``zimm5`` -> ``imm``)
+    var: str = ""
+
+    @property
+    def var_name(self) -> str:
+        return self.var or self.field
 
     @property
     def td_class(self) -> str:

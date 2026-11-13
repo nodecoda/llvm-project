@@ -92,6 +92,9 @@ LITERAL_ZERO_FIELDS = frozenset({"nf"})
 def assignments(spec: InstrSpec) -> list[BitAssignment]:
     """Return the full bit-assignment list for one instruction, MSB first."""
     result: list[BitAssignment] = []
+    # A taxonomy operand may name its TableGen variable differently from the
+    # database field it consumes (vsetivli's ``zimm5`` is ``$uimm``).
+    renamed = {op.field: op.var_name for op in (*spec.outs, *spec.ins) if op.var_name != op.field}
 
     for name in spec.opcode.fields:
         rng = spec.opcode.range_of(name)
@@ -111,7 +114,7 @@ def assignments(spec: InstrSpec) -> list[BitAssignment]:
         if rule is not None:
             result.extend(rule.expand())
             continue
-        result.append(BitAssignment(rng.msb, rng.lsb, name))
+        result.append(BitAssignment(rng.msb, rng.lsb, renamed.get(name, name)))
 
     carry = _carry_mask(spec)
     for token in spec.opcode.fixed:

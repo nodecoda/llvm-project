@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from autotd import emit  # noqa: E402
 from autotd.check import validate  # noqa: E402
 from autotd.encoding import assignments, instruction_format  # noqa: E402
-from autotd.model import BitRange, InstrSpec, OpcodeRef, OpcodeRow, record_name_for  # noqa: E402
+from autotd.model import BitRange, InstrSpec, OpcodeRef, OpcodeRow, Operand, record_name_for  # noqa: E402
 from autotd.loader import load_config, load_instructions  # noqa: E402
 from autotd.opcodes import OpcodeDatabase, parse_fixed, read_arg_lut  # noqa: E402
 
@@ -429,6 +429,37 @@ class DeclaredEmptyTest(FixtureCase):
         text = "\n".join(emit.render_record(spec, {}, "T"))
         self.assertIn("let Predicates = [];", text)
         self.assertEqual(validate([spec], "T"), [])
+
+
+class OperandVarTest(unittest.TestCase):
+    """A database field may be exposed under a different TableGen name."""
+
+    def test_renamed_field_drives_dag_asm_and_bits(self):
+        ranges = {
+            "vd": BitRange("vd", 11, 7),
+            "vs2": BitRange("vs2", 24, 20),
+            "zimm5": BitRange("zimm5", 19, 15),
+            "vm": BitRange("vm", 25, 25),
+        }
+        spec = InstrSpec(
+            mnemonic="demo.vi",
+            domain="d",
+            predicate="",
+            opcode=OpcodeRow("demo.vi", ("vm", "vs2", "zimm5", "vd"), (), ranges, Path("mem.td")),
+            ref=OpcodeRef("repo", "ext", "demo.vi"),
+            spec_ref="s",
+            source=Path("mem.yaml"),
+            outs=(Operand("dest", "vd", reg_class="VR"),),
+            ins=(
+                Operand("lhs", "vs2", reg_class="VR"),
+                Operand("imm", "zimm5", operand_class="simm5", var="imm"),
+                Operand("mask", "vm", operand_class="VMaskOp", is_mask=True),
+            ),
+            arg_lut=dict(ranges),
+        )
+        self.assertIn("Inst{19-15} = imm", {item.range_text() + " = " + item.expr for item in assignments(spec)})
+        self.assertEqual(emit.asm_string(spec), "$vd, $vs2, $imm$vm")
+        self.assertIn("simm5:$imm", "\n".join(emit.render_record(spec, {}, "T")))
 
 
 class RecordPropertyTest(FixtureCase):

@@ -53,6 +53,7 @@ def _operand(raw: dict) -> Operand:
         operand_class=operand_class,
         is_mask=operand_class in MASK_CLASSES,
         is_carry_mask=operand_class in CARRY_MASK_CLASSES,
+        var=str(raw.get("var", "")),
     )
 
 

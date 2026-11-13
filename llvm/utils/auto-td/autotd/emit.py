@@ -25,13 +25,13 @@ def _dag(spec: InstrSpec, config: dict, direction: str) -> str:
     if not operands:
         return f"({direction})"
     rendered = ", ".join(
-        f"{operand_class(spec, config, op.td_class)}:${op.field}" for op in operands
+        f"{operand_class(spec, config, op.td_class)}:${op.var_name}" for op in operands
     )
     return f"({direction} {rendered})"
 
 
 def asm_string(spec: InstrSpec) -> str:
-    parts = [f"${op.field}" for op in spec.outs]
+    parts = [f"${op.var_name}" for op in spec.outs]
     values = [op for op in spec.ins if not op.is_mask]
     base = next((op for op in values if op.role == "base"), None)
     offset = next((op for op in values if op.role == "offset"), None)
@@ -40,14 +40,14 @@ def asm_string(spec: InstrSpec) -> str:
     for op in values:
         if folded and op in (base, offset):
             continue
-        parts.append(f"${op.field}")
+        parts.append(f"${op.var_name}")
     if folded:
         parts.append(f"${{{offset.field}}}(${{{base.field}}})")
 
     text = ", ".join(parts)
     mask = spec.mask_operand
     if mask is not None:
-        text += f", ${mask.field}" if mask.is_carry_mask else f"${mask.field}"
+        text += f", ${mask.var_name}" if mask.is_carry_mask else f"${mask.var_name}"
     return text
 
 
