@@ -32,3 +32,18 @@ formats:
 # Every instruction carries an explicit SchedRW (possibly empty), matching the
 # hand-written backend; do not invent a scheduling stub.
 emit_scheduling_stub: false
+
+# Coverage gate: every row of these extension files must be generated from a
+# YAML instruction, or named in `retained_handwritten` with a reason.
+coverage:
+  extensions:
+    - rv_i
+    - rv64_i
+    - rv_m
+    - rv64_m
+    - rv_a
+    - rv64_a
+    - rv_zicsr
+    - rv_zifencei
+    - rv_v
+  retained_handwritten: []

@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from . import coverage, emit
-from .check import unknown_keys, validate
+from .check import coverage_problems, reference_problems, unknown_keys, validate
 from .loader import load_config, load_instructions
 from .opcodes import OpcodeDatabase
 
@@ -63,6 +63,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"auto-td: warning: {warning}", file=sys.stderr)
 
     problems = validate(specs, prefix, strict=args.strict)
+    problems += coverage_problems(db, config, specs)
+    problems += reference_problems(db, config, specs, target_root)
     if problems:
         for problem in problems:
             print(f"auto-td: error: {problem}", file=sys.stderr)

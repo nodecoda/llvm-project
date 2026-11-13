@@ -171,7 +171,11 @@ Beyond "the opcode exists and the fields add up", the checker enforces:
   mnemonic or `<base>.<suffix>` and each pins a different `fixed` set — this is
   what makes the four aq/rl variants of one atomic legal without making
   duplicates legal;
-* record names are unique after the prefix is applied.
+* record names are unique after the prefix is applied;
+* every row of `coverage.extensions` is claimed by an instruction YAML, or is
+  named in `coverage.retained_handwritten` (a typo there is an error);
+* every standard record referenced from the target's C++ or by an
+  `InstAlias` is still generated.
 
 ## Outputs
 
@@ -204,7 +208,7 @@ also has to `set(LLVM_TARGET_DEPENDS <generated file>)`.
 
 ```console
 $ python3 -m unittest discover -s llvm/utils/auto-td/tests -p 'test_*.py'
-Ran 38 tests ... OK
+Ran 54 tests ... OK
 ```
 
 The suite covers the opcode reader, every encoding rule (including the B/J/S
@@ -218,15 +222,25 @@ Four external cross-checks back the claims:
 * running the tool over the reference corpus (50 instructions) reproduces the
   reference tool's output byte for byte (`AutoTdInstrInfo.inc` and
   `AutoTdManifests.inc`);
-* the RVTrim corpus (160 instructions) reproduces the RISCV backend's own
-  records: `160 instructions compared, 0 mismatching, 0 not in reference`
-  with `tests/compare_riscv_records.py`, which compares every `Inst` bit after
+* the RVTrim corpus (**535 instructions**: 160 scalar + 375 vector)
+  reproduces the backend's own records:
+  `535 instructions compared, 0 mismatching, 0 not in reference` with
+  `tests/compare_riscv_records.py`, which compares every `Inst` bit after
   canonicalising record-local variable names;
-* the same 160 instructions assemble to byte-identical objects (and
+* the 160 scalar instructions assemble to byte-identical objects (and
   disassemble identically) under `-triple=riscv64` and `-triple=rvtrim64`;
-* 13 vector records generated from `rv_v` rows are bit-identical to the
-  backend's hand-written V records (`13 instructions compared, 0 mismatching`
-  with the same comparison script).
+* the 375 vector records reproduce every generated property, not just the
+  encoding bits: `tests/compare_record_props.py` reports
+  `375 records compared, 0 mismatching, 0 missing` against the checked-in
+  `auto-td/golden/v-all-props.txt` (predicate, `SchedRW`, `Uses`/`Defs`,
+  `Constraints`, `DestEEW`, `VS1VS2Constraint`, `ElementsDependOn`,
+  `ReadsPastVL`, `mayRaiseFPException`, `VMConstraint`, …).
+
+The coverage gate in `--check-only` also enforces that every row of the
+extensions listed in `config.yaml` has a YAML instruction (or is named in
+`retained_handwritten`), and that every standard record referenced from the
+target's C++ or by an `InstAlias` is still generated.  For RVTrim the retained
+list is empty.
 
 ## Deliberate limitations
 
@@ -235,7 +249,9 @@ Four external cross-checks back the claims:
 * The pseudo matrix is a manifest, not generated TableGen.
 * Builtin prototypes are derived from `config.builtins.types`, not guessed from
   the instruction name.
-* Vector records are proven by a synthetic fixture, not wired into RVTrim's
-  build: the hand-written `RVTrimInstrInfoV.td` records still own those names,
-  and switching them over is a separate change that also has to move the
-  selection patterns.
+* Vector *pseudo* instructions (`RVTrimInstrInfoVPseudos.td`) and selection
+  patterns remain hand-written; only the 375 real V records are generated.
+* `InstAlias`/`MnemonicAlias` spellings remain hand-written and reference the
+  generated records by name.
+* Floating-point V records are generated but cannot be assembled under the
+  current `RV64IMA_Zve64x` profile; they are verified at record level only.

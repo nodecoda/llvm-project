@@ -592,6 +592,72 @@ class RecordPropsToolTest(unittest.TestCase):
             )
 
 
+class CoverageGateTest(FixtureCase):
+    """Every enforced opcode row needs a YAML, or an explicit retention."""
+
+    def config(self, **coverage):
+        return {"coverage": {"extensions": ["rv_i"], **coverage}}
+
+    def specs_without(self, mnemonic):
+        return [spec for spec in self.specs.values() if spec.mnemonic != mnemonic]
+
+    def test_all_rows_claimed(self):
+        from autotd.check import coverage_problems
+
+        self.assertEqual(coverage_problems(self.db, self.config(), list(self.specs.values())), [])
+
+    def test_missing_yaml_is_reported(self):
+        from autotd.check import coverage_problems
+
+        problems = coverage_problems(self.db, self.config(), self.specs_without("add"))
+        self.assertTrue(any("rv_i/add" in problem for problem in problems), problems)
+
+    def test_retained_row_is_allowed(self):
+        from autotd.check import coverage_problems
+
+        config = self.config(retained_handwritten=["riscv-opcodes/rv_i/add"])
+        self.assertEqual(coverage_problems(self.db, config, self.specs_without("add")), [])
+
+    def test_retained_typo_is_reported(self):
+        from autotd.check import coverage_problems
+
+        config = self.config(retained_handwritten=["riscv-opcodes/rv_i/nope"])
+        problems = coverage_problems(self.db, config, list(self.specs.values()))
+        self.assertTrue(any("does not name a row" in problem for problem in problems), problems)
+
+    def test_unknown_extension_is_reported(self):
+        from autotd.check import coverage_problems
+
+        config = {"coverage": {"extensions": ["rv_missing"]}}
+        problems = coverage_problems(self.db, config, list(self.specs.values()))
+        self.assertTrue(any("not in the opcode database" in problem for problem in problems), problems)
+
+
+class ReferenceGateTest(FixtureCase):
+    """A C++ or alias reference to a standard record must stay generated."""
+
+    def test_reference_to_dropped_record_is_reported(self):
+        from autotd.check import reference_problems
+
+        (self.target / "TestInstrInfo.cpp").write_text(
+            "auto X = RVTrim::ADD;\n", encoding="utf-8"
+        )
+        config = {"coverage": {"extensions": ["rv_i"]}}
+        specs = [spec for spec in self.specs.values() if spec.mnemonic != "add"]
+        problems = reference_problems(self.db, config, specs, self.target)
+        self.assertTrue(any("references ADD" in problem for problem in problems), problems)
+
+    def test_non_standard_reference_is_ignored(self):
+        from autotd.check import reference_problems
+
+        (self.target / "TestInstrInfo.cpp").write_text(
+            "auto X = RVTrim::VENDOR_ONLY;\n", encoding="utf-8"
+        )
+        config = {"coverage": {"extensions": ["rv_i"]}}
+        problems = reference_problems(self.db, config, list(self.specs.values()), self.target)
+        self.assertEqual(problems, [])
+
+
 class CliTest(FixtureCase):
     def test_check_only_passes(self):
         from autotd.cli import main

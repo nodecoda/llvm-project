@@ -81,6 +81,17 @@ class OpcodeDatabase:
     def lookup(self, ref) -> OpcodeRow | None:
         return self._rows.get((ref.repo, ref.extension, ref.key))
 
+    def rows(self, repo: str, extension: str) -> dict[str, OpcodeRow]:
+        """Every row of one extension file, keyed by database key."""
+        return {
+            key: row
+            for (rep, ext, key), row in self._rows.items()
+            if rep == repo and ext == extension
+        }
+
+    def refs(self, repo: str, extension: str) -> set[str]:
+        return {f"{repo}/{extension}/{key}" for key in self.rows(repo, extension)}
+
     def lut_for(self, repo: str) -> dict[str, BitRange]:
         return self._luts.get(repo, {})
 

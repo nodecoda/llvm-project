@@ -170,3 +170,81 @@ def _check_uniqueness(specs: list[InstrSpec], prefix: str) -> list[str]:
         if len(group) > 1:
             problems.append(f"record name collision: {record} from {[s.mnemonic for s in group]}")
     return problems
+
+
+def coverage_problems(db, config: dict, specs: list[InstrSpec]) -> list[str]:
+    """Every row of the enforced extensions must be claimed by an instruction.
+
+    A row may be claimed by several instructions (the aq/rl atomics share one
+    database line), so this checks the *row*, not a 1:1 count.  Rows that are
+    deliberately still hand-written must be named in ``retained_handwritten``
+    so the gap is a decision instead of an oversight.
+    """
+    coverage = config.get("coverage") or {}
+    extensions = coverage.get("extensions") or []
+    retained = set(coverage.get("retained_handwritten") or [])
+    claimed = {str(spec.ref) for spec in specs}
+    known: set[str] = set()
+    problems: list[str] = []
+
+    for entry in extensions:
+        repo, _, extension = str(entry).partition("/")
+        if not extension:
+            repo, extension = "riscv-opcodes", repo
+        rows = db.rows(repo, extension)
+        if not rows:
+            problems.append(f"coverage: extension '{entry}' is not in the opcode database")
+            continue
+        refs = db.refs(repo, extension)
+        known |= refs
+        for ref in sorted(refs):
+            if ref in claimed or ref in retained:
+                continue
+            mnemonic = rows[ref.rsplit("/", 1)[-1]].mnemonic
+            problems.append(f"coverage: {ref} ({mnemonic}) has no instruction YAML")
+
+    for ref in sorted(retained - known):
+        problems.append(
+            f"coverage: retained_handwritten entry '{ref}' does not name a row "
+            "in any enforced extension"
+        )
+    return problems
+
+
+def reference_problems(db, config: dict, specs: list[InstrSpec], target_root) -> list[str]:
+    """Standard records referenced from C++ or by an alias must be generated.
+
+    References to pseudo instructions and vendor extensions are ignored: only
+    names that exist in the enforced opcode extensions are checked, so this
+    catches a dropped YAML without needing a list of every pseudo.
+    """
+    import re
+    from pathlib import Path
+
+    coverage = config.get("coverage") or {}
+    standard: set[str] = set()
+    for entry in coverage.get("extensions") or []:
+        repo, _, extension = str(entry).partition("/")
+        if not extension:
+            repo, extension = "riscv-opcodes", repo
+        for key, row in db.rows(repo, extension).items():
+            del key
+            standard.add(re.sub(r"[.\-]", "_", row.mnemonic).upper())
+
+    generated = {spec.record_name("") for spec in specs}
+    root = Path(target_root)
+    problems: list[str] = []
+
+    sources = list(root.glob("*.cpp")) + list(root.glob("*.td"))
+    cpp_ref = re.compile(r"RVTrim::([A-Z][A-Z0-9_]+)")
+    alias_ref = re.compile(r"\(([A-Z][A-Z0-9_]*)\s+[A-Z]")
+    for path in sorted(sources):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        found = set(cpp_ref.findall(text))
+        if path.suffix == ".td":
+            found |= set(alias_ref.findall(text))
+        for name in sorted(found & standard - generated):
+            problems.append(
+                f"coverage: {path.name} references {name}, which no instruction YAML generates"
+            )
+    return problems
