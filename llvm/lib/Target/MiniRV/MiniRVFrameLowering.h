@@ -58,10 +58,13 @@ public:
 
   /// Add \p Val to \p SrcReg and put the result in \p DestReg.  A small
   /// adjustment is a single addi; anything that does not fit in twelve bits is
-  /// materialised with lui+addi and added.
-  void adjustReg(MachineBasicBlock &MBB, MachineBasicBlock::iterator II,
-                 const DebugLoc &DL, Register DestReg, Register SrcReg,
-                 int64_t Val, MachineInstr::MIFlag Flag) const;
+  /// materialised with lui+addi and added.  Returns the insertion point just
+  /// after the emitted instructions so that the caller can attach CFI state
+  /// to the adjusted value.
+  MachineBasicBlock::iterator
+  adjustReg(MachineBasicBlock &MBB, MachineBasicBlock::iterator II,
+            const DebugLoc &DL, Register DestReg, Register SrcReg, int64_t Val,
+            MachineInstr::MIFlag Flag) const;
 
   /// Round the stack pointer down to \p MaxAlign.  Used when an object asks
   /// for more alignment than the ABI stack alignment provides.

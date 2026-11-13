@@ -20,7 +20,7 @@ declare ptr @opaque(ptr)
 ; CHECK-NEXT:  ld x8, 8(x2)
 ; CHECK-NEXT:  addi x2, x2, 16
 ; CHECK-NEXT:  jalr x0, 0(x1)
-define ptr @frame() {
+define ptr @frame() #0 {
   %p = call ptr @llvm.frameaddress.p0(i32 0)
   ret ptr %p
 }
@@ -34,7 +34,7 @@ define ptr @frame() {
 ; CHECK-NEXT:  addi [[A:x[0-9]+]], x8, -24
 ; CHECK-NEXT:  sd x10, 0([[A]])
 ; CHECK-NEXT:  add x10, x10, x8
-define i64 @frame_and_alloca(i64 %n) {
+define i64 @frame_and_alloca(i64 %n) #0 {
   %a = alloca [2 x i64], align 8
   store i64 %n, ptr %a
   %p = call ptr @llvm.frameaddress.p0(i32 0)
@@ -50,7 +50,7 @@ define i64 @frame_and_alloca(i64 %n) {
 ; CHECK-NOT:   addi x2, x2, -
 ; CHECK:       addi x10, x1, 0
 ; CHECK-NEXT:  jalr x0, 0(x1)
-define ptr @retaddr() {
+define ptr @retaddr() #0 {
   %p = call ptr @llvm.returnaddress(i32 0)
   ret ptr %p
 }
@@ -67,7 +67,7 @@ define ptr @retaddr() {
 ; CHECK-NEXT:  addi x10, x8, 0
 ; CHECK:       ld x8, 0(x2)
 ; CHECK-NEXT:  ld x1, 8(x2)
-define ptr @retaddr_after_call(ptr %x) {
+define ptr @retaddr_after_call(ptr %x) #0 {
   %r = call ptr @opaque(ptr %x)
   %p = call ptr @llvm.returnaddress(i32 0)
   ret ptr %p
@@ -85,10 +85,14 @@ define ptr @retaddr_after_call(ptr %x) {
 ; CHECK-NEXT:  addi x2, [[NEWSP]], 0
 ; CHECK:       sd
 ; CHECK:       addi x2, [[SAVED]], 0
-define i64 @save_restore(i64 %n) {
+define i64 @save_restore(i64 %n) #0 {
   %sp = call ptr @llvm.stacksave.p0()
   %a = alloca i64, i64 %n, align 8
   store i64 5, ptr %a
   call void @llvm.stackrestore.p0(ptr %sp)
   ret i64 5
 }
+
+; These tests describe the frame layout itself; opt out of the unwind table so
+; that CFI directives do not clutter the instruction sequences under test.
+attributes #0 = { nounwind }

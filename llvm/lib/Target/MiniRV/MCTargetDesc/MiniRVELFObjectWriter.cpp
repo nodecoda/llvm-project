@@ -10,6 +10,7 @@
 #include "llvm/MC/MCELFObjectWriter.h"
 #include "llvm/MC/MCFixup.h"
 #include "llvm/MC/MCObjectWriter.h"
+#include "llvm/MC/MCValue.h"
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace llvm;
@@ -22,8 +23,11 @@ public:
                                 /*HasRelocationAddend=*/true) {}
 
 protected:
-  unsigned getRelocType(const MCFixup &Fixup, const MCValue &,
-                        bool) const override {
+  unsigned getRelocType(const MCFixup &Fixup, const MCValue &Target,
+                        bool IsPCRel) const override {
+    // ADD/SUB pairs used for symbol differences already carry their ELF type.
+    if (mc::isRelocation(Fixup.getKind()))
+      return Fixup.getKind();
     switch (Fixup.getKind()) {
     case MiniRV::fixup_minirv_branch:
       return ELF::R_RISCV_BRANCH;
@@ -37,7 +41,13 @@ protected:
     case FK_Data_8:
       return ELF::R_RISCV_64;
     case FK_Data_4:
-      return ELF::R_RISCV_32;
+      // Unwind tables describe the return address with a PC-relative 32-bit
+      // field; an absolute R_RISCV_32 would be wrong once the section is
+      // placed at its final address.  The FDE names that relocation with an
+      // explicit specifier; ordinary PC-relative data has the fixup flag.
+      if (Target.getSpecifier() == ELF::R_RISCV_32_PCREL)
+        return ELF::R_RISCV_32_PCREL;
+      return IsPCRel ? ELF::R_RISCV_32_PCREL : ELF::R_RISCV_32;
     default:
       llvm_unreachable("Unknown fixup kind!");
     }

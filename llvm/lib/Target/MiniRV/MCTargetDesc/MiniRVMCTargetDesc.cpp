@@ -10,6 +10,7 @@
 #include "MiniRVInstPrinter.h"
 #include "MiniRVMCAsmInfo.h"
 #include "TargetInfo/MiniRVTargetInfo.h"
+#include "llvm/MC/MCDwarf.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCStreamer.h"
@@ -44,7 +45,13 @@ static MCRegisterInfo *createMiniRVMCRegisterInfo(const Triple &TT) {
 static MCAsmInfo *createMiniRVMCAsmInfo(const MCRegisterInfo &MRI,
                                         const Triple &TT,
                                         const MCTargetOptions &Options) {
-  return new MiniRVMCAsmInfo(TT, Options);
+  MCAsmInfo *MAI = new MiniRVMCAsmInfo(TT, Options);
+  // The unwinder starts from the stack pointer as it was on entry, before the
+  // prologue has adjusted it.  Every frame move emitted by the prologue is
+  // relative to that value.
+  unsigned SP = MRI.getDwarfRegNum(MiniRV::X2, /*IsEH=*/true);
+  MAI->addInitialFrameState(MCCFIInstruction::cfiDefCfa(nullptr, SP, 0));
+  return MAI;
 }
 
 static MCSubtargetInfo *createMiniRVMCSubtargetInfo(const Triple &TT,

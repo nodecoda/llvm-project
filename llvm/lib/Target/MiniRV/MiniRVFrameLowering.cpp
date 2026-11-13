@@ -16,6 +16,7 @@
 #include "MiniRVFrameLowering.h"
 #include "MiniRVInstrInfo.h"
 #include "MiniRVSubtarget.h"
+#include "llvm/CodeGen/CFIInstBuilder.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
@@ -101,11 +102,14 @@ bool MiniRVFrameLowering::spillCalleeSavedRegisters(
 bool MiniRVFrameLowering::restoreCalleeSavedRegisters(
     MachineBasicBlock &MBB, MachineBasicBlock::iterator MI,
     MutableArrayRef<CalleeSavedInfo> CSI, const TargetRegisterInfo *TRI) const {
+  bool NeedsCFI = MBB.getParent()->needsFrameMoves();
   for (const CalleeSavedInfo &CS : reverse(CSI)) {
     Register Reg = CS.getReg();
     const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(Reg);
     TII.loadRegFromStackSlot(MBB, MI, Reg, CS.getFrameIdx(), RC, Register(),
                              /*SubReg=*/0, MachineInstr::FrameDestroy);
+    if (NeedsCFI)
+      CFIInstBuilder(MBB, MI, MachineInstr::FrameDestroy).buildRestore(Reg);
   }
   return true;
 }
@@ -134,15 +138,19 @@ void MiniRVFrameLowering::emitPrologue(MachineFunction &MF,
     report_fatal_error("MiniRV frames must fit in a 32-bit immediate");
   DebugLoc DL =
       MBB.begin() != MBB.end() ? MBB.begin()->getDebugLoc() : DebugLoc();
+  bool NeedsCFI = MF.needsFrameMoves();
 
   // The adjustment has to be the first thing in the function: the callee-saved
   // spills that PEI inserts afterwards use offsets relative to the new SP.
-  if (StackSize)
-    adjustReg(MBB, MBB.begin(), DL, MiniRV::X2, MiniRV::X2,
-              -static_cast<int64_t>(StackSize), MachineInstr::FrameSetup);
-
-  if (!HasFP)
-    return;
+  MachineBasicBlock::iterator AfterSP = MBB.begin();
+  if (StackSize) {
+    AfterSP = adjustReg(MBB, MBB.begin(), DL, MiniRV::X2, MiniRV::X2,
+                        -static_cast<int64_t>(StackSize),
+                        MachineInstr::FrameSetup);
+    if (NeedsCFI)
+      CFIInstBuilder(MBB, AfterSP, MachineInstr::FrameSetup)
+          .buildDefCFAOffset(StackSize);
+  }
 
   // The frame pointer is set to the incoming stack pointer and must be
   // written after the old value has been spilled, so it goes behind the
@@ -152,8 +160,29 @@ void MiniRVFrameLowering::emitPrologue(MachineFunction &MF,
   while (InsertPt != MBB.end() &&
          InsertPt->getFlag(MachineInstr::FrameSetup))
     ++InsertPt;
-  adjustReg(MBB, InsertPt, DL, MiniRV::X8, MiniRV::X2,
-            static_cast<int64_t>(StackSize), MachineInstr::FrameSetup);
+
+  // The spill slots only have their final offsets after PEI has laid out the
+  // frame, so the unwind table is described here rather than while the stores
+  // are emitted.  The offsets are relative to the CFA, which is the incoming
+  // stack pointer either way.
+  if (NeedsCFI) {
+    CFIInstBuilder CFIBuilder(MBB, InsertPt, MachineInstr::FrameSetup);
+    for (const CalleeSavedInfo &CS : MFI.getCalleeSavedInfo())
+      CFIBuilder.buildOffset(CS.getReg(),
+                             MFI.getObjectOffset(CS.getFrameIdx()));
+  }
+
+  if (!HasFP)
+    return;
+
+  AfterSP = adjustReg(MBB, InsertPt, DL, MiniRV::X8, MiniRV::X2,
+                      static_cast<int64_t>(StackSize),
+                      MachineInstr::FrameSetup);
+  // From here on the frame is described relative to X8, which holds the
+  // incoming stack pointer and therefore the CFA.
+  if (NeedsCFI)
+    CFIInstBuilder(MBB, AfterSP, MachineInstr::FrameSetup)
+        .buildDefCFARegister(MiniRV::X8);
 
   // An object that asks for more than the ABI stack alignment needs the stack
   // pointer rounded down.  This runs after the callee-saved spills, which are
@@ -205,6 +234,7 @@ void MiniRVFrameLowering::realignStack(MachineBasicBlock &MBB,
 void MiniRVFrameLowering::emitEpilogue(MachineFunction &MF,
                                        MachineBasicBlock &MBB) const {
   uint64_t StackSize = MF.getFrameInfo().getStackSize();
+  bool NeedsCFI = MF.needsFrameMoves();
 
   if (hasFP(MF)) {
     // The stack pointer may have been moved by a dynamic alloca, so the
@@ -216,8 +246,14 @@ void MiniRVFrameLowering::emitEpilogue(MachineFunction &MF,
            std::prev(MBBI)->getFlag(MachineInstr::FrameDestroy))
       --MBBI;
     DebugLoc DL = MBBI != MBB.end() ? MBBI->getDebugLoc() : DebugLoc();
-    adjustReg(MBB, MBBI, DL, MiniRV::X2, MiniRV::X8,
-              -static_cast<int64_t>(StackSize), MachineInstr::FrameDestroy);
+    auto AfterSP = adjustReg(MBB, MBBI, DL, MiniRV::X2, MiniRV::X8,
+                             -static_cast<int64_t>(StackSize),
+                             MachineInstr::FrameDestroy);
+    // The stack pointer is the CFA base again; the offset still accounts for
+    // the frame that has not been released yet.
+    if (NeedsCFI)
+      CFIInstBuilder(MBB, AfterSP, MachineInstr::FrameDestroy)
+          .buildDefCFARegister(MiniRV::X2);
   }
 
   if (!StackSize)
@@ -227,24 +263,30 @@ void MiniRVFrameLowering::emitEpilogue(MachineFunction &MF,
   // the return, so the SP must be released after them.
   MachineBasicBlock::iterator MBBI = MBB.getLastNonDebugInstr();
   DebugLoc DL = MBBI->getDebugLoc();
-  adjustReg(MBB, MBBI, DL, MiniRV::X2, MiniRV::X2,
-            static_cast<int64_t>(StackSize), MachineInstr::FrameDestroy);
+  auto AfterSP = adjustReg(MBB, MBBI, DL, MiniRV::X2, MiniRV::X2,
+                           static_cast<int64_t>(StackSize),
+                           MachineInstr::FrameDestroy);
+  // The frame is gone: the CFA is the stack pointer again.
+  if (NeedsCFI)
+    CFIInstBuilder(MBB, AfterSP, MachineInstr::FrameDestroy)
+        .buildDefCFAOffset(0);
 }
 
-void MiniRVFrameLowering::adjustReg(MachineBasicBlock &MBB,
-                                    MachineBasicBlock::iterator II,
-                                    const DebugLoc &DL, Register DestReg,
-                                    Register SrcReg, int64_t Val,
-                                    MachineInstr::MIFlag Flag) const {
+MachineBasicBlock::iterator
+MiniRVFrameLowering::adjustReg(MachineBasicBlock &MBB,
+                               MachineBasicBlock::iterator II,
+                               const DebugLoc &DL, Register DestReg,
+                               Register SrcReg, int64_t Val,
+                               MachineInstr::MIFlag Flag) const {
   if (DestReg == SrcReg && Val == 0)
-    return;
+    return II;
 
   if (isInt<12>(Val)) {
-    BuildMI(MBB, II, DL, TII.get(MiniRV::ADDI), DestReg)
-        .addReg(SrcReg)
-        .addImm(Val)
-        .setMIFlag(Flag);
-    return;
+    auto MI = BuildMI(MBB, II, DL, TII.get(MiniRV::ADDI), DestReg)
+                  .addReg(SrcReg)
+                  .addImm(Val)
+                  .setMIFlag(Flag);
+    return std::next(MI->getIterator());
   }
 
   assert(isInt<32>(Val) && "MiniRV cannot materialise a larger adjustment");
@@ -263,10 +305,11 @@ void MiniRVFrameLowering::adjustReg(MachineBasicBlock &MBB,
       .addReg(Scratch)
       .addImm(Lo12)
       .setMIFlag(Flag);
-  BuildMI(MBB, II, DL, TII.get(MiniRV::ADD), DestReg)
-      .addReg(Scratch)
-      .addReg(SrcReg)
-      .setMIFlag(Flag);
+  auto MI = BuildMI(MBB, II, DL, TII.get(MiniRV::ADD), DestReg)
+                .addReg(Scratch)
+                .addReg(SrcReg)
+                .setMIFlag(Flag);
+  return std::next(MI->getIterator());
 }
 
 MachineBasicBlock::iterator MiniRVFrameLowering::eliminateCallFramePseudoInstr(
@@ -285,8 +328,8 @@ MachineBasicBlock::iterator MiniRVFrameLowering::eliminateCallFramePseudoInstr(
     if (Amount) {
       if (MI->getOpcode() == MiniRV::ADJCALLSTACKDOWN)
         Amount = -Amount;
-      adjustReg(MBB, MI, MI->getDebugLoc(), MiniRV::X2, MiniRV::X2, Amount,
-                MachineInstr::NoFlags);
+      (void)adjustReg(MBB, MI, MI->getDebugLoc(), MiniRV::X2, MiniRV::X2,
+                      Amount, MachineInstr::NoFlags);
     }
   }
   return MBB.erase(MI);

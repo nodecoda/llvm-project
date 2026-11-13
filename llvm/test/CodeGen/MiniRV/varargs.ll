@@ -29,7 +29,7 @@ declare void @llvm.va_end.p0(ptr)
 ; CHECK-NEXT:  sd [[NEXT]], 0([[AP]])
 ; CHECK-NEXT:  ld {{x[0-9]+}}, 0([[SLOT]])
 ; CHECK:       addi x2, x2, 64
-define i64 @sum(i64 %n, ...) {
+define i64 @sum(i64 %n, ...) #0 {
 entry:
   %ap = alloca ptr, align 8
   call void @llvm.va_start.p0(ptr %ap)
@@ -54,7 +54,7 @@ exit:
 ; CHECK-NEXT:  addi [[NEXT:x[0-9]+]], [[SLOT]], 8
 ; CHECK-NEXT:  sd [[NEXT]], 0(
 ; CHECK-NEXT:  lw {{x[0-9]+}}, 0([[SLOT]])
-define i64 @sum32(i64 %n, ...) {
+define i64 @sum32(i64 %n, ...) #0 {
 entry:
   %ap = alloca ptr, align 8
   call void @llvm.va_start.p0(ptr %ap)
@@ -83,7 +83,7 @@ exit:
 ; CHECK-NEXT:  addi [[AREA:x[0-9]+]], x2, 16
 ; CHECK-NEXT:  sd [[AREA]], 0([[AP]])
 define i64 @sum_stack(i64 %a, i64 %b, i64 %c, i64 %d, i64 %e, i64 %f, i64 %g,
-                      i64 %h, ...) {
+                      i64 %h, ...) #0 {
 entry:
   %ap = alloca ptr, align 8
   call void @llvm.va_start.p0(ptr %ap)
@@ -109,7 +109,7 @@ exit:
 ; CHECK-NEXT:  addi [[AREA:x[0-9]+]], x2, 32
 ; CHECK-NEXT:  sd [[AREA]], 0([[AP]])
 define i64 @named_stack(i64 %a0, i64 %a1, i64 %a2, i64 %a3, i64 %a4, i64 %a5,
-                        i64 %a6, i64 %a7, i64 %a8, i64 %a9, ...) {
+                        i64 %a6, i64 %a7, i64 %a8, i64 %a9, ...) #0 {
 entry:
   %ap = alloca ptr, align 8
   call void @llvm.va_start.p0(ptr %ap)
@@ -141,7 +141,7 @@ exit:
 ; CHECK:       sd x17, 40([[AREA]])
 ; CHECK:       addi [[AP:x[0-9]+]], x8, -64
 ; CHECK-NEXT:  sd [[AREA]], 0([[AP]])
-define i64 @vla_sum(i64 %n, i64 %m, ...) {
+define i64 @vla_sum(i64 %n, i64 %m, ...) #0 {
 entry:
   %buf = alloca i64, i64 %m, align 8
   store i64 7, ptr %buf
@@ -171,7 +171,7 @@ exit:
 ; CHECK-DAG:   addi [[NEXT:x[0-9]+]], [[AREA]], 8
 ; CHECK-DAG:   sd [[AREA]], 0(
 ; CHECK-DAG:   sd [[NEXT]], 0(
-define i64 @copy_test(i64 %n, ...) {
+define i64 @copy_test(i64 %n, ...) #0 {
 entry:
   %ap = alloca ptr, align 8
   %ap2 = alloca ptr, align 8
@@ -190,9 +190,13 @@ entry:
 ; CHECK:       sd {{x[0-9]+}}, 8(x2)
 ; CHECK:       addi x17, x0, 7
 ; CHECK:       jal x1, sum
-define i64 @caller() {
+define i64 @caller() #0 {
 entry:
   %r = call i64 (i64, ...) @sum(i64 9, i64 1, i64 2, i64 3, i64 4, i64 5,
                                 i64 6, i64 7, i64 8, i64 9)
   ret i64 %r
 }
+
+; These tests describe the frame layout itself; opt out of the unwind table so
+; that CFI directives do not clutter the instruction sequences under test.
+attributes #0 = { nounwind }

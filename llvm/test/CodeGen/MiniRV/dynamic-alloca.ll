@@ -22,7 +22,7 @@
 ; CHECK-NEXT:  ld x8, 8(x2)
 ; CHECK-NEXT:  addi x2, x2, 16
 ; CHECK-NEXT:  jalr x0, 0(x1)
-define i64 @vla(i64 %n) {
+define i64 @vla(i64 %n) #0 {
 entry:
   %a = alloca i64, i64 %n, align 8
   %p = getelementptr i64, ptr %a, i64 1
@@ -41,7 +41,7 @@ declare i64 @nine(i64, i64, i64, i64, i64, i64, i64, i64, i64)
 ; CHECK-NEXT:  sd x10, 0(x2)
 ; CHECK:       jal x1, nine
 ; CHECK-NEXT:  addi x2, x2, 16
-define i64 @vla_call(i64 %n) {
+define i64 @vla_call(i64 %n) #0 {
 entry:
   %a = alloca i64, i64 %n, align 8
   %p = getelementptr i64, ptr %a, i64 1
@@ -72,7 +72,7 @@ entry:
 ; CHECK:       lui x2, -1
 ; CHECK-NEXT:  addi x2, x2, 1680
 ; CHECK-NEXT:  add x2, x2, x8
-define i64 @vla_big(i64 %n) {
+define i64 @vla_big(i64 %n) #0 {
 entry:
   %fixed = alloca [300 x i64], align 8
   %dyn = alloca i64, i64 %n, align 8
@@ -90,7 +90,7 @@ entry:
 ; CHECK-LABEL: no_vla:
 ; CHECK-NOT:   x8
 ; CHECK:       jalr x0, 0(x1)
-define i64 @no_vla(i64 %n) {
+define i64 @no_vla(i64 %n) #0 {
 entry:
   %a = alloca [2 x i64], align 8
   %p = getelementptr [2 x i64], ptr %a, i64 0, i64 1
@@ -98,3 +98,7 @@ entry:
   %v = load i64, ptr %p
   ret i64 %v
 }
+
+; These tests describe the frame layout itself; opt out of the unwind table so
+; that CFI directives do not clutter the instruction sequences under test.
+attributes #0 = { nounwind }

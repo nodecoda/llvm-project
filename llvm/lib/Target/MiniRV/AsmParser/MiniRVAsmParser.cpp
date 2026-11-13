@@ -76,6 +76,11 @@ public:
                   const MCInstrInfo &MII)
       : MCTargetAsmParser(STI, MII), Parser(Parser) {
     MCAsmParserExtension::Initialize(Parser);
+    // GNU RISC-V assembly spells the data directives .half/.word/.dword; the
+    // generic parser only knows the numeric-size names.
+    Parser.addAliasForDirective(".half", ".2byte");
+    Parser.addAliasForDirective(".word", ".4byte");
+    Parser.addAliasForDirective(".dword", ".8byte");
     setAvailableFeatures(ComputeAvailableFeatures(STI.getFeatureBits()));
   }
 };

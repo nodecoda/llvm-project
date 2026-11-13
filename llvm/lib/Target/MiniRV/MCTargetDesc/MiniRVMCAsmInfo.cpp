@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "MiniRVMCAsmInfo.h"
+#include "llvm/BinaryFormat/ELF.h"
 using namespace llvm;
 
 void MiniRVMCAsmInfo::anchor() {}
@@ -21,4 +22,8 @@ MiniRVMCAsmInfo::MiniRVMCAsmInfo(const Triple &TT,
   AlignmentIsInBytes = false;
   UsesELFSectionDirectiveForBSS = true;
   SupportsDebugInformation = true;
+  // The FDE's initial location is a 32-bit PC-relative field.  Naming the
+  // relocation directly keeps it from being confused with a symbol
+  // difference, which would be emitted as an ADD/SUB pair.
+  DwarfFDERelSymbolSpec = ELF::R_RISCV_32_PCREL;
 }

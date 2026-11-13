@@ -47,6 +47,50 @@ MCFixupKindInfo MiniRVAsmBackend::getFixupKindInfo(MCFixupKind Kind) const {
 void MiniRVAsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
                                   const MCValue &Target, uint8_t *Data,
                                   uint64_t Value, bool IsResolved) {
+  // A symbol difference (A - B) cannot be represented by a single relocation:
+  // the linker needs an ADD for A and a SUB for B.  Profile data describes a
+  // counter relative to its descriptor this way.
+  if (Target.getSubSym()) {
+    assert(Target.getSpecifier() == 0 &&
+           "relocatable SymA-SymB cannot have a relocation specifier");
+    unsigned AddType = 0, SubType = 0;
+    switch (Fixup.getKind()) {
+    case FK_Data_1:
+      AddType = ELF::R_RISCV_ADD8;
+      SubType = ELF::R_RISCV_SUB8;
+      break;
+    case FK_Data_2:
+      AddType = ELF::R_RISCV_ADD16;
+      SubType = ELF::R_RISCV_SUB16;
+      break;
+    case FK_Data_4:
+      AddType = ELF::R_RISCV_ADD32;
+      SubType = ELF::R_RISCV_SUB32;
+      break;
+    case FK_Data_8:
+      AddType = ELF::R_RISCV_ADD64;
+      SubType = ELF::R_RISCV_SUB64;
+      break;
+    default:
+      llvm_unreachable("unsupported fixup size");
+    }
+    uint64_t AddValue = 0, SubValue = 0;
+    MCValue AddTarget =
+        MCValue::get(Target.getAddSym(), nullptr, Target.getConstant());
+    MCValue SubTarget = MCValue::get(Target.getSubSym());
+    Asm->getWriter().recordRelocation(
+        F, MCFixup::create(Fixup.getOffset(), nullptr, AddType), AddTarget,
+        AddValue);
+    Asm->getWriter().recordRelocation(
+        F, MCFixup::create(Fixup.getOffset(), nullptr, SubType), SubTarget,
+        SubValue);
+    Value = AddValue - SubValue;
+    // The two relocations carry the symbols; only the constant part is left
+    // for the data bytes, so do not record the difference a third time.
+    IsResolved = true;
+    // Fall through to write the constant part of the difference.
+  }
+
   // Data fixups -- the debug frame uses a four-byte one -- are not
   // instruction-shaped: write the value as a plain little-endian integer.
   if (Fixup.getKind() < FirstTargetFixupKind) {

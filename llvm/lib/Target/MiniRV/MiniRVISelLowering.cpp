@@ -87,6 +87,10 @@ MiniRVTargetLowering::MiniRVTargetLowering(const TargetMachine &TM,
   // Route the intrinsics through LowerOperation so that llvm.thread.pointer
   // can be rejected; see there.
   setOperationAction(ISD::INTRINSIC_WO_CHAIN, MVT::Other, Custom);
+  // There is no cycle counter CSR, and the generic expansion would silently
+  // produce zero; reject the intrinsic instead of returning a wrong value.
+  setOperationAction({ISD::READCYCLECOUNTER, ISD::READSTEADYCOUNTER}, MVT::i64,
+                     Custom);
   setOperationAction(ISD::JumpTable, MVT::i64, Custom);
   setOperationAction(ISD::BR_JT, MVT::Other, Expand);
 
@@ -182,6 +186,9 @@ SDValue MiniRVTargetLowering::LowerOperation(SDValue Op,
       report_fatal_error("MiniRV does not support thread-local storage");
     return SDValue();
   }
+  case ISD::READCYCLECOUNTER:
+  case ISD::READSTEADYCOUNTER:
+    report_fatal_error("MiniRV has no cycle counter");
   case ISD::JumpTable:
     return LowerJumpTable(Op, DAG);
   case ISD::FRAMEADDR:

@@ -15,7 +15,7 @@
 ; CHECK-NEXT:  addi x6, x6, -1696
 ; CHECK-NEXT:  add x2, x6, x2
 ; CHECK-NEXT:  jalr x0, 0(x1)
-define i64 @big_array(i64 %n) {
+define i64 @big_array(i64 %n) #0 {
 entry:
   %a = alloca [300 x i64], align 8
   %p = getelementptr inbounds [300 x i64], ptr %a, i64 0, i64 299
@@ -32,7 +32,7 @@ entry:
 ; CHECK-NEXT:  addi [[BASE]], [[BASE]], -1696
 ; CHECK-NEXT:  add [[BASE]], [[BASE]], x2
 ; CHECK-NEXT:  sd x10, 0([[BASE]])
-define i64 @two_arrays(i64 %n) {
+define i64 @two_arrays(i64 %n) #0 {
 entry:
   %a = alloca [300 x i64], align 8
   %b = alloca [300 x i64], align 8
@@ -64,7 +64,7 @@ entry:
 ; CHECK-NEXT:  addi x6, x6, -1680
 ; CHECK-NEXT:  add x2, x6, x2
 ; CHECK-NEXT:  jalr x0, 0(x1)
-define i64 @caller(i64 %n) {
+define i64 @caller(i64 %n) #0 {
 entry:
   %a = alloca [300 x i64], align 8
   %p = getelementptr inbounds [300 x i64], ptr %a, i64 0, i64 0
@@ -76,3 +76,7 @@ entry:
 }
 
 declare i64 @callee(i64)
+
+; These tests describe the frame layout itself; opt out of the unwind table so
+; that CFI directives do not clutter the instruction sequences under test.
+attributes #0 = { nounwind }
