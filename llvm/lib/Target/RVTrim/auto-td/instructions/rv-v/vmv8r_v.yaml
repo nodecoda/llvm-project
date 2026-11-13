@@ -1,0 +1,6 @@
+mnemonic: vmv8r.v
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vmv8r_v}
+spec: rvtrim.vector.v_vmv8r_v
+domain: rv-v
+status: auto_full
+sched: [WriteVMov8V, ReadVMov8V]

@@ -1,0 +1,6 @@
+mnemonic: vlm.v
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vlm_v}
+spec: rvtrim.vector.v_vlm_v
+domain: rv-v
+status: auto_full
+sched: [WriteVLDM_WorstCase, ReadVLDX]

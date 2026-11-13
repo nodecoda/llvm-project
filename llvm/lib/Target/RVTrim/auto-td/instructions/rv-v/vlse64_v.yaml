@@ -1,0 +1,7 @@
+mnemonic: vlse64.v
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vlse64_v}
+spec: rvtrim.vector.v_vlse16_v
+domain: rv-v
+status: auto_full
+sched: [WriteVLDS64_WorstCase, ReadVPassthru_WorstCase, ReadVLDX, ReadVLDSX, ReadVMask]
+predicate: [HasVInstructionsI64]

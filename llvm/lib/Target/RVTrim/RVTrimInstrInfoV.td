@@ -1014,51 +1014,9 @@ multiclass VWholeLoadN<int eew, int lmul, string opcodestr, RegisterClass VRC> {
 
 // vsetvli/vsetivli/vsetvl are generated from auto-td/opcodes.
 
-let ElementsDependOn = EltDepsNone in
-foreach eew = [8, 16, 32, 64] in {
-  defvar w = !cast<RVTrimWidth>("LSWidth" # eew);
-
-  let Predicates = !if(!eq(eew, 64), [HasVInstructionsI64],
-                                     [HasVInstructions]) in {
-    // Vector Unit-Stride Instructions
-    def VLE#eew#_V : VUnitStrideLoad<w, "vle"#eew#".v">, VLESchedMC;
-    def VSE#eew#_V  : VUnitStrideStore<w,  "vse"#eew#".v">, VSESchedMC;
-
-    // Vector Unit-Stride Fault-only-First Loads
-    def VLE#eew#FF_V : VUnitStrideLoadFF<w,  "vle"#eew#"ff.v">, VLFSchedMC;
-
-    // Vector Strided Instructions
-    def VLSE#eew#_V  : VStridedLoad<w,  "vlse"#eew#".v">, VLSSchedMC<eew>;
-    def VSSE#eew#_V  : VStridedStore<w,  "vsse"#eew#".v">, VSSSchedMC<eew>;
-
-    defm VL1R : VWholeLoadN<eew, 1, "vl1r", VR>;
-    defm VL2R : VWholeLoadN<eew, 2, "vl2r", VRM2>;
-    defm VL4R : VWholeLoadN<eew, 4, "vl4r", VRM4>;
-    defm VL8R : VWholeLoadN<eew, 8, "vl8r", VRM8>;
-  }
-
-  let Predicates = !if(!eq(eew, 64), [IsRV64, HasVInstructionsI64],
-                                     [HasVInstructions]) in
-  defm "" : VIndexLoadStore<eew>;
-}
-
 let Predicates = [HasVInstructions] in {
-let ElementsDependOn = EltDepsNone in
-def VLM_V : VUnitStrideMaskLoad<"vlm.v">,
-             Sched<[WriteVLDM_WorstCase, ReadVLDX]>;
-def VSM_V : VUnitStrideMaskStore<"vsm.v">,
-             Sched<[WriteVSTM_WorstCase, ReadVSTM_WorstCase, ReadVSTX]>;
 def : MnemonicAlias<"vle1.v", "vlm.v">;
 def : MnemonicAlias<"vse1.v", "vsm.v">;
-
-def VS1R_V : VWholeStore<1, "vs1r.v", VR>,
-             Sched<[WriteVST1R, ReadVST1R, ReadVSTX]>;
-def VS2R_V : VWholeStore<2, "vs2r.v", VRM2>,
-             Sched<[WriteVST2R, ReadVST2R, ReadVSTX]>;
-def VS4R_V : VWholeStore<4, "vs4r.v", VRM4>,
-             Sched<[WriteVST4R, ReadVST4R, ReadVSTX]>;
-def VS8R_V : VWholeStore<8, "vs8r.v", VRM8>,
-             Sched<[WriteVST8R, ReadVST8R, ReadVSTX]>;
 
 def : InstAlias<"vl1r.v $vd, $rs1", (VL1RE8_V VR:$vd,   GPRMemZeroOffset:$rs1)>;
 def : InstAlias<"vl2r.v $vd, $rs1", (VL2RE8_V VRM2:$vd, GPRMemZeroOffset:$rs1)>;
@@ -1407,24 +1365,6 @@ defm VFSLIDE1UP_V : VSLD1_FV_F<"vfslide1up", 0b001110, /*slidesUp=*/true>;
 let ElementsDependOn = EltDepsVL, ReadsPastVL = 1 in
 defm VFSLIDE1DOWN_V : VSLD1_FV_F<"vfslide1down", 0b001111, /*slidesUp=*/false>;
 } // Predicates = [HasVInstructionsAnyF]
-
-let Predicates = [HasVInstructions] in {
-
-let hasSideEffects = 0, mayLoad = 0, mayStore = 0, isMoveReg = 1 in {
-// A future extension may relax the vector register alignment restrictions.
-foreach n = [1, 2, 4, 8] in {
-  defvar vrc = !cast<VReg>(!if(!eq(n, 1), "VR", "VRM"#n));
-  def VMV#n#R_V  : RVInstVUnary<0b100111, !add(n, -1), OPIVI, (outs vrc:$vd),
-                                (ins vrc:$vs2), "vmv" # n # "r.v", "$vd, $vs2">,
-                   VMVRSched<n> {
-    let Uses = [VTYPE];
-    let vm = 1;
-
-    let VMConstraint = false;
-  }
-}
-} // hasSideEffects = 0, mayLoad = 0, mayStore = 0
-} // Predicates = [HasVInstructions]
 
 let ElementsDependOn = EltDepsNone in {
 let Predicates = [HasVInstructions] in {

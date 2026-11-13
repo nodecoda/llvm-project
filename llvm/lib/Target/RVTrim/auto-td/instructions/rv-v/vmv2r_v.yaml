@@ -1,0 +1,6 @@
+mnemonic: vmv2r.v
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vmv2r_v}
+spec: rvtrim.vector.v_vmv2r_v
+domain: rv-v
+status: auto_full
+sched: [WriteVMov2V, ReadVMov2V]

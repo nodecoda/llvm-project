@@ -1,0 +1,6 @@
+mnemonic: vsuxei32.v
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vsuxei32_v}
+spec: rvtrim.vector.v_vsoxei16_v
+domain: rv-v
+status: auto_full
+sched: [WriteVSTUX32_WorstCase, ReadVPassthru_WorstCase, ReadVSTUX32_WorstCase, ReadVSTX, ReadVSTUXV_WorstCase, ReadVMask]

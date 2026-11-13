@@ -1,0 +1,6 @@
+mnemonic: vmv4r.v
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vmv4r_v}
+spec: rvtrim.vector.v_vmv4r_v
+domain: rv-v
+status: auto_full
+sched: [WriteVMov4V, ReadVMov4V]

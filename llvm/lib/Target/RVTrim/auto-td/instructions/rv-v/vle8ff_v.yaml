@@ -1,0 +1,6 @@
+mnemonic: vle8ff.v
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vle8ff_v}
+spec: rvtrim.vector.v_vle16ff_v
+domain: rv-v
+status: auto_full
+sched: [WriteVLDFF_WorstCase, ReadVPassthru_WorstCase, ReadVLDX, ReadVMask]

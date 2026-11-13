@@ -1,0 +1,7 @@
+mnemonic: vluxei64.v
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vluxei64_v}
+spec: rvtrim.vector.v_vloxei16_v
+domain: rv-v
+status: auto_full
+sched: [WriteVLDUX64_WorstCase, ReadVPassthru_WorstCase, ReadVLDX, ReadVLDUXV_WorstCase, ReadVMask]
+predicate: [IsRV64, HasVInstructionsI64]

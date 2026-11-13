@@ -539,3 +539,165 @@ categories:
         - {role: rhs, field: vs1, reg_class: VR}
         - {role: mask, field: vm, operand: VMaskOp}
     effects: {implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable]}
+
+  v_vl1re16_v:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: base, field: rs1, operand: GPRMemZeroOffset}
+    effects: {may_load: true, flags: [UseNamedOperandTable], lets: {ElementsDependOn: EltDepsNone}}
+
+  v_vl2re16_v:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VRM2}
+      ins:
+        - {role: base, field: rs1, operand: GPRMemZeroOffset}
+    effects: {may_load: true, flags: [UseNamedOperandTable], lets: {ElementsDependOn: EltDepsNone}}
+
+  v_vl4re16_v:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VRM4}
+      ins:
+        - {role: base, field: rs1, operand: GPRMemZeroOffset}
+    effects: {may_load: true, flags: [UseNamedOperandTable], lets: {ElementsDependOn: EltDepsNone}}
+
+  v_vl8re16_v:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VRM8}
+      ins:
+        - {role: base, field: rs1, operand: GPRMemZeroOffset}
+    effects: {may_load: true, flags: [UseNamedOperandTable], lets: {ElementsDependOn: EltDepsNone}}
+
+  v_vle16ff_v:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: base, field: rs1, operand: GPRMemZeroOffset}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {may_load: true, implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint], lets: {ElementsDependOn: EltDepsNone}}
+
+  v_vlm_v:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: base, field: rs1, operand: GPRMemZeroOffset}
+    effects: {may_load: true, implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable], lets: {ElementsDependOn: EltDepsNone}}
+
+  v_vloxei16_v:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: base, field: rs1, operand: GPRMemZeroOffset}
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {may_load: true, implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint], lets: {ElementsDependOn: EltDepsNone}}
+
+  v_vlse16_v:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: base, field: rs1, operand: GPRMemZeroOffset}
+        - {role: vlmax, field: rs2, reg_class: GPR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {may_load: true, implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable, VMConstraint], lets: {ElementsDependOn: EltDepsNone}}
+
+  v_vmv1r_v:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VR}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+    effects: {implicit_uses: [VTYPE], flags: [UseNamedOperandTable]}
+
+  v_vmv2r_v:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VRM2}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VRM2}
+    effects: {implicit_uses: [VTYPE], flags: [UseNamedOperandTable]}
+
+  v_vmv4r_v:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VRM4}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VRM4}
+    effects: {implicit_uses: [VTYPE], flags: [UseNamedOperandTable]}
+
+  v_vmv8r_v:
+    operands:
+      outs:
+        - {role: dest, field: vd, reg_class: VRM8}
+      ins:
+        - {role: lhs, field: vs2, reg_class: VRM8}
+    effects: {implicit_uses: [VTYPE], flags: [UseNamedOperandTable]}
+
+  v_vs1r_v:
+    operands:
+      ins:
+        - {role: src, field: vs3, reg_class: VR}
+        - {role: base, field: rs1, operand: GPRMemZeroOffset}
+    effects: {may_store: true, flags: [UseNamedOperandTable]}
+
+  v_vs2r_v:
+    operands:
+      ins:
+        - {role: src, field: vs3, reg_class: VRM2}
+        - {role: base, field: rs1, operand: GPRMemZeroOffset}
+    effects: {may_store: true, flags: [UseNamedOperandTable]}
+
+  v_vs4r_v:
+    operands:
+      ins:
+        - {role: src, field: vs3, reg_class: VRM4}
+        - {role: base, field: rs1, operand: GPRMemZeroOffset}
+    effects: {may_store: true, flags: [UseNamedOperandTable]}
+
+  v_vs8r_v:
+    operands:
+      ins:
+        - {role: src, field: vs3, reg_class: VRM8}
+        - {role: base, field: rs1, operand: GPRMemZeroOffset}
+    effects: {may_store: true, flags: [UseNamedOperandTable]}
+
+  v_vse16_v:
+    operands:
+      ins:
+        - {role: src, field: vs3, reg_class: VR}
+        - {role: base, field: rs1, operand: GPRMemZeroOffset}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {may_store: true, implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable], lets: {ElementsDependOn: EltDepsNone}}
+
+  v_vsm_v:
+    operands:
+      ins:
+        - {role: src, field: vs3, reg_class: VR}
+        - {role: base, field: rs1, operand: GPRMemZeroOffset}
+    effects: {may_store: true, implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable]}
+
+  v_vsoxei16_v:
+    operands:
+      ins:
+        - {role: src, field: vs3, reg_class: VR}
+        - {role: base, field: rs1, operand: GPRMemZeroOffset}
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {may_store: true, implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable], lets: {ElementsDependOn: EltDepsNone}}
+
+  v_vsse16_v:
+    operands:
+      ins:
+        - {role: src, field: vs3, reg_class: VR}
+        - {role: base, field: rs1, operand: GPRMemZeroOffset}
+        - {role: vlmax, field: rs2, reg_class: GPR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects: {may_store: true, implicit_uses: [VL, VTYPE], flags: [UseNamedOperandTable], lets: {ElementsDependOn: EltDepsNone}}

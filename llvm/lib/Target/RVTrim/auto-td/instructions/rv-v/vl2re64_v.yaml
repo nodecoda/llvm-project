@@ -1,0 +1,7 @@
+mnemonic: vl2re64.v
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vl2re64_v}
+spec: rvtrim.vector.v_vl2re16_v
+domain: rv-v
+status: auto_full
+sched: [WriteVLD2R, ReadVLDX]
+predicate: [HasVInstructionsI64]

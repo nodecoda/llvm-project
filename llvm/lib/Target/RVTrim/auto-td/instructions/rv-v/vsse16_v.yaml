@@ -1,0 +1,6 @@
+mnemonic: vsse16.v
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vsse16_v}
+spec: rvtrim.vector.v_vsse16_v
+domain: rv-v
+status: auto_full
+sched: [WriteVSTS16_WorstCase, ReadVPassthru_WorstCase, ReadVSTS16V_WorstCase, ReadVSTX, ReadVSTSX, ReadVMask]

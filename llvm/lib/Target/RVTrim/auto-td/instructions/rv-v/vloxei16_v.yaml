@@ -1,0 +1,6 @@
+mnemonic: vloxei16.v
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vloxei16_v}
+spec: rvtrim.vector.v_vloxei16_v
+domain: rv-v
+status: auto_full
+sched: [WriteVLDOX16_WorstCase, ReadVPassthru_WorstCase, ReadVLDX, ReadVLDOXV_WorstCase, ReadVMask]

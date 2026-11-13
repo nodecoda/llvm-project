@@ -1,0 +1,6 @@
+mnemonic: vl1re8.v
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vl1re8_v}
+spec: rvtrim.vector.v_vl1re16_v
+domain: rv-v
+status: auto_full
+sched: [WriteVLD1R, ReadVLDX]

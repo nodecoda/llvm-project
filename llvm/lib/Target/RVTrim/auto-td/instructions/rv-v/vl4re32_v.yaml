@@ -1,0 +1,6 @@
+mnemonic: vl4re32.v
+opcode: {repo: riscv-opcodes, extension: rv_v, key: vl4re32_v}
+spec: rvtrim.vector.v_vl4re16_v
+domain: rv-v
+status: auto_full
+sched: [WriteVLD4R, ReadVLDX]
