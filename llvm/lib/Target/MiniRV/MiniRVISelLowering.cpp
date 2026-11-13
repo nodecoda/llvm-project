@@ -173,6 +173,36 @@ MiniRVTargetLowering::getRegForInlineAsmConstraint(
   return TargetLowering::getRegForInlineAsmConstraint(TRI, Constraint, VT);
 }
 
+bool MiniRVTargetLowering::isLegalAddressingMode(const DataLayout &DL,
+                                                const AddrMode &AM, Type *Ty,
+                                                unsigned AS,
+                                                Instruction *I) const {
+  // Loads and stores take a base register and a 12-bit signed displacement.
+  // An index without a base is just an address; a base plus an index would
+  // need a separate add, so leave it to LSR to decide.
+  if (AM.BaseGV || AM.ScalableOffset || !isInt<12>(AM.BaseOffs))
+    return false;
+  switch (AM.Scale) {
+  case 0:
+    break;
+  case 1:
+    if (!AM.HasBaseReg)
+      break;
+    return false;
+  default:
+    return false;
+  }
+  return true;
+}
+
+bool MiniRVTargetLowering::isLegalICmpImmediate(int64_t Imm) const {
+  return isInt<12>(Imm);
+}
+
+bool MiniRVTargetLowering::isLegalAddImmediate(int64_t Imm) const {
+  return isInt<12>(Imm);
+}
+
 SDValue MiniRVTargetLowering::LowerOperation(SDValue Op,
                                              SelectionDAG &DAG) const {
   switch (Op.getOpcode()) {
