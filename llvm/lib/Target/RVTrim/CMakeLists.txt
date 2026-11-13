@@ -15,7 +15,8 @@ set(RVTRIM_AUTO_TD_DIR ${CMAKE_CURRENT_BINARY_DIR}/auto-td)
 set(RVTRIM_AUTO_TD_GEN ${LLVM_MAIN_SRC_DIR}/utils/auto-td/auto-td-gen)
 file(GLOB_RECURSE RVTRIM_AUTO_TD_INPUTS CONFIGURE_DEPENDS
      ${CMAKE_CURRENT_SOURCE_DIR}/auto-td/*.yaml
-     ${CMAKE_CURRENT_SOURCE_DIR}/auto-td/opcodes/arg_lut.csv)
+     ${CMAKE_CURRENT_SOURCE_DIR}/auto-td/opcodes/arg_lut.csv
+     ${LLVM_MAIN_SRC_DIR}/utils/auto-td/autotd/*.py)
 
 add_custom_command(
   OUTPUT ${RVTRIM_AUTO_TD_DIR}/AutoTdInstrInfo.inc
