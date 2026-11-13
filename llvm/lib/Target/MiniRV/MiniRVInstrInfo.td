@@ -239,6 +239,16 @@ def PseudoTAILReg : MiniRVInst<(outs), (ins GPR:$rs), "jalr", "x0, $rs, 0",
   let isCodeGenOnly = 1;
 }
 
+// An indirect branch: the destination is already in a register.  A jump table
+// ends with one of these, after loading the block address out of the table.
+let isBranch = 1, isTerminator = 1, isBarrier = 1, isIndirectBranch = 1,
+    hasNoSchedulingInfo = 1 in
+def PseudoBRIND : MiniRVInst<(outs), (ins GPR:$rs), "jr", "$rs",
+                             [(brind GPR:$rs)], InstFormatI>,
+                  PseudoInstExpansion<(JALR X0, GPR:$rs, 0)> {
+  let isCodeGenOnly = 1;
+}
+
 // The address of a symbol: auipc rd, %pcrel_hi(sym) followed by
 // addi rd, rd, %pcrel_lo(auipc).  The pair is expanded by the AsmPrinter,
 // which also creates the label the low part refers to.

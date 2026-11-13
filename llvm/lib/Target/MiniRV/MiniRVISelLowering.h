@@ -28,6 +28,8 @@ public:
 
   SDValue LowerGlobalAddress(SDValue Op, SelectionDAG &DAG) const;
 
+  SDValue LowerJumpTable(SDValue Op, SelectionDAG &DAG) const;
+
   SDValue LowerVASTART(SDValue Op, SelectionDAG &DAG) const;
 
   SDValue LowerVAARG(SDValue Op, SelectionDAG &DAG) const;

@@ -77,8 +77,12 @@ MiniRVTargetLowering::MiniRVTargetLowering(const TargetMachine &TM,
   setOperationAction(ISD::SELECT_CC, MVT::i64, Custom);
   setOperationAction(ISD::SELECT_CC, MVT::i32, Custom);
 
-  // The address of a symbol is materialised with auipc+addi.
+  // The address of a symbol is materialised with auipc+addi, and a jump table
+  // is just another symbol.  A switch becomes a table lookup followed by an
+  // indirect branch.
   setOperationAction(ISD::GlobalAddress, MVT::i64, Custom);
+  setOperationAction(ISD::JumpTable, MVT::i64, Custom);
+  setOperationAction(ISD::BR_JT, MVT::Other, Expand);
 
   // A va_list is a pointer to the next argument slot.  va_start hands out the
   // address of the register save area and va_arg advances the pointer by one
@@ -121,6 +125,8 @@ SDValue MiniRVTargetLowering::LowerOperation(SDValue Op,
   switch (Op.getOpcode()) {
   case ISD::GlobalAddress:
     return LowerGlobalAddress(Op, DAG);
+  case ISD::JumpTable:
+    return LowerJumpTable(Op, DAG);
   case ISD::VASTART:
     return LowerVASTART(Op, DAG);
   case ISD::VAARG:
@@ -145,6 +151,17 @@ SDValue MiniRVTargetLowering::LowerGlobalAddress(SDValue Op,
   EVT PtrVT = getPointerTy(DAG.getDataLayout());
   SDValue Sym =
       DAG.getTargetGlobalAddress(GV->getGlobal(), DL, PtrVT, GV->getOffset());
+  return SDValue(DAG.getMachineNode(MiniRV::PseudoLA, DL, PtrVT, Sym), 0);
+}
+
+/// A jump table is an array of block addresses in the constant pool.  Its
+/// address is materialised like any other symbol.
+SDValue MiniRVTargetLowering::LowerJumpTable(SDValue Op,
+                                             SelectionDAG &DAG) const {
+  auto *N = cast<JumpTableSDNode>(Op);
+  SDLoc DL(Op);
+  EVT PtrVT = getPointerTy(DAG.getDataLayout());
+  SDValue Sym = DAG.getTargetJumpTable(N->getIndex(), PtrVT);
   return SDValue(DAG.getMachineNode(MiniRV::PseudoLA, DL, PtrVT, Sym), 0);
 }
 
