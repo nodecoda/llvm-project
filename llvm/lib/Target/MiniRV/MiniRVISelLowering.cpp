@@ -91,6 +91,9 @@ MiniRVTargetLowering::MiniRVTargetLowering(const TargetMachine &TM,
   // produce zero; reject the intrinsic instead of returning a wrong value.
   setOperationAction({ISD::READCYCLECOUNTER, ISD::READSTEADYCOUNTER}, MVT::i64,
                      Custom);
+  // llvm.localrecover has no selection pattern; diagnose the pair with
+  // llvm.localescape instead of failing in the selector.
+  setOperationAction(ISD::LOCAL_RECOVER, MVT::i64, Custom);
   setOperationAction(ISD::JumpTable, MVT::i64, Custom);
   setOperationAction(ISD::BR_JT, MVT::Other, Expand);
 
@@ -189,6 +192,9 @@ SDValue MiniRVTargetLowering::LowerOperation(SDValue Op,
   case ISD::READCYCLECOUNTER:
   case ISD::READSTEADYCOUNTER:
     report_fatal_error("MiniRV has no cycle counter");
+  case ISD::LOCAL_RECOVER:
+    report_fatal_error(
+        "MiniRV does not support llvm.localescape/llvm.localrecover");
   case ISD::JumpTable:
     return LowerJumpTable(Op, DAG);
   case ISD::FRAMEADDR:

@@ -68,8 +68,14 @@ bool MiniRVRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
   int FrameIndex = MI.getOperand(FIOperandNum).getIndex();
   Register FrameReg;
   int64_t Offset =
-      TFI->getFrameIndexReference(MF, FrameIndex, FrameReg).getFixed() +
-      MI.getOperand(FIOperandNum + 1).getImm();
+      TFI->getFrameIndexReference(MF, FrameIndex, FrameReg).getFixed();
+  // LOCAL_ESCAPE names only the frame index; its escaped value is the offset
+  // from the frame address, which llvm.localrecover adds at run time.
+  if (MI.getOpcode() == TargetOpcode::LOCAL_ESCAPE) {
+    MI.getOperand(FIOperandNum).ChangeToImmediate(Offset);
+    return false;
+  }
+  Offset += MI.getOperand(FIOperandNum + 1).getImm();
 
   // The common case: the resolved offset fits in the twelve bits of the
   // instruction's immediate field.
@@ -117,9 +123,18 @@ bool MiniRVRegisterInfo::requiresVirtualBaseRegisters(
   return !MF.getFrameInfo().hasVarSizedObjects();
 }
 
+/// A frame index used as a memory address is followed by the displacement.
+/// Other users -- llvm.localescape, for example -- just list the frame index
+/// and have no displacement.
+static bool isAddressFrameIndex(const MachineInstr *MI, unsigned Idx) {
+  return Idx + 1 < MI->getNumOperands() && MI->getOperand(Idx + 1).isImm();
+}
+
 int64_t MiniRVRegisterInfo::getFrameIndexInstrOffset(const MachineInstr *MI,
                                                      int Idx) const {
   assert(MI->getOperand(Idx).isFI() && "Not a frame index operand");
+  if (!isAddressFrameIndex(MI, Idx))
+    return 0;
   return MI->getOperand(Idx + 1).getImm();
 }
 
@@ -132,6 +147,11 @@ bool MiniRVRegisterInfo::isFrameOffsetLegal(const MachineInstr *MI,
     assert(FIOperandNum < MI->getNumOperands() &&
            "Instruction does not have a frame index operand");
   }
+  // An instruction that only names the frame index cannot be rewritten as a
+  // base register plus displacement; leave it to the generic frame index
+  // elimination.
+  if (!isAddressFrameIndex(MI, FIOperandNum))
+    return true;
   return isInt<12>(Offset + getFrameIndexInstrOffset(MI, FIOperandNum));
 }
 
