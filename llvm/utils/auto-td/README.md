@@ -190,25 +190,40 @@ Beyond "the opcode exists and the fields add up", the checker enforces:
 
 ## CMake wiring
 
+`llvm/cmake/modules/AutoTD.cmake` wraps the custom command:
+
 ```cmake
-add_custom_command(
-  OUTPUT ${AUTO_TD_DIR}/AutoTdInstrInfo.inc ${AUTO_TD_DIR}/AutoTdManifests.inc
-  COMMAND ${Python3_EXECUTABLE} ${LLVM_MAIN_SRC_DIR}/../llvm/utils/auto-td/auto-td-gen
-          --target-root ${CMAKE_CURRENT_SOURCE_DIR}
-          --riscv-opcodes ${LLVM_MAIN_SRC_DIR}/../third_party/riscv-opcodes
-          --out-dir ${AUTO_TD_DIR} --coverage ${AUTO_TD_DIR}/AutoTdCoverage.md
-  DEPENDS ${AUTO_TD_DEPS}
-  COMMENT "Generating auto-td instruction records")
+include(AutoTD)
+
+llvm_autotd_generate(<Target>
+  TARGET_ROOT ${CMAKE_CURRENT_SOURCE_DIR}
+  RISCV_OPCODES ${CMAKE_CURRENT_SOURCE_DIR}/auto-td/opcodes
+  YSX_OPCODES ${CMAKE_CURRENT_SOURCE_DIR}/auto-td/opcodes-ysx)   # optional
+
+set(LLVM_TARGET_DEPENDS ${<Target>_AUTOTD_INSTRINFO})
 ```
 
-The generated file must exist before TableGen parses the target, so the target
-also has to `set(LLVM_TARGET_DEPENDS <generated file>)`.
+The generated file must exist before TableGen parses the target, which is what
+`LLVM_TARGET_DEPENDS` expresses.  `OUT_DIR` defaults to
+`<binary dir>/auto-td`; `COVERAGE`, `RECORD_PREFIX`, `EXTRA_DEPENDS` and
+`EXTRA_ARGS` are optional.  Every call registers the corpus, so one target
+checks them all:
+
+```console
+$ ninja check-autotd
+auto-td: 536 instructions OK
+Ran 58 tests ... OK
+```
+
+`check-autotd` runs `auto-td-gen --check-only` for each registered corpus
+(field coverage, predicates, duplicate rows, coverage and reference gates) and
+the generator's unit tests.
 
 ## Verification
 
 ```console
 $ python3 -m unittest discover -s llvm/utils/auto-td/tests -p 'test_*.py'
-Ran 54 tests ... OK
+Ran 58 tests ... OK
 ```
 
 The suite covers the opcode reader, every encoding rule (including the B/J/S
@@ -224,7 +239,7 @@ Four external cross-checks back the claims:
   `AutoTdManifests.inc`);
 * the RVTrim corpus (**535 instructions**: 160 scalar + 375 vector)
   reproduces the backend's own records:
-  `535 instructions compared, 0 mismatching, 0 not in reference` with
+  `535 instructions compared, 0 mismatching, 1 not in reference` with
   `tests/compare_riscv_records.py`, which compares every `Inst` bit after
   canonicalising record-local variable names;
 * a vendor extension is one opcode row plus one YAML: `yushuxin.vfexp`
@@ -245,7 +260,8 @@ The coverage gate in `--check-only` also enforces that every row of the
 extensions listed in `config.yaml` has a YAML instruction (or is named in
 `retained_handwritten`), and that every standard record referenced from the
 target's C++ or by an `InstAlias` is still generated.  For RVTrim the retained
-list is empty.
+list is empty.  `cpp_namespace` in `config.yaml` pins which namespace the
+reference gate reads; without it any `<ns>::NAME` reference is considered.
 
 ## Deliberate limitations
 

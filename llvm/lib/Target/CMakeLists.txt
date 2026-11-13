@@ -2,6 +2,8 @@ list(APPEND LLVM_COMMON_DEPENDS intrinsics_gen)
 
 list(APPEND LLVM_TABLEGEN_FLAGS -I ${LLVM_MAIN_SRC_DIR}/lib/Target)
 
+include(AutoTD)
+
 add_llvm_component_library(LLVMTarget
   RegisterTargetPassConfigCallback.cpp
   Target.cpp
@@ -35,6 +37,10 @@ foreach(t ${LLVM_TARGETS_TO_BUILD})
   message(STATUS "Targeting ${t}")
   add_subdirectory(${t})
 endforeach()
+
+# One target that validates every instruction corpus registered through
+# llvm_autotd_generate(); no-op when no target uses auto-td.
+llvm_autotd_add_check_target()
 
 # Currently we do not allow libraries from lib to reference targets directly.
 # This property is used to enforce that convention. It is important because the

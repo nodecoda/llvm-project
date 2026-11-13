@@ -6,6 +6,8 @@
 # comparison against the hand-written RISCV records.
 record_prefix: ""
 base_class: RVInst
+# C++ namespace whose record references the coverage gate checks.
+cpp_namespace: RVTrim
 
 domains:
   rv-i:       {predicate: null}

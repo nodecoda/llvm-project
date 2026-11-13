@@ -11,27 +11,14 @@ add_llvm_component_group(RVTrim)
 # RVTrimFeatures::validateProfile().
 #===----------------------------------------------------------------------===//
 
-set(RVTRIM_AUTO_TD_DIR ${CMAKE_CURRENT_BINARY_DIR}/auto-td)
-set(RVTRIM_AUTO_TD_GEN ${LLVM_MAIN_SRC_DIR}/utils/auto-td/auto-td-gen)
-file(GLOB_RECURSE RVTRIM_AUTO_TD_INPUTS CONFIGURE_DEPENDS
-     ${CMAKE_CURRENT_SOURCE_DIR}/auto-td/*.yaml
-     ${CMAKE_CURRENT_SOURCE_DIR}/auto-td/opcodes/arg_lut.csv
-     ${CMAKE_CURRENT_SOURCE_DIR}/auto-td/opcodes-ysx/extensions/*
-     ${LLVM_MAIN_SRC_DIR}/utils/auto-td/autotd/*.py)
+include(AutoTD)
 
-add_custom_command(
-  OUTPUT ${RVTRIM_AUTO_TD_DIR}/AutoTdInstrInfo.inc
-  COMMAND ${Python3_EXECUTABLE} ${RVTRIM_AUTO_TD_GEN}
-          --target-root ${CMAKE_CURRENT_SOURCE_DIR}
-          --riscv-opcodes ${CMAKE_CURRENT_SOURCE_DIR}/auto-td/opcodes
-          --ysx-opcodes ${CMAKE_CURRENT_SOURCE_DIR}/auto-td/opcodes-ysx
-          --out-dir ${RVTRIM_AUTO_TD_DIR}
-          --coverage ${RVTRIM_AUTO_TD_DIR}/AutoTdCoverage.md
-  DEPENDS ${RVTRIM_AUTO_TD_INPUTS} ${RVTRIM_AUTO_TD_GEN}
-  COMMENT "Generating RVTrim instruction records with auto-td"
-  VERBATIM)
+llvm_autotd_generate(RVTrim
+  TARGET_ROOT ${CMAKE_CURRENT_SOURCE_DIR}
+  RISCV_OPCODES ${CMAKE_CURRENT_SOURCE_DIR}/auto-td/opcodes
+  YSX_OPCODES ${CMAKE_CURRENT_SOURCE_DIR}/auto-td/opcodes-ysx)
 
-set(LLVM_TARGET_DEPENDS ${RVTRIM_AUTO_TD_DIR}/AutoTdInstrInfo.inc)
+set(LLVM_TARGET_DEPENDS ${RVTrim_AUTOTD_INSTRINFO})
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
 
 set(LLVM_TARGET_DEFINITIONS RVTrim.td)

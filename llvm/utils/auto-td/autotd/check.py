@@ -218,6 +218,10 @@ def reference_problems(db, config: dict, specs: list[InstrSpec], target_root) ->
     References to pseudo instructions and vendor extensions are ignored: only
     names that exist in the enforced opcode extensions are checked, so this
     catches a dropped YAML without needing a list of every pseudo.
+
+    ``config.yaml`` may pin the C++ namespace (``cpp_namespace: RVTrim``).
+    Without it any ``<ns>::NAME`` reference is considered, which keeps the gate
+    useful for a target that has not set the key yet.
     """
     import re
     from pathlib import Path
@@ -237,7 +241,11 @@ def reference_problems(db, config: dict, specs: list[InstrSpec], target_root) ->
     problems: list[str] = []
 
     sources = list(root.glob("*.cpp")) + list(root.glob("*.td"))
-    cpp_ref = re.compile(r"RVTrim::([A-Z][A-Z0-9_]+)")
+    namespace = config.get("cpp_namespace")
+    if namespace:
+        cpp_ref = re.compile(re.escape(str(namespace)) + r"::([A-Z][A-Z0-9_]+)")
+    else:
+        cpp_ref = re.compile(r"[A-Za-z_]\w*::([A-Z][A-Z0-9_]+)")
     alias_ref = re.compile(r"\(([A-Z][A-Z0-9_]*)\s+[A-Z]")
     for path in sorted(sources):
         text = path.read_text(encoding="utf-8", errors="replace")

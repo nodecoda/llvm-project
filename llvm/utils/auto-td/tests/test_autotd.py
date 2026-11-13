@@ -665,6 +665,28 @@ class ReferenceGateTest(FixtureCase):
         problems = reference_problems(self.db, config, specs, self.target)
         self.assertTrue(any("references ADD" in problem for problem in problems), problems)
 
+    def test_explicit_namespace_is_honoured(self):
+        from autotd.check import reference_problems
+
+        (self.target / "TestInstrInfo.cpp").write_text(
+            "auto X = Other::ADD;\n", encoding="utf-8"
+        )
+        config = {"coverage": {"extensions": ["rv_i"]}, "cpp_namespace": "RVTrim"}
+        specs = [spec for spec in self.specs.values() if spec.mnemonic != "add"]
+        problems = reference_problems(self.db, config, specs, self.target)
+        self.assertEqual(problems, [])
+
+    def test_explicit_namespace_still_reports_its_own_refs(self):
+        from autotd.check import reference_problems
+
+        (self.target / "TestInstrInfo.cpp").write_text(
+            "auto X = RVTrim::ADD;\n", encoding="utf-8"
+        )
+        config = {"coverage": {"extensions": ["rv_i"]}, "cpp_namespace": "RVTrim"}
+        specs = [spec for spec in self.specs.values() if spec.mnemonic != "add"]
+        problems = reference_problems(self.db, config, specs, self.target)
+        self.assertTrue(any("references ADD" in problem for problem in problems), problems)
+
     def test_non_standard_reference_is_ignored(self):
         from autotd.check import reference_problems
 
