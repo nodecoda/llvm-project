@@ -114,6 +114,42 @@ define i32 @fcmpuno(double %a, double %b) {
   ret i32 %r
 }
 
+; Half precision has no arithmetic helpers: the operands are widened to f32,
+; added with __addsf3, and narrowed again.
+; CHECK-LABEL: hadd:
+; CHECK:         jal     x1, __extendhfsf2
+; CHECK:         jal     x1, __addsf3
+; CHECK:         jal     x1, __truncsfhf2
+define half @hadd(half %a, half %b) {
+  %r = fadd half %a, %b
+  ret half %r
+}
+
+; bfloat16 is widened the same way; the arguments are already promoted to f32
+; by the calling convention, so only the result is narrowed.
+; CHECK-LABEL: bfadd:
+; CHECK:         jal     x1, __addsf3
+; CHECK:         jal     x1, __truncsfbf2
+define bfloat @bfadd(bfloat %a, bfloat %b) {
+  %r = fadd bfloat %a, %b
+  ret bfloat %r
+}
+
+; A 128-bit integer conversion uses the quad helpers.
+; CHECK-LABEL: fptosi128:
+; CHECK:         jal     x1, __fixdfti
+define i128 @fptosi128(double %a) {
+  %r = fptosi double %a to i128
+  ret i128 %r
+}
+
+; CHECK-LABEL: sitofp128:
+; CHECK:         jal     x1, __floattidf
+define double @sitofp128(i128 %a) {
+  %r = sitofp i128 %a to double
+  ret double %r
+}
+
 ; The helpers must be relocations against real symbols.
 ; OBJ-LABEL: <fadd64>:
 ; OBJ:         R_RISCV_JAL  __adddf3
