@@ -574,6 +574,22 @@ class CliTest(FixtureCase):
         ])
         self.assertEqual(code, 0)
 
+    def test_record_prefix_reaches_the_output(self):
+        from autotd.cli import main
+
+        out = self.root / "out"
+        code = main([
+            "--target-root", str(self.target),
+            "--riscv-opcodes", str(self.root / "riscv-opcodes"),
+            "--ysx-opcodes", str(self.root / "ysx-opcodes"),
+            "--out-dir", str(out),
+            "--record-prefix", "DEMO",
+            "--quiet",
+        ])
+        self.assertEqual(code, 0)
+        text = (out / "AutoTdInstrInfo.inc").read_text()
+        self.assertIn("def DEMO_ADD :", text)
+
     def test_generate_writes_all_artifacts(self):
         from autotd.cli import main
 

@@ -55,6 +55,9 @@ def main(argv: list[str] | None = None) -> int:
 
     specs = load_instructions(target_root, db, config)
     prefix = args.record_prefix or str(config.get("record_prefix", "AUTO"))
+    # ``emit`` reads the prefix from the config; keep one source of truth so
+    # ``--record-prefix`` really namespaces the generated records.
+    config = dict(config, record_prefix=prefix)
 
     for warning in unknown_keys(specs):
         print(f"auto-td: warning: {warning}", file=sys.stderr)
