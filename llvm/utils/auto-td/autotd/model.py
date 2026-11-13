@@ -93,6 +93,9 @@ class Effects:
     implicit_defs: tuple[str, ...] = ()
     #: extra TableGen instruction properties (``let <flag> = 1;``)
     flags: tuple[str, ...] = ()
+    #: extra TableGen instruction properties with an explicit value
+    #: (``let <key> = <value>;``), e.g. ``Constraints: '"@earlyclobber $vd"'``
+    lets: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass

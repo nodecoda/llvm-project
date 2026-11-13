@@ -61,6 +61,13 @@ def operands_of(category: dict, direction: str) -> tuple[Operand, ...]:
     return tuple(_operand(item) for item in spec)
 
 
+def _lets(raw: dict) -> tuple[tuple[str, str], ...]:
+    lets = raw.get("lets") or {}
+    if not isinstance(lets, dict):
+        raise ValueError("'lets' must be a mapping of TableGen field -> expression")
+    return tuple((str(key), str(value)) for key, value in lets.items())
+
+
 def effects_of(category: dict) -> Effects:
     raw = category.get("effects") or {}
     return Effects(
@@ -69,4 +76,6 @@ def effects_of(category: dict) -> Effects:
         side_effects=bool(raw.get("has_side_effects", False)),
         implicit_uses=tuple(raw.get("implicit_uses") or ()),
         implicit_defs=tuple(raw.get("implicit_defs") or ()),
+        flags=tuple(str(flag) for flag in (raw.get("flags") or ())),
+        lets=_lets(raw),
     )

@@ -87,6 +87,12 @@ def load_instructions(target_root: Path, db: OpcodeDatabase, config: dict | None
         effects = effects_of(category)
         if data.get("flags"):
             effects = replace(effects, flags=tuple(str(f) for f in data["flags"]))
+        if data.get("lets"):
+            if not isinstance(data["lets"], dict):
+                raise ValueError(f"{path}: 'lets' must be a mapping of TableGen field -> expression")
+            merged = dict(effects.lets)
+            merged.update({str(k): str(v) for k, v in data["lets"].items()})
+            effects = replace(effects, lets=tuple(merged.items()))
 
         specs.append(
             InstrSpec(

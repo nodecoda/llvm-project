@@ -66,10 +66,18 @@ def _flags(spec: InstrSpec, config: dict) -> list[str]:
         lines.append(f"  let SchedRW = [{', '.join(spec.sched)}];")
     elif _cfg(config, "emit_scheduling_stub", True) and "hasNoSchedulingInfo" not in spec.effects.flags:
         lines.append("  let hasNoSchedulingInfo = 1;")
-    if spec.effects.implicit_uses:
+    lets = dict(spec.effects.lets)
+    # A value-form ``lets`` entry wins over the structured field, so a category
+    # can declare ``implicit_uses`` and one instruction can still override it
+    # with an explicit empty list.
+    if spec.effects.implicit_uses and "Uses" not in lets:
         lines.append(f"  let Uses = [{', '.join(spec.effects.implicit_uses)}];")
-    if spec.effects.implicit_defs:
+    if spec.effects.implicit_defs and "Defs" not in lets:
         lines.append(f"  let Defs = [{', '.join(spec.effects.implicit_defs)}];")
+    for key, value in lets.items():
+        if key in {"hasSideEffects", "mayLoad", "mayStore"}:
+            continue
+        lines.append(f"  let {key} = {value};")
     return lines
 
 

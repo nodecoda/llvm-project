@@ -10,6 +10,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -428,6 +429,50 @@ class DeclaredEmptyTest(FixtureCase):
         text = "\n".join(emit.render_record(spec, {}, "T"))
         self.assertIn("let Predicates = [];", text)
         self.assertEqual(validate([spec], "T"), [])
+
+
+class RecordPropertyTest(FixtureCase):
+    """Value-form ``lets`` and taxonomy ``flags`` must reach the record."""
+
+    def test_category_reads_flags_and_lets(self):
+        from autotd.taxonomy import effects_of
+
+        effects = effects_of({"effects": {
+            "flags": ["UseNamedOperandTable", "VMConstraint"],
+            "lets": {"DestEEW": "EEWSEWx2", "Constraints": '"@earlyclobber $vd"'},
+        }})
+        self.assertEqual(effects.flags, ("UseNamedOperandTable", "VMConstraint"))
+        self.assertEqual(dict(effects.lets)["DestEEW"], "EEWSEWx2")
+        self.assertEqual(dict(effects.lets)["Constraints"], '"@earlyclobber $vd"')
+
+    def test_flags_and_lets_are_emitted(self):
+        spec = self.specs["add"]
+        spec.effects = replace(
+            spec.effects,
+            flags=("VMConstraint",),
+            lets=(("DestEEW", "EEWSEWx2"), ("Constraints", '"@earlyclobber $vd"')),
+        )
+        text = "\n".join(emit.render_record(spec, {}, "T"))
+        self.assertIn("let VMConstraint = 1;", text)
+        self.assertIn("let DestEEW = EEWSEWx2;", text)
+        self.assertIn('let Constraints = "@earlyclobber $vd";', text)
+
+    def test_lets_uses_wins_over_implicit_uses(self):
+        spec = self.specs["add"]
+        spec.effects = replace(
+            spec.effects,
+            implicit_uses=("VL", "VTYPE"),
+            lets=(("Uses", "[]"),),
+        )
+        text = "\n".join(emit.render_record(spec, {}, "T"))
+        self.assertIn("let Uses = [];", text)
+        self.assertNotIn("let Uses = [VL, VTYPE];", text)
+
+    def test_instruction_lets_override_the_category(self):
+        path = self.target / "auto-td" / "instructions" / "core" / "add.yaml"
+        path.write_text(path.read_text() + "lets: {VMConstraint: 0}\n")
+        specs = {s.mnemonic: s for s in load_instructions(self.target, self.db)}
+        self.assertEqual(dict(specs["add"].effects.lets)["VMConstraint"], "0")
 
 
 class CliTest(FixtureCase):

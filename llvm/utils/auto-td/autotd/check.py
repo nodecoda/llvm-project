@@ -26,7 +26,7 @@ CODEGEN_OPS = {"add", "sub", "mul", "ireduce_sum", "freduce_sum", "gather", "sli
 ALLOWED_KEYS = {
     "mnemonic", "opcode", "opcode_source", "spec", "spec_ref", "domain", "predicate",
     "status", "aliases", "pseudos", "patterns", "builtin", "format",
-    "retained_owner_files", "features", "reason", "missing_schema", "fixed", "flags", "sched", "nullary",
+    "retained_owner_files", "features", "reason", "missing_schema", "fixed", "flags", "lets", "sched", "nullary",
 }
 
 
