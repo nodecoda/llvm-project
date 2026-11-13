@@ -406,8 +406,6 @@ MiniRVTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   CallingConv::ID CallConv = CLI.CallConv;
   bool IsVarArg = CLI.IsVarArg;
 
-  if (CLI.IsTailCall)
-    report_fatal_error("MiniRV does not lower tail calls");
   if (IsVarArg)
     report_fatal_error("MiniRV does not support variadic calls");
 
@@ -417,6 +415,19 @@ MiniRVTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   SmallVector<CCValAssign, 16> ArgLocs;
   CCState CCInfo(CallConv, IsVarArg, MF, ArgLocs, *DAG.getContext());
   CCInfo.AnalyzeCallOperands(Outs, CC_MiniRV);
+
+  // A tail call is a jump: the epilogue that PEI places before the terminator
+  // releases the frame and restores the callee-saved registers, and the callee
+  // returns straight to the caller's caller.  Only register arguments can be
+  // forwarded, because a stack argument would have to be written to the area
+  // this function received its own stack arguments in, which the epilogue is
+  // about to give back.
+  if (CLI.IsTailCall && CCInfo.getStackSize() != 0) {
+    if (CLI.CB && CLI.CB->isMustTailCall())
+      report_fatal_error(
+          "MiniRV cannot tail call a function with stack arguments");
+    CLI.IsTailCall = false;
+  }
 
   // The outgoing argument area is reserved in the prologue, so this only
   // announces the maximum size to the frame machinery.
@@ -493,6 +504,16 @@ MiniRVTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   assert(Mask && "MiniRV is missing a call-preserved register mask");
   Ops.push_back(DAG.getRegisterMask(Mask));
 
+  // The tail call ends the block: there is no result to copy out and no call
+  // sequence to close, because the callee's return goes to our caller.
+  if (CLI.IsTailCall) {
+    MF.getFrameInfo().setHasTailCall();
+    if (Glue.getNode())
+      Ops.push_back(Glue);
+    return DAG.getNode(IsIndirect ? MiniRVISD::TAIL_REG : MiniRVISD::TAIL, DL,
+                       MVT::Other, Ops);
+  }
+
   // The glue goes last on a variadic call node.
   if (Glue.getNode())
     Ops.push_back(Glue);
@@ -557,6 +578,10 @@ const char *MiniRVTargetLowering::getTargetNodeName(unsigned Opcode) const {
     return "MiniRVISD::CALL";
   case MiniRVISD::CALL_REG:
     return "MiniRVISD::CALL_REG";
+  case MiniRVISD::TAIL:
+    return "MiniRVISD::TAIL";
+  case MiniRVISD::TAIL_REG:
+    return "MiniRVISD::TAIL_REG";
   case MiniRVISD::RET:
     return "MiniRVISD::RET";
   case MiniRVISD::ADDW:

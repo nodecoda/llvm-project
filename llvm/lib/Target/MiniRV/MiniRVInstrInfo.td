@@ -174,6 +174,15 @@ def MiniRVcall_reg : SDNode<"MiniRVISD::CALL_REG", SDT_MiniRVCall,
                             [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue,
                              SDNPVariadic]>;
 
+// A tail call.  It has no result and no glue out: the block ends there,
+// because the callee returns to this function's caller.
+def MiniRVtail : SDNode<"MiniRVISD::TAIL", SDT_MiniRVCall,
+                        [SDNPHasChain, SDNPOptInGlue, SDNPVariadic]>;
+
+// The same tail call with the callee in a register instead of a symbol.
+def MiniRVtail_reg : SDNode<"MiniRVISD::TAIL_REG", SDT_MiniRVCall,
+                            [SDNPHasChain, SDNPOptInGlue, SDNPVariadic]>;
+
 // The corpus has no return record either, but "jalr x0, x1, 0" is one.  The
 // pseudo carries the terminator flags and the expansion supplies the encoding.
 def PseudoRET : MiniRVInst<(outs), (ins), "ret", "", [(MiniRVret)], InstFormatI>,
@@ -205,6 +214,28 @@ let isCall = 1, Defs = [X1], hasNoSchedulingInfo = 1 in
 def PseudoCALLReg : MiniRVInst<(outs), (ins GPR:$rs), "jalr", "x1, $rs, 0",
                                [(MiniRVcall_reg GPR:$rs)], InstFormatI>,
                     PseudoInstExpansion<(JALR X1, GPR:$rs, 0)> {
+  let isCodeGenOnly = 1;
+}
+
+// A tail call jumps instead of returning.  The epilogue that PEI places
+// before the terminator has already released the frame and restored the
+// callee-saved registers, so the callee returns straight to the caller's
+// caller: the link register is not written.
+let isCall = 1, isTerminator = 1, isReturn = 1, isBarrier = 1,
+    hasNoSchedulingInfo = 1 in
+def PseudoTAIL : MiniRVInst<(outs), (ins bare_symbol:$dst), "jal", "x0, $dst",
+                            [(MiniRVtail tglobaladdr:$dst)], InstFormatJ>,
+                 PseudoInstExpansion<(JAL X0, simm21_lsb0:$dst)> {
+  let isCodeGenOnly = 1;
+}
+
+def : Pat<(MiniRVtail texternalsym:$dst), (PseudoTAIL texternalsym:$dst)>;
+
+let isCall = 1, isTerminator = 1, isReturn = 1, isBarrier = 1,
+    hasNoSchedulingInfo = 1 in
+def PseudoTAILReg : MiniRVInst<(outs), (ins GPR:$rs), "jalr", "x0, $rs, 0",
+                               [(MiniRVtail_reg GPR:$rs)], InstFormatI>,
+                    PseudoInstExpansion<(JALR X0, GPR:$rs, 0)> {
   let isCodeGenOnly = 1;
 }
 
