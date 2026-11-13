@@ -26,13 +26,20 @@ auto-td/
   instructions/rv64-a/      (44) lr.d/sc.d/amo*.d x {-, .aq, .rl, .aqrl}
   instructions/rv-zicsr/     (6) csrrw..csrrci
   instructions/rv-zifencei/  (1) fence.i
+  instructions/rv-xtinyv/    (1) yushuxin.vfexp (vendor extension)
   opcodes/                      vendored riscv-opcodes subset (BSD-2-Clause)
+  opcodes-ysx/extensions/       vendor opcode overlay (one row)
 ```
 
 `opcodes/` is a verbatim subset of upstream `riscv-opcodes` (`arg_lut.csv`
 plus the `extensions/` files the corpus uses) and keeps its `LICENSE`.  It is
 vendored rather than fetched so a build has no network dependency and the
 encoding truth for a release is pinned by the checkout.
+
+`opcodes-ysx/` is a second, vendor-owned database.  It is passed with
+`--ysx-opcodes` and lets a YAML name `repo: ysx-opcodes` for an instruction
+that has no upstream row.  Field bit ranges come from the standard `arg_lut`
+(fallback LUT), so a vendor file only needs the encoding line itself.
 
 ## Adding an instruction
 
@@ -80,6 +87,33 @@ The checker accepts several records on one opcode row only when the mnemonics
 are `<base>` or `<base>.<suffix>` and each record pins a different `fixed`
 set.
 
+## Vendor extensions
+
+A vendor instruction is the same two-file addition as a standard one, plus one
+opcode row in a separate database:
+
+```yaml
+# instructions/rv-xtinyv/yushuxin_vfexp.yaml
+mnemonic: yushuxin.vfexp
+opcode: {repo: ysx-opcodes, extension: rv_xtinyv, key: yushuxin_vfexp}
+spec: rvtrim.vector.v_unary
+domain: rv-xtinyv
+status: auto_full
+sched: [WriteVIALUV_WorstCase, ReadVIALUV_WorstCase, ReadVMask]
+```
+
+```
+# opcodes-ysx/extensions/rv_xtinyv
+yushuxin.vfexp 31..26=0x2a vm vs2 19..15=0 14..12=0x1 vd 6..0=0x0b
+```
+
+`config.yaml` maps the domain to `HasVendorXTinyV` and lists
+`ysx-opcodes/rv_xtinyv` under `coverage.extensions`, so the row cannot silently
+lose its YAML.  The feature itself is declared in `RVTrimFeatures.td` as a
+`FeatureVendor*` extension; without `+xtinyv` the assembler rejects the
+mnemonic.  `llvm/test/MC/RVTrim/xtinyv-vfexp.s` pins the encoding, the masked
+form and the predicate diagnostic.
+
 ## What is generated and what is not
 
 Generated: the flat `def` (operands, asm string, `Predicates`, `mayLoad`/
@@ -100,6 +134,7 @@ Not generated, still hand-written in `RVTrimInstrInfo*.td`:
 $ python3 llvm/utils/auto-td/auto-td-gen \
     --target-root llvm/lib/Target/RVTrim \
     --riscv-opcodes llvm/lib/Target/RVTrim/auto-td/opcodes \
+    --ysx-opcodes llvm/lib/Target/RVTrim/auto-td/opcodes-ysx \
     --out-dir /tmp/rvtrim --check-only
 auto-td: 160 instructions OK
 

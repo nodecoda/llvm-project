@@ -1962,6 +1962,16 @@ def HasCheriot
     : Predicate<"Subtarget->hasVendorXCheriot()">,
       AssemblerPredicate<(all_of FeatureVendorXCheriot), "'XCheriot' (CHERIoT Extension)">;
 
+// YSX Extensions
+
+def FeatureVendorXTinyV
+    : RVTrimExtension<1, 0, "YSX tiny vector extension",
+                     [FeatureStdExtZve64x]>;
+def HasVendorXTinyV
+    : Predicate<"Subtarget->hasVendorXTinyV()">,
+      AssemblerPredicate<(all_of FeatureVendorXTinyV),
+                         "'XTinyV' (YSX tiny vector extension)">;
+
 //===----------------------------------------------------------------------===//
 // LLVM specific features and extensions
 //===----------------------------------------------------------------------===//

@@ -16,6 +16,7 @@ set(RVTRIM_AUTO_TD_GEN ${LLVM_MAIN_SRC_DIR}/utils/auto-td/auto-td-gen)
 file(GLOB_RECURSE RVTRIM_AUTO_TD_INPUTS CONFIGURE_DEPENDS
      ${CMAKE_CURRENT_SOURCE_DIR}/auto-td/*.yaml
      ${CMAKE_CURRENT_SOURCE_DIR}/auto-td/opcodes/arg_lut.csv
+     ${CMAKE_CURRENT_SOURCE_DIR}/auto-td/opcodes-ysx/extensions/*
      ${LLVM_MAIN_SRC_DIR}/utils/auto-td/autotd/*.py)
 
 add_custom_command(
@@ -23,6 +24,7 @@ add_custom_command(
   COMMAND ${Python3_EXECUTABLE} ${RVTRIM_AUTO_TD_GEN}
           --target-root ${CMAKE_CURRENT_SOURCE_DIR}
           --riscv-opcodes ${CMAKE_CURRENT_SOURCE_DIR}/auto-td/opcodes
+          --ysx-opcodes ${CMAKE_CURRENT_SOURCE_DIR}/auto-td/opcodes-ysx
           --out-dir ${RVTRIM_AUTO_TD_DIR}
           --coverage ${RVTRIM_AUTO_TD_DIR}/AutoTdCoverage.md
   DEPENDS ${RVTRIM_AUTO_TD_INPUTS} ${RVTRIM_AUTO_TD_GEN}

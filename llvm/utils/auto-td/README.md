@@ -227,6 +227,11 @@ Four external cross-checks back the claims:
   `535 instructions compared, 0 mismatching, 0 not in reference` with
   `tests/compare_riscv_records.py`, which compares every `Inst` bit after
   canonicalising record-local variable names;
+* a vendor extension is one opcode row plus one YAML: `yushuxin.vfexp`
+  (repo `ysx-opcodes`) generates `YUSHUXIN_VFEXP`, assembles to
+  `[0x8b,0x10,0x20,0xaa]`, and is rejected without `+xtinyv`.  It has no
+  upstream RISCV counterpart, so a comparison against an upstream dump reports
+  it as "not in reference"; the RVTrim self-check still counts all 536;
 * the 160 scalar instructions assemble to byte-identical objects (and
   disassemble identically) under `-triple=riscv64` and `-triple=rvtrim64`;
 * the 375 vector records reproduce every generated property, not just the

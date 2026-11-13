@@ -17,6 +17,7 @@ domains:
   rv-zicsr:   {predicate: null}
   rv-zifencei: {predicate: null}
   rv-v:       {predicate: HasVInstructions}
+  rv-xtinyv:  {predicate: HasVendorXTinyV}
 
 # Formats that cannot be inferred from the opcode field shape: instructions
 # whose only immediate lives inside the opcode (fence/ecall/ebreak/fence.i)
@@ -46,4 +47,5 @@ coverage:
     - rv_zicsr
     - rv_zifencei
     - rv_v
+    - ysx-opcodes/rv_xtinyv
   retained_handwritten: []

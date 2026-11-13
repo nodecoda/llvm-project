@@ -1,0 +1,6 @@
+mnemonic: yushuxin.vfexp
+opcode: {repo: ysx-opcodes, extension: rv_xtinyv, key: yushuxin_vfexp}
+spec: rvtrim.vector.v_unary
+domain: rv-xtinyv
+status: auto_full
+sched: [WriteVIALUV_WorstCase, ReadVIALUV_WorstCase, ReadVMask]

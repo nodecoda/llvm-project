@@ -14,6 +14,7 @@ python3 -m unittest discover -s llvm/utils/auto-td/tests -p 'test_*.py'
 echo "== generated records =="
 python3 llvm/utils/auto-td/auto-td-gen --target-root llvm/lib/Target/RVTrim \
   --riscv-opcodes llvm/lib/Target/RVTrim/auto-td/opcodes \
+  --ysx-opcodes llvm/lib/Target/RVTrim/auto-td/opcodes-ysx \
   --out-dir /tmp/rvsmoke --check-only
 
 echo "== V record properties (golden) =="
