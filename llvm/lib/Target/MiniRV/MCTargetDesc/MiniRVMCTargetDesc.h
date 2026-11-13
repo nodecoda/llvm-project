@@ -23,6 +23,8 @@ namespace MiniRV {
 enum Fixups {
   fixup_minirv_branch = FirstTargetFixupKind,
   fixup_minirv_jal,
+  fixup_minirv_pcrel_hi20,
+  fixup_minirv_pcrel_lo12_i,
   NumTargetFixupKinds
 };
 

@@ -27,6 +27,10 @@ public:
                   const MCValue &Target, uint8_t *Data, uint64_t Value,
                   bool IsResolved) override;
 
+  std::optional<bool> evaluateFixup(const MCFragment &F, MCFixup &Fixup,
+                                    MCValue &Target,
+                                    uint64_t &Value) override;
+
   std::unique_ptr<MCObjectTargetWriter>
   createObjectTargetWriter() const override;
 

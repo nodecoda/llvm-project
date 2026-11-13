@@ -8,9 +8,14 @@
 
 #include "MiniRVAsmBackend.h"
 #include "MiniRVMCTargetDesc.h"
+#include "llvm/MC/MCAssembler.h"
+#include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCELFObjectWriter.h"
+#include "llvm/MC/MCExpr.h"
+#include "llvm/MC/MCValue.h"
 #include "llvm/MC/MCObjectWriter.h"
 #include "llvm/MC/MCSubtargetInfo.h"
+#include "llvm/MC/MCSymbolELF.h"
 #include "llvm/Support/Endian.h"
 
 using namespace llvm;
@@ -27,6 +32,8 @@ MCFixupKindInfo MiniRVAsmBackend::getFixupKindInfo(MCFixupKind Kind) const {
       // the instruction the fixup lives in.
       {"fixup_minirv_branch", 0, 32, 0},
       {"fixup_minirv_jal", 0, 32, 0},
+      {"fixup_minirv_pcrel_hi20", 0, 32, 0},
+      {"fixup_minirv_pcrel_lo12_i", 0, 32, 0},
   };
 
   if (Kind < FirstTargetFixupKind)
@@ -43,8 +50,12 @@ void MiniRVAsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
   // Data fixups -- the debug frame uses a four-byte one -- are not
   // instruction-shaped: write the value as a plain little-endian integer.
   if (Fixup.getKind() < FirstTargetFixupKind) {
-    if (!IsResolved)
+    // A data fixup that refers to another section becomes a relocation; the
+    // linker fills in the value.
+    if (!IsResolved) {
+      maybeAddReloc(F, Fixup, Target, Value, IsResolved);
       return;
+    }
     switch (getFixupKindInfo(Fixup.getKind()).TargetSize) {
     case 64:
       support::endian::write64le(Data, Value);
@@ -95,10 +106,95 @@ void MiniRVAsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
     Insn |= (Imm & 0x7f800) << 1;
     break;
   }
+  case MiniRV::fixup_minirv_pcrel_hi20: {
+    // The high 20 bits of a PC-relative address, rounded away from zero so
+    // that the low part always fits in the signed twelve bits of addi.
+    uint32_t Hi = static_cast<uint32_t>((Value + 0x800) >> 12) & 0xfffff;
+    Insn &= ~0xfffff000u;
+    Insn |= Hi << 12;
+    break;
+  }
+  case MiniRV::fixup_minirv_pcrel_lo12_i: {
+    // The low twelve bits of the same address, in the I-format immediate.
+    Insn &= ~0xfff00000u;
+    Insn |= (static_cast<uint32_t>(Value) & 0xfff) << 20;
+    break;
+  }
   default:
     llvm_unreachable("Unknown fixup kind!");
   }
   support::endian::write32le(Data, Insn);
+}
+
+/// Find the pcrel_hi fixup that a pcrel_lo operand refers to.  The low part
+/// names the label of the auipc instruction, so the high fixup is the one at
+/// that label's offset in the same fragment.
+static const MCFixup *getPCRelHiFixup(const MCSymbol *Sym,
+                                      const MCFragment **DFOut) {
+  const MCFragment *DF = Sym->getFragment();
+  if (!DF)
+    return nullptr;
+
+  uint64_t Offset = Sym->getOffset();
+  if (DF->getContents().size() == Offset) {
+    DF = DF->getNext();
+    if (!DF)
+      return nullptr;
+    Offset = 0;
+  }
+
+  for (const MCFixup &F : DF->getFixups()) {
+    if (F.getOffset() != Offset)
+      continue;
+    if (F.getKind() == MiniRV::fixup_minirv_pcrel_hi20) {
+      *DFOut = DF;
+      return &F;
+    }
+    break;
+  }
+  return nullptr;
+}
+
+std::optional<bool> MiniRVAsmBackend::evaluateFixup(const MCFragment &,
+                                                    MCFixup &Fixup,
+                                                    MCValue &Target,
+                                                    uint64_t &Value) {
+  if (Fixup.getKind() != MiniRV::fixup_minirv_pcrel_lo12_i)
+    return {};
+
+  const MCSymbol *AUIPCSym = Target.getAddSym();
+  if (!AUIPCSym)
+    return true;
+
+  const MCFragment *AUIPCDF = nullptr;
+  const MCFixup *AUIPCFixup = getPCRelHiFixup(AUIPCSym, &AUIPCDF);
+  if (!AUIPCFixup) {
+    getContext().reportError(Fixup.getLoc(),
+                             "could not find corresponding pcrel_hi");
+    return true;
+  }
+
+  MCValue AUIPCTarget;
+  if (!AUIPCFixup->getValue()->evaluateAsRelocatable(AUIPCTarget, Asm))
+    return true;
+
+  const MCSymbol *TargetSym = AUIPCTarget.getAddSym();
+  if (!TargetSym)
+    return false;
+
+  const auto &SA = static_cast<const MCSymbolELF &>(*TargetSym);
+  if (SA.isUndefined())
+    return false;
+
+  bool IsResolved = &SA.getSection() == AUIPCDF->getParent() &&
+                    SA.getBinding() == ELF::STB_LOCAL;
+  if (!IsResolved)
+    return false;
+
+  // The value of both parts is the address relative to the auipc.
+  Value = Asm->getSymbolOffset(SA) + AUIPCTarget.getConstant();
+  Value -= Asm->getFragmentOffset(*AUIPCDF) + AUIPCFixup->getOffset();
+  return true;
 }
 
 bool MiniRVAsmBackend::writeNopData(raw_ostream &OS, uint64_t Count,

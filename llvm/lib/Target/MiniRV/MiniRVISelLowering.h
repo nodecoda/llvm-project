@@ -26,6 +26,8 @@ public:
 
   SDValue LowerSELECT_CC(SDValue Op, SelectionDAG &DAG) const;
 
+  SDValue LowerGlobalAddress(SDValue Op, SelectionDAG &DAG) const;
+
   SDValue LowerBranchCC(SDValue Chain, SDValue LHS, SDValue RHS,
                         ISD::CondCode CC, SDValue Dest, const SDLoc &DL,
                         SelectionDAG &DAG) const;

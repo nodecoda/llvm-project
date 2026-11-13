@@ -169,6 +169,11 @@ def MiniRVcall : SDNode<"MiniRVISD::CALL", SDT_MiniRVCall,
                         [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue,
                          SDNPVariadic]>;
 
+// The same call with the callee in a register instead of a symbol.
+def MiniRVcall_reg : SDNode<"MiniRVISD::CALL_REG", SDT_MiniRVCall,
+                            [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue,
+                             SDNPVariadic]>;
+
 // The corpus has no return record either, but "jalr x0, x1, 0" is one.  The
 // pseudo carries the terminator flags and the expansion supplies the encoding.
 def PseudoRET : MiniRVInst<(outs), (ins), "ret", "", [(MiniRVret)], InstFormatI>,
@@ -193,6 +198,22 @@ def PseudoCALL : MiniRVInst<(outs), (ins bare_symbol:$dst), "jal", "x1, $dst",
 }
 
 def : Pat<(MiniRVcall texternalsym:$dst), (PseudoCALL texternalsym:$dst)>;
+
+// An indirect call is "jalr x1, rs, 0": the callee address is already in a
+// register.
+let isCall = 1, Defs = [X1], hasNoSchedulingInfo = 1 in
+def PseudoCALLReg : MiniRVInst<(outs), (ins GPR:$rs), "jalr", "x1, $rs, 0",
+                               [(MiniRVcall_reg GPR:$rs)], InstFormatI>,
+                    PseudoInstExpansion<(JALR X1, GPR:$rs, 0)> {
+  let isCodeGenOnly = 1;
+}
+
+// The address of a symbol: auipc rd, %pcrel_hi(sym) followed by
+// addi rd, rd, %pcrel_lo(auipc).  The pair is expanded by the AsmPrinter,
+// which also creates the label the low part refers to.
+let isCodeGenOnly = 1, hasNoSchedulingInfo = 1 in
+def PseudoLA : MiniRVInst<(outs GPR:$rd), (ins bare_symbol:$sym), "la",
+                          "$rd, $sym", [], InstFormatI>;
 
 // The unconditional branch of this target: "jal x0, offset".
 def PseudoBR : MiniRVInst<(outs), (ins simm21_lsb0:$imm20), "j", "$imm20",

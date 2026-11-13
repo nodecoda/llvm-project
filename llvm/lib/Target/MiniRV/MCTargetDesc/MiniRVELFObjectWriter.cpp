@@ -29,9 +29,24 @@ protected:
       return ELF::R_RISCV_BRANCH;
     case MiniRV::fixup_minirv_jal:
       return ELF::R_RISCV_JAL;
+    case MiniRV::fixup_minirv_pcrel_hi20:
+      return ELF::R_RISCV_PCREL_HI20;
+    case MiniRV::fixup_minirv_pcrel_lo12_i:
+      return ELF::R_RISCV_PCREL_LO12_I;
+    // Data relocations: a pointer in an initialiser refers to a symbol.
+    case FK_Data_8:
+      return ELF::R_RISCV_64;
+    case FK_Data_4:
+      return ELF::R_RISCV_32;
     default:
       llvm_unreachable("Unknown fixup kind!");
     }
+  }
+
+  bool needsRelocateWithSymbol(const MCValue &, unsigned) const override {
+    // Keep the original symbol: the low part of a PC-relative pair has to name
+    // the auipc label, not the section it lives in.
+    return true;
   }
 };
 } // end anonymous namespace

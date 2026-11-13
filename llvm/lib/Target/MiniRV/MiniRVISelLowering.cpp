@@ -75,6 +75,9 @@ MiniRVTargetLowering::MiniRVTargetLowering(const TargetMachine &TM,
   setOperationAction(ISD::SELECT_CC, MVT::i64, Custom);
   setOperationAction(ISD::SELECT_CC, MVT::i32, Custom);
 
+  // The address of a symbol is materialised with auipc+addi.
+  setOperationAction(ISD::GlobalAddress, MVT::i64, Custom);
+
   setOperationAction(ISD::BRCOND, MVT::Other, Custom);
   // BR_CC is expanded into BRCOND plus a comparison, which is then fused back
   // into one branch by LowerBRCOND.
@@ -99,6 +102,8 @@ EVT MiniRVTargetLowering::getSetCCResultType(const DataLayout &DL,
 SDValue MiniRVTargetLowering::LowerOperation(SDValue Op,
                                              SelectionDAG &DAG) const {
   switch (Op.getOpcode()) {
+  case ISD::GlobalAddress:
+    return LowerGlobalAddress(Op, DAG);
   case ISD::BRCOND:
     return LowerBRCOND(Op, DAG);
   case ISD::SELECT_CC:
@@ -106,6 +111,20 @@ SDValue MiniRVTargetLowering::LowerOperation(SDValue Op,
   default:
     llvm_unreachable("MiniRV does not custom-lower this operation");
   }
+}
+
+/// The address of a symbol: auipc rd, %pcrel_hi(sym) adds the high 20 bits of
+/// the PC-relative distance to the PC, then addi rd, rd, %pcrel_lo(auipc)
+/// adds the low 12.  The pair stays a pseudo until the AsmPrinter, which has
+/// to create the label that ties the two parts together.
+SDValue MiniRVTargetLowering::LowerGlobalAddress(SDValue Op,
+                                                 SelectionDAG &DAG) const {
+  const auto *GV = cast<GlobalAddressSDNode>(Op);
+  SDLoc DL(Op);
+  EVT PtrVT = getPointerTy(DAG.getDataLayout());
+  SDValue Sym =
+      DAG.getTargetGlobalAddress(GV->getGlobal(), DL, PtrVT, GV->getOffset());
+  return SDValue(DAG.getMachineNode(MiniRV::PseudoLA, DL, PtrVT, Sym), 0);
 }
 
 /// Turn an i32 operation into its *W form.  The operands are any-extended:
@@ -398,17 +417,18 @@ MiniRVTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   if (NumBytes)
     Chain = DAG.getCALLSEQ_START(Chain, NumBytes, 0, DL);
 
-  // The callee has to be a symbol: the corpus has no way to compute the
-  // address of a function, so an indirect call cannot be lowered.  A direct
-  // callee becomes a target node so that the patterns can match it.
+  // A direct callee becomes a target node so that the pattern can match it.
+  // Anything else is an address that is already in a register and is called
+  // indirectly.
   EVT PtrVT = getPointerTy(DAG.getDataLayout());
+  bool IsIndirect = false;
   if (GlobalAddressSDNode *G = dyn_cast<GlobalAddressSDNode>(Callee))
     Callee =
         DAG.getTargetGlobalAddress(G->getGlobal(), DL, PtrVT, G->getOffset());
   else if (ExternalSymbolSDNode *S = dyn_cast<ExternalSymbolSDNode>(Callee))
     Callee = DAG.getTargetExternalSymbol(S->getSymbol(), PtrVT);
   else
-    report_fatal_error("MiniRV can only call a direct symbol");
+    IsIndirect = true;
 
   // Stack arguments are written first, then the register arguments are
   // copied.  Keeping the stores on a TokenFactor (rather than chaining them
@@ -469,7 +489,8 @@ MiniRVTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   // The glue goes last on a variadic call node.
   if (Glue.getNode())
     Ops.push_back(Glue);
-  Chain = DAG.getNode(MiniRVISD::CALL, DL, NodeTys, Ops);
+  Chain = DAG.getNode(IsIndirect ? MiniRVISD::CALL_REG : MiniRVISD::CALL, DL,
+                      NodeTys, Ops);
   Glue = Chain.getValue(1);
 
   // Release the reserved call frame.  The pseudo is erased by PEI because the
@@ -527,6 +548,8 @@ const char *MiniRVTargetLowering::getTargetNodeName(unsigned Opcode) const {
     return "MiniRVISD::BRCC";
   case MiniRVISD::CALL:
     return "MiniRVISD::CALL";
+  case MiniRVISD::CALL_REG:
+    return "MiniRVISD::CALL_REG";
   case MiniRVISD::RET:
     return "MiniRVISD::RET";
   case MiniRVISD::ADDW:

@@ -17,6 +17,7 @@
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachinePassManager.h"
 #include "llvm/IR/GlobalValue.h"
+#include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCStreamer.h"
@@ -41,6 +42,8 @@ public:
   // Wrapper needed for the tablegenned pseudo lowering.
   bool lowerOperand(const MachineOperand &MO, MCOperand &MCOp) const;
   bool lowerPseudoInstExpansion(const MachineInstr *MI, MCInst &Inst);
+
+  void emitSymbolAddress(const MachineInstr &MI);
 
   static char ID;
 };
@@ -80,7 +83,44 @@ bool MiniRVAsmPrinter::lowerOperand(const MachineOperand &MO,
     MCOp = MCOperand::createExpr(MCSymbolRefExpr::create(
         GetExternalSymbolSymbol(MO.getSymbolName()), OutContext));
     return true;
+  case MachineOperand::MO_MCSymbol:
+    MCOp = MCOperand::createExpr(
+        MCSymbolRefExpr::create(MO.getMCSymbol(), OutContext));
+    return true;
   }
+}
+
+/// Emit "auipc rd, %pcrel_hi(sym)" followed by "addi rd, rd, %pcrel_lo(L)".
+/// The label L marks the auipc so that the assembler and the linker can find
+/// the high part that the low part belongs to.
+void MiniRVAsmPrinter::emitSymbolAddress(const MachineInstr &MI) {
+  Register Dst = MI.getOperand(0).getReg();
+  const MachineOperand &MO = MI.getOperand(1);
+
+  const MCExpr *Target;
+  if (MO.isGlobal())
+    Target = MCSymbolRefExpr::create(getSymbol(MO.getGlobal()), MO.getOffset(),
+                                     OutContext);
+  else
+    Target = MCSymbolRefExpr::create(
+        GetExternalSymbolSymbol(MO.getSymbolName()), OutContext);
+
+  MCSymbol *HiLabel = OutContext.createTempSymbol("pcrel_hi", true);
+  OutStreamer->emitLabel(HiLabel);
+
+  MCInst AUIPC;
+  AUIPC.setOpcode(MiniRV::AUIPC);
+  AUIPC.addOperand(MCOperand::createReg(Dst));
+  AUIPC.addOperand(MCOperand::createExpr(Target));
+  EmitToStreamer(*OutStreamer, AUIPC);
+
+  MCInst ADDI;
+  ADDI.setOpcode(MiniRV::ADDI);
+  ADDI.addOperand(MCOperand::createReg(Dst));
+  ADDI.addOperand(MCOperand::createReg(Dst));
+  ADDI.addOperand(
+      MCOperand::createExpr(MCSymbolRefExpr::create(HiLabel, OutContext)));
+  EmitToStreamer(*OutStreamer, ADDI);
 }
 
 // PseudoRET and PseudoBR are lowered here, from the records that carry a
@@ -88,6 +128,11 @@ bool MiniRVAsmPrinter::lowerOperand(const MachineOperand &MO,
 #include "MiniRVGenMCPseudoLowering.inc"
 
 void MiniRVAsmPrinter::emitInstruction(const MachineInstr *MI) {
+  if (MI->getOpcode() == MiniRV::PseudoLA) {
+    emitSymbolAddress(*MI);
+    return;
+  }
+
   if (MCInst Expanded; lowerPseudoInstExpansion(MI, Expanded)) {
     EmitToStreamer(*OutStreamer, Expanded);
     return;

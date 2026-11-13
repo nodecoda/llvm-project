@@ -67,7 +67,24 @@ unsigned MiniRVMCCodeEmitter::getMachineOpValue(
     return Ctx.getRegisterInfo()->getEncodingValue(MO.getReg());
   if (MO.isImm())
     return static_cast<unsigned>(MO.getImm());
-  llvm_unreachable("MiniRV has no symbol operands");
+
+  // The only instructions that take a symbol are the two halves of a
+  // PC-relative address: auipc carries the high 20 bits and addi the low 12.
+  assert(MO.isExpr() && "Unexpected operand");
+  MCFixupKind Kind;
+  switch (MI.getOpcode()) {
+  case MiniRV::AUIPC:
+    Kind = MiniRV::fixup_minirv_pcrel_hi20;
+    break;
+  case MiniRV::ADDI:
+    Kind = MiniRV::fixup_minirv_pcrel_lo12_i;
+    break;
+  default:
+    llvm_unreachable("MiniRV has no symbol operands for this instruction");
+  }
+  Fixups.push_back(
+      MCFixup::create(0, MO.getExpr(), Kind, /*PCRel=*/true));
+  return 0;
 }
 
 /// A branch immediate is the byte offset divided by two, packed into the

@@ -45,6 +45,10 @@ void MiniRVMCInstLower::Lower(const MachineInstr *MI, MCInst &OutMI) const {
       OutMI.addOperand(MCOperand::createExpr(MCSymbolRefExpr::create(
           Printer.GetExternalSymbolSymbol(MO.getSymbolName()), Ctx)));
       break;
+    case MachineOperand::MO_MCSymbol:
+      OutMI.addOperand(MCOperand::createExpr(
+          MCSymbolRefExpr::create(MO.getMCSymbol(), Ctx)));
+      break;
     }
   }
 }
