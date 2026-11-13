@@ -1,0 +1,75 @@
+# Operand/effect categories for the standard 'V' vector extension.
+#
+# A category fixes shape only: which operand class fills which database field,
+# in which order.  Encodings still come exclusively from
+# third_party/riscv-opcodes; nothing here can influence a bit position.
+#
+# The `lets` block carries properties that are neither operands nor booleans:
+# `DestEEW`, `VS1VS2Constraint`, `ElementsDependOn` and `Constraints` all end
+# up in TSFlags or in the register allocator, so they must survive a migration
+# from hand-written records unchanged.
+
+categories:
+
+  # --- vsetvli / vsetivli / vsetvl ----------------------------------------
+  # All three write VL and VTYPE and are modelled as having side effects.
+  vset_vli:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins:
+        - {role: avl, field: rs1, reg_class: GPR}
+        - {role: vtype, field: zimm11, var: vtypei, operand: VTypeIOp11}
+    effects: {has_side_effects: true, implicit_defs: [VL, VTYPE]}
+
+  vset_ivli:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins:
+        - {role: uimm, field: zimm5, var: uimm, operand: uimm5}
+        - {role: vtype, field: zimm10, var: vtypei, operand: VTypeIOp10}
+    effects: {has_side_effects: true, implicit_defs: [VL, VTYPE]}
+
+  vset_vl:
+    operands:
+      outs: [{role: dest, field: rd, reg_class: GPR}]
+      ins:
+        - {role: avl, field: rs1, reg_class: GPR}
+        - {role: vlmax, field: rs2, reg_class: GPR}
+    effects: {has_side_effects: true, implicit_defs: [VL, VTYPE]}
+
+  # --- integer ALU, register-register / register-immediate ----------------
+  v_vv:
+    operands:
+      outs: [{role: dest, field: vd, reg_class: VR}]
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: vs1, reg_class: VR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects:
+      implicit_uses: [VL, VTYPE]
+      flags: [UseNamedOperandTable, VMConstraint]
+      lets: {ElementsDependOn: EltDepsNone}
+
+  v_vx:
+    operands:
+      outs: [{role: dest, field: vd, reg_class: VR}]
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: rs1, reg_class: GPR}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects:
+      implicit_uses: [VL, VTYPE]
+      flags: [UseNamedOperandTable, VMConstraint]
+      lets: {ElementsDependOn: EltDepsNone}
+
+  v_vi:
+    operands:
+      outs: [{role: dest, field: vd, reg_class: VR}]
+      ins:
+        - {role: lhs, field: vs2, reg_class: VR}
+        - {role: rhs, field: zimm5, var: imm, operand: simm5}
+        - {role: mask, field: vm, operand: VMaskOp}
+    effects:
+      implicit_uses: [VL, VTYPE]
+      flags: [UseNamedOperandTable, VMConstraint]
+      lets: {ElementsDependOn: EltDepsNone}

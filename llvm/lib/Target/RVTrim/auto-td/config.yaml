@@ -16,6 +16,7 @@ domains:
   rv64-a:     {predicate: null}
   rv-zicsr:   {predicate: null}
   rv-zifencei: {predicate: null}
+  rv-v:       {predicate: HasVInstructions}
 
 # Formats that cannot be inferred from the opcode field shape: instructions
 # whose only immediate lives inside the opcode (fence/ecall/ebreak/fence.i)
@@ -25,6 +26,8 @@ formats:
   fence.i: InstFormatI
   ecall: InstFormatI
   ebreak: InstFormatI
+  vsetvli: InstFormatI
+  vsetivli: InstFormatI
 
 # Every instruction carries an explicit SchedRW (possibly empty), matching the
 # hand-written backend; do not invent a scheduling stub.
