@@ -28,6 +28,18 @@ public:
                            unsigned FIOperandNum,
                            RegScavenger *RS = nullptr) const override;
   Register getFrameRegister(const MachineFunction &MF) const override;
+
+  /// Chapter 16: frames larger than 2 KiB need a scratch register after
+  /// register allocation, so PEI must build a RegScavenger for every function.
+  bool requiresRegisterScavenging(const MachineFunction &MF) const override {
+    return true;
+  }
+
+  /// eliminateFrameIndex creates virtual registers for far frame accesses and
+  /// leaves them to scavengeFrameVirtualRegs (see eliminateFrameIndex below).
+  bool requiresFrameIndexScavenging(const MachineFunction &MF) const override {
+    return true;
+  }
 };
 
 } // namespace llvm

@@ -15,6 +15,7 @@
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/CFIInstBuilder.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/CodeGen/RegisterScavenging.h"
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace llvm;
@@ -26,6 +27,66 @@ bool RVMinFrameLowering::hasFPImpl(const MachineFunction &MF) const {
   return false;
 }
 
+//===----------------------------------------------------------------------===//
+// Constant materialization
+//===----------------------------------------------------------------------===//
+//
+// RV32I has no "load immediate": a 32-bit constant is an ADDI when it fits in
+// the 12-bit signed field, and `LUI hi20` + `ADDI lo12` otherwise.  The split
+// is the same one RVMinDAGToDAGISel::Select uses for ISD::Constant, and it
+// works for every 32-bit value (including INT32_MIN) because LUI sign-extends.
+//
+// Two places need it long after instruction selection:
+//   - the prologue/epilogue, to move sp by a frame larger than 2 KiB;
+//   - eliminateFrameIndex, to form the address of a stack slot that is more
+//     than 2 KiB away from sp.
+
+void RVMinFrameLowering::materializeConstant(MachineBasicBlock &MBB,
+                                             MachineBasicBlock::iterator I,
+                                             const RVMinInstrInfo &TII,
+                                             const DebugLoc &DL, Register Dst,
+                                             int64_t Value,
+                                             MachineInstr::MIFlag Flag) {
+  if (isInt<12>(Value)) {
+    BuildMI(MBB, I, DL, TII.get(RVMin::ADDI), Dst)
+        .addReg(RVMin::X0)
+        .addImm(Value)
+        .setMIFlag(Flag);
+    return;
+  }
+
+  assert(isInt<32>(Value) && "RVMin frames are at most 2 GiB");
+  int64_t Hi = (Value + 0x800) >> 12;
+  int64_t Lo = Value - (Hi << 12);
+  assert(isInt<12>(Lo) && "LUI+ADDI split is always encodable");
+
+  BuildMI(MBB, I, DL, TII.get(RVMin::LUI), Dst)
+      .addImm(Hi)
+      .setMIFlag(Flag);
+  if (Lo)
+    BuildMI(MBB, I, DL, TII.get(RVMin::ADDI), Dst)
+        .addReg(Dst)
+        .addImm(Lo)
+        .setMIFlag(Flag);
+}
+
+void RVMinFrameLowering::materializeAddress(MachineBasicBlock &MBB,
+                                            MachineBasicBlock::iterator I,
+                                            const RVMinInstrInfo &TII,
+                                            const DebugLoc &DL, Register Dst,
+                                            Register Base, int64_t Offset) {
+  if (isInt<12>(Offset)) {
+    BuildMI(MBB, I, DL, TII.get(RVMin::ADDI), Dst).addReg(Base).addImm(Offset);
+    return;
+  }
+
+  // `Dst` carries the constant, then one ADD folds in the base (sp).  Adding
+  // the constant first keeps the split to three instructions; there is no
+  // "add shifted high part" form in RV32I.
+  materializeConstant(MBB, I, TII, DL, Dst, Offset);
+  BuildMI(MBB, I, DL, TII.get(RVMin::ADD), Dst).addReg(Dst).addReg(Base);
+}
+
 namespace {
 
 /// `sp += Amount`, where Amount is a *signed* byte count.  RV32I's ADDI covers
@@ -35,32 +96,18 @@ namespace {
 void adjustStackPointer(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
                         const RVMinInstrInfo &TII, const DebugLoc &DL,
                         int64_t Amount, MachineInstr::MIFlag Flag) {
-  auto emit = [&](unsigned Opc, Register Dst, Register Src) {
-    MachineInstr *MI = BuildMI(MBB, I, DL, TII.get(Opc), Dst).addReg(Src);
-    MI->setFlag(Flag);
-    return MI;
-  };
-
   if (isInt<12>(Amount)) {
-    MachineInstr *MI = emit(RVMin::ADDI, RVMin::X2, RVMin::X2);
-    MI->addOperand(MachineOperand::CreateImm(Amount));
+    BuildMI(MBB, I, DL, TII.get(RVMin::ADDI), RVMin::X2)
+        .addReg(RVMin::X2)
+        .addImm(Amount)
+        .setMIFlag(Flag);
     return;
   }
 
-  // Materialize |Amount| in t0 with LUI+ADDI, then add/subtract it.
+  // Materialize |Amount| in t0, then add/subtract it.
   int64_t Value = Amount < 0 ? -Amount : Amount;
-  int64_t Hi = (Value + 0x800) >> 12;
-  int64_t Lo = Value - (Hi << 12);
-  assert(isUInt<20>(Hi) && "stack size must fit in 31 bits");
-
-  BuildMI(MBB, I, DL, TII.get(RVMin::LUI), RVMin::X5)
-      .addImm(Hi)
-      .setMIFlag(Flag);
-  if (Lo)
-    BuildMI(MBB, I, DL, TII.get(RVMin::ADDI), RVMin::X5)
-        .addReg(RVMin::X5)
-        .addImm(Lo)
-        .setMIFlag(Flag);
+  RVMinFrameLowering::materializeConstant(MBB, I, TII, DL, RVMin::X5, Value,
+                                          Flag);
   // Positive amounts are the epilogue (sp += N), negative ones the prologue.
   BuildMI(MBB, I, DL, TII.get(Amount > 0 ? RVMin::ADD : RVMin::SUB), RVMin::X2)
       .addReg(RVMin::X2)
@@ -69,6 +116,44 @@ void adjustStackPointer(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
 }
 
 } // end anonymous namespace
+
+//===----------------------------------------------------------------------===//
+// Register scavenging
+//===----------------------------------------------------------------------===//
+//
+// A frame access whose offset does not fit in 12 bits cannot be encoded, so
+// eliminateFrameIndex materializes the address in a *virtual* GPR.  Those
+// vregs appear after register allocation, and PEI resolves them with the
+// register scavenger (scavengeFrameVirtualRegs).  Scavenging may have to evict
+// a live register, and the only place it may store it is an "emergency spill
+// slot" that the target has to reserve here:
+//
+//   - the slot is allocated last, which places it closest to sp, so the
+//     scavenger's own `sw`/`lw` always fit in 12 bits;
+//   - frames that fit comfortably in 12 bits never need it, and adding one
+//     unconditionally would change every prologue in the tutorial, so only
+//     frames near the 2 KiB boundary pay for it.
+//
+// The estimate is used because the exact stack size is computed right after
+// this hook runs.  It does not include the slot itself, so add its 4 bytes and
+// the 16-byte stack alignment before comparing against the largest encodable
+// offset (2047).
+
+void RVMinFrameLowering::processFunctionBeforeFrameFinalized(
+    MachineFunction &MF, RegScavenger *RS) const {
+  assert(RS && "RVMin asks for register scavenging unconditionally");
+
+  MachineFrameInfo &MFI = MF.getFrameInfo();
+  uint64_t Estimate = MFI.estimateStackSize(MF);
+  if (alignTo(Estimate + 4, 16) <= 2047)
+    return;
+
+  const TargetRegisterClass &RC = RVMin::GPRRegClass;
+  const TargetRegisterInfo &TRI = *MF.getSubtarget().getRegisterInfo();
+  int FI =
+      MFI.CreateSpillStackObject(TRI.getSpillSize(RC), TRI.getSpillAlign(RC));
+  RS->addScavengingFrameIndex(FI);
+}
 
 void RVMinFrameLowering::emitPrologue(MachineFunction &MF,
                                       MachineBasicBlock &MBB) const {

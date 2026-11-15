@@ -14,6 +14,8 @@
 
 namespace llvm {
 
+class RegScavenger;
+class RVMinInstrInfo;
 class RVMinSubtarget;
 
 class RVMinFrameLowering : public TargetFrameLowering {
@@ -37,6 +39,25 @@ public:
   MachineBasicBlock::iterator
   eliminateCallFramePseudoInstr(MachineFunction &MF, MachineBasicBlock &MBB,
                                 MachineBasicBlock::iterator MI) const override;
+
+  void processFunctionBeforeFrameFinalized(MachineFunction &MF,
+                                           RegScavenger *RS) const override;
+
+  /// Materialize the signed 32-bit constant \p Value into \p Dst with
+  /// `LUI` + `ADDI` (a single `ADDI x0, imm` when it fits in 12 bits).
+  static void materializeConstant(MachineBasicBlock &MBB,
+                                  MachineBasicBlock::iterator I,
+                                  const RVMinInstrInfo &TII, const DebugLoc &DL,
+                                  Register Dst, int64_t Value,
+                                  MachineInstr::MIFlag Flag =
+                                      MachineInstr::NoFlags);
+
+  /// Compute \p Dst = \p Base + \p Offset.  Chapter 16 uses this for frame
+  /// accesses whose offset does not fit in the 12-bit immediate field.
+  static void materializeAddress(MachineBasicBlock &MBB,
+                                 MachineBasicBlock::iterator I,
+                                 const RVMinInstrInfo &TII, const DebugLoc &DL,
+                                 Register Dst, Register Base, int64_t Offset);
 
 private:
   /// Emit `.cfi_def_cfa_offset` and one `.cfi_offset` per callee-saved

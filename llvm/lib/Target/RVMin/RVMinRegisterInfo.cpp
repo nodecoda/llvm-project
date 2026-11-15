@@ -8,9 +8,12 @@
 
 #include "RVMinRegisterInfo.h"
 #include "RVMin.h"
+#include "RVMinFrameLowering.h"
+#include "RVMinInstrInfo.h"
 #include "RVMinTargetMachine.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace llvm;
@@ -54,13 +57,30 @@ BitVector RVMinRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
 // the object, because the frame pointer is not used.  The instruction's own
 // immediate is folded in, which is how `frameindex + 8` (a constant-indexed
 // alloca) becomes one instruction.
+//
+// Chapter 16: when that final offset does not fit in the 12-bit field, the
+// access cannot be encoded at all.  Instead of giving up, materialize the
+// address in a scratch register first:
+//
+//   lui   s, hi20(offset)
+//   addi  s, s, lo12(offset)
+//   add   s, s, sp
+//   lw    rd, 0(s)                  <- the original instruction, offset 0
+//
+// There is no free physical register to hard-code here: this runs *after*
+// register allocation, so every GPR may be live.  We therefore create a
+// virtual register and let PEI's register scavenger assign a physical one,
+// spilling a live value to the emergency slot from
+// RVMinFrameLowering::processFunctionBeforeFrameFinalized if it has to
+// (scavengeRegisterBackwards is what picks the register under the hood).
 bool RVMinRegisterInfo::eliminateFrameIndex(
     MachineBasicBlock::iterator II, int SPAdj, unsigned FIOperandNum,
     RegScavenger *RS) const {
   assert(SPAdj == 0 && "RVMin has no dynamic stack adjustments");
 
   MachineInstr &MI = *II;
-  MachineFunction &MF = *MI.getParent()->getParent();
+  MachineBasicBlock &MBB = *MI.getParent();
+  MachineFunction &MF = *MBB.getParent();
   const TargetFrameLowering *TFI = getFrameLowering(MF);
 
   int FrameIndex = MI.getOperand(FIOperandNum).getIndex();
@@ -69,13 +89,22 @@ bool RVMinRegisterInfo::eliminateFrameIndex(
       TFI->getFrameIndexReference(MF, FrameIndex, FrameReg).getFixed();
   Offset += MI.getOperand(FIOperandNum + 1).getImm();
 
-  if (!isInt<12>(Offset))
-    report_fatal_error("RVMin: frame offset " + Twine(Offset) +
-                       " does not fit in 12 bits (frame larger than 2 KiB is "
-                       "not supported yet)");
+  if (isInt<12>(Offset)) {
+    MI.getOperand(FIOperandNum).ChangeToRegister(FrameReg, /*isDef=*/false);
+    MI.getOperand(FIOperandNum + 1).ChangeToImmediate(Offset);
+    return false;
+  }
 
-  MI.getOperand(FIOperandNum).ChangeToRegister(FrameReg, /*isDef=*/false);
-  MI.getOperand(FIOperandNum + 1).ChangeToImmediate(Offset);
+  assert(FrameReg == RVMin::X2 && "RVMin only addresses frames through sp");
+
+  const RVMinInstrInfo &TII =
+      *static_cast<const RVMinInstrInfo *>(MF.getSubtarget().getInstrInfo());
+  Register Scratch = MF.getRegInfo().createVirtualRegister(&RVMin::GPRRegClass);
+  RVMinFrameLowering::materializeAddress(MBB, II, TII, MI.getDebugLoc(),
+                                         Scratch, FrameReg, Offset);
+
+  MI.getOperand(FIOperandNum).ChangeToRegister(Scratch, /*isDef=*/false);
+  MI.getOperand(FIOperandNum + 1).ChangeToImmediate(0);
   return false;
 }
 

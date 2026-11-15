@@ -70,7 +70,7 @@ git checkout rvmin-ch16     # 第 16 章（大栈帧）结束
 | 章 | 主题 | 状态 |
 | --- | --- | --- |
 | 15 | [下篇导览与基线核对](docs/15-part2-overview.md) | 完成 |
-| 16 | 大栈帧与 RegScavenger | 规划中 |
+| 16 | [大栈帧与 RegScavenger](docs/16-large-frames.md) | 完成 |
 | 17 | 尾调用与 musttail | 规划中 |
 | 18 | 跳转表与间接跳转 | 规划中 |
 | 19 | 常量乘除的强度削减 | 规划中 |

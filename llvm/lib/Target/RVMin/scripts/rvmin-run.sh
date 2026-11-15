@@ -3,7 +3,8 @@
 # Chapter 12 gate: compile, assemble, link and RUN a freestanding RV32I
 # program.  Chapter 13 runs the same program twice, once as plain RV32I (with
 # the runtime's libcalls) and once with the M extension, and requires identical
-# output.
+# output.  Chapter 16 adds a second program whose stack frames are larger than
+# 2 KiB, compiled at -O0 and -O2.
 #
 # Usage: rvmin-run.sh <llvm-bin-dir> [qemu]
 #
@@ -88,6 +89,37 @@ for SYM in __mulsi3 __divsi3 __udivsi3 __modsi3 __umodsi3; do
   [[ "$RELOCS" != *"$SYM"* ]] || fail "+m build still references $SYM"
 done
 grep -q '__ashldi3' <<< "$RELOCS" || fail "+m build lost the 64-bit shift libcall"
+
+# Chapter 16 gate: frames larger than 2 KiB.  `-O0` and `-O2` exercise both
+# register allocators; `-verify-machineinstrs` checks the scavenged scratch
+# registers that eliminateFrameIndex creates.
+run_large_frame() {
+  local O=$1
+  "$CC" --target="$TRIPLE" -march=rv32i -mabi=ilp32 -O"$O" -ffreestanding \
+    -fno-builtin -S -emit-llvm "$RT/large-frame.c" -o "$TMP/lf$O.ll" \
+    || fail "clang could not compile large-frame.c (-O$O)"
+  "$LLC" -march=rvmin -mtriple="$TRIPLE" -O"$O" -verify-machineinstrs \
+    "$TMP/lf$O.ll" -o "$TMP/lf$O.s" \
+    || fail "llc could not select large-frame.c (-O$O)"
+  "$MC" -triple=rvmin -filetype=obj "$TMP/lf$O.s" -o "$TMP/lf$O.o" \
+    || fail "llvm-mc rejected the large-frame output (-O$O)"
+  "$MC" -triple=rvmin -filetype=obj "$RT/rvmin-rt.S" -o "$TMP/rt-lf$O.o" \
+    || fail "llvm-mc rejected rvmin-rt.S"
+  "$MC" -triple=rvmin -filetype=obj "$RT/start.S" -o "$TMP/start-lf$O.o" \
+    || fail "llvm-mc rejected start.S"
+  "$LD" -m elf32lriscv -T "$RT/link.ld" -o "$TMP/lf$O" \
+    "$TMP/start-lf$O.o" "$TMP/lf$O.o" "$TMP/rt-lf$O.o" \
+    || fail "ld.lld could not link the large-frame program (-O$O)"
+  "$QEMU" "$TMP/lf$O"
+}
+
+for O in 0 2; do
+  STATUS=0
+  run_large_frame "$O" || STATUS=$?
+  [[ "$STATUS" -eq 0 ]] || fail "large-frame -O$O exited with $STATUS"
+  grep -q 'lui' "$TMP/lf$O.s" || fail "large-frame -O$O never materialized an address"
+done
+echo "PASS: 3 KiB frames (and 9 nested ones) ran under $QEMU at -O0 and -O2"
 
 SIZE1=$(stat -c%s "$TMP/demo")
 SIZE2=$(stat -c%s "$TMP/demo-m")

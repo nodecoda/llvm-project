@@ -90,6 +90,9 @@ PASS 5/5: 80 llc runs with -verify-machineinstrs
 ALL GATES PASS (run rvmin-run.sh separately for the QEMU check)
 ```
 
+> 第 16 章新增 `large-frame.ll` 后，这里的 `14`/`80` 会变成 `15`/`88`；
+> 其余输出不变。本章的数字是第 15 章结束时的快照。
+
 QEMU 那一项单独跑，因为它需要链接器和模拟器：
 
 ```bash

@@ -75,7 +75,11 @@ entry:
 ; CHECK:         sw a1, 0(a0)
 ; CHECK:         lw a0, 0(a0)
 
-; Frames larger than ADDI's 12-bit range need LUI+ADDI in the epilogue.
+; Frames larger than ADDI's 12-bit range need LUI+ADDI in the prologue and the
+; epilogue.  Since chapter 16 such a frame also reserves a 4-byte emergency
+; spill slot for the register scavenger (rounded up to the 16-byte stack
+; alignment), which is why this 2048-byte array sits at 16(sp) and the frame is
+; 2064 bytes.
 define i32 @big(i32 %a) nounwind {
 entry:
   %p = alloca [512 x i32], align 4
@@ -85,10 +89,13 @@ entry:
   ret i32 %v
 }
 ; CHECK-LABEL: big:
-; CHECK:         addi sp, sp, -2048
-; CHECK:         sw a0, 0(sp)
 ; CHECK:         lui t0, 1
-; CHECK:         addi t0, t0, -2048
+; CHECK:         addi t0, t0, -2032
+; CHECK:         sub sp, sp, t0
+; CHECK:         sw a0, 16(sp)
+; CHECK:         lw a0, 16(sp)
+; CHECK:         lui t0, 1
+; CHECK:         addi t0, t0, -2032
 ; CHECK:         add sp, sp, t0
 
 define i32 @stress(i32 %a) nounwind {
