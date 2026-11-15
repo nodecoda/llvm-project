@@ -9,7 +9,9 @@ RVMin 是一个从零写的 LLVM 后端，只实现 RISC-V 最小整数集（RV3
 
 ## 章节
 
-| 章 | 文档 | 主题 | 本章门禁 | 提交 |
+### 上篇：从零到能跑（00–14）
+
+| 章 | 文档 | 主题 | 本章门禁 | 提交 / tag |
 | --- | --- | --- | --- | --- |
 | 00 | [00-overview.md](00-overview.md) | target 骨架与注册 | `llc --version \| grep rvmin` | `d65f87020db7` |
 | 01 | [01-instructions.md](01-instructions.md) | 寄存器与 RV32I 六种指令格式 | `llvm-mc -triple=rvmin -show-encoding` | `9c6537834376` |
@@ -25,6 +27,23 @@ RVMin 是一个从零写的 LLVM 后端，只实现 RISC-V 最小整数集（RV3
 | 11 | [11-e2e.md](11-e2e.md) | 端到端、CFI、switch、测试体系 | `scripts/rvmin-e2e.sh`、`cfi.ll` | `8c8c83378834` |
 | 12 | [12-run.md](12-run.md) | 链接与 QEMU 运行（ecall、运行时） | `scripts/rvmin-run.sh` | `4f71aa883223` |
 | 13 | [13-m-extension.md](13-m-extension.md) | 可选 M 扩展与优化空间 | `m-ext.ll`、M 语料 | `b075676cca65` |
+| 14 | [本索引](README.md) | 上篇验收：AC1–AC10 | `rvmin-verify-all.sh`（5 项） | `b3d4b6da5e43` |
+
+### 下篇：从能跑到像样（15–23）
+
+| 章 | 文档 | 主题 | 本章门禁 | tag |
+| --- | --- | --- | --- | --- |
+| 15 | [15-part2-overview.md](15-part2-overview.md) | 下篇导览与基线核对 | `scripts/rvmin-verify-all.sh` | `rvmin-ch15` |
+| 16 | （规划中） | 大栈帧与 RegScavenger | 3 KiB 帧在 QEMU 运行 | `rvmin-ch16` |
+| 17 | （规划中） | 尾调用与 musttail | 1e6 层尾递归不爆栈 | `rvmin-ch17` |
+| 18 | （规划中） | 跳转表与间接跳转 | 8-case switch 只有 load+jalr | `rvmin-ch18` |
+| 19 | （规划中） | 常量乘除强度削减 | `+m` 下 `x/7` 无 libcall | `rvmin-ch19` |
+| 20 | （规划中） | 反汇编器 | 97 条语料往返 | `rvmin-ch20` |
+| 21 | （规划中） | Zbb/Zbs | `clz/cpop/rev8` 单条 | `rvmin-ch21` |
+| 22 | （规划中） | A 扩展 | `lr/sc` 程序在 QEMU 运行 | `rvmin-ch22` |
+| 23 | （规划中） | 下篇验收 | 下篇 AC 表 | `rvmin-ch23` |
+
+每个章末都有对应 tag：`git checkout rvmin-ch16` 即可看到该章结束时的完整代码。
 
 ## 每章固定包含什么
 
@@ -48,6 +67,9 @@ RVMin 是一个从零写的 LLVM 后端，只实现 RISC-V 最小整数集（RV3
 | 11 | `## 目标`（第二段起） | `## 代码地图` | `## 验证` | `## 关键实现` 里的三问题表 | `## 练习` |
 | 12 | `## 目标`（第二段起） | `## 代码地图` | `## 验证` | `## 常见坑` | `## 练习` |
 | 13 | `## 目标`（第二段起） | `## 代码地图` | `## 验证` | `## 关键实现` 里的“坑”注记 | `## 练习` |
+| 15 | `## 背景` | `## 下篇路线` / 速查表 | `## 基线核对` | `## 常见坑` | `## 练习` |
+
+> 第 14、23 章是验收章，本身即证据表，不套用八要素模板。
 
 ## 验收标准（计划 §6）
 

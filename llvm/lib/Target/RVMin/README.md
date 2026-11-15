@@ -37,6 +37,16 @@ ninja -C "$B" llc clang llvm-mc llvm-objdump llvm-readelf FileCheck
 
 ## 章节
 
+教程分上下两篇。上篇从零写出一个可运行的后端，下篇在这个后端上继续加深。
+每章结束时的代码都可以按 tag checkout：
+
+```bash
+git checkout rvmin-ch14     # 上篇结束
+git checkout rvmin-ch16     # 第 16 章（大栈帧）结束
+```
+
+### 上篇：从零到能跑（00–14，已完成）
+
 | 章 | 主题 | 状态 |
 | --- | --- | --- |
 | 00 | [target 骨架与注册](docs/00-overview.md) | 完成 |
@@ -55,7 +65,21 @@ ninja -C "$B" llc clang llvm-mc llvm-objdump llvm-readelf FileCheck
 | 13 | [可选 M 扩展与优化空间](docs/13-m-extension.md) | 完成 |
 | 14 | [验收：AC1–AC10 逐条证据](docs/README.md) | 完成 |
 
-## 当前限制（第 13 章）
+### 下篇：从能跑到像样（15–23，进行中）
+
+| 章 | 主题 | 状态 |
+| --- | --- | --- |
+| 15 | [下篇导览与基线核对](docs/15-part2-overview.md) | 完成 |
+| 16 | 大栈帧与 RegScavenger | 规划中 |
+| 17 | 尾调用与 musttail | 规划中 |
+| 18 | 跳转表与间接跳转 | 规划中 |
+| 19 | 常量乘除的强度削减 | 规划中 |
+| 20 | 反汇编器 | 规划中 |
+| 21 | Zbb/Zbs 位操作扩展 | 规划中 |
+| 22 | A 扩展与 AtomicExpand | 规划中 |
+| 23 | 下篇验收 | 规划中 |
+
+## 当前限制（上篇结束时，第 14 章）
 
 - i32 的算术/逻辑/移位/比较、分支、栈对象、load/store、全局数据与字符串、
   函数调用/递归/栈传参全部可用；`-O0`…`-O3` 都能出汇编和对象文件。
