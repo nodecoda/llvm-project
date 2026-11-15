@@ -42,7 +42,7 @@ ninja -C "$B" llc clang llvm-mc llvm-objdump llvm-readelf FileCheck
 | 02 | [MC 层、汇编输出与编码正确性](docs/02-mc-layer.md) | 完成 |
 | 03 | [最小指令选择与栈帧骨架](docs/03-isel.md) | 完成 |
 | 04 | [整数算术、逻辑、移位、比较与 select](docs/04-alu.md) | 完成 |
-| 05 | 控制流与基本块布局 | 待做 |
+| 05 | [控制流、条件分支与基本块布局](docs/05-control.md) | 完成 |
 | 06 | 栈、局部变量与 load/store | 待做 |
 | 07 | 全局数据、字符串与重定位 | 待做 |
 | 08 | 调用约定、函数调用与递归 | 待做 |
@@ -52,14 +52,20 @@ ninja -C "$B" llc clang llvm-mc llvm-objdump llvm-readelf FileCheck
 | 12 | 可选：链接与 QEMU 运行 | 待做 |
 | 13 | 可选：M 扩展与优化 | 待做 |
 
-## 当前限制（第 4 章）
+## 当前限制（第 5 章）
 
 - i32 的算术/逻辑/移位/比较全部可用，任意 32 位常量用 `LUI+ADDI` 物化；
-  `select` 用无分支掩码序列。`-O0`…`-O3` 都能出汇编。
-- 还没有分支与基本块（第 5 章）、栈帧与 load/store（第 6 章）。
+  6 条条件分支与 `j` 都能选择，`BranchFolder`/`BlockPlacement` 会删掉
+  跳到布局后继的分支。`-O1`…`-O3` 都能出汇编。
+- `-O0` 的多基本块函数还不行：fast regalloc 需要栈上溢出，第 6 章实现
+  `storeRegToStackSlot`/`loadRegFromStackSlot`。
+- 还没有栈帧与 load/store（第 6 章）、全局数据与重定位（第 7 章）。
 - 调用约定只覆盖寄存器传参（a0–a7）与寄存器返回（a0/a1）；
   `ra` 当前被保留，函数还不能调用（第 8 章）。
-- MC 层完整：`llvm-mc -triple=rvmin` 可汇编 67 条指令，编码与参考
-  RISC-V 汇编器逐字节一致（`scripts/check-rvmin-encodings.sh`）。
+- MC 层完整：`llvm-mc -triple=rvmin` 可汇编 71 条指令，按立即数和按标签
+  fixup 两条路径的编码都与参考 RISC-V 汇编器逐字节一致
+  （`scripts/check-rvmin-encodings.sh`）。
+- 分支/跳转范围是 B 型 ±4 KiB、J 型 ±1 MiB，没有 branch relaxation；
+  超出范围会明确报错。
 - 对象文件里的符号重定位（含 `.eh_frame` 的函数符号引用）第 7 章实现；
   当前遇到未定义符号会明确报错。

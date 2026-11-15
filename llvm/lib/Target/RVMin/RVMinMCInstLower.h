@@ -11,13 +11,15 @@
 
 namespace llvm {
 
+class MCContext;
 class MCInst;
 class MachineInstr;
 
 /// Copy a MachineInstr into an MCInst.  Chapter 2 handles registers and
-/// immediates; chapter 6 adds frame indices and chapter 7 adds global
-/// addresses / symbol references.
-void LowerRVMinMachineInstrToMCInst(const MachineInstr *MI, MCInst &OutMI);
+/// immediates, chapter 5 basic-block operands (branch targets), chapter 6 adds
+/// frame indices and chapter 7 adds global addresses / symbol references.
+void LowerRVMinMachineInstrToMCInst(const MachineInstr *MI, MCInst &OutMI,
+                                    MCContext &Ctx);
 
 } // namespace llvm
 

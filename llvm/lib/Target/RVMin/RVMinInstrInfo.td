@@ -76,23 +76,29 @@ def uimm20 : Operand<i32> {
   }];
 }
 
-// 13-bit signed byte offset with bit 0 clear (branch target).
-def simm13_lsb0 : Operand<i32> {
+// 13-bit signed byte offset with bit 0 clear (branch target).  The operand
+// type is OtherVT, not i32, because instruction-selection patterns match it
+// against a basic block (`bb:$dst`).
+def simm13_lsb0 : Operand<OtherVT> {
   let PrintMethod = "printOperand";
   let ParserMatchClass = SImm13Lsb0AsmOperand;
   let MCOperandPredicate = [{
     int64_t Imm;
-    return MCOp.evaluateAsConstantImm(Imm) && isShiftedInt<12, 1>(Imm);
+    if (MCOp.evaluateAsConstantImm(Imm))
+      return isShiftedInt<12, 1>(Imm);
+    return MCOp.isBareSymbolRef();
   }];
 }
 
 // 21-bit signed byte offset with bit 0 clear (JAL target).
-def simm21_lsb0 : Operand<i32> {
+def simm21_lsb0 : Operand<OtherVT> {
   let PrintMethod = "printOperand";
   let ParserMatchClass = SImm21Lsb0AsmOperand;
   let MCOperandPredicate = [{
     int64_t Imm;
-    return MCOp.evaluateAsConstantImm(Imm) && isShiftedInt<20, 1>(Imm);
+    if (MCOp.evaluateAsConstantImm(Imm))
+      return isShiftedInt<20, 1>(Imm);
+    return MCOp.isBareSymbolRef();
   }];
 }
 
@@ -182,7 +188,9 @@ def JALR : RVMinIInst<0b000, OPC_JALR, (outs GPR:$rd),
                      "$rd, ${imm12}(${rs1})">;
 } // isTerminator = 1, isBarrier = 1
 
-let isBranch = 1, isTerminator = 1, isBarrier = 1, hasSideEffects = 0,
+// Conditional branches may fall through to the next block, so they must not be
+// marked isBarrier (that would tell the verifier the block has no fallthrough).
+let isBranch = 1, isTerminator = 1, hasSideEffects = 0,
     mayLoad = 0, mayStore = 0 in {
 def BEQ : RVMinBInst<0b000, OPC_BRANCH, (outs),
                     (ins GPR:$rs1, GPR:$rs2, simm13_lsb0:$imm13), "beq",
@@ -196,6 +204,12 @@ def BLT : RVMinBInst<0b100, OPC_BRANCH, (outs),
 def BGE : RVMinBInst<0b101, OPC_BRANCH, (outs),
                     (ins GPR:$rs1, GPR:$rs2, simm13_lsb0:$imm13), "bge",
                     "$rs1, $rs2, $imm13">;
+def BLTU : RVMinBInst<0b110, OPC_BRANCH, (outs),
+                     (ins GPR:$rs1, GPR:$rs2, simm13_lsb0:$imm13), "bltu",
+                     "$rs1, $rs2, $imm13">;
+def BGEU : RVMinBInst<0b111, OPC_BRANCH, (outs),
+                     (ins GPR:$rs1, GPR:$rs2, simm13_lsb0:$imm13), "bgeu",
+                     "$rs1, $rs2, $imm13">;
 } // isBranch = 1, isTerminator = 1, isBarrier = 1
 
 //===----------------------------------------------------------------------===//
@@ -220,6 +234,14 @@ def SW : RVMinSInst<0b010, OPC_STORE, (outs),
 // into a0/a1 by LowerReturn, so the node only carries chain and glue.
 def RVMinRet : SDNode<"RVMinISD::RET_FLAG", SDTNone,
                       [SDNPHasChain, SDNPOptInGlue, SDNPVariadic]>;
+
+// Conditional branch with a condition code: operands are
+// (lhs, rhs, condcode, dest).  BR_CC nodes are produced by lowerBRCOND /
+// lowerBR_CC in RVMinISelLowering.cpp.
+def SDT_RVMinBrCC : SDTypeProfile<0, 4, [SDTCisSameAs<0, 1>,
+                                         SDTCisVT<2, OtherVT>,
+                                         SDTCisVT<3, OtherVT>]>;
+def RVMinBrcc : SDNode<"RVMinISD::BR_CC", SDT_RVMinBrCC, [SDNPHasChain]>;
 
 //===----------------------------------------------------------------------===//
 // Selection patterns
@@ -283,6 +305,23 @@ def : Pat<(i32 (setne (i32 GPR:$rs1), (i32 GPR:$rs2))),
           (SLTU X0, (XOR GPR:$rs1, GPR:$rs2))>;
 def : Pat<(i32 (setne (i32 GPR:$rs1), 0)), (SLTU X0, GPR:$rs1)>;
 
+// Conditional branches.  The DAG-level condition codes are canonicalized in C++
+// (see lowerBR_CC), so only these six remain here.
+multiclass RVMinBccPat<CondCode Cond, RVMinBInst Inst> {
+  def : Pat<(RVMinBrcc GPR:$rs1, GPR:$rs2, Cond, bb:$dst),
+            (Inst GPR:$rs1, GPR:$rs2, simm13_lsb0:$dst)>;
+  // Compare against zero uses x0 instead of materializing a constant.
+  def : Pat<(RVMinBrcc GPR:$rs1, 0, Cond, bb:$dst),
+            (Inst GPR:$rs1, X0, simm13_lsb0:$dst)>;
+}
+defm : RVMinBccPat<SETEQ, BEQ>;
+defm : RVMinBccPat<SETNE, BNE>;
+defm : RVMinBccPat<SETLT, BLT>;
+defm : RVMinBccPat<SETGE, BGE>;
+defm : RVMinBccPat<SETULT, BLTU>;
+defm : RVMinBccPat<SETUGE, BGEU>;
+
+
 //===----------------------------------------------------------------------===//
 // Pseudo instructions (no encoding of their own)
 //===----------------------------------------------------------------------===//
@@ -296,6 +335,18 @@ def PseudoRET : RVMinPseudo<(outs), (ins), "", [(RVMinRet)]>,
   let isTerminator = 1;
   let Size = 4;
 }
+
+// Unconditional branch: JAL with rd = x0 is the RV32I `j` form.  Keeping a
+// pseudo with no result lets the register allocator leave rd alone, and the
+// asm printer expands it to `jal zero, target`.
+def PseudoBR : RVMinPseudo<(outs), (ins simm21_lsb0:$imm21), "", []>,
+               PseudoInstExpansion<(JAL X0, simm21_lsb0:$imm21)> {
+  let isBranch = 1;
+  let isBarrier = 1;
+  let isTerminator = 1;
+  let Size = 4;
+}
+def : Pat<(br bb:$dst), (PseudoBR simm21_lsb0:$dst)>;
 
 def ADJCALLSTACKDOWN : RVMinPseudo<(outs), (ins i32imm:$amt), "", []>;
 def ADJCALLSTACKUP : RVMinPseudo<(outs), (ins i32imm:$amt1, i32imm:$amt2), "", []>;

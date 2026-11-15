@@ -55,7 +55,7 @@ static uint32_t encodeJalImm(uint32_t Inst, uint32_t Imm) {
   Inst |= (Imm & 0x100000u) << 11;      // imm[20]    -> bit 31
   Inst |= (Imm & 0x0007feu) << 20;      // imm[10:1]  -> bits 30:21
   Inst |= (Imm & 0x000800u) << 9;       // imm[11]    -> bit 20
-  Inst |= (Imm & 0x0ff000u) >> 12;      // imm[19:12] -> bits 19:12
+  Inst |= (Imm & 0x0ff000u);            // imm[19:12] -> bits 19:12
   return Inst;
 }
 

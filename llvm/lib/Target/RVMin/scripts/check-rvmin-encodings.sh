@@ -51,15 +51,23 @@ if ! diff -u "$TMP/ref.enc" "$TMP/rvmin.enc" > "$TMP/diff.txt"; then
   fail "encoding mismatch between rvmin and riscv32"
 fi
 
-# 2. Object-level diff of .text.
+# 2. Object-level diff of .text (immediates only, no labels).
 "$BIN/llvm-mc" -triple=rvmin -filetype=obj "$CORPUS" -o "$TMP/rvmin.o"
 "$BIN/llvm-mc" -triple=riscv32 -filetype=obj "$CORPUS" -o "$TMP/ref.o"
 "$BIN/llvm-objcopy" -O binary --only-section=.text "$TMP/rvmin.o" "$TMP/rvmin.bin"
 "$BIN/llvm-objcopy" -O binary --only-section=.text "$TMP/ref.o" "$TMP/ref.bin"
 cmp -s "$TMP/rvmin.bin" "$TMP/ref.bin" || fail ".text bytes differ from reference object"
 
+# 2b. Fixup-level diff: branch/jump targets expressed as labels.
+FIXUPS="$HERE/rvmin-fixup-corpus.s"
+"$BIN/llvm-mc" -triple=rvmin -filetype=obj "$FIXUPS" -o "$TMP/rvmin-fix.o"
+"$BIN/llvm-mc" -triple=riscv32 -filetype=obj "$FIXUPS" -o "$TMP/ref-fix.o"
+"$BIN/llvm-objcopy" -O binary --only-section=.text "$TMP/rvmin-fix.o" "$TMP/rvmin-fix.bin"
+"$BIN/llvm-objcopy" -O binary --only-section=.text "$TMP/ref-fix.o" "$TMP/ref-fix.bin"
+cmp -s "$TMP/rvmin-fix.bin" "$TMP/ref-fix.bin" || fail ".text bytes differ for label fixups"
+
 # 3. ELF identification.
 MACHINE=$("$BIN/llvm-readelf" -h "$TMP/rvmin.o" | awk -F: '/Machine:/ {gsub(/^ +| +$/, "", $2); print $2}')
 [[ "$MACHINE" == "RISC-V" ]] || fail "ELF machine is '$MACHINE', want RISC-V"
 
-echo "PASS: $N instructions, .text identical, ELF machine RISC-V"
+echo "PASS: $N instructions, .text identical (incl. label fixups), ELF machine RISC-V"

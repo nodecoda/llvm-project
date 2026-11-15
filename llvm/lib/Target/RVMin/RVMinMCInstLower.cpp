@@ -7,15 +7,18 @@
 //===----------------------------------------------------------------------===//
 
 #include "RVMinMCInstLower.h"
+#include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineOperand.h"
+#include "llvm/MC/MCContext.h"
+#include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace llvm;
 
 void llvm::LowerRVMinMachineInstrToMCInst(const MachineInstr *MI,
-                                          MCInst &OutMI) {
+                                          MCInst &OutMI, MCContext &Ctx) {
   OutMI.setOpcode(MI->getOpcode());
 
   for (const MachineOperand &MO : MI->explicit_operands()) {
@@ -26,6 +29,12 @@ void llvm::LowerRVMinMachineInstrToMCInst(const MachineInstr *MI,
       break;
     case MachineOperand::MO_Immediate:
       OutMI.addOperand(MCOperand::createImm(MO.getImm()));
+      break;
+    case MachineOperand::MO_MachineBasicBlock:
+      // Branch targets become symbol references; the MCCodeEmitter turns them
+      // into B/J fixups and the assembler backend patches the offset.
+      OutMI.addOperand(MCOperand::createExpr(
+          MCSymbolRefExpr::create(MO.getMBB()->getSymbol(), Ctx)));
       break;
     default:
       llvm_unreachable("RVMin: unsupported machine operand in MCInst lowering");

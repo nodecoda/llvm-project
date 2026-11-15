@@ -73,6 +73,8 @@ uint64_t RVMinMCCodeEmitter::getMachineOpValue(
   case RVMin::BNE:
   case RVMin::BLT:
   case RVMin::BGE:
+  case RVMin::BLTU:
+  case RVMin::BGEU:
     Kind = rvmin::fixup_rvmin_branch;
     break;
   case RVMin::JAL:

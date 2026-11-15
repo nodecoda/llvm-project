@@ -68,3 +68,7 @@ blt a0, a1, 12
 blt a0, a1, -2
 bge a0, a1, -12
 bge a0, a1, 4094
+bltu a0, a1, 12
+bltu a0, a1, -2
+bgeu a0, a1, -12
+bgeu a0, a1, 4094

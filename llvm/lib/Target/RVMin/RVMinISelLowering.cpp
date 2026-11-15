@@ -24,6 +24,7 @@
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/SelectionDAG.h"
+#include "llvm/CodeGen/SelectionDAGNodes.h"
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace llvm;
@@ -48,6 +49,11 @@ RVMinTargetLowering::RVMinTargetLowering(const TargetMachine &TM,
     setOperationAction(ISD::SELECT, VT, Expand);
     setOperationAction(ISD::SELECT_CC, VT, Custom);
   }
+
+  // Chapter 5: conditional branches.  BRCOND is lowered to a target BR_CC node,
+  // which TableGen matches against BEQ/BNE/BLT/BGE/BLTU/BGEU.
+  setOperationAction(ISD::BRCOND, MVT::Other, Custom);
+  setOperationAction(ISD::BR_CC, MVT::i32, Custom);
 }
 
 // Comparisons produce a 0/1 integer, not an i1: RV32I has no i1 registers and
@@ -65,7 +71,79 @@ SDValue RVMinTargetLowering::LowerOperation(SDValue Op,
     llvm_unreachable("RVMin: unhandled custom lowering");
   case ISD::SELECT_CC:
     return lowerSELECT_CC(Op, DAG);
+  case ISD::BRCOND:
+    return lowerBRCOND(Op, DAG);
+  case ISD::BR_CC:
+    return lowerBR_CC(Op, DAG);
   }
+}
+
+// Canonicalize the condition code so the TableGen patterns only need
+// SETEQ/SETNE/SETLT/SETGE/SETULT/SETUGE.  The two "greater" forms and the
+// non-strict unsigned forms are the same comparison with swapped operands or
+// an inverted result:
+//
+//   a > b   ==  b < a          a <= b  ==  b >= a
+//   a >u b  ==  b <u a         a <=u b == b >=u a
+static void canonicalizeBranchCC(ISD::CondCode &CC, SDValue &LHS,
+                                 SDValue &RHS) {
+  switch (CC) {
+  default:
+    return;
+  case ISD::SETGT:
+    CC = ISD::SETLT;
+    std::swap(LHS, RHS);
+    return;
+  case ISD::SETLE:
+    CC = ISD::SETGE;
+    std::swap(LHS, RHS);
+    return;
+  case ISD::SETUGT:
+    CC = ISD::SETULT;
+    std::swap(LHS, RHS);
+    return;
+  case ISD::SETULE:
+    CC = ISD::SETUGE;
+    std::swap(LHS, RHS);
+    return;
+  }
+}
+
+// BRCOND always carries a boolean in the DAG.  When it came from a setcc we
+// can branch on the original comparison operands directly; otherwise compare
+// the boolean against zero.
+SDValue RVMinTargetLowering::lowerBRCOND(SDValue Op,
+                                         SelectionDAG &DAG) const {
+  SDValue Chain = Op.getOperand(0);
+  SDValue Cond = Op.getOperand(1);
+  SDValue Dest = Op.getOperand(2);
+  SDLoc DL(Op);
+
+  if (Cond.getOpcode() == ISD::SETCC) {
+    SDValue LHS = Cond.getOperand(0);
+    SDValue RHS = Cond.getOperand(1);
+    ISD::CondCode CCVal = cast<CondCodeSDNode>(Cond.getOperand(2))->get();
+    canonicalizeBranchCC(CCVal, LHS, RHS);
+    return DAG.getNode(RVMinISD::BR_CC, DL, MVT::Other, Chain, LHS, RHS,
+                       DAG.getCondCode(CCVal), Dest);
+  }
+
+  return DAG.getNode(RVMinISD::BR_CC, DL, MVT::Other, Chain, Cond,
+                     DAG.getConstant(0, DL, MVT::i32),
+                     DAG.getCondCode(ISD::SETNE), Dest);
+}
+
+SDValue RVMinTargetLowering::lowerBR_CC(SDValue Op, SelectionDAG &DAG) const {
+  SDValue Chain = Op.getOperand(0);
+  SDValue LHS = Op.getOperand(2);
+  SDValue RHS = Op.getOperand(3);
+  ISD::CondCode CC = cast<CondCodeSDNode>(Op.getOperand(1))->get();
+  SDValue Dest = Op.getOperand(4);
+  SDLoc DL(Op);
+
+  canonicalizeBranchCC(CC, LHS, RHS);
+  return DAG.getNode(RVMinISD::BR_CC, DL, MVT::Other, Chain, LHS, RHS,
+                     DAG.getCondCode(CC), Dest);
 }
 
 // RV32I has no conditional move.  Chapter 4 lowers select branchlessly with a
@@ -99,6 +177,8 @@ const char *RVMinTargetLowering::getTargetNodeName(unsigned Opcode) const {
   switch (Opcode) {
   case RVMinISD::RET_FLAG:
     return "RVMinISD::RET_FLAG";
+  case RVMinISD::BR_CC:
+    return "RVMinISD::BR_CC";
   default:
     return nullptr;
   }

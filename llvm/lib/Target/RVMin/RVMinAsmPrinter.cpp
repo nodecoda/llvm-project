@@ -19,10 +19,12 @@
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/AsmPrinterAnalysis.h"
 #include "llvm/CodeGen/MachineFunctionAnalysisManager.h"
+#include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachinePassManager.h"
 #include "llvm/IR/Analysis.h"
 #include "llvm/IR/PassManager.h"
+#include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/TargetRegistry.h"
@@ -58,13 +60,32 @@ public:
     }
 
     MCInst TmpInst;
-    LowerRVMinMachineInstrToMCInst(MI, TmpInst);
+    LowerRVMinMachineInstrToMCInst(MI, TmpInst, OutContext);
     OutStreamer->emitInstruction(TmpInst, getSubtargetInfo());
   }
 
   /// TableGen-generated expansion for instructions declared with
-  /// PseudoInstExpansion (currently PseudoRET).
+  /// PseudoInstExpansion (PseudoRET and PseudoBR).
   bool lowerPseudoInstExpansion(const MachineInstr *MI, MCInst &Inst);
+
+  /// Operand helper used by the generated pseudo-expansion code: a pseudo
+  /// branch carries a basic block, which becomes a symbol reference.
+  void lowerOperand(const MachineOperand &MO, MCOperand &MCOp) {
+    switch (MO.getType()) {
+    case MachineOperand::MO_Register:
+      MCOp = MCOperand::createReg(MO.getReg());
+      return;
+    case MachineOperand::MO_Immediate:
+      MCOp = MCOperand::createImm(MO.getImm());
+      return;
+    case MachineOperand::MO_MachineBasicBlock:
+      MCOp = MCOperand::createExpr(
+          MCSymbolRefExpr::create(MO.getMBB()->getSymbol(), OutContext));
+      return;
+    default:
+      llvm_unreachable("RVMin: unsupported pseudo-instruction operand");
+    }
+  }
 
   static char ID;
 };
