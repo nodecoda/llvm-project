@@ -13,6 +13,7 @@
 #include "RVMinISelLowering.h"
 #include "RVMinInstrInfo.h"
 #include "RVMinRegisterInfo.h"
+#include "RVMinSelectionDAGInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include <string>
 
@@ -30,6 +31,7 @@ class RVMinSubtarget : public RVMinGenSubtargetInfo {
   RVMinInstrInfo InstrInfo;
   RVMinTargetLowering TLInfo;
   RVMinFrameLowering FrameLowering;
+  std::unique_ptr<const SelectionDAGTargetInfo> TSInfo;
 
 public:
   RVMinSubtarget(const Triple &TT, const std::string &CPU,
@@ -48,6 +50,9 @@ public:
   }
   const TargetFrameLowering *getFrameLowering() const override {
     return &FrameLowering;
+  }
+  const SelectionDAGTargetInfo *getSelectionDAGInfo() const override {
+    return TSInfo.get();
   }
 };
 

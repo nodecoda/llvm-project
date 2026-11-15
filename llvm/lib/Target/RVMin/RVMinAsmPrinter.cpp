@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "RVMinAsmPrinter.h"
+#include "RVMin.h"
 #include "RVMinMCInstLower.h"
 #include "RVMinTargetMachine.h"
 #include "TargetInfo/RVMinTargetInfo.h"
@@ -46,18 +47,31 @@ public:
   }
 
   void emitInstruction(const MachineInstr *MI) override {
-    if (MI->isPseudo())
-      llvm_unreachable("RVMin: pseudo instruction reached the asm printer");
+    if (MI->isPseudo()) {
+      MCInst Expanded;
+      if (lowerPseudoInstExpansion(MI, Expanded)) {
+        OutStreamer->emitInstruction(Expanded, getSubtargetInfo());
+        return;
+      }
+      llvm_unreachable("RVMin: unimplemented pseudo instruction reached the "
+                       "asm printer");
+    }
 
     MCInst TmpInst;
     LowerRVMinMachineInstrToMCInst(MI, TmpInst);
     OutStreamer->emitInstruction(TmpInst, getSubtargetInfo());
   }
 
+  /// TableGen-generated expansion for instructions declared with
+  /// PseudoInstExpansion (currently PseudoRET).
+  bool lowerPseudoInstExpansion(const MachineInstr *MI, MCInst &Inst);
+
   static char ID;
 };
 
 char RVMinAsmPrinter::ID = 0;
+
+#include "RVMinGenMCPseudoLowering.inc"
 
 } // namespace
 

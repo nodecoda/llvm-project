@@ -8,12 +8,14 @@
 
 #include "RVMinFrameLowering.h"
 #include "RVMinSubtarget.h"
+#include "llvm/CodeGen/MachineFrameInfo.h"
+#include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace llvm;
 
 RVMinFrameLowering::RVMinFrameLowering(const RVMinSubtarget &STI)
-    : TargetFrameLowering(StackGrowsDown, Align(16), -4, Align(16)) {}
+    : TargetFrameLowering(StackGrowsDown, Align(16), 0, Align(16)) {}
 
 bool RVMinFrameLowering::hasFPImpl(const MachineFunction &MF) const {
   return false;
@@ -21,10 +23,16 @@ bool RVMinFrameLowering::hasFPImpl(const MachineFunction &MF) const {
 
 void RVMinFrameLowering::emitPrologue(MachineFunction &MF,
                                       MachineBasicBlock &MBB) const {
-  llvm_unreachable("RVMin prologue emission is not implemented yet");
+  // Chapter 3 functions have no stack objects, so there is nothing to do.
+  // Chapter 6 adds the stack adjustment, callee-saved spills and ra.
+  if (MF.getFrameInfo().getStackSize() == 0)
+    return;
+  llvm_unreachable("RVMin stack frames are not implemented yet (chapter 6)");
 }
 
 void RVMinFrameLowering::emitEpilogue(MachineFunction &MF,
                                       MachineBasicBlock &MBB) const {
-  llvm_unreachable("RVMin epilogue emission is not implemented yet");
+  if (MF.getFrameInfo().getStackSize() == 0)
+    return;
+  llvm_unreachable("RVMin stack frames are not implemented yet (chapter 6)");
 }

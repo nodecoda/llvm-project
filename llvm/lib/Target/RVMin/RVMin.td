@@ -33,6 +33,8 @@ include "RVMinRegisterInfo.td"
 
 include "RVMinInstrInfo.td"
 
+include "RVMinCallingConv.td"
+
 // Remap pointer operands of the target-independent pseudo instructions
 // (PREALLOCATED_ARG, LOAD_STACK_GUARD, ...) onto the RVMin GPR class.
 defm : RemapAllTargetPseudoPointerOperands<GPR>;

@@ -27,6 +27,8 @@ public:
   explicit RVMinInstrInfo(const RVMinSubtarget &STI);
 
   const RVMinRegisterInfo &getRegisterInfo() const { return RI; }
+
+  unsigned getInstSizeInBytes(const MachineInstr &MI) const override;
 };
 
 } // namespace llvm

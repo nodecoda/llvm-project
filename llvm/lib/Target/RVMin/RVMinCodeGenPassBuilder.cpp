@@ -8,6 +8,7 @@
 
 #include "RVMinCodeGenPassBuilder.h"
 #include "RVMinAsmPrinter.h"
+#include "RVMinISelDAGToDAG.h"
 #include "RVMinTargetMachine.h"
 #include "llvm/CodeGen/MachineFunctionAnalysisManager.h"
 #include "llvm/IR/Analysis.h"
@@ -21,15 +22,6 @@
 using namespace llvm;
 
 namespace {
-
-class RVMinUnimplementedISelPass
-    : public RequiredPassInfoMixin<RVMinUnimplementedISelPass> {
-public:
-  PreservedAnalyses run(MachineFunction &MF,
-                        MachineFunctionAnalysisManager &MFAM) {
-    report_fatal_error("RVMin: instruction selection is not implemented yet");
-  }
-};
 
 class RVMinCodeGenPassBuilder : public CodeGenPassBuilder {
   using Base = CodeGenPassBuilder;
@@ -51,10 +43,7 @@ public:
 };
 
 Error RVMinCodeGenPassBuilder::addInstSelector(PassManagerWrapper &PMW) {
-  // Chapter 0 has no instruction selector yet.  Empty modules still build a
-  // complete pipeline; non-empty ones fail with a clear diagnostic instead of
-  // tripping an assertion later in the machine pass pipeline.
-  addMachineFunctionPass(RVMinUnimplementedISelPass(), PMW);
+  addMachineFunctionPass(RVMinDAGToDAGISelPass(getTM()), PMW);
   return Error::success();
 }
 

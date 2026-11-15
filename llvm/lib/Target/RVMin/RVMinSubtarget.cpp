@@ -31,4 +31,6 @@ RVMinSubtarget::RVMinSubtarget(const Triple &TT, const std::string &CPU,
                                const RVMinTargetMachine &TM)
     : RVMinGenSubtargetInfo(TT, CPU, /*TuneCPU=*/CPU, FS),
       InstrInfo(initializeSubtargetDependencies(CPU, FS)), TLInfo(TM, *this),
-      FrameLowering(*this) {}
+      FrameLowering(*this) {
+  TSInfo = std::make_unique<RVMinSelectionDAGInfo>();
+}

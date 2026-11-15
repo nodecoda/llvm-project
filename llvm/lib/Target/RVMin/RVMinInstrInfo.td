@@ -47,7 +47,7 @@ def SImm21Lsb0AsmOperand : RVMinImmAsmOperand<"SImm21Lsb0", "isSImm21Lsb0">;
 
 // 12-bit signed immediate: ADDI/ANDI/ORI/XORI/SLTI/SLTIU, LW/SW offsets,
 // JALR offsets.  Encoded as-is in imm[11:0].
-def simm12 : Operand<i32> {
+def simm12 : Operand<i32>, ImmLeaf<i32, [{ return isInt<12>(Imm); }]> {
   let PrintMethod = "printOperand";
   let ParserMatchClass = SImm12AsmOperand;
   let MCOperandPredicate = [{
@@ -213,8 +213,38 @@ def SW : RVMinSInst<0b010, OPC_STORE, (outs),
                    "$rs2, ${imm12}(${rs1})">;
 
 //===----------------------------------------------------------------------===//
+// Selection DAG nodes
+//===----------------------------------------------------------------------===//
+
+// Return from the current function.  Register values have already been moved
+// into a0/a1 by LowerReturn, so the node only carries chain and glue.
+def RVMinRet : SDNode<"RVMinISD::RET_FLAG", SDTNone,
+                      [SDNPHasChain, SDNPOptInGlue, SDNPVariadic]>;
+
+//===----------------------------------------------------------------------===//
+// Selection patterns
+//===----------------------------------------------------------------------===//
+
+// Chapter 3: constants, integer add and return.  Chapter 4 fills in the rest of
+// the ALU, chapter 5 control flow, and so on.
+def : Pat<(i32 simm12:$imm), (ADDI X0, simm12:$imm)>;
+
+def : Pat<(add GPR:$rs1, GPR:$rs2), (ADD GPR:$rs1, GPR:$rs2)>;
+def : Pat<(add GPR:$rs1, simm12:$imm), (ADDI GPR:$rs1, simm12:$imm)>;
+
+//===----------------------------------------------------------------------===//
 // Pseudo instructions (no encoding of their own)
 //===----------------------------------------------------------------------===//
+
+// PseudoRET is expanded by TableGen's pseudo-lowering emitter (chapter 2's MC
+// layer is reused): it prints and encodes as `jalr zero, 0(ra)`.
+def PseudoRET : RVMinPseudo<(outs), (ins), "", [(RVMinRet)]>,
+                PseudoInstExpansion<(JALR X0, X1, 0)> {
+  let isReturn = 1;
+  let isBarrier = 1;
+  let isTerminator = 1;
+  let Size = 4;
+}
 
 def ADJCALLSTACKDOWN : RVMinPseudo<(outs), (ins i32imm:$amt), "", []>;
 def ADJCALLSTACKUP : RVMinPseudo<(outs), (ins i32imm:$amt1, i32imm:$amt2), "", []>;
