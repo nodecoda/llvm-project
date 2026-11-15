@@ -77,6 +77,46 @@ RVMinTargetLowering::RVMinTargetLowering(const TargetMachine &TM,
   setLoadExtAction(ISD::EXTLOAD, MVT::i32, MVT::i1, Promote);
   setTruncStoreAction(MVT::i32, MVT::i1, Promote);
 
+  // Chapter 10: RV32I has no multiply, divide or remainder at all (that is
+  // the M extension).  `Expand` here means "the legalizer emits a call to the
+  // compiler runtime" -- the call support from chapter 8 makes that cheap:
+  // MUL -> __mulsi3, SDIV -> __divsi3, UDIV -> __udivsi3, SREM -> __modsi3,
+  // UREM -> __umodsi3.  Constant multiplies and division by powers of two are
+  // folded into shifts and adds by the DAG combiner before this point.
+  for (MVT VT : {MVT::i32}) {
+    setOperationAction(ISD::MUL, VT, Expand);
+    setOperationAction(ISD::MULHS, VT, Expand);
+    setOperationAction(ISD::MULHU, VT, Expand);
+    // Without these two, the generic MUL expansion prefers a two-result
+    // SMUL_LOHI/UMUL_LOHI node ("legal" by default) and never reaches the
+    // libcall, leaving the selector with an instruction it cannot encode.
+    setOperationAction(ISD::SMUL_LOHI, VT, Expand);
+    setOperationAction(ISD::UMUL_LOHI, VT, Expand);
+    setOperationAction(ISD::SDIVREM, VT, Expand);
+    setOperationAction(ISD::UDIVREM, VT, Expand);
+    setOperationAction(ISD::SDIV, VT, Expand);
+    setOperationAction(ISD::UDIV, VT, Expand);
+    setOperationAction(ISD::SREM, VT, Expand);
+    setOperationAction(ISD::UREM, VT, Expand);
+
+    // The bit-manipulation builtins (Zbb's cpop/clz/ctz) are expanded into
+    // plain arithmetic sequences by the legalizer, not into calls.  The byte
+    // swap is first rewritten into rotates by the DAG combiner, so ROTL/ROTR
+    // have to be expandable as well (a rotate is a shift pair on RV32I).
+    setOperationAction(ISD::ROTL, VT, Expand);
+    setOperationAction(ISD::ROTR, VT, Expand);
+    setOperationAction(ISD::CTPOP, VT, Expand);
+    setOperationAction(ISD::CTLZ, VT, Expand);
+    setOperationAction(ISD::CTTZ, VT, Expand);
+    setOperationAction(ISD::BSWAP, VT, Expand);
+  }
+
+  // Chapter 10: soft float.  There is no f32/f64 register class, so the type
+  // legalizer *softens* floating-point values into i32 pairs and rewrites
+  // every FP operation as a libcall.  Nothing else is needed: __addsf3,
+  // __muldf3, __ltsf2, __fixsfsi, ... fall out of the same machinery, and the
+  // `ilp32` ABI already passes floats in integer registers.
+
   // Chapter 9: 64-bit shifts.  RV32I shifts one register at a time, so the
   // legalizer would otherwise leave SHL_PARTS/SRL_PARTS/SRA_PARTS for the
   // selector.  Expanding them emits the standard compiler-runtime libcalls
