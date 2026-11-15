@@ -49,10 +49,10 @@ ninja -C "$B" llc clang llvm-mc llvm-objdump llvm-readelf FileCheck
 | 09 | [整数类型合法化（i1/i8/i16/i64）](docs/09-types.md) | 完成 |
 | 10 | [RV32I 缺口：乘除、位内建与软浮点](docs/10-libcalls.md) | 完成 |
 | 11 | [clang 端到端、测试体系与教程收尾](docs/11-e2e.md) | 完成 |
-| 12 | 可选：链接与 QEMU 运行 | 待做 |
+| 12 | [链接与 QEMU 运行（运行时、ecall）](docs/12-run.md) | 完成 |
 | 13 | 可选：M 扩展与优化 | 待做 |
 
-## 当前限制（第 11 章）
+## 当前限制（第 12 章）
 
 - i32 的算术/逻辑/移位/比较、分支、栈对象、load/store、全局数据与字符串、
   函数调用/递归/栈传参全部可用；`-O0`…`-O3` 都能出汇编和对象文件。
@@ -79,14 +79,17 @@ ninja -C "$B" llc clang llvm-mc llvm-objdump llvm-readelf FileCheck
   没有 `R_RISCV_CALL`/`R_RISCV_RELAX`，因此也没有链接器松弛。间接调用是
   单条 `jalr ra, rs1, 0`。
 - 没有尾调用（`return f(x);` 先调用再返回）。
-- MC 层完整：`llvm-mc -triple=rvmin` 可汇编 83 条指令（调用序列复用
+- MC 层完整：`llvm-mc -triple=rvmin` 可汇编 85 条指令（调用序列复用
   `lui/addi/jalr`），立即数、标签和 `%hi/%lo` 三类编码都与参考 RISC-V
   汇编器逐字节一致（`scripts/check-rvmin-encodings.sh`）。
 - 分支/跳转范围是 B 型 ±4 KiB、J 型 ±1 MiB，没有 branch relaxation。
 - 非 2 的幂的常量乘法仍然走 `__mulsi3`（正确但慢，第 13 章可加 DAG combine）。
-- 后端只发 libcall，不提供实现：链接需要 `libgcc`/`compiler-rt`（第 12 章可选做
-  一个最小运行时）。
-- 测试体系：9 个 lit 测试 + 83 条指令的编码门禁 +
+- 后端只发 libcall；`scripts/rt/rvmin-rt.S` 提供 8 个整数实现（乘除取模、
+  64 位移位），其余（`__muldi3`、软浮点等）仍需 `libgcc`/`compiler-rt`。
+- 可运行：`scripts/rvmin-run.sh` 用 clang → llc → **自己的汇编器** → `ld.lld`
+  → `qemu-riscv32-static` 跑通一个自检程序（含 8 个 libcall 的最小运行时
+  `scripts/rt/rvmin-rt.S`、`_start` 与链接脚本）。
+- 测试体系：9 个 lit 测试 + 85 条指令的编码门禁 +
   `scripts/rvmin-e2e.sh`（7 个 C 程序 × `-O0..-O3`，`.text` 与 `llvm-mc`
   重汇编逐字节一致）。
 - 窄类型的参数依赖调用方按 ABI 扩展；函数入口不重新扩展，手写 IR 传入脏高位

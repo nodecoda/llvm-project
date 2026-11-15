@@ -84,3 +84,8 @@ bltu a0, a1, 12
 bltu a0, a1, -2
 bgeu a0, a1, -12
 bgeu a0, a1, 4094
+
+# Chapter 12: SYSTEM instructions.  ECALL/EBREAK are I-type encodings with no
+# operands; `ecall` is how the runtime exits under QEMU's Linux user mode.
+        ecall
+        ebreak

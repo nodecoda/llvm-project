@@ -430,7 +430,25 @@ def : Pat<(truncstorei16 GPR:$val, (add GPR:$addr, simm12:$off)),
 
 
 //===----------------------------------------------------------------------===//
-// Pseudo instructions (no encoding of their own)
+// SYSTEM: environment calls
+//===----------------------------------------------------------------------===//
+//
+// Chapter 12: the runtime needs a way to talk to the outside world.  ECALL and
+// EBREAK are I-type encodings with rs1 = rd = 0 and imm = 0 / 1, so they fit
+// in the existing I-type format without operands; the whole 32-bit word is
+// fixed here.  `ecall` traps to the environment (a Linux syscall under QEMU),
+// `ebreak` to a debugger.
+
+def ECALL : RVMinInst<(outs), (ins), "ecall", []> {
+  let Inst = 0x00000073;
+  let isBarrier = 1;
+}
+
+def EBREAK : RVMinInst<(outs), (ins), "ebreak", []> {
+  let Inst = 0x00100073;
+}
+
+
 //===----------------------------------------------------------------------===//
 
 // PseudoRET is expanded by TableGen's pseudo-lowering emitter (chapter 2's MC
