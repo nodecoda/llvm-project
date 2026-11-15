@@ -9,6 +9,7 @@
 #ifndef LLVM_LIB_TARGET_RVMIN_RVMINFRAMELOWERING_H
 #define LLVM_LIB_TARGET_RVMIN_RVMINFRAMELOWERING_H
 
+#include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/TargetFrameLowering.h"
 
 namespace llvm {
@@ -23,6 +24,19 @@ public:
                     MachineBasicBlock &MBB) const override;
   void emitEpilogue(MachineFunction &MF,
                     MachineBasicBlock &MBB) const override;
+
+  bool spillCalleeSavedRegisters(MachineBasicBlock &MBB,
+                                 MachineBasicBlock::iterator MI,
+                                 ArrayRef<CalleeSavedInfo> CSI,
+                                 const TargetRegisterInfo *TRI) const override;
+  bool restoreCalleeSavedRegisters(MachineBasicBlock &MBB,
+                                   MachineBasicBlock::iterator MI,
+                                   MutableArrayRef<CalleeSavedInfo> CSI,
+                                   const TargetRegisterInfo *TRI) const override;
+
+  MachineBasicBlock::iterator
+  eliminateCallFramePseudoInstr(MachineFunction &MF, MachineBasicBlock &MBB,
+                                MachineBasicBlock::iterator MI) const override;
 
 protected:
   bool hasFPImpl(const MachineFunction &MF) const override;

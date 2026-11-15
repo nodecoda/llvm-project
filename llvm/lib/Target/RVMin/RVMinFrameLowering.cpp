@@ -13,6 +13,7 @@
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
+#include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace llvm;
@@ -104,4 +105,68 @@ void RVMinFrameLowering::emitEpilogue(MachineFunction &MF,
   adjustStackPointer(MBB, MBB.getFirstTerminator(), TII, DL,
                      static_cast<int64_t>(StackSize),
                      MachineInstr::FrameDestroy);
+}
+
+//===----------------------------------------------------------------------===//
+// Callee-saved registers
+//===----------------------------------------------------------------------===//
+//
+// PEI has already created a stack slot for every register in CSR_RVMin that
+// this function modifies (for a non-leaf function that is `ra`; a function
+// that uses s0-s11 gets those too).  All that is left is the code that stores
+// and reloads them around the body.
+//
+// The spills are inserted at the beginning of the entry block, the reloads
+// before each return.  emitPrologue/emitEpilogue then place the sp adjustment
+// outside them, so the sequence is:
+//
+//   addi sp, sp, -N
+//   sw   ra, ...(sp)        <- spill
+//   ...
+//   lw   ra, ...(sp)        <- reload
+//   addi sp, sp, N
+//   jalr zero, 0(ra)
+
+bool RVMinFrameLowering::spillCalleeSavedRegisters(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator MI,
+    ArrayRef<CalleeSavedInfo> CSI, const TargetRegisterInfo *TRI) const {
+  const RVMinInstrInfo &TII =
+      *static_cast<const RVMinInstrInfo *>(MBB.getParent()->getSubtarget()
+                                               .getInstrInfo());
+
+  for (const CalleeSavedInfo &CS : CSI)
+    TII.storeRegToStackSlot(MBB, MI, CS.getReg(), /*isKill=*/true,
+                            CS.getFrameIdx(), &RVMin::GPRRegClass, Register(),
+                            MachineInstr::FrameSetup);
+  return true;
+}
+
+bool RVMinFrameLowering::restoreCalleeSavedRegisters(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator MI,
+    MutableArrayRef<CalleeSavedInfo> CSI,
+    const TargetRegisterInfo *TRI) const {
+  const RVMinInstrInfo &TII =
+      *static_cast<const RVMinInstrInfo *>(MBB.getParent()->getSubtarget()
+                                               .getInstrInfo());
+
+  for (const CalleeSavedInfo &CS : CSI)
+    TII.loadRegFromStackSlot(MBB, MI, CS.getReg(), CS.getFrameIdx(),
+                             &RVMin::GPRRegClass, Register(), /*SubReg=*/0,
+                             MachineInstr::FrameDestroy);
+  return true;
+}
+
+//===----------------------------------------------------------------------===//
+// Call frame pseudos
+//===----------------------------------------------------------------------===//
+
+// ADJCALLSTACKDOWN/UP bracket every call in the DAG.  Because RVMin has no
+// frame pointer, hasReservedCallFrame() returns true: PEI already counted the
+// largest outgoing argument area into the stack frame, so sp never moves at a
+// call site and both pseudos simply disappear.
+MachineBasicBlock::iterator RVMinFrameLowering::eliminateCallFramePseudoInstr(
+    MachineFunction &MF, MachineBasicBlock &MBB,
+    MachineBasicBlock::iterator MI) const {
+  assert(hasReservedCallFrame(MF) && "unexpected dynamic call frame");
+  return MBB.erase(MI);
 }

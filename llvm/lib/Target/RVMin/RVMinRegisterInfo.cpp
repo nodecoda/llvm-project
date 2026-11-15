@@ -20,13 +20,19 @@ using namespace llvm;
 
 RVMinRegisterInfo::RVMinRegisterInfo() : RVMinGenRegisterInfo(RVMin::X0) {}
 
+// Generated from CSR_RVMin in RVMinCallingConv.td: ra, s0, s1, s2-s11.
 const MCPhysReg *
 RVMinRegisterInfo::getCalleeSavedRegs(const MachineFunction *MF) const {
-  static const MCPhysReg CalleeSavedRegs[] = {
-      RVMin::X8,  RVMin::X9,  RVMin::X18, RVMin::X19, RVMin::X20, RVMin::X21,
-      RVMin::X22, RVMin::X23, RVMin::X24, RVMin::X25, RVMin::X26, RVMin::X27,
-      0};
-  return CalleeSavedRegs;
+  return CSR_RVMin_SaveList;
+}
+
+// The mask attached to every call instruction.  Registers in the mask are the
+// ones a callee promises to preserve; everything else (a0-a7, t0-t6) is
+// clobbered by the call and must be spilled by the register allocator if it is
+// live across the call.
+const uint32_t *RVMinRegisterInfo::getCallPreservedMask(const MachineFunction &MF,
+                                                        CallingConv::ID CC) const {
+  return CSR_RVMin_RegMask;
 }
 
 BitVector RVMinRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
@@ -35,10 +41,10 @@ BitVector RVMinRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   Reserved.set(RVMin::X2);
   Reserved.set(RVMin::X3);
   Reserved.set(RVMin::X4);
-  // Until chapter 6/8 teach the backend to save and restore the return
-  // address, `ra` must not be handed out as a scratch register: a leaf
-  // function still needs it for `jalr zero, 0(ra)`.
-  Reserved.set(RVMin::X1);
+  // Chapter 8 stops reserving `ra`.  A leaf function still keeps its incoming
+  // `ra` live across the whole body (the return uses it), so the register
+  // allocator will not hand it out; a non-leaf function saves it in the
+  // prologue because the call instruction defines it.
   return Reserved;
 }
 

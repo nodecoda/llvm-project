@@ -102,6 +102,13 @@ def simm21_lsb0 : Operand<OtherVT> {
   }];
 }
 
+// A call target: a function symbol.  The DAG node carries a pointer-sized
+// address (i32 on RV32), so the operand is typed i32; the pseudo itself is
+// code-gen only and never reaches the MC layer.
+def bare_symbol : Operand<i32> {
+  let PrintMethod = "printOperand";
+}
+
 //===----------------------------------------------------------------------===//
 // ALU: register-register (R-type)
 //===----------------------------------------------------------------------===//
@@ -267,6 +274,26 @@ def SDT_RVMinBrCC : SDTypeProfile<0, 4, [SDTCisSameAs<0, 1>,
                                          SDTCisVT<3, OtherVT>]>;
 def RVMinBrcc : SDNode<"RVMinISD::BR_CC", SDT_RVMinBrCC, [SDNPHasChain]>;
 
+// Call node: (chain, callee, argument registers..., regmask, glue?).
+//
+// The callee is either a target global address / external symbol (direct call)
+// or a plain value (indirect call).  The trailing operands are variadic: the
+// pattern matcher copies the argument registers and the call-preserved mask
+// onto the selected machine instruction, where the register allocator and the
+// machine verifier can see them.
+// Target-independent call-frame nodes, with the operand types RVMin uses.
+def SDT_RVMinCallSeqStart : SDCallSeqStart<[SDTCisVT<0, i32>, SDTCisVT<1, i32>]>;
+def SDT_RVMinCallSeqEnd : SDCallSeqEnd<[SDTCisVT<0, i32>, SDTCisVT<1, i32>]>;
+def callseq_start : SDNode<"ISD::CALLSEQ_START", SDT_RVMinCallSeqStart,
+                           [SDNPHasChain, SDNPOutGlue]>;
+def callseq_end : SDNode<"ISD::CALLSEQ_END", SDT_RVMinCallSeqEnd,
+                         [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue]>;
+
+def SDT_RVMinCall : SDTypeProfile<0, -1, [SDTCisPtrTy<0>]>;
+def RVMinCall : SDNode<"RVMinISD::CALL", SDT_RVMinCall,
+                       [SDNPHasChain, SDNPOutGlue, SDNPOptInGlue,
+                        SDNPVariadic]>;
+
 //===----------------------------------------------------------------------===//
 // Selection patterns
 //===----------------------------------------------------------------------===//
@@ -383,5 +410,48 @@ def PseudoBR : RVMinPseudo<(outs), (ins simm21_lsb0:$imm21), "", []>,
 }
 def : Pat<(br bb:$dst), (PseudoBR simm21_lsb0:$dst)>;
 
-def ADJCALLSTACKDOWN : RVMinPseudo<(outs), (ins i32imm:$amt), "", []>;
-def ADJCALLSTACKUP : RVMinPseudo<(outs), (ins i32imm:$amt1, i32imm:$amt2), "", []>;
+// ADJCALLSTACKDOWN/UP bracket every call in the DAG (CALLSEQ_START/END).  They
+// carry the size of the outgoing argument area.  RVMin has a reserved call
+// frame, so PEI deletes them again: the area is part of the fixed stack frame
+// from the prologue on (see RVMinFrameLowering::eliminateCallFramePseudoInstr).
+// The patterns on the two pseudos are what selects CALLSEQ_START/END; the
+// explicit stack-pointer use/def tells the scheduler that the pair may move sp
+// (it does not in RVMin, but the DAG is built before frame lowering decides).
+let Defs = [X2], Uses = [X2] in {
+def ADJCALLSTACKDOWN : RVMinPseudo<(outs), (ins i32imm:$amt1, i32imm:$amt2), "",
+                                   [(callseq_start timm:$amt1, timm:$amt2)]>;
+def ADJCALLSTACKUP : RVMinPseudo<(outs), (ins i32imm:$amt1, i32imm:$amt2), "",
+                                 [(callseq_end timm:$amt1, timm:$amt2)]>;
+}
+
+//===----------------------------------------------------------------------===//
+// Calls
+//===----------------------------------------------------------------------===//
+
+// Direct call.  The asm printer expands it into three real instructions:
+//
+//   lui  t0, %hi(callee)
+//   addi t0, t0, %lo(callee)
+//   jalr ra, t0, 0
+//
+// Materializing the absolute address reuses the chapter 7 %hi/%lo pair and its
+// relocations, so a call needs no new MC support.  The real RISC-V ABI uses
+// AUIPC+JALR with R_RISCV_CALL so the linker can relax the pair to a single
+// `jal`; that needs linker relaxation, which RVMin leaves for later.
+//
+// Defs = [X1] is what makes `ra` appear modified: PEI then saves it in the
+// prologue of every function that contains a call.
+let isCall = 1, Defs = [X1], Size = 12 in
+def PseudoCALL : RVMinPseudo<(outs), (ins bare_symbol:$func), "", []>;
+
+def : Pat<(RVMinCall tglobaladdr:$func), (PseudoCALL tglobaladdr:$func)>;
+def : Pat<(RVMinCall texternalsym:$func), (PseudoCALL texternalsym:$func)>;
+
+// Indirect call: the target address is already in a register, so a single
+// `jalr ra, rs1, 0` is enough.  TableGen's pseudo-lowering emitter handles the
+// expansion because it fits in one instruction.
+let isCall = 1, Defs = [X1], Size = 4 in
+def PseudoCALLR : RVMinPseudo<(outs), (ins GPR:$rs1), "", []>,
+                  PseudoInstExpansion<(JALR X1, GPR:$rs1, 0)>;
+
+def : Pat<(RVMinCall GPR:$rs1), (PseudoCALLR GPR:$rs1)>;

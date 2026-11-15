@@ -68,6 +68,9 @@ enum : unsigned {
   MO_HI20 = 1 << 0,
   MO_LO12_I = 1 << 1,
   MO_LO12_S = 1 << 2,
+  // A call target.  The pseudo that carries it is expanded by the asm printer
+  // into LUI/ADDI/JALR, so this flag never reaches the MC layer.
+  MO_CALL = 1 << 3,
 };
 
 } // end namespace RVMinII

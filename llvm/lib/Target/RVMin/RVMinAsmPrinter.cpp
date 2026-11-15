@@ -13,6 +13,7 @@
 
 #include "RVMinAsmPrinter.h"
 #include "RVMin.h"
+#include "RVMinBaseInfo.h"
 #include "RVMinMCInstLower.h"
 #include "RVMinTargetMachine.h"
 #include "TargetInfo/RVMinTargetInfo.h"
@@ -25,8 +26,10 @@
 #include "llvm/IR/Analysis.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/MC/MCExpr.h"
+#include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCStreamer.h"
+#include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -49,6 +52,11 @@ public:
   }
 
   void emitInstruction(const MachineInstr *MI) override {
+    if (MI->getOpcode() == RVMin::PseudoCALL) {
+      emitPseudoCall(*MI);
+      return;
+    }
+
     if (MI->isPseudo()) {
       MCInst Expanded;
       if (lowerPseudoInstExpansion(MI, Expanded)) {
@@ -65,8 +73,53 @@ public:
   }
 
   /// TableGen-generated expansion for instructions declared with
-  /// PseudoInstExpansion (PseudoRET and PseudoBR).
+  /// PseudoInstExpansion (PseudoRET, PseudoBR and PseudoCALLR).
   bool lowerPseudoInstExpansion(const MachineInstr *MI, MCInst &Inst);
+
+  /// Expand a direct call into the three real instructions that materialize
+  /// the callee address and jump to it:
+  ///
+  ///   lui  t0, %hi(callee)
+  ///   addi t0, t0, %lo(callee)
+  ///   jalr ra, t0, 0
+  ///
+  /// The `%hi`/`%lo` specifiers become R_RISCV_HI20 / R_RISCV_LO12_I
+  /// relocations, exactly like a global data reference.
+  void emitPseudoCall(const MachineInstr &MI) {
+    const MachineOperand &Callee = MI.getOperand(0);
+
+    MCSymbol *Sym;
+    if (Callee.isGlobal())
+      Sym = TM.getSymbol(Callee.getGlobal());
+    else if (Callee.isSymbol())
+      Sym = OutContext.getOrCreateSymbol(Callee.getSymbolName());
+    else
+      llvm_unreachable("RVMin: direct call without a symbol callee");
+
+    const MCExpr *Base = MCSymbolRefExpr::create(Sym, OutContext);
+
+    MCInst Lui;
+    Lui.setOpcode(RVMin::LUI);
+    Lui.addOperand(MCOperand::createReg(RVMin::X5));
+    Lui.addOperand(MCOperand::createExpr(
+        MCSpecifierExpr::create(Base, rvmin::S_HI20, OutContext)));
+    OutStreamer->emitInstruction(Lui, getSubtargetInfo());
+
+    MCInst Addi;
+    Addi.setOpcode(RVMin::ADDI);
+    Addi.addOperand(MCOperand::createReg(RVMin::X5));
+    Addi.addOperand(MCOperand::createReg(RVMin::X5));
+    Addi.addOperand(MCOperand::createExpr(
+        MCSpecifierExpr::create(Base, rvmin::S_LO12_I, OutContext)));
+    OutStreamer->emitInstruction(Addi, getSubtargetInfo());
+
+    MCInst Jalr;
+    Jalr.setOpcode(RVMin::JALR);
+    Jalr.addOperand(MCOperand::createReg(RVMin::X1));
+    Jalr.addOperand(MCOperand::createReg(RVMin::X5));
+    Jalr.addOperand(MCOperand::createImm(0));
+    OutStreamer->emitInstruction(Jalr, getSubtargetInfo());
+  }
 
   /// Operand helper used by the generated pseudo-expansion code: a pseudo
   /// branch carries a basic block, which becomes a symbol reference.

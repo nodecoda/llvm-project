@@ -28,3 +28,17 @@ def CC_RVMin : CallingConv<[
 def RetCC_RVMin : CallingConv<[
   CCIfType<[i32], CCAssignToReg<[X10, X11]>>
 ]>;
+
+// Callee-saved registers: the return address and s0-s11.  The same list feeds
+// two consumers:
+//
+//   * PEI spills and restores these registers around a function that modifies
+//     them (CSR_RVMin_SaveList),
+//   * the register allocator gets the complementary information at call sites
+//     through the call-preserved mask (CSR_RVMin_RegMask), which is what tells
+//     it that a value in s0-s11 survives a call while everything else does not.
+//
+// `ra` is in the list even though a call overwrites it: saving it in the
+// prologue and reloading it before the return is exactly how a non-leaf
+// function keeps its own return address.
+def CSR_RVMin : CalleeSavedRegs<(add X1, X8, X9, (sequence "X%u", 18, 27))>;
