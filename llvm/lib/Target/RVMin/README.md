@@ -38,7 +38,7 @@ ninja -C "$B" llc clang llvm-mc llvm-objdump llvm-readelf FileCheck
 | 章 | 主题 | 状态 |
 | --- | --- | --- |
 | 00 | [target 骨架与注册](docs/00-overview.md) | 完成 |
-| 01 | 寄存器与 RV32I 指令描述 | 待做 |
+| 01 | [寄存器与 RV32I 指令描述](docs/01-instructions.md) | 完成 |
 | 02 | MC 层、汇编输出与编码正确性 | 待做 |
 | 03 | 最小指令选择与栈帧骨架 | 待做 |
 | 04 | 整数算术、逻辑、移位、比较与 select | 待做 |
@@ -52,8 +52,10 @@ ninja -C "$B" llc clang llvm-mc llvm-objdump llvm-readelf FileCheck
 | 12 | 可选：链接与 QEMU 运行 | 待做 |
 | 13 | 可选：M 扩展与优化 | 待做 |
 
-## 当前限制（第 0 章）
+## 当前限制（第 1 章）
 
-- 只有 target 注册与空模块流水线；非空函数会明确报
-  `RVMin: instruction selection is not implemented yet`。
-- 还没有汇编输出、指令编码和指令选择。
+- TableGen 里已有完整 RV32I 核心指令描述与编码位域，
+  但还没有 MC 层：汇编输出、指令编码、obj 发射从第 2 章开始。
+- 非空函数仍会停在占位 pass：
+  `RVMin: instruction selection is not implemented yet`（第 3 章移除）。
+- 还没有指令选择、寄存器分配后的栈帧和调用约定。
