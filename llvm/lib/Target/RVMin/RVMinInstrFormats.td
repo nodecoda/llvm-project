@@ -83,6 +83,8 @@ class RVMinInst<dag outs, dag ins, string asmstr, list<dag> pattern>
 class RVMinPseudo<dag outs, dag ins, string asmstr, list<dag> pattern>
     : RVMinInst<outs, ins, asmstr, pattern> {
   let isPseudo = 1;
+  // Keep pseudos out of the assembler: they have no mnemonic and no encoding.
+  let isCodeGenOnly = 1;
   let Size = 0;
   let TSFlags{4-0} = FmtPseudo.Value;
 }

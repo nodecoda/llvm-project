@@ -6,12 +6,13 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Chapter 0 only needs the AsmPrinter plumbing so that llc can build a codegen
-// pipeline.  Tree walking and instruction printing arrive in chapter 2.
+// AsmPrinter walks the MachineFunction and hands each instruction to the MC
+// layer.  MachineInstr -> MCInst conversion lives in RVMinMCInstLower.cpp.
 //
 //===----------------------------------------------------------------------===//
 
 #include "RVMinAsmPrinter.h"
+#include "RVMinMCInstLower.h"
 #include "RVMinTargetMachine.h"
 #include "TargetInfo/RVMinTargetInfo.h"
 #include "llvm/CodeGen/AsmPrinter.h"
@@ -21,6 +22,7 @@
 #include "llvm/CodeGen/MachinePassManager.h"
 #include "llvm/IR/Analysis.h"
 #include "llvm/IR/PassManager.h"
+#include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Compiler.h"
@@ -44,7 +46,12 @@ public:
   }
 
   void emitInstruction(const MachineInstr *MI) override {
-    llvm_unreachable("RVMin instruction emission is not implemented yet");
+    if (MI->isPseudo())
+      llvm_unreachable("RVMin: pseudo instruction reached the asm printer");
+
+    MCInst TmpInst;
+    LowerRVMinMachineInstrToMCInst(MI, TmpInst);
+    OutStreamer->emitInstruction(TmpInst, getSubtargetInfo());
   }
 
   static char ID;

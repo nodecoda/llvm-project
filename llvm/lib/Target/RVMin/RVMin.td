@@ -40,9 +40,29 @@ defm : RemapAllTargetPseudoPointerOperands<GPR>;
 def RVMinInstrInfo : InstrInfo;
 
 //===----------------------------------------------------------------------===//
+// Assembly parser / writer
+//===----------------------------------------------------------------------===//
+
+// The writer is implemented by hand in MCTargetDesc/RVMinInstPrinter.cpp on top
+// of the generated per-instruction printing code.
+def RVMinAsmWriter : AsmWriter {
+  let AsmWriterClassName = "InstPrinter";
+  int PassSubtarget = 1;
+}
+
+// The parser is hand written; TableGen generates the matcher tables from the
+// instruction AsmStrings and operand match classes.
+def RVMinAsmParser : AsmParser {
+  let ShouldEmitMatchRegisterAltName = true;
+  let AllowDuplicateRegisterNames = true;
+}
+
+//===----------------------------------------------------------------------===//
 // Target Declaration
 //===----------------------------------------------------------------------===//
 
 def RVMin : Target {
   let InstructionSet = RVMinInstrInfo;
+  let AssemblyParsers = [RVMinAsmParser];
+  let AssemblyWriters = [RVMinAsmWriter];
 }

@@ -29,10 +29,27 @@ include "RVMinInstrFormats.td"
 // Immediate operands
 //===----------------------------------------------------------------------===//
 
+// Match classes for the assembler.  The generated asm matcher calls these
+// predicates on RVMinOperand to decide which instruction form matches a parsed
+// immediate.  Keeping the classes distinct (rather than using a single "Imm"
+// class) lets the matcher reject e.g. `slli a0, a0, 32`.
+class RVMinImmAsmOperand<string name, string predicate> : AsmOperandClass {
+  let Name = name;
+  let PredicateMethod = predicate;
+  let RenderMethod = "addImmOperands";
+}
+
+def SImm12AsmOperand     : RVMinImmAsmOperand<"SImm12", "isSImm12">;
+def UImm5AsmOperand      : RVMinImmAsmOperand<"UImm5", "isUImm5">;
+def UImm20AsmOperand     : RVMinImmAsmOperand<"UImm20", "isUImm20">;
+def SImm13Lsb0AsmOperand : RVMinImmAsmOperand<"SImm13Lsb0", "isSImm13Lsb0">;
+def SImm21Lsb0AsmOperand : RVMinImmAsmOperand<"SImm21Lsb0", "isSImm21Lsb0">;
+
 // 12-bit signed immediate: ADDI/ANDI/ORI/XORI/SLTI/SLTIU, LW/SW offsets,
 // JALR offsets.  Encoded as-is in imm[11:0].
 def simm12 : Operand<i32> {
   let PrintMethod = "printOperand";
+  let ParserMatchClass = SImm12AsmOperand;
   let MCOperandPredicate = [{
     int64_t Imm;
     return MCOp.evaluateAsConstantImm(Imm) && isInt<12>(Imm);
@@ -42,6 +59,7 @@ def simm12 : Operand<i32> {
 // 5-bit unsigned immediate: shift amounts.  RV32I encodes these in imm[24:20].
 def uimm5 : Operand<i32> {
   let PrintMethod = "printOperand";
+  let ParserMatchClass = UImm5AsmOperand;
   let MCOperandPredicate = [{
     int64_t Imm;
     return MCOp.evaluateAsConstantImm(Imm) && isUInt<5>(Imm);
@@ -51,6 +69,7 @@ def uimm5 : Operand<i32> {
 // 20-bit unsigned immediate: LUI/AUIPC's imm[31:12] field.
 def uimm20 : Operand<i32> {
   let PrintMethod = "printOperand";
+  let ParserMatchClass = UImm20AsmOperand;
   let MCOperandPredicate = [{
     int64_t Imm;
     return MCOp.evaluateAsConstantImm(Imm) && isUInt<20>(Imm);
@@ -60,6 +79,7 @@ def uimm20 : Operand<i32> {
 // 13-bit signed byte offset with bit 0 clear (branch target).
 def simm13_lsb0 : Operand<i32> {
   let PrintMethod = "printOperand";
+  let ParserMatchClass = SImm13Lsb0AsmOperand;
   let MCOperandPredicate = [{
     int64_t Imm;
     return MCOp.evaluateAsConstantImm(Imm) && isShiftedInt<12, 1>(Imm);
@@ -69,6 +89,7 @@ def simm13_lsb0 : Operand<i32> {
 // 21-bit signed byte offset with bit 0 clear (JAL target).
 def simm21_lsb0 : Operand<i32> {
   let PrintMethod = "printOperand";
+  let ParserMatchClass = SImm21Lsb0AsmOperand;
   let MCOperandPredicate = [{
     int64_t Imm;
     return MCOp.evaluateAsConstantImm(Imm) && isShiftedInt<20, 1>(Imm);

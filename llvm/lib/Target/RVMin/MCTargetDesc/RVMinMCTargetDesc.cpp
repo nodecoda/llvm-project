@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "RVMinMCTargetDesc.h"
+#include "RVMinInstPrinter.h"
 #include "RVMinMCAsmInfo.h"
 #include "TargetInfo/RVMinTargetInfo.h"
 #include "llvm/MC/MCInstrInfo.h"
@@ -55,6 +56,28 @@ static MCTargetStreamer *createRVMinNullTargetStreamer(MCStreamer &S) {
   return new MCTargetStreamer(S);
 }
 
+static MCInstPrinter *createRVMinMCInstPrinter(const Triple &T,
+                                               unsigned SyntaxVariant,
+                                               const MCAsmInfo &MAI,
+                                               const MCInstrInfo &MII,
+                                               const MCRegisterInfo &MRI) {
+  if (SyntaxVariant == 0)
+    return new RVMinInstPrinter(MAI, MII, MRI);
+  return nullptr;
+}
+
+static MCCodeEmitter *createRVMinMCCodeEmitterWrapper(const MCInstrInfo &MII,
+                                                      MCContext &Ctx) {
+  return createRVMinMCCodeEmitter(Ctx, MII);
+}
+
+static MCAsmBackend *
+createRVMinMCAsmBackendWrapper(const Target &T, const MCSubtargetInfo &STI,
+                               const MCRegisterInfo &MRI,
+                               const MCTargetOptions &Options) {
+  return createRVMinMCAsmBackend(T, STI, MRI, Options);
+}
+
 extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void
 LLVMInitializeRVMinTargetMC() {
   Target &T = getTheRVMinTarget();
@@ -63,5 +86,8 @@ LLVMInitializeRVMinTargetMC() {
   TargetRegistry::RegisterMCInstrInfo(T, createRVMinMCInstrInfo);
   TargetRegistry::RegisterMCRegInfo(T, createRVMinMCRegisterInfo);
   TargetRegistry::RegisterMCSubtargetInfo(T, createRVMinMCSubtargetInfo);
+  TargetRegistry::RegisterMCAsmBackend(T, createRVMinMCAsmBackendWrapper);
+  TargetRegistry::RegisterMCCodeEmitter(T, createRVMinMCCodeEmitterWrapper);
+  TargetRegistry::RegisterMCInstPrinter(T, createRVMinMCInstPrinter);
   TargetRegistry::RegisterNullTargetStreamer(T, createRVMinNullTargetStreamer);
 }

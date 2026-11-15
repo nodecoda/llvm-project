@@ -11,8 +11,29 @@
 
 #include "llvm/Support/DataTypes.h"
 
+#include <memory>
+
 namespace llvm {
+class MCAsmBackend;
+class MCCodeEmitter;
+class MCContext;
+class MCInstrInfo;
+class MCObjectTargetWriter;
+class MCRegisterInfo;
+class MCSubtargetInfo;
+class MCTargetOptions;
 class Target;
+
+MCCodeEmitter *createRVMinMCCodeEmitter(MCContext &Ctx,
+                                        const MCInstrInfo &MCII);
+
+MCAsmBackend *createRVMinMCAsmBackend(const Target &T,
+                                      const MCSubtargetInfo &STI,
+                                      const MCRegisterInfo &MRI,
+                                      const MCTargetOptions &Options);
+
+std::unique_ptr<MCObjectTargetWriter>
+createRVMinELFObjectWriter(uint8_t OSABI);
 } // namespace llvm
 
 #define GET_REGINFO_ENUM

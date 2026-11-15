@@ -39,7 +39,7 @@ ninja -C "$B" llc clang llvm-mc llvm-objdump llvm-readelf FileCheck
 | --- | --- | --- |
 | 00 | [target 骨架与注册](docs/00-overview.md) | 完成 |
 | 01 | [寄存器与 RV32I 指令描述](docs/01-instructions.md) | 完成 |
-| 02 | MC 层、汇编输出与编码正确性 | 待做 |
+| 02 | [MC 层、汇编输出与编码正确性](docs/02-mc-layer.md) | 完成 |
 | 03 | 最小指令选择与栈帧骨架 | 待做 |
 | 04 | 整数算术、逻辑、移位、比较与 select | 待做 |
 | 05 | 控制流与基本块布局 | 待做 |
@@ -52,10 +52,12 @@ ninja -C "$B" llc clang llvm-mc llvm-objdump llvm-readelf FileCheck
 | 12 | 可选：链接与 QEMU 运行 | 待做 |
 | 13 | 可选：M 扩展与优化 | 待做 |
 
-## 当前限制（第 1 章）
+## 当前限制（第 2 章）
 
-- TableGen 里已有完整 RV32I 核心指令描述与编码位域，
-  但还没有 MC 层：汇编输出、指令编码、obj 发射从第 2 章开始。
+- MC 层已完整：`llvm-mc -triple=rvmin` 可以汇编本章指令集并产出
+  ELF32 RISC-V 目标文件；67 条指令的编码与参考 RISC-V 汇编器逐字节一致。
+- 还没有反汇编器；回读 obj 用参考 RISCV 反汇编器（`llvm-objdump` 自动识别）。
+- 符号重定位（`%hi/%lo`、调用、全局地址）第 7 章实现；当前遇到未定义符号
+  会明确报错。
 - 非空函数仍会停在占位 pass：
   `RVMin: instruction selection is not implemented yet`（第 3 章移除）。
-- 还没有指令选择、寄存器分配后的栈帧和调用约定。

@@ -2,8 +2,11 @@ add_llvm_component_group(RVMin)
 
 set(LLVM_TARGET_DEFINITIONS RVMin.td)
 
-llvm_tablegen(RVMinGenRegisterInfo.inc -gen-register-info)
+llvm_tablegen(RVMinGenAsmMatcher.inc -gen-asm-matcher)
+llvm_tablegen(RVMinGenAsmWriter.inc -gen-asm-writer)
 llvm_tablegen(RVMinGenInstrInfo.inc -gen-instr-info)
+llvm_tablegen(RVMinGenMCCodeEmitter.inc -gen-emitter)
+llvm_tablegen(RVMinGenRegisterInfo.inc -gen-register-info)
 llvm_tablegen(RVMinGenSubtargetInfo.inc -gen-subtarget)
 
 add_public_tablegen_target(RVMinCommonTableGen)
@@ -14,6 +17,7 @@ add_llvm_target(RVMinCodeGen
   RVMinFrameLowering.cpp
   RVMinISelLowering.cpp
   RVMinInstrInfo.cpp
+  RVMinMCInstLower.cpp
   RVMinRegisterInfo.cpp
   RVMinSubtarget.cpp
   RVMinTargetMachine.cpp
@@ -36,5 +40,6 @@ add_llvm_target(RVMinCodeGen
   RVMin
   )
 
+add_subdirectory(AsmParser)
 add_subdirectory(MCTargetDesc)
 add_subdirectory(TargetInfo)
