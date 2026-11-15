@@ -17,6 +17,9 @@ class Triple;
 class RVMinMCAsmInfo : public MCAsmInfoELF {
   void anchor() override;
 
+  void printSpecifierExpr(raw_ostream &OS,
+                          const MCSpecifierExpr &Expr) const override;
+
 public:
   explicit RVMinMCAsmInfo(const Triple &TT, const MCTargetOptions &Options);
 };

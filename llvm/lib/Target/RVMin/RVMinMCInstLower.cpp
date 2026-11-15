@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "RVMinBaseInfo.h"
 #include "RVMinMCInstLower.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineInstr.h"
@@ -13,12 +14,15 @@
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
+#include "llvm/MC/MCSymbol.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Target/TargetMachine.h"
 
 using namespace llvm;
 
 void llvm::LowerRVMinMachineInstrToMCInst(const MachineInstr *MI,
-                                          MCInst &OutMI, MCContext &Ctx) {
+                                          MCInst &OutMI, MCContext &Ctx,
+                                          const TargetMachine &TM) {
   OutMI.setOpcode(MI->getOpcode());
 
   for (const MachineOperand &MO : MI->explicit_operands()) {
@@ -30,6 +34,31 @@ void llvm::LowerRVMinMachineInstrToMCInst(const MachineInstr *MI,
     case MachineOperand::MO_Immediate:
       OutMI.addOperand(MCOperand::createImm(MO.getImm()));
       break;
+    case MachineOperand::MO_GlobalAddress: {
+      // A global address arrives in two halves: %hi20 for `lui`, %lo12 for
+      // `addi rd, rd, ...` or a store's S-type immediate.
+      MCSymbol *Sym = TM.getSymbol(MO.getGlobal());
+      const MCExpr *Expr = MCSymbolRefExpr::create(Sym, Ctx);
+      if (MO.getOffset())
+        Expr = MCBinaryExpr::createAdd(
+            Expr, MCConstantExpr::create(MO.getOffset(), Ctx), Ctx);
+
+      switch (MO.getTargetFlags()) {
+      case RVMinII::MO_HI20:
+        Expr = MCSpecifierExpr::create(Expr, rvmin::S_HI20, Ctx);
+        break;
+      case RVMinII::MO_LO12_I:
+        Expr = MCSpecifierExpr::create(Expr, rvmin::S_LO12_I, Ctx);
+        break;
+      case RVMinII::MO_LO12_S:
+        Expr = MCSpecifierExpr::create(Expr, rvmin::S_LO12_S, Ctx);
+        break;
+      default:
+        llvm_unreachable("RVMin: global address without a %hi/%lo flag");
+      }
+      OutMI.addOperand(MCOperand::createExpr(Expr));
+      break;
+    }
     case MachineOperand::MO_MachineBasicBlock:
       // Branch targets become symbol references; the MCCodeEmitter turns them
       // into B/J fixups and the assembler backend patches the offset.

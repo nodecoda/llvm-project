@@ -21,6 +21,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "RVMinBaseInfo.h"
 #include "MCTargetDesc/RVMinMCTargetDesc.h"
 #include "TargetInfo/RVMinTargetInfo.h"
 #include "llvm/MC/MCContext.h"
@@ -64,6 +65,7 @@ class RVMinAsmParser : public MCTargetAsmParser {
   bool parseOperand(OperandVector &Operands, StringRef Mnemonic);
   ParseStatus parseRegister(OperandVector &Operands);
   ParseStatus parseExpression(OperandVector &Operands);
+  ParseStatus parseSpecifierOperand(OperandVector &Operands);
   ParseStatus parseMemOpBaseReg(OperandVector &Operands);
 
   /// @name Auto-generated Matcher Functions
@@ -142,7 +144,10 @@ public:
   // Predicates referenced from RVMinInstrInfo.td (PredicateMethod).
   bool isSImm12() const {
     int64_t Value;
-    return evaluateConstantImm(Value) && isInt<12>(Value);
+    if (evaluateConstantImm(Value))
+      return isInt<12>(Value);
+    // %lo(sym) is resolved by a relocation, not at assembly time.
+    return Kind == Immediate && isa<MCSpecifierExpr>(Imm);
   }
   bool isUImm5() const {
     int64_t Value;
@@ -150,7 +155,10 @@ public:
   }
   bool isUImm20() const {
     int64_t Value;
-    return evaluateConstantImm(Value) && isUInt<20>(Value);
+    if (evaluateConstantImm(Value))
+      return isUInt<20>(Value);
+    // %hi(sym): the upper half of a symbolic address.
+    return Kind == Immediate && isa<MCSpecifierExpr>(Imm);
   }
 
   // Branch and jump targets may still be unresolved symbols; accept those and
@@ -161,7 +169,7 @@ public:
     int64_t Value;
     if (Imm->evaluateAsAbsolute(Value))
       return isShiftedInt<12, 1>(Value);
-    return isa<MCSymbolRefExpr>(Imm);
+    return isa<MCSymbolRefExpr>(Imm) || isa<MCSpecifierExpr>(Imm);
   }
   bool isSImm21Lsb0() const {
     if (Kind != Immediate)
@@ -169,7 +177,7 @@ public:
     int64_t Value;
     if (Imm->evaluateAsAbsolute(Value))
       return isShiftedInt<20, 1>(Value);
-    return isa<MCSymbolRefExpr>(Imm);
+    return isa<MCSymbolRefExpr>(Imm) || isa<MCSpecifierExpr>(Imm);
   }
 
   void addRegOperands(MCInst &Inst, unsigned N) const {
@@ -270,6 +278,39 @@ ParseStatus RVMinAsmParser::parseExpression(OperandVector &Operands) {
   return ParseStatus::Success;
 }
 
+ParseStatus RVMinAsmParser::parseSpecifierOperand(OperandVector &Operands) {
+  SMLoc StartLoc = getLoc();
+  Lex(); // '%'
+
+  if (getLexer().isNot(AsmToken::Identifier))
+    return Error(getLoc(), "expected relocation specifier after '%'");
+
+  StringRef Name = getLexer().getTok().getIdentifier();
+  std::optional<rvmin::Specifier> Spec = rvmin::parseSpecifierName(Name);
+  if (!Spec)
+    return Error(getLoc(), "invalid relocation specifier");
+  Lex();
+
+  if (parseToken(AsmToken::LParen, "expected '('"))
+    return ParseStatus::Failure;
+
+  const MCExpr *SubExpr;
+  SMLoc EndLoc;
+  if (getParser().parseParenExpression(SubExpr, EndLoc))
+    return ParseStatus::Failure;
+
+  Operands.push_back(RVMinOperand::createImm(
+      MCSpecifierExpr::create(SubExpr, *Spec, getContext(), StartLoc),
+      StartLoc, EndLoc));
+
+  // `%lo(sym)(a0)`: a symbolic displacement with a base register.
+  if (getLexer().is(AsmToken::LParen)) {
+    if (parseMemOpBaseReg(Operands).isFailure())
+      return Error(getLoc(), "expected memory base register");
+  }
+  return ParseStatus::Success;
+}
+
 ParseStatus RVMinAsmParser::parseMemOpBaseReg(OperandVector &Operands) {
   // The matcher compares these literal tokens against the '(' and ')' in the
   // instruction's AsmString ($imm12($rs1)), so they must be part of the
@@ -313,6 +354,13 @@ ParseStatus RVMinAsmParser::parseDirective(AsmToken DirectiveID) {
 bool RVMinAsmParser::parseOperand(OperandVector &Operands, StringRef Mnemonic) {
   if (parseRegister(Operands).isSuccess())
     return false;
+
+  // %hi(sym) / %lo(sym): a relocation specifier around an expression.
+  if (getLexer().is(AsmToken::Percent)) {
+    if (parseSpecifierOperand(Operands).isFailure())
+      return true;
+    return false;
+  }
 
   if (parseExpression(Operands).isSuccess()) {
     // `8(sp)` is two operands: the offset expression and the base register.

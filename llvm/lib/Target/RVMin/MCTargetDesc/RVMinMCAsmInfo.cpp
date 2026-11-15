@@ -6,12 +6,24 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "RVMinBaseInfo.h"
 #include "RVMinMCAsmInfo.h"
+#include "llvm/MC/MCExpr.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Triple.h"
 
 using namespace llvm;
 
 void RVMinMCAsmInfo::anchor() {}
+
+void RVMinMCAsmInfo::printSpecifierExpr(raw_ostream &OS,
+                                        const MCSpecifierExpr &Expr) const {
+  OS << '%' << rvmin::getSpecifierName(
+                    static_cast<rvmin::Specifier>(Expr.getSpecifier()))
+     << '(';
+  printExpr(OS, *Expr.getSubExpr());
+  OS << ')';
+}
 
 RVMinMCAsmInfo::RVMinMCAsmInfo(const Triple &TT,
                                const MCTargetOptions &Options)

@@ -14,6 +14,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "RVMin.h"
+#include "RVMinBaseInfo.h"
 #include "RVMinISelDAGToDAG.h"
 #include "RVMinSubtarget.h"
 #include "RVMinTargetMachine.h"
@@ -172,6 +173,29 @@ void RVMinDAGToDAGISel::Select(SDNode *N) {
       ReplaceNode(N, MN);
       return;
     }
+  }
+
+  // Global addresses: RV32I has no absolute addressing mode, so materialize
+  // the address with the canonical %hi/%lo pair:
+  //
+  //   lui  rd, %hi(sym)
+  //   addi rd, rd, %lo(sym)
+  //
+  // The two halves carry different target flags; the asm printer turns them
+  // into relocation specifiers and the ELF writer into R_RISCV_HI20/LO12.
+  if (N->getOpcode() == ISD::GlobalAddress) {
+    auto *GA = cast<GlobalAddressSDNode>(N);
+    const GlobalValue *GV = GA->getGlobal();
+    int64_t Off = GA->getOffset();
+    SDValue Hi = CurDAG->getTargetGlobalAddress(GV, DL, MVT::i32, Off,
+                                                RVMinII::MO_HI20);
+    SDValue Lo = CurDAG->getTargetGlobalAddress(GV, DL, MVT::i32, Off,
+                                                RVMinII::MO_LO12_I);
+    SDValue Lui =
+        SDValue(CurDAG->getMachineNode(RVMin::LUI, DL, MVT::i32, Hi), 0);
+    ReplaceNode(N,
+                CurDAG->getMachineNode(RVMin::ADDI, DL, MVT::i32, Lui, Lo));
+    return;
   }
 
   SelectCode(N);

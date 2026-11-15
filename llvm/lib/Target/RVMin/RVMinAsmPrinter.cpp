@@ -60,7 +60,7 @@ public:
     }
 
     MCInst TmpInst;
-    LowerRVMinMachineInstrToMCInst(MI, TmpInst, OutContext);
+    LowerRVMinMachineInstrToMCInst(MI, TmpInst, OutContext, TM);
     OutStreamer->emitInstruction(TmpInst, getSubtargetInfo());
   }
 

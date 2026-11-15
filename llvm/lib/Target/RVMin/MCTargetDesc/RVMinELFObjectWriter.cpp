@@ -10,11 +10,13 @@
 // (EM_RISCV), otherwise llvm-readelf/llvm-objdump will not recognize the
 // output, even though the instruction encoding is otherwise correct.
 //
-// Relocations are introduced in chapter 7; until then an unresolved symbol
-// produces a clear diagnostic instead of a silently wrong object file.
+// Chapter 7 adds the relocations a static RV32I object needs: absolute 32-bit
+// data (R_RISCV_32), the %hi/%lo global-address pair, and the branch/jump
+// types that only appear when a target is outside the current section.
 //
 //===----------------------------------------------------------------------===//
 
+#include "RVMinFixupKinds.h"
 #include "RVMinMCTargetDesc.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/BinaryFormat/ELF.h"
@@ -38,9 +40,25 @@ public:
 protected:
   unsigned getRelocType(const MCFixup &Fixup, const MCValue &Target,
                         bool IsPCRel) const override {
-    reportError(Fixup.getLoc(),
-                "RVMin: relocations are not implemented yet (chapter 7)");
-    return ELF::R_RISCV_NONE;
+    switch (Fixup.getKind()) {
+    case FK_Data_4:
+      return IsPCRel ? ELF::R_RISCV_32_PCREL : ELF::R_RISCV_32;
+    case rvmin::fixup_rvmin_32:
+      return ELF::R_RISCV_32;
+    case rvmin::fixup_rvmin_branch:
+      return ELF::R_RISCV_BRANCH;
+    case rvmin::fixup_rvmin_jal:
+      return ELF::R_RISCV_JAL;
+    case rvmin::fixup_rvmin_hi20:
+      return ELF::R_RISCV_HI20;
+    case rvmin::fixup_rvmin_lo12_i:
+      return ELF::R_RISCV_LO12_I;
+    case rvmin::fixup_rvmin_lo12_s:
+      return ELF::R_RISCV_LO12_S;
+    default:
+      reportError(Fixup.getLoc(), "RVMin: unsupported relocation");
+      return ELF::R_RISCV_NONE;
+    }
   }
 };
 

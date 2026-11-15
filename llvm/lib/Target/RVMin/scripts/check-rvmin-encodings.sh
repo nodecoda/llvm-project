@@ -66,8 +66,22 @@ FIXUPS="$HERE/rvmin-fixup-corpus.s"
 "$BIN/llvm-objcopy" -O binary --only-section=.text "$TMP/ref-fix.o" "$TMP/ref-fix.bin"
 cmp -s "$TMP/rvmin-fix.bin" "$TMP/ref-fix.bin" || fail ".text bytes differ for label fixups"
 
+# 2c. Global-address operands (%hi/%lo).  Both assemblers leave the immediate
+# fields zero and emit relocations, so .text must still match.
+GLOBALS="$HERE/rvmin-global-corpus.s"
+"$BIN/llvm-mc" -triple=rvmin -filetype=obj "$GLOBALS" -o "$TMP/rvmin-glob.o"
+"$BIN/llvm-mc" -triple=riscv32 -filetype=obj "$GLOBALS" -o "$TMP/ref-glob.o"
+"$BIN/llvm-objcopy" -O binary --only-section=.text "$TMP/rvmin-glob.o" "$TMP/rvmin-glob.bin"
+"$BIN/llvm-objcopy" -O binary --only-section=.text "$TMP/ref-glob.o" "$TMP/ref-glob.bin"
+cmp -s "$TMP/rvmin-glob.bin" "$TMP/ref-glob.bin" || fail ".text bytes differ for %hi/%lo operands"
+
+RELOCS=$("$BIN/llvm-readelf" -r "$TMP/rvmin-glob.o")
+for R in R_RISCV_HI20 R_RISCV_LO12_I R_RISCV_LO12_S; do
+  [[ "$RELOCS" == *"$R"* ]] || fail "missing relocation $R in global corpus"
+done
+
 # 3. ELF identification.
 MACHINE=$("$BIN/llvm-readelf" -h "$TMP/rvmin.o" | awk -F: '/Machine:/ {gsub(/^ +| +$/, "", $2); print $2}')
 [[ "$MACHINE" == "RISC-V" ]] || fail "ELF machine is '$MACHINE', want RISC-V"
 
-echo "PASS: $N instructions, .text identical (incl. label fixups), ELF machine RISC-V"
+echo "PASS: $N instructions, .text identical (incl. label fixups and %hi/%lo), ELF machine RISC-V"

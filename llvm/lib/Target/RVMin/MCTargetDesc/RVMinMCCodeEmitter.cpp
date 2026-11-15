@@ -15,6 +15,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "RVMinBaseInfo.h"
 #include "RVMinFixupKinds.h"
 #include "RVMinMCTargetDesc.h"
 #include "llvm/MC/MCCodeEmitter.h"
@@ -83,6 +84,31 @@ uint64_t RVMinMCCodeEmitter::getMachineOpValue(
   default:
     Kind = rvmin::fixup_rvmin_32;
     break;
+  }
+
+  // %hi/%lo operands carry a relocation specifier; it selects the fixup kind.
+  // `%lo` in assembly does not say whether the destination is an I-type or an
+  // S-type field, so the opcode decides.
+  if (auto *SE = dyn_cast<MCSpecifierExpr>(MO.getExpr())) {
+    switch (SE->getSpecifier()) {
+    case rvmin::S_HI20:
+      Kind = rvmin::fixup_rvmin_hi20;
+      break;
+    case rvmin::S_LO12_I:
+      Kind = rvmin::fixup_rvmin_lo12_i;
+      break;
+    case rvmin::S_LO12_S:
+      Kind = rvmin::fixup_rvmin_lo12_s;
+      break;
+    case rvmin::S_LO12:
+      Kind = (MI.getOpcode() == RVMin::SB || MI.getOpcode() == RVMin::SH ||
+              MI.getOpcode() == RVMin::SW)
+                 ? rvmin::fixup_rvmin_lo12_s
+                 : rvmin::fixup_rvmin_lo12_i;
+      break;
+    default:
+      break;
+    }
   }
 
   bool IsPCRel = Kind == rvmin::fixup_rvmin_branch ||

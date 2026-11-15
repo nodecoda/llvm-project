@@ -83,6 +83,9 @@ public:
       {"fixup_rvmin_32",         0,  32, 0},
       {"fixup_rvmin_branch",     0,  13, 0},
       {"fixup_rvmin_jal",        0,  21, 0},
+      {"fixup_rvmin_hi20",      12,  20, 0},
+      {"fixup_rvmin_lo12_i",    20,  12, 0},
+      {"fixup_rvmin_lo12_s",     0,  32, 0},
     };
     // clang-format on
     static_assert(std::size(Infos) == rvmin::NumTargetFixupKinds,
@@ -135,6 +138,32 @@ void RVMinAsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
       getContext().reportError(Fixup.getLoc(), "branch target out of range");
     uint32_t Inst = support::endian::read32le(Data);
     support::endian::write32le(Data, encodeBranchImm(Inst, Offset));
+    return;
+  }
+
+  case rvmin::fixup_rvmin_hi20: {
+    // lui rd, %hi(sym): bits 31:12 hold (value + 0x800) >> 12.  The rounding
+    // matches what %lo(sym) subtracts, so the pair covers the full 32 bits.
+    uint32_t Inst = support::endian::read32le(Data);
+    uint32_t Hi = static_cast<uint32_t>((Value + 0x800) >> 12) & 0xfffff;
+    support::endian::write32le(Data, Inst | (Hi << 12));
+    return;
+  }
+
+  case rvmin::fixup_rvmin_lo12_i: {
+    uint32_t Inst = support::endian::read32le(Data);
+    support::endian::write32le(Data,
+                               Inst | ((static_cast<uint32_t>(Value) & 0xfff)
+                                       << 20));
+    return;
+  }
+
+  case rvmin::fixup_rvmin_lo12_s: {
+    uint32_t V = static_cast<uint32_t>(Value);
+    uint32_t Inst = support::endian::read32le(Data);
+    Inst |= (V & 0xfe0u) << 20; // imm[11:5] -> bits 31:25
+    Inst |= (V & 0x01fu) << 7;  // imm[4:0]  -> bits 11:7
+    support::endian::write32le(Data, Inst);
     return;
   }
 
