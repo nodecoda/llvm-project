@@ -66,13 +66,17 @@ def uimm5 : Operand<i32>, ImmLeaf<i32, [{ return isUInt<5>(Imm); }]> {
   }];
 }
 
-// 20-bit unsigned immediate: LUI/AUIPC's imm[31:12] field.
+// 20-bit immediate: LUI/AUIPC's imm[31:12] field.  The DAG carries constants
+// as sign-extended i32, so the machine operand may be negative even though the
+// encoded field is unsigned; the printer therefore always prints the low 20
+// bits (`lui a0, 1048575` rather than `lui a0, -1`), which is also what the
+// parser accepts.
 def uimm20 : Operand<i32> {
-  let PrintMethod = "printOperand";
+  let PrintMethod = "printUImm20Operand";
   let ParserMatchClass = UImm20AsmOperand;
   let MCOperandPredicate = [{
     int64_t Imm;
-    return MCOp.evaluateAsConstantImm(Imm) && isUInt<20>(Imm);
+    return MCOp.evaluateAsConstantImm(Imm) && (isUInt<20>(Imm) || isInt<20>(Imm));
   }];
 }
 

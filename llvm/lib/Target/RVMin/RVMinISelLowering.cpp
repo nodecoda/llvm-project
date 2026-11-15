@@ -117,6 +117,14 @@ RVMinTargetLowering::RVMinTargetLowering(const TargetMachine &TM,
   // __muldf3, __ltsf2, __fixsfsi, ... fall out of the same machinery, and the
   // `ilp32` ABI already passes floats in integer registers.
 
+  // Chapter 11: a `switch` with many cases becomes a jump table: an array of
+  // code labels in .rodata plus a load and an indirect jump.  RVMin has no
+  // such sequence, so neither BR_JT nor BRIND may be "legal" -- those are the
+  // two tests the switch builder uses before deciding to build one.  With
+  // this, `switch` lowers to a comparison chain at every optimization level.
+  setOperationAction(ISD::BR_JT, MVT::Other, Expand);
+  setOperationAction(ISD::BRIND, MVT::Other, Expand);
+
   // Chapter 9: 64-bit shifts.  RV32I shifts one register at a time, so the
   // legalizer would otherwise leave SHL_PARTS/SRL_PARTS/SRA_PARTS for the
   // selector.  Expanding them emits the standard compiler-runtime libcalls

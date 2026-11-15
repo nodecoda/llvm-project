@@ -55,3 +55,18 @@ void RVMinInstPrinter::printOperand(const MCInst *MI, unsigned OpNo,
   assert(MO.isExpr() && "unknown operand kind in printOperand");
   MAI.printExpr(O, *MO.getExpr());
 }
+
+void RVMinInstPrinter::printUImm20Operand(const MCInst *MI, unsigned OpNo,
+                                          const MCSubtargetInfo &STI,
+                                          raw_ostream &O) {
+  const MCOperand &MO = MI->getOperand(OpNo);
+  if (MO.isImm()) {
+    // The DAG hands out the 20-bit field sign-extended (0xEDB88 arrives as
+    // -74872); print what the field actually holds.
+    O << (MO.getImm() & 0xFFFFF);
+    return;
+  }
+
+  assert(MO.isExpr() && "unknown operand kind in printUImm20Operand");
+  MAI.printExpr(O, *MO.getExpr());
+}

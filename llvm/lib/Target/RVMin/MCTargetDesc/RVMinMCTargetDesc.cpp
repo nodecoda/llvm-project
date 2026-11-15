@@ -37,14 +37,23 @@ static MCInstrInfo *createRVMinMCInstrInfo() {
 
 static MCRegisterInfo *createRVMinMCRegisterInfo(const Triple &TT) {
   MCRegisterInfo *X = new MCRegisterInfo();
-  InitRVMinMCRegisterInfo(X, RVMin::X0);
+  // The second argument is the return-address register, used as the DWARF
+  // "return address column" of every CIE.  Chapter 2 had no `ra` yet and
+  // passed x0; since chapter 8 `ra` is a normal register.
+  InitRVMinMCRegisterInfo(X, RVMin::X1);
   return X;
 }
 
 static MCAsmInfo *createRVMinMCAsmInfo(const MCRegisterInfo &MRI,
                                        const Triple &TT,
                                        const MCTargetOptions &Options) {
-  return new RVMinMCAsmInfo(TT, Options);
+  MCAsmInfo *MAI = new RVMinMCAsmInfo(TT, Options);
+  // Per-function CFI starts from "CFA = sp + 0"; the frame lowering then
+  // updates the offset after `sp -= N`.  Without this the CIE has no
+  // DW_CFA_def_cfa rule at all and unwinders cannot find the frame.
+  unsigned SP = MRI.getDwarfRegNum(RVMin::X2, /*IsEH=*/true);
+  MAI->addInitialFrameState(MCCFIInstruction::cfiDefCfa(nullptr, SP, 0));
+  return MAI;
 }
 
 static MCSubtargetInfo *createRVMinMCSubtargetInfo(const Triple &TT,

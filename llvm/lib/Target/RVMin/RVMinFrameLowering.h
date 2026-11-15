@@ -38,6 +38,11 @@ public:
   eliminateCallFramePseudoInstr(MachineFunction &MF, MachineBasicBlock &MBB,
                                 MachineBasicBlock::iterator MI) const override;
 
+private:
+  /// Emit `.cfi_def_cfa_offset` and one `.cfi_offset` per callee-saved
+  /// register, after the prologue stores.
+  void emitPrologueCFI(MachineFunction &MF, MachineBasicBlock &MBB) const;
+
 protected:
   bool hasFPImpl(const MachineFunction &MF) const override;
 };

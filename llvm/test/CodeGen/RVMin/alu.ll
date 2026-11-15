@@ -128,7 +128,9 @@ entry:
   ret i32 -305419896
 }
 ; CHECK-LABEL: neg_const:
-; CHECK:         lui [[R:[a-z0-9]+]], -74565
+; The LUI field is 20 bits and unsigned: -74565 prints as 974011 (the same
+; bits), exactly like the reference RISC-V assembler does.
+; CHECK:         lui [[R:[a-z0-9]+]], 974011
 ; CHECK-NEXT:    addi [[R]], [[R]], -1656
 
 define i32 @sel(i32 %a, i32 %b) nounwind {

@@ -13,6 +13,7 @@
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
+#include "llvm/CodeGen/CFIInstBuilder.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/Support/ErrorHandling.h"
 
@@ -85,6 +86,32 @@ void RVMinFrameLowering::emitPrologue(MachineFunction &MF,
   // inserting here keeps the order `sp -= N; sw ...` correct.
   adjustStackPointer(MBB, MBB.begin(), TII, DL, -static_cast<int64_t>(StackSize),
                      MachineInstr::FrameSetup);
+
+  emitPrologueCFI(MF, MBB);
+}
+
+/// Describe the frame to the unwinder: after `sp -= N` the canonical frame
+/// address (CFA) is `sp + N`, and every callee-saved register lives at a fixed
+/// negative offset from it (`MachineFrameInfo::getObjectOffset`, which is
+/// already CFA-relative).  The directives go *after* the stores: a CFI entry
+/// that appears before them would let an unwinder read a slot that has not
+/// been written yet (for example if a signal arrives in the prologue).
+void RVMinFrameLowering::emitPrologueCFI(MachineFunction &MF,
+                                         MachineBasicBlock &MBB) const {
+  if (!MF.needsFrameMoves())
+    return;
+
+  const MachineFrameInfo &MFI = MF.getFrameInfo();
+  uint64_t StackSize = MFI.getStackSize();
+
+  MachineBasicBlock::iterator CFIPos = MBB.begin();
+  while (CFIPos != MBB.end() && CFIPos->getFlag(MachineInstr::FrameSetup))
+    ++CFIPos;
+
+  CFIInstBuilder CFIBuilder(MBB, CFIPos, MachineInstr::FrameSetup);
+  CFIBuilder.buildDefCFAOffset(static_cast<int64_t>(StackSize));
+  for (const CalleeSavedInfo &CS : MFI.getCalleeSavedInfo())
+    CFIBuilder.buildOffset(CS.getReg(), MFI.getObjectOffset(CS.getFrameIdx()));
 }
 
 void RVMinFrameLowering::emitEpilogue(MachineFunction &MF,
@@ -105,6 +132,16 @@ void RVMinFrameLowering::emitEpilogue(MachineFunction &MF,
   adjustStackPointer(MBB, MBB.getFirstTerminator(), TII, DL,
                      static_cast<int64_t>(StackSize),
                      MachineInstr::FrameDestroy);
+
+  // Mirror the prologue: after `sp += N` the CFA is just sp again, and after
+  // each reload the register is no longer "saved somewhere".
+  if (MF.needsFrameMoves()) {
+    CFIInstBuilder CFIBuilder(MBB, MBB.getFirstTerminator(),
+                              MachineInstr::FrameDestroy);
+    for (const CalleeSavedInfo &CS : MFI.getCalleeSavedInfo())
+      CFIBuilder.buildRestore(CS.getReg());
+    CFIBuilder.buildDefCFAOffset(0);
+  }
 }
 
 //===----------------------------------------------------------------------===//
