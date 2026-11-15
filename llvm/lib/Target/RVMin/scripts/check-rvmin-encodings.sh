@@ -80,8 +80,29 @@ for R in R_RISCV_HI20 R_RISCV_LO12_I R_RISCV_LO12_S; do
   [[ "$RELOCS" == *"$R"* ]] || fail "missing relocation $R in global corpus"
 done
 
+# 2d. The M extension (chapter 13).  These instructions only exist with
+# `-mattr=+m`, so both assemblers get the feature and the negative case is
+# checked too: without `+m` RVMin must reject the corpus with a diagnostic.
+MCORPUS="$HERE/rvmin-m-encoding-corpus.s"
+"$BIN/llvm-mc" -triple=rvmin -mattr=+m -show-encoding "$MCORPUS" > "$TMP/rvmin-m.txt"
+"$BIN/llvm-mc" -triple=riscv32 -mattr=+m -show-encoding "$MCORPUS" > "$TMP/ref-m.txt"
+extract "$TMP/rvmin-m.txt" > "$TMP/rvmin-m.enc"
+extract "$TMP/ref-m.txt" > "$TMP/ref-m.enc"
+NM=$(wc -l < "$TMP/rvmin-m.enc")
+[[ "$NM" -eq 12 ]] || fail "M corpus produced $NM encodings, want 12"
+diff -u "$TMP/ref-m.enc" "$TMP/rvmin-m.enc" > "$TMP/diff-m.txt" \
+  || { head -20 "$TMP/diff-m.txt" >&2; fail "M encoding mismatch between rvmin and riscv32"; }
+
+if "$BIN/llvm-mc" -triple=rvmin -filetype=obj "$MCORPUS" -o "$TMP/no-m.o" \
+     > /dev/null 2> "$TMP/no-m.err"; then
+  fail "llvm-mc -triple=rvmin accepted M instructions without +m"
+fi
+grep -q "requires the following: 'M'" "$TMP/no-m.err" \
+  || fail "missing 'requires M' diagnostic without +m"
+
 # 3. ELF identification.
 MACHINE=$("$BIN/llvm-readelf" -h "$TMP/rvmin.o" | awk -F: '/Machine:/ {gsub(/^ +| +$/, "", $2); print $2}')
 [[ "$MACHINE" == "RISC-V" ]] || fail "ELF machine is '$MACHINE', want RISC-V"
 
-echo "PASS: $N instructions, .text identical (incl. label fixups and %hi/%lo), ELF machine RISC-V"
+echo "PASS: $N RV32I instructions + $NM M-extension instructions, .text identical"
+echo "      (incl. label fixups and %hi/%lo), ELF machine RISC-V, missing-feature diagnostic OK"

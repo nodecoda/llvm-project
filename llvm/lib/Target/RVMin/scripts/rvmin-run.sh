@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 #
 # Chapter 12 gate: compile, assemble, link and RUN a freestanding RV32I
-# program.
+# program.  Chapter 13 runs the same program twice, once as plain RV32I (with
+# the runtime's libcalls) and once with the M extension, and requires identical
+# output.
 #
 # Usage: rvmin-run.sh <llvm-bin-dir> [qemu]
 #
@@ -23,6 +25,7 @@ trap 'rm -rf "$TMP"' EXIT
 CC="$BIN/clang"
 LLC="$BIN/llc"
 MC="$BIN/llvm-mc"
+READELF="$BIN/llvm-readelf"
 TRIPLE=riscv32-unknown-elf
 
 fail() {
@@ -30,29 +33,63 @@ fail() {
   exit 1
 }
 
-# 1. C -> LLVM IR (clang, RV32I target) -> RV32I assembly (llc).
-"$CC" --target="$TRIPLE" -march=rv32i -mabi=ilp32 -O2 -ffreestanding \
-  -fno-builtin -S -emit-llvm "$RT/demo.c" -o "$TMP/demo.ll" \
-  || fail "clang could not compile demo.c"
-"$LLC" -march=rvmin -mtriple="$TRIPLE" -O2 "$TMP/demo.ll" -o "$TMP/demo.s" \
-  || fail "llc could not select demo.c"
+# Build demo.c for one feature set and run it under QEMU.  Prints the
+# program's stdout; the return value is the program's exit status.
+run_variant() {
+  local suffix=$1 mattr=$2
+  local LLC_ARGS=(-march=rvmin -mtriple="$TRIPLE" -O2)
+  local MC_ARGS=(-triple=rvmin)
+  if [[ -n "$mattr" ]]; then
+    LLC_ARGS+=(-mattr="$mattr")
+    MC_ARGS+=(-mattr="$mattr")
+  fi
 
-# 2. The program and the runtime are assembled by RVMin's own MC layer.
-"$MC" -triple=rvmin -filetype=obj "$TMP/demo.s" -o "$TMP/demo.o" \
-  || fail "llvm-mc rejected llc's output"
-"$MC" -triple=rvmin -filetype=obj "$RT/rvmin-rt.S" -o "$TMP/rt.o" \
-  || fail "llvm-mc rejected rvmin-rt.S"
-"$MC" -triple=rvmin -filetype=obj "$RT/start.S" -o "$TMP/start.o" \
-  || fail "llvm-mc rejected start.S"
+  # 1. C -> LLVM IR (clang, RV32I target) -> assembly (llc).
+  "$CC" --target="$TRIPLE" -march=rv32i -mabi=ilp32 -O2 -ffreestanding \
+    -fno-builtin -S -emit-llvm "$RT/demo.c" -o "$TMP/demo$suffix.ll" \
+    || fail "clang could not compile demo.c (${mattr:-rv32i})"
+  "$LLC" "${LLC_ARGS[@]}" "$TMP/demo$suffix.ll" -o "$TMP/demo$suffix.s" \
+    || fail "llc could not select demo.c (${mattr:-rv32i})"
 
-# 3. Link into a static ET_EXEC that QEMU can load.
-"$LD" -m elf32lriscv -T "$RT/link.ld" -o "$TMP/demo" \
-  "$TMP/start.o" "$TMP/demo.o" "$TMP/rt.o" \
-  || fail "ld.lld could not link the program"
+  # 2. The program and the runtime are assembled by RVMin's own MC layer.
+  "$MC" "${MC_ARGS[@]}" -filetype=obj "$TMP/demo$suffix.s" \
+    -o "$TMP/demo$suffix.o" || fail "llvm-mc rejected llc's output"
+  "$MC" "${MC_ARGS[@]}" -filetype=obj "$RT/rvmin-rt.S" -o "$TMP/rt$suffix.o" \
+    || fail "llvm-mc rejected rvmin-rt.S"
+  "$MC" "${MC_ARGS[@]}" -filetype=obj "$RT/start.S" -o "$TMP/start$suffix.o" \
+    || fail "llvm-mc rejected start.S"
 
-# 4. Run it.
-OUT=$("$QEMU" "$TMP/demo") || STATUS=$?
-STATUS=${STATUS:-0}
-echo "$OUT"
-[[ "$STATUS" -eq 0 ]] || fail "demo exited with $STATUS"
-echo "PASS: linked $(stat -c%s "$TMP/demo") bytes, ran under $QEMU, all checks green"
+  # 3. Link into a static ET_EXEC that QEMU can load.
+  "$LD" -m elf32lriscv -T "$RT/link.ld" -o "$TMP/demo$suffix" \
+    "$TMP/start$suffix.o" "$TMP/demo$suffix.o" "$TMP/rt$suffix.o" \
+    || fail "ld.lld could not link the program (${mattr:-rv32i})"
+
+  # 4. Run it.
+  "$QEMU" "$TMP/demo$suffix"
+}
+
+# RV32I: multiply/divide/remainder go through rvmin-rt.S.
+STATUS1=0
+OUT1=$(run_variant "" "") || STATUS1=$?
+[[ "$STATUS1" -eq 0 ]] || fail "RV32I demo exited with $STATUS1"
+echo "rv32i: $OUT1"
+
+# RV32I + M: the same program with single-instruction mul/div/rem.
+STATUS2=0
+OUT2=$(run_variant "-m" "+m") || STATUS2=$?
+[[ "$STATUS2" -eq 0 ]] || fail "RV32I+M demo exited with $STATUS2"
+echo "rv32i+m: $OUT2"
+[[ "$OUT1" == "$OUT2" ]] || fail "the two feature sets disagree: '$OUT1' vs '$OUT2'"
+
+# The M build must not reference the multiply/divide libcalls any more.  (The
+# 64-bit shifts still do: `<<` and `>>` on `long long` are not part of M.)
+RELOCS=$("$READELF" -r "$TMP/demo-m.o")
+for SYM in __mulsi3 __divsi3 __udivsi3 __modsi3 __umodsi3; do
+  [[ "$RELOCS" != *"$SYM"* ]] || fail "+m build still references $SYM"
+done
+grep -q '__ashldi3' <<< "$RELOCS" || fail "+m build lost the 64-bit shift libcall"
+
+SIZE1=$(stat -c%s "$TMP/demo")
+SIZE2=$(stat -c%s "$TMP/demo-m")
+echo "PASS: linked $SIZE1 bytes (rv32i) and $SIZE2 bytes (rv32i+m), both ran under $QEMU"
+echo "      with identical output; +m dropped the mul/div/rem libcalls entirely"

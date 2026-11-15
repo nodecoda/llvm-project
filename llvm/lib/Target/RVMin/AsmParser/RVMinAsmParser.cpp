@@ -38,6 +38,10 @@
 
 using namespace llvm;
 
+// Defined by the generated matcher at the bottom of this file; declared here
+// so `matchAndEmitInstruction` can use it for feature diagnostics.
+static const char *getSubtargetFeatureName(uint64_t Val);
+
 namespace {
 
 class RVMinAsmParser : public MCTargetAsmParser {
@@ -405,14 +409,30 @@ bool RVMinAsmParser::matchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
                                              uint64_t &ErrorInfo,
                                              bool MatchingInlineAsm) {
   MCInst Inst;
-  unsigned MatchResult =
-      MatchInstructionImpl(Operands, Inst, ErrorInfo, MatchingInlineAsm);
+  // The five-argument overload additionally reports *which* subtarget
+  // features were missing, so `mul` without `-mattr=+m` can be diagnosed
+  // instead of silently doing nothing.
+  FeatureBitset MissingFeatures;
+  unsigned MatchResult = MatchInstructionImpl(
+      Operands, Inst, ErrorInfo, MissingFeatures, MatchingInlineAsm);
 
   switch (MatchResult) {
   case Match_Success:
     Inst.setLoc(IDLoc);
     Out.emitInstruction(Inst, *STI);
     return false;
+  case Match_MissingFeature: {
+    // `getSubtargetFeatureName` is generated from the AssemblerPredicate in
+    // RVMin.td, e.g. "'M' (Integer Multiplication and Division)".
+    bool First = true;
+    std::string Msg = "instruction requires the following:";
+    for (unsigned Feature : MissingFeatures) {
+      Msg += First ? " " : ", ";
+      Msg += getSubtargetFeatureName(Feature);
+      First = false;
+    }
+    return Error(IDLoc, Msg);
+  }
   case Match_MnemonicFail:
     return Error(IDLoc, "invalid instruction mnemonic");
   case Match_InvalidOperand: {
@@ -437,5 +457,6 @@ LLVMInitializeRVMinAsmParser() {
 }
 
 #define GET_REGISTER_MATCHER
+#define GET_SUBTARGET_FEATURE_NAME
 #define GET_MATCHER_IMPLEMENTATION
 #include "RVMinGenAsmMatcher.inc"

@@ -430,6 +430,43 @@ def : Pat<(truncstorei16 GPR:$val, (add GPR:$addr, simm12:$off)),
 
 
 //===----------------------------------------------------------------------===//
+// M extension (chapter 13)
+//===----------------------------------------------------------------------===//
+//
+// Eight R-type instructions with funct7 = 0b0000001.  They are only available
+// with `-mattr=+m` (or `-mcpu=generic-rv32-m`): the Predicates clause keeps
+// both the instruction selector and the assembler honest.
+
+let Predicates = [HasStdExtM] in {
+
+def MUL    : RVMinRInst<0b0000001, 0b000, OPC_OP, (outs GPR:$rd),
+                       (ins GPR:$rs1, GPR:$rs2), "mul", "$rd, $rs1, $rs2">;
+def MULH   : RVMinRInst<0b0000001, 0b001, OPC_OP, (outs GPR:$rd),
+                       (ins GPR:$rs1, GPR:$rs2), "mulh", "$rd, $rs1, $rs2">;
+def MULHSU : RVMinRInst<0b0000001, 0b010, OPC_OP, (outs GPR:$rd),
+                       (ins GPR:$rs1, GPR:$rs2), "mulhsu", "$rd, $rs1, $rs2">;
+def MULHU  : RVMinRInst<0b0000001, 0b011, OPC_OP, (outs GPR:$rd),
+                       (ins GPR:$rs1, GPR:$rs2), "mulhu", "$rd, $rs1, $rs2">;
+def DIV    : RVMinRInst<0b0000001, 0b100, OPC_OP, (outs GPR:$rd),
+                       (ins GPR:$rs1, GPR:$rs2), "div", "$rd, $rs1, $rs2">;
+def DIVU   : RVMinRInst<0b0000001, 0b101, OPC_OP, (outs GPR:$rd),
+                       (ins GPR:$rs1, GPR:$rs2), "divu", "$rd, $rs1, $rs2">;
+def REM    : RVMinRInst<0b0000001, 0b110, OPC_OP, (outs GPR:$rd),
+                       (ins GPR:$rs1, GPR:$rs2), "rem", "$rd, $rs1, $rs2">;
+def REMU   : RVMinRInst<0b0000001, 0b111, OPC_OP, (outs GPR:$rd),
+                       (ins GPR:$rs1, GPR:$rs2), "remu", "$rd, $rs1, $rs2">;
+
+def : Pat<(mul    GPR:$rs1, GPR:$rs2), (MUL    GPR:$rs1, GPR:$rs2)>;
+def : Pat<(sdiv   GPR:$rs1, GPR:$rs2), (DIV    GPR:$rs1, GPR:$rs2)>;
+def : Pat<(udiv   GPR:$rs1, GPR:$rs2), (DIVU   GPR:$rs1, GPR:$rs2)>;
+def : Pat<(srem   GPR:$rs1, GPR:$rs2), (REM    GPR:$rs1, GPR:$rs2)>;
+def : Pat<(urem   GPR:$rs1, GPR:$rs2), (REMU   GPR:$rs1, GPR:$rs2)>;
+def : Pat<(mulhs  GPR:$rs1, GPR:$rs2), (MULH   GPR:$rs1, GPR:$rs2)>;
+def : Pat<(mulhu  GPR:$rs1, GPR:$rs2), (MULHU  GPR:$rs1, GPR:$rs2)>;
+
+} // Predicates = [HasStdExtM]
+
+//===----------------------------------------------------------------------===//
 // SYSTEM: environment calls
 //===----------------------------------------------------------------------===//
 //

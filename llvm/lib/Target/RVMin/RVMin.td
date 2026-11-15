@@ -14,12 +14,29 @@
 include "llvm/Target/Target.td"
 
 //===----------------------------------------------------------------------===//
+// Features
+//===----------------------------------------------------------------------===//
+//
+// Chapter 13: the M extension is optional.  Without `-mattr=+m` the backend is
+// exactly the RV32I machine of chapters 1-12; with it, multiply, divide and
+// remainder become single instructions instead of libcalls.
+
+def FeatureStdExtM : SubtargetFeature<"m", "HasStdExtM", "true",
+                                      "Integer multiplication and division">;
+
+def HasStdExtM : Predicate<"Subtarget->hasStdExtM()">,
+                 AssemblerPredicate<(all_of FeatureStdExtM),
+                                    "'M' (Integer Multiplication and Division)">;
+
+//===----------------------------------------------------------------------===//
 // Processors
 //===----------------------------------------------------------------------===//
 
-class RVMinProc<string Name> : Processor<Name, NoItineraries, []>;
+class RVMinProc<string Name, list<SubtargetFeature> Features>
+    : Processor<Name, NoItineraries, Features>;
 
-def : RVMinProc<"generic-rv32">;
+def : RVMinProc<"generic-rv32", []>;
+def : RVMinProc<"generic-rv32-m", [FeatureStdExtM]>;
 
 //===----------------------------------------------------------------------===//
 // Register File

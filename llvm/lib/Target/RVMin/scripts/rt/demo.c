@@ -22,22 +22,34 @@ unsigned crc32(const unsigned char *data, unsigned len) {
 
 static int narrow(signed char c) { return c; }
 
+// The operands are volatile so that the compiler cannot fold the arithmetic
+// away: chapter 12 needs real calls to __mulsi3/__divsi3/..., and chapter 13
+// needs real `mul`/`div`/`rem` instructions instead of them.
+volatile int vmul_a = 1000, vmul_b = 37;
+volatile unsigned vdiv_a = 37000u, vdiv_b = 37u;
+volatile int vsdiv_a = -37000, vsdiv_b = 37;
+volatile int vmod_a = -37, vmod_b = 10;
+volatile unsigned vumod_a = 37000u, vumod_b = 37u;
+volatile long long vshift = 1LL;
+volatile long long vneg = -1024LL;
+volatile int vcount = 40;
+
 int main(void) {
   if (fib(10) != 55)                       // call, recursion, stack frames
     return 1;
-  if (1000 * 37 != 37000)                  // __mulsi3
+  if (vmul_a * vmul_b != 37000)            // __mulsi3 / mul
     return 2;
-  if (37000u / 37u != 1000u)               // __udivsi3
+  if (vdiv_a / vdiv_b != 1000u)            // __udivsi3 / divu
     return 3;
-  if (-37000 / 37 != -1000)                // __divsi3
+  if (vsdiv_a / vsdiv_b != -1000)          // __divsi3 / div
     return 4;
-  if (-37 % 10 != -7)                      // __modsi3
+  if (vmod_a % vmod_b != -7)               // __modsi3 / rem
     return 5;
-  if (37000u % 37u != 0u)                  // __umodsi3
+  if (vumod_a % vumod_b != 0u)             // __umodsi3 / remu
     return 6;
-  if ((1LL << 40) != 1099511627776LL)      // __ashldi3
+  if ((vshift << vcount) != 1099511627776LL) // __ashldi3 (dynamic count)
     return 7;
-  if ((-1024LL >> 3) != -128LL)            // __ashrdi3
+  if ((vneg >> 3) != -128LL)               // __ashrdi3
     return 8;
   if ((0xFFFFFFFFu >> 4) != 0x0FFFFFFFu)   // srli
     return 9;

@@ -84,20 +84,28 @@ RVMinTargetLowering::RVMinTargetLowering(const TargetMachine &TM,
   // UREM -> __umodsi3.  Constant multiplies and division by powers of two are
   // folded into shifts and adds by the DAG combiner before this point.
   for (MVT VT : {MVT::i32}) {
-    setOperationAction(ISD::MUL, VT, Expand);
-    setOperationAction(ISD::MULHS, VT, Expand);
-    setOperationAction(ISD::MULHU, VT, Expand);
-    // Without these two, the generic MUL expansion prefers a two-result
-    // SMUL_LOHI/UMUL_LOHI node ("legal" by default) and never reaches the
-    // libcall, leaving the selector with an instruction it cannot encode.
+    // RVMin has no instruction that produces two results, so these must be
+    // expanded in both modes.  Without M the expansion reaches the libcalls;
+    // with M it reaches MUL/MULH/DIV/REM, which is exactly what a 64-bit
+    // multiply or a div/rem pair needs.
     setOperationAction(ISD::SMUL_LOHI, VT, Expand);
     setOperationAction(ISD::UMUL_LOHI, VT, Expand);
     setOperationAction(ISD::SDIVREM, VT, Expand);
     setOperationAction(ISD::UDIVREM, VT, Expand);
-    setOperationAction(ISD::SDIV, VT, Expand);
-    setOperationAction(ISD::UDIV, VT, Expand);
-    setOperationAction(ISD::SREM, VT, Expand);
-    setOperationAction(ISD::UREM, VT, Expand);
+
+    // With the M extension every one of these is a single instruction with a
+    // TableGen pattern, so the libcall path must not be taken.  Note the
+    // `if`, not an early `break`: the bit-manipulation actions below must be
+    // registered whether or not M is enabled.
+    if (!STI.hasStdExtM()) {
+      setOperationAction(ISD::MUL, VT, Expand);
+      setOperationAction(ISD::MULHS, VT, Expand);
+      setOperationAction(ISD::MULHU, VT, Expand);
+      setOperationAction(ISD::SDIV, VT, Expand);
+      setOperationAction(ISD::UDIV, VT, Expand);
+      setOperationAction(ISD::SREM, VT, Expand);
+      setOperationAction(ISD::UREM, VT, Expand);
+    }
 
     // The bit-manipulation builtins (Zbb's cpop/clz/ctz) are expanded into
     // plain arithmetic sequences by the legalizer, not into calls.  The byte

@@ -9,6 +9,7 @@
 #ifndef LLVM_LIB_TARGET_RVMIN_RVMINSUBTARGET_H
 #define LLVM_LIB_TARGET_RVMIN_RVMINSUBTARGET_H
 
+#include "MCTargetDesc/RVMinMCTargetDesc.h"
 #include "RVMinFrameLowering.h"
 #include "RVMinISelLowering.h"
 #include "RVMinInstrInfo.h"
@@ -17,6 +18,8 @@
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include <string>
 
+// The `RVMin::Feature...` enum lives in MCTargetDesc/RVMinMCTargetDesc.h
+// (GET_SUBTARGETINFO_ENUM above); this include only adds the class body.
 #define GET_SUBTARGETINFO_HEADER
 #include "RVMinGenSubtargetInfo.inc"
 
@@ -28,6 +31,11 @@ class StringRef;
 class RVMinSubtarget : public RVMinGenSubtargetInfo {
   virtual void anchor();
 
+  // Chapter 13: one bit per optional extension.  `ParseSubtargetFeatures`
+  // (generated from RVMin.td) writes these fields when the feature string
+  // contains `+m`.
+  bool HasStdExtM = false;
+
   RVMinInstrInfo InstrInfo;
   RVMinTargetLowering TLInfo;
   RVMinFrameLowering FrameLowering;
@@ -38,6 +46,10 @@ public:
                  const std::string &FS, const RVMinTargetMachine &TM);
 
   RVMinSubtarget &initializeSubtargetDependencies(StringRef CPU, StringRef FS);
+
+  // Feature query used by TableGen predicates (`HasStdExtM` in the .td files)
+  // and by hand-written lowering code.
+  bool hasStdExtM() const { return HasStdExtM; }
 
   void ParseSubtargetFeatures(StringRef CPU, StringRef TuneCPU, StringRef FS);
 

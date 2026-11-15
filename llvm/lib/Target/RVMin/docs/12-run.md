@@ -6,13 +6,22 @@
 本章把它跑起来：
 
 ```c
+/* 操作数来自 volatile 全局变量，编译器不能把它们折叠成常量 ——
+   否则 __mulsi3 之类的调用根本不会出现，自检就成了空转。 */
+volatile int vmul_a = 1000, vmul_b = 37;
+volatile unsigned vdiv_a = 37000u, vdiv_b = 37u;
+volatile int vsdiv_a = -37000, vsdiv_b = 37;
+volatile int vmod_a = -37, vmod_b = 10;
+volatile long long vshift = 1LL;
+volatile int vcount = 40;
+
 int main(void) {
-  if (fib(10) != 55) return 1;              /* 调用、递归、栈帧 */
-  if (1000 * 37 != 37000) return 2;         /* __mulsi3 */
-  if (37000u / 37u != 1000u) return 3;      /* __udivsi3 */
-  if (-37000 / 37 != -1000) return 4;       /* __divsi3 */
-  if (-37 % 10 != -7) return 5;             /* __modsi3 */
-  if ((1LL << 40) != 1099511627776LL) return 7;  /* __ashldi3 */
+  if (fib(10) != 55) return 1;                      /* 调用、递归、栈帧 */
+  if (vmul_a * vmul_b != 37000) return 2;           /* __mulsi3 */
+  if (vdiv_a / vdiv_b != 1000u) return 3;           /* __udivsi3 */
+  if (vsdiv_a / vsdiv_b != -1000) return 4;         /* __divsi3 */
+  if (vmod_a % vmod_b != -7) return 5;              /* __modsi3 */
+  if ((vshift << vcount) != 1099511627776LL) return 7;  /* __ashldi3 */
   if (crc32((const unsigned char *)"123456789", 9) != 0xCBF43926u) return 10;
   return 0;
 }
@@ -21,8 +30,10 @@ int main(void) {
 ```console
 $ rvmin-run.sh $B
 rvmin: ok
-PASS: linked 5816 bytes, ran under qemu-riscv32-static, all checks green
+PASS: linked 6656 bytes (rv32i), ran under qemu-riscv32-static, all checks green
 ```
+
+（第 13 章会让同一个脚本再跑一遍 `+m` 构建，所以最终的输出是两行 `rvmin: ok`。）
 
 完成本章后：
 
@@ -231,7 +242,7 @@ W=/home/ubuntu/llvm/trees/pr-ctpop; B=/home/ubuntu/llvm/builds/pr-ctpop
 # 完整链路：编译、汇编、链接、运行
 "$W/llvm/lib/Target/RVMin/scripts/rvmin-run.sh" "$B/bin"
 # rvmin: ok
-# PASS: linked 5816 bytes, ran under qemu-riscv32-static, all checks green
+# PASS: linked 6656 bytes (rv32i), ran under qemu-riscv32-static, all checks green
 
 # 失败路径也要验证：把某个检查改坏，退出码应当非零且打印 fail
 #   rvmin: fail
