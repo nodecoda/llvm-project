@@ -1,4 +1,5 @@
 ; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O1 < %s | FileCheck %s
+; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O1 < %s -o - | llvm-mc -triple=riscv32 -filetype=obj -o /dev/null
 
 ; Chapter 4: integer arithmetic, logic, shifts, comparisons and select.
 ; Big constants are materialized with LUI+ADDI by RVMinDAGToDAGISel::Select.

@@ -118,6 +118,19 @@ def simm21_lsb0 : Operand<i32> { /* isShiftedInt<20, 1> */ }
 
 `JALR` 还是间接跳转，等第 5 章真正发射控制流时再加 `isIndirectBranch`。
 
+## 常见坑
+
+- **ABI 别名不是装饰**：`a0`/`sp` 这些名字靠 `RegAltNameIndices = [ABIRegAltName]`
+  暴露给汇编器；漏掉这一行，`llvm-mc` 只认 `x10`/`x2`。
+- **立即数是位域，不是数值范围**：`addi` 的 12 位是有符号的，`-2048` 合法、
+  `2048` 不合法；`lui` 的 20 位是**无符号**的，所以 `0x80000` 以上必须写正数。
+- **分支立即数是“字节偏移”且最低位恒为 0**：谓词用
+  `isShiftedInt<12, 1>`（±4 KiB），不是 `isInt<13>`。
+- **`slli/srli/srai` 共用 I 型编码**：`shamt` 占 `imm[4:0]`，`funct7` 占
+  `imm[11:5]`；把整个 `imm` 当一个字段会在移位数 ≥ 32 时悄悄改掉 opcode。
+- **`x0` 可读不可写**：`addi x0, x0, 1` 是合法的 `nop` 变体，汇编器不该拒绝，
+  但依赖 x0 保存结果会得到 0。
+
 ## 门禁与验证
 
 ```bash

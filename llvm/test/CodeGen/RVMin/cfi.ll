@@ -1,6 +1,7 @@
 ; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O1 < %s | FileCheck %s
 ; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O1 < %s -filetype=obj -o %t.o
 ; RUN: llvm-readelf --unwind %t.o | FileCheck %s --check-prefix=UNWIND
+; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O1 < %s -o - | llvm-mc -triple=riscv32 -filetype=obj -o /dev/null
 
 ; Chapter 11: DWARF unwind information.
 ;

@@ -6,6 +6,8 @@ RVMin 是一个教学用的 LLVM 后端：不写前端、不复用 `llvm/lib/Tar
 
 ## 快速开始
 
+完整章节索引与验收对照见 [`docs/README.md`](docs/README.md)。
+
 ```bash
 W=/home/ubuntu/llvm/trees/pr-ctpop
 B=/home/ubuntu/llvm/builds/pr-ctpop
@@ -51,6 +53,7 @@ ninja -C "$B" llc clang llvm-mc llvm-objdump llvm-readelf FileCheck
 | 11 | [clang 端到端、测试体系与教程收尾](docs/11-e2e.md) | 完成 |
 | 12 | [链接与 QEMU 运行（运行时、ecall）](docs/12-run.md) | 完成 |
 | 13 | [可选 M 扩展与优化空间](docs/13-m-extension.md) | 完成 |
+| 14 | [验收：AC1–AC10 逐条证据](docs/README.md) | 完成 |
 
 ## 当前限制（第 13 章）
 
@@ -96,8 +99,9 @@ ninja -C "$B" llc clang llvm-mc llvm-objdump llvm-readelf FileCheck
   → `qemu-riscv32-static` 跑通一个自检程序（含 8 个 libcall 的最小运行时
   `scripts/rt/rvmin-rt.S`、`_start` 与链接脚本），并把同一程序在 RV32I 与
   RV32I+M 两种构建下各跑一次，要求输出一致、`+m` 版本不再引用乘除 libcall。
-- 测试体系：10 个 lit 测试 + 93 条指令的编码门禁 +
-  `scripts/rvmin-e2e.sh`（7 个 C 程序 × `-O0..-O3` × 2 个特性集 = 56 个对象，
+- 测试体系：14 个 lit 测试（10 个 CodeGen + 4 个 MC；每个 CodeGen 测试都有一条
+  `llvm-mc -triple=riscv32` 往返 RUN 行）+ 93 条指令的编码门禁 +
+  `scripts/rvmin-e2e.sh`（10 个 C 程序 × `-O0..-O3` × 2 个特性集 = 80 个对象，
   `.text` 与 `llvm-mc` 重汇编逐字节一致）。
 - 窄类型的参数依赖调用方按 ABI 扩展；函数入口不重新扩展，手写 IR 传入脏高位
   会得到错误结果。

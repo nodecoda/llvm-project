@@ -283,6 +283,15 @@ clang 端到端（本章的两个函数）：
 这两条与参考 RISC-V 后端逐字节一致（`li a0, 0x2a` / `ret` 是参考汇编器的
 别名，编码就是 `addi a0, zero, 42` / `jalr zero, 0(ra)`）。
 
+## 练习
+
+1. 把 `RET` 也改成伪指令 + `PseudoInstExpansion`（像 `PseudoBR` 那样），
+   用 `llc -stop-after=finalize-isel` 对比 MIR 里的差异。
+2. 加一条 `mv rd, rs` 伪指令（展开成 `addi rd, rs, 0`），在
+   `RVMinInstrInfo.td` 里用 `PseudoInstExpansion` 实现，并让汇编器接受它。
+3. 把返回值寄存器从 `a0`（`x10`）改成 `a5`，观察调用约定表
+   `RVMinCallingConv.td` 与 `LowerReturn` 需要一起改哪些地方。
+
 ## 当前限制（第 3 章）
 
 - 只支持寄存器传参；栈传参、被调用者保存、`ra` 保存等第 6/8 章补齐。

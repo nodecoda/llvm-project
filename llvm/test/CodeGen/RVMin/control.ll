@@ -1,4 +1,5 @@
 ; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O1 < %s | FileCheck %s
+; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O1 < %s -o - | llvm-mc -triple=riscv32 -filetype=obj -o /dev/null
 
 ; Chapter 5: conditional branches, unconditional branches and block layout.
 ; BranchFolder/MachineBlockPlacement use RVMinInstrInfo::analyzeBranch to

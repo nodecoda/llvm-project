@@ -1,4 +1,5 @@
 ; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf < %s | FileCheck %s
+; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O1 < %s -o - | llvm-mc -triple=riscv32 -filetype=obj -o /dev/null
 
 ; Chapter 3: just enough instruction selection to compile a constant return and
 ; an integer add.  Returns use `jalr zero, 0(ra)`, which PseudoRET expands to

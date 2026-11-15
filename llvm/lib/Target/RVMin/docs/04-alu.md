@@ -231,6 +231,15 @@ done
  98: 00a03533  snez   a0, a0          # sltu a0, zero, a0
 ```
 
+## 练习
+
+1. 给 `sltiu a0, a0, 1` / `sltu a0, zero, a0` 加 `seqz` / `snez` 的别名输出
+   （提示：`RVMinInstPrinter` 里按 opcode 特判），并保证 `llvm-mc` 重汇编一致。
+2. 用 `llc -mdebug-only=isel` 观察 `select` 的五条掩码指令是怎么生成的，
+   然后手工构造 `select_cc`，看它是否走 `SELECT_CC` 的自定义 lowering。
+3. 给 `xori` 加一个 `-2048/2047` 边界的 lit 测试，确认 `simm12` 谓词在
+   两个端点上都正确。
+
 ## 当前限制（第 4 章）
 
 - `select` 是无分支序列（4–5 条指令）；第 5 章分支就绪后改成分支形式。

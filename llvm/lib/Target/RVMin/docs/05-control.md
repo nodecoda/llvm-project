@@ -419,6 +419,15 @@ xor_down:
 注意循环体没有 `jal`：`MachineBlockPlacement` 把回边排成了 fallthrough，
 `analyzeBranch(AllowModify=true)` 删掉了多余的跳转。这正是第 6 节三个回调的意义。
 
+## 练习
+
+1. 现在是“条件成立跳 then、否则跳 else”。试改成先发 `bne` 跳到 else、
+   再发 then，比较两种布局在 `-O2` 下的指令数与分支方向。
+2. 用 `llc -print-after=block-placement` 看一个 `if/else` 的基本块顺序，
+   然后手写一个 IR 让 then 块更大，观察布局是否翻转。
+3. 构造一个分支距离超过 ±4 KiB 的函数（大量 `nop` 或重复 IR），确认
+   `applyFixup` 的报错信息，并思考 branch relaxation 需要什么信息。
+
 ## 当前限制（第 5 章）
 
 - **`-O0` 的多基本块函数还不行**：fast regalloc 需要把值溢出到栈上，而

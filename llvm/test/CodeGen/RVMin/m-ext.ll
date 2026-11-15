@@ -2,6 +2,10 @@
 ; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O1 -mcpu=generic-rv32-m < %s | FileCheck %s --check-prefix=M
 ; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O1 < %s | FileCheck %s --check-prefix=RV32I
 ; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O0 -mattr=+m < %s -o /dev/null
+; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O1 -mattr=+m < %s -o - \
+; RUN:   | llvm-mc -triple=riscv32 -mattr=+m -filetype=obj -o /dev/null
+; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O1 < %s -o - \
+; RUN:   | llvm-mc -triple=riscv32 -filetype=obj -o /dev/null
 ;
 ; Chapter 13: the optional M extension.  With `+m` every multiply, divide and
 ; remainder is one instruction; without it the same IR still calls the

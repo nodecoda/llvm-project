@@ -347,6 +347,15 @@ clang 端到端（`-O1` 和 `-O0` 都能出对象文件）：
 "$B/bin/llvm-readelf" -r globals.o
 ```
 
+## 练习
+
+1. 给 `RVMinAsmPrinter` 的全局数据加 `.p2align 2`，用 `llvm-readelf -S`
+   确认段对齐发生变化。
+2. 构造两个全局变量 `a`、`b`，让同一个函数取两次 `&a`，观察是否重复发
+   `lui+addi`；思考把它 CSE 成一条需要放在哪个 pass。
+3. 用 `llvm-readelf -r` 检查一个 `sw` 到全局数组的地址，确认它用的是
+   `R_RISCV_LO12_S` 而不是 `LO12_I`。
+
 ## 当前限制（第 7 章）
 
 - 字符串只能作为数据（`.asciz`）；`char` 读取需要 i8 的 `extload`，是第 9 章。

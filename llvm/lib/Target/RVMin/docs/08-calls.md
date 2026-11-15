@@ -251,6 +251,22 @@ R_RISCV_LO12_I  ext + 0
 同一节内的函数（`fib` 调用自己、`is_even` 调用 `is_odd`）也会生成重定位，
 因为重定位对象文件里 `.text` 的最终地址尚未确定。
 
+## 常见坑
+
+- **`getCallPreservedMask` 返回 `nullptr` 等于“所有寄存器都被破坏”**：寄存器
+  分配器会因此把 `ra` 也当成调用后失效，随后每次调用都要重新保存，代码立刻
+  变大且容易在 `-O0` 下溢出。必须给出真实的 callee-saved 掩码。
+- **调用节点的 chain 必须排最后**：`RVMinISD::CALL` 的参数顺序是
+  `[chain, target, glue, args..., regmask]`，把 chain 放前面会让 DAG 校验失败。
+- **`PseudoCALL` 的 `Size` 是标签布局的一部分**：它现在固定 12 字节
+  （`lui+addi+jalr`），改展开序列时必须同步改 `Size`，否则同一函数里的
+  分支偏移全部错位。
+- **栈参数区必须 16 字节对齐**：ILP32 的 `sp` 在调用点保持 16 字节对齐，
+  调用者写第 5 个参数时要按 ABI 的顺序从 `0(sp)` 开始，而不是从帧顶开始。
+- **`ra` 不保存就调用**：任何有调用的函数都必须在序言里保存 `ra`
+  （`hasCalls` → 保存），否则返回地址被覆盖；`calls.ll` 的 `lw ra, 12(sp)`
+  就是这条规则的可执行证据。
+
 ## 验证
 
 ```bash
@@ -304,6 +320,16 @@ fib:
 	addi sp, sp, 16
 	jalr zero, 0(ra)
 ```
+
+## 练习
+
+1. 写一个 8 参数函数，用 `-stop-after=finalize-isel` 观察第 5 个参数
+   之后如何从栈上读取（提示：`FI` 偏移与调用者的 `sw` 对应）。
+2. 把直接调用的 `PseudoCALL` 改成 `auipc ra, %pcrel_hi(sym)` +
+   `jalr ra, %pcrel_lo(sym)(ra)`，需要新增 `R_RISCV_PCREL_HI20/LO12_I`
+   两个重定位；先只做汇编层，验证编码。
+3. 把 callee-saved 集合从 `{s0, s1, ra}` 扩展到 `s0`–`s11`，跑一遍
+   `calls.ll`，解释为什么寄存器分配器仍然只用了少数几个。
 
 ## 当前限制（第 8 章）
 

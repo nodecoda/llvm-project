@@ -380,6 +380,15 @@ fill:
 	add a2, a2, a3
 ```
 
+## 练习
+
+1. 把 `TargetFrameLowering` 的局部区偏移改成非 0（例如 8），观察
+   `-O0` 下 `lw/sw` 的偏移如何变化，并解释为什么本章要求它是 0。
+2. 用 `-mllvm -print-machineinstrs`（或 `-print-after=prolog-epilog`）
+   看一个 6 参数函数的栈帧布局，数一数 `sp` 调整了几次。
+3. 让函数申请一个 3 KiB 的 `alloca`，确认现在的报错位置，然后思考
+   `RegScavenger` 方案需要哪几条指令（`lui`/`add`/临时寄存器）。
+
 ## 当前限制（第 6 章）
 
 - 只合法化 i32 的 load/store。`char`/`short`、结构体拷贝（`memcpy`）和

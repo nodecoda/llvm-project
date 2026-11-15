@@ -2,6 +2,7 @@
 ; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O0 < %s -o /dev/null
 ; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O1 < %s -filetype=obj -o %t.o
 ; RUN: llvm-readelf -r %t.o | FileCheck %s --check-prefix=RELOC
+; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O1 < %s -o - | llvm-mc -triple=riscv32 -filetype=obj -o /dev/null
 
 ; Chapter 10: everything RV32I cannot do in one instruction becomes a call.
 ; RV32I has no M extension (mul/div/rem) and no F/D extension (any floating

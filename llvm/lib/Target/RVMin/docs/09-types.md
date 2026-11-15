@@ -331,6 +331,20 @@ cp:
 
 这也说明“后端最小”和“能编译真实 C”并不矛盾：**缺失的指令用运行时补**。
 
+## 常见坑
+
+- **`SIGN_EXTEND_INREG` 按内层类型注册**：legalizer 查询的是
+  `VTSDNode` 里的那个 VT（i1/i8/i16），给 `MVT::i32` 设 `Expand` 完全无效。
+- **`i1` 的内存类型要 `Promote` 到 i8**：否则 TableGen 要求一条“i1 load”，
+  而 RV32I 只有字节/半字/字访问。`setLoadExtAction(..., MVT::i1, Promote)`
+  把它接回 `LB/LBU`。
+- **`i64` 的移位是 `SHL_PARTS`/`SRL_PARTS`/`SRA_PARTS`**：不 `Expand` 就会
+  停在选择器里；展开后是 `__ashldi3`/`__lshrdi3`/`__ashrdi3` 调用。
+- **`i64` 的 mul/div 是两结果节点**：`SMUL_LOHI`/`UMUL_LOHI`/`SDIVREM`/
+  `UDIVREM` 默认 `Legal`，必须显式 `Expand`（第 10 章踩过同一坑）。
+- **窄参数的高位是调用方的责任**：ABI 要求调用者把 `char`/`short` 扩展好，
+  函数入口不再扩展；手写 IR 传脏高位会算出错误结果。
+
 ## 验证
 
 ```bash

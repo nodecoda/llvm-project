@@ -1,5 +1,6 @@
 ; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O1 < %s | FileCheck %s
 ; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O0 < %s | FileCheck %s --check-prefix=CHECK-O0
+; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O1 < %s -o - | llvm-mc -triple=riscv32 -filetype=obj -o /dev/null
 
 ; Chapter 6: stack objects, frame-index elimination, spills and callee-saved
 ; registers.  The volatile accesses keep the allocas alive at -O1 so that the
