@@ -19,6 +19,7 @@
 #include "RVMinTargetMachine.h"
 #include "llvm/CodeGen/SelectionDAGISel.h"
 #include "llvm/CodeGen/SelectionDAGNodes.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/Debug.h"
 
 using namespace llvm;
@@ -53,10 +54,46 @@ void RVMinDAGToDAGISel::Select(SDNode *N) {
     return;
   }
 
-  switch (N->getOpcode()) {
-  default:
-    break;
-  // Chapter 4 will select large constants with LUI+ADDI here.
+  SDLoc DL(N);
+
+  // Materialize integer constants.  RV32I has no "load immediate", so this is
+  // ADDI for the 12-bit range and LUI+ADDI for everything else:
+  //
+  //   imm = (hi20 << 12) + lo12,  lo12 in [-2048, 2047]
+  //
+  // LUI writes hi20 into bits 31:12 and sign-extends the result, which is why
+  // the pairing covers the whole 32-bit range (including INT32_MIN).
+  if (N->getOpcode() == ISD::Constant) {
+    int64_t Imm = cast<ConstantSDNode>(N)->getSExtValue();
+    SDValue Zero = CurDAG->getRegister(RVMin::X0, MVT::i32);
+    auto targetImm = [&](int64_t V) {
+      return CurDAG->getTargetConstant(
+          APInt(32, static_cast<uint64_t>(V), /*isSigned=*/true), DL, MVT::i32);
+    };
+
+    // zero is the x0 register, not an ADDI.
+    if (Imm == 0) {
+      ReplaceNode(N, Zero.getNode());
+      return;
+    }
+
+    if (isInt<12>(Imm)) {
+      SDValue ImmV = targetImm(Imm);
+      ReplaceNode(N, CurDAG->getMachineNode(RVMin::ADDI, DL, MVT::i32, Zero,
+                                            ImmV));
+      return;
+    }
+
+    int64_t Hi = (Imm + 0x800) >> 12;
+    int64_t Lo = Imm - (Hi << 12);
+    assert(isInt<12>(Lo) && "LUI+ADDI split is always encodable");
+    SDValue HiV = targetImm(Hi);
+    SDValue LoV = targetImm(Lo);
+    SDValue Lui =
+        SDValue(CurDAG->getMachineNode(RVMin::LUI, DL, MVT::i32, HiV), 0);
+    ReplaceNode(
+        N, CurDAG->getMachineNode(RVMin::ADDI, DL, MVT::i32, Lui, LoV));
+    return;
   }
 
   SelectCode(N);

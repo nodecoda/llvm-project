@@ -40,6 +40,59 @@ RVMinTargetLowering::RVMinTargetLowering(const TargetMachine &TM,
   setStackPointerRegisterToSaveRestore(RVMin::X2);
   setBooleanContents(ZeroOrOneBooleanContent);
   setBooleanVectorContents(ZeroOrOneBooleanContent);
+
+  // Chapter 4: i32 ALU operations are all legal (one RV32I instruction each).
+  // Comparisons are legal too: TableGen patterns turn every condcode into
+  // SLT/SLTU/SLTI/SLTIU plus, where needed, one XORI to invert the result.
+  for (MVT VT : {MVT::i32}) {
+    setOperationAction(ISD::SELECT, VT, Expand);
+    setOperationAction(ISD::SELECT_CC, VT, Custom);
+  }
+}
+
+// Comparisons produce a 0/1 integer, not an i1: RV32I has no i1 registers and
+// the DAG is simpler if setcc results are already in a GPR.
+EVT RVMinTargetLowering::getSetCCResultType(const DataLayout &DL,
+                                            LLVMContext &Context,
+                                            EVT VT) const {
+  return getPointerTy(DL);
+}
+
+SDValue RVMinTargetLowering::LowerOperation(SDValue Op,
+                                            SelectionDAG &DAG) const {
+  switch (Op.getOpcode()) {
+  default:
+    llvm_unreachable("RVMin: unhandled custom lowering");
+  case ISD::SELECT_CC:
+    return lowerSELECT_CC(Op, DAG);
+  }
+}
+
+// RV32I has no conditional move.  Chapter 4 lowers select branchlessly with a
+// mask:
+//
+//   cond = setcc lhs, rhs        // 0 or 1
+//   mask = 0 - cond              // 0x00000000 or 0xffffffff
+//   res  = false ^ ((true ^ false) & mask)
+//
+// Chapter 5 revisits this with a real branch, which is usually shorter.
+SDValue RVMinTargetLowering::lowerSELECT_CC(SDValue Op,
+                                            SelectionDAG &DAG) const {
+  SDLoc DL(Op);
+  SDValue LHS = Op.getOperand(0);
+  SDValue RHS = Op.getOperand(1);
+  SDValue TrueV = Op.getOperand(2);
+  SDValue FalseV = Op.getOperand(3);
+  ISD::CondCode CC = Op.getOperandCondCode(4);
+  EVT VT = Op.getValueType();
+
+  EVT CCVT = getSetCCResultType(DAG.getDataLayout(), *DAG.getContext(), VT);
+  SDValue Cond = DAG.getNode(ISD::SETCC, DL, CCVT, LHS, RHS,
+                             DAG.getCondCode(CC));
+  SDValue Mask = DAG.getNode(ISD::SUB, DL, VT, DAG.getConstant(0, DL, VT), Cond);
+  SDValue Diff = DAG.getNode(ISD::XOR, DL, VT, TrueV, FalseV);
+  SDValue Sel = DAG.getNode(ISD::AND, DL, VT, Diff, Mask);
+  return DAG.getNode(ISD::XOR, DL, VT, Sel, FalseV);
 }
 
 const char *RVMinTargetLowering::getTargetNodeName(unsigned Opcode) const {

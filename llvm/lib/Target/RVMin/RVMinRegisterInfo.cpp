@@ -33,6 +33,12 @@ BitVector RVMinRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   BitVector Reserved(getNumRegs());
   Reserved.set(RVMin::X0);
   Reserved.set(RVMin::X2);
+  Reserved.set(RVMin::X3);
+  Reserved.set(RVMin::X4);
+  // Until chapter 6/8 teach the backend to save and restore the return
+  // address, `ra` must not be handed out as a scratch register: a leaf
+  // function still needs it for `jalr zero, 0(ra)`.
+  Reserved.set(RVMin::X1);
   return Reserved;
 }
 

@@ -25,6 +25,11 @@ public:
 
   const char *getTargetNodeName(unsigned Opcode) const override;
 
+  EVT getSetCCResultType(const DataLayout &DL, LLVMContext &Context,
+                         EVT VT) const override;
+
+  SDValue LowerOperation(SDValue Op, SelectionDAG &DAG) const override;
+
   SDValue LowerFormalArguments(SDValue Chain, CallingConv::ID CallConv,
                                bool IsVarArg,
                                const SmallVectorImpl<ISD::InputArg> &Ins,
@@ -40,6 +45,9 @@ public:
                       const SmallVectorImpl<ISD::OutputArg> &Outs,
                       const SmallVectorImpl<SDValue> &OutVals, const SDLoc &DL,
                       SelectionDAG &DAG) const override;
+
+private:
+  SDValue lowerSELECT_CC(SDValue Op, SelectionDAG &DAG) const;
 };
 
 } // namespace llvm

@@ -9,6 +9,7 @@
 #include "RVMinInstrInfo.h"
 #include "RVMin.h"
 #include "RVMinSubtarget.h"
+#include "llvm/CodeGen/MachineInstrBuilder.h"
 
 using namespace llvm;
 
@@ -28,4 +29,18 @@ unsigned RVMinInstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
   // Real RV32I instructions are always 4 bytes.  Pseudos use their declared
   // Size (PseudoRET is 4 after expansion, ADJCALLSTACK* are 0).
   return MI.getDesc().getSize();
+}
+
+// RV32I has no move instruction; `addi rd, rs, 0` is the canonical copy.
+void RVMinInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
+                                 MachineBasicBlock::iterator MI,
+                                 const DebugLoc &DL, Register DestReg,
+                                 Register SrcReg, bool KillSrc,
+                                 bool RenamableDest, bool RenamableSrc) const {
+  if (!RVMin::GPRRegClass.contains(DestReg, SrcReg))
+    llvm_unreachable("RVMin: only GPR-to-GPR copies are supported");
+
+  BuildMI(MBB, MI, DL, get(RVMin::ADDI), DestReg)
+      .addReg(SrcReg, getKillRegState(KillSrc))
+      .addImm(0);
 }

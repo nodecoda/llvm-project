@@ -57,7 +57,7 @@ def simm12 : Operand<i32>, ImmLeaf<i32, [{ return isInt<12>(Imm); }]> {
 }
 
 // 5-bit unsigned immediate: shift amounts.  RV32I encodes these in imm[24:20].
-def uimm5 : Operand<i32> {
+def uimm5 : Operand<i32>, ImmLeaf<i32, [{ return isUInt<5>(Imm); }]> {
   let PrintMethod = "printOperand";
   let ParserMatchClass = UImm5AsmOperand;
   let MCOperandPredicate = [{
@@ -225,12 +225,63 @@ def RVMinRet : SDNode<"RVMinISD::RET_FLAG", SDTNone,
 // Selection patterns
 //===----------------------------------------------------------------------===//
 
-// Chapter 3: constants, integer add and return.  Chapter 4 fills in the rest of
-// the ALU, chapter 5 control flow, and so on.
-def : Pat<(i32 simm12:$imm), (ADDI X0, simm12:$imm)>;
+// Chapter 3: integer add.  Chapter 4 fills in the rest of the ALU and the
+// comparisons; chapter 5 adds control flow.
 
+// Arithmetic.  Constants are materialized by RVMinDAGToDAGISel::Select (ADDI
+// for 12-bit values, LUI+ADDI otherwise) before these patterns are tried.
 def : Pat<(add GPR:$rs1, GPR:$rs2), (ADD GPR:$rs1, GPR:$rs2)>;
 def : Pat<(add GPR:$rs1, simm12:$imm), (ADDI GPR:$rs1, simm12:$imm)>;
+def : Pat<(sub GPR:$rs1, GPR:$rs2), (SUB GPR:$rs1, GPR:$rs2)>;
+
+// Logic.
+def : Pat<(and GPR:$rs1, GPR:$rs2), (AND GPR:$rs1, GPR:$rs2)>;
+def : Pat<(and GPR:$rs1, simm12:$imm), (ANDI GPR:$rs1, simm12:$imm)>;
+def : Pat<(or GPR:$rs1, GPR:$rs2), (OR GPR:$rs1, GPR:$rs2)>;
+def : Pat<(or GPR:$rs1, simm12:$imm), (ORI GPR:$rs1, simm12:$imm)>;
+def : Pat<(xor GPR:$rs1, GPR:$rs2), (XOR GPR:$rs1, GPR:$rs2)>;
+def : Pat<(xor GPR:$rs1, simm12:$imm), (XORI GPR:$rs1, simm12:$imm)>;
+
+// Shifts.  RV32I only encodes 5-bit shift amounts, and LLVM shifts by >= 32
+// are poison, so a plain SLL/SRL/SRA is the correct instruction.
+def : Pat<(shl GPR:$rs1, GPR:$rs2), (SLL GPR:$rs1, GPR:$rs2)>;
+def : Pat<(shl GPR:$rs1, uimm5:$shamt), (SLLI GPR:$rs1, uimm5:$shamt)>;
+def : Pat<(srl GPR:$rs1, GPR:$rs2), (SRL GPR:$rs1, GPR:$rs2)>;
+def : Pat<(srl GPR:$rs1, uimm5:$shamt), (SRLI GPR:$rs1, uimm5:$shamt)>;
+def : Pat<(sra GPR:$rs1, GPR:$rs2), (SRA GPR:$rs1, GPR:$rs2)>;
+def : Pat<(sra GPR:$rs1, uimm5:$shamt), (SRAI GPR:$rs1, uimm5:$shamt)>;
+
+// Comparisons.  SLT/SLTU already produce 0/1, so the signed/unsigned ordered
+// relations map directly; the non-strict ones invert one result bit with XORI.
+def : Pat<(i32 (setlt (i32 GPR:$rs1), (i32 GPR:$rs2))),
+          (SLT GPR:$rs1, GPR:$rs2)>;
+def : Pat<(i32 (setlt (i32 GPR:$rs1), simm12:$imm)),
+          (SLTI GPR:$rs1, simm12:$imm)>;
+def : Pat<(i32 (setgt (i32 GPR:$rs1), (i32 GPR:$rs2))),
+          (SLT GPR:$rs2, GPR:$rs1)>;
+def : Pat<(i32 (setge (i32 GPR:$rs1), (i32 GPR:$rs2))),
+          (XORI (SLT GPR:$rs1, GPR:$rs2), 1)>;
+def : Pat<(i32 (setle (i32 GPR:$rs1), (i32 GPR:$rs2))),
+          (XORI (SLT GPR:$rs2, GPR:$rs1), 1)>;
+
+def : Pat<(i32 (setult (i32 GPR:$rs1), (i32 GPR:$rs2))),
+          (SLTU GPR:$rs1, GPR:$rs2)>;
+def : Pat<(i32 (setult (i32 GPR:$rs1), simm12:$imm)),
+          (SLTIU GPR:$rs1, simm12:$imm)>;
+def : Pat<(i32 (setugt (i32 GPR:$rs1), (i32 GPR:$rs2))),
+          (SLTU GPR:$rs2, GPR:$rs1)>;
+def : Pat<(i32 (setuge (i32 GPR:$rs1), (i32 GPR:$rs2))),
+          (XORI (SLTU GPR:$rs1, GPR:$rs2), 1)>;
+def : Pat<(i32 (setule (i32 GPR:$rs1), (i32 GPR:$rs2))),
+          (XORI (SLTU GPR:$rs2, GPR:$rs1), 1)>;
+
+// Equality goes through XOR: (a ^ b) == 0 is exactly a == b.
+def : Pat<(i32 (seteq (i32 GPR:$rs1), (i32 GPR:$rs2))),
+          (SLTIU (XOR GPR:$rs1, GPR:$rs2), 1)>;
+def : Pat<(i32 (seteq (i32 GPR:$rs1), 0)), (SLTIU GPR:$rs1, 1)>;
+def : Pat<(i32 (setne (i32 GPR:$rs1), (i32 GPR:$rs2))),
+          (SLTU X0, (XOR GPR:$rs1, GPR:$rs2))>;
+def : Pat<(i32 (setne (i32 GPR:$rs1), 0)), (SLTU X0, GPR:$rs1)>;
 
 //===----------------------------------------------------------------------===//
 // Pseudo instructions (no encoding of their own)

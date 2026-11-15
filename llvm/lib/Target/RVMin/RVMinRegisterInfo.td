@@ -59,7 +59,13 @@ def X31 : RVMinReg<31, "x31", ["t6"]>;
 
 } // RegAltNameIndices = [ABIRegAltName]
 
+// Allocation order follows the ILP32 ABI: caller-saved argument/temporary
+// registers first, callee-saved registers next, and the special registers
+// (zero/ra/sp/gp/tp) last so they are only picked under pressure.
 def GPR : RegisterClass<"RVMin", [i32], 32,
-  (add X0, X1, X2, X3, X4, X5, X6, X7, X8, X9, X10, X11, X12, X13, X14, X15,
-       X16, X17, X18, X19, X20, X21, X22, X23, X24, X25, X26, X27, X28, X29,
-       X30, X31)>;
+  (add (sequence "X%u", 10, 17),
+       (sequence "X%u", 5, 7),
+       (sequence "X%u", 28, 31),
+       (sequence "X%u", 8, 9),
+       (sequence "X%u", 18, 27),
+       X0, X1, X2, X3, X4)>;

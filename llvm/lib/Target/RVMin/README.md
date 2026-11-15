@@ -41,7 +41,7 @@ ninja -C "$B" llc clang llvm-mc llvm-objdump llvm-readelf FileCheck
 | 01 | [寄存器与 RV32I 指令描述](docs/01-instructions.md) | 完成 |
 | 02 | [MC 层、汇编输出与编码正确性](docs/02-mc-layer.md) | 完成 |
 | 03 | [最小指令选择与栈帧骨架](docs/03-isel.md) | 完成 |
-| 04 | 整数算术、逻辑、移位、比较与 select | 待做 |
+| 04 | [整数算术、逻辑、移位、比较与 select](docs/04-alu.md) | 完成 |
 | 05 | 控制流与基本块布局 | 待做 |
 | 06 | 栈、局部变量与 load/store | 待做 |
 | 07 | 全局数据、字符串与重定位 | 待做 |
@@ -52,13 +52,14 @@ ninja -C "$B" llc clang llvm-mc llvm-objdump llvm-readelf FileCheck
 | 12 | 可选：链接与 QEMU 运行 | 待做 |
 | 13 | 可选：M 扩展与优化 | 待做 |
 
-## 当前限制（第 3 章）
+## 当前限制（第 4 章）
 
-- 已有最小指令选择：常量、`add`、`ret` 能出 RV32I 汇编，
-  `llvm/test/CodeGen/RVMin/basic.ll` 全绿；clang IR 端到端可用。
-- 调用约定只覆盖寄存器传参（a0–a7）与寄存器返回（a0/a1）。
-- 还没有函数调用、栈帧、控制流、大部分 ALU、全局与重定位。
-- MC 层仍然完整：`llvm-mc -triple=rvmin` 可汇编 67 条指令，编码与参考
+- i32 的算术/逻辑/移位/比较全部可用，任意 32 位常量用 `LUI+ADDI` 物化；
+  `select` 用无分支掩码序列。`-O0`…`-O3` 都能出汇编。
+- 还没有分支与基本块（第 5 章）、栈帧与 load/store（第 6 章）。
+- 调用约定只覆盖寄存器传参（a0–a7）与寄存器返回（a0/a1）；
+  `ra` 当前被保留，函数还不能调用（第 8 章）。
+- MC 层完整：`llvm-mc -triple=rvmin` 可汇编 67 条指令，编码与参考
   RISC-V 汇编器逐字节一致（`scripts/check-rvmin-encodings.sh`）。
 - 对象文件里的符号重定位（含 `.eh_frame` 的函数符号引用）第 7 章实现；
   当前遇到未定义符号会明确报错。
