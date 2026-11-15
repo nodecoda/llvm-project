@@ -48,6 +48,29 @@ public:
 
 } // end anonymous namespace
 
+namespace {
+
+/// Recognize a stack address: either a bare `frameindex` or
+/// `frameindex + constant`.  GEPs with constant indices are folded this way,
+/// so `alloca [4 x i32]` + index 2 reaches us as FI + 8.
+bool matchFrameAddr(SDValue Addr, SDValue &FI, int64_t &Offset) {
+  if (isa<FrameIndexSDNode>(Addr)) {
+    FI = Addr;
+    Offset = 0;
+    return true;
+  }
+  if (Addr.getOpcode() == ISD::ADD &&
+      isa<ConstantSDNode>(Addr.getOperand(1)) &&
+      isa<FrameIndexSDNode>(Addr.getOperand(0))) {
+    FI = Addr.getOperand(0);
+    Offset = cast<ConstantSDNode>(Addr.getOperand(1))->getSExtValue();
+    return true;
+  }
+  return false;
+}
+
+} // end anonymous namespace
+
 void RVMinDAGToDAGISel::Select(SDNode *N) {
   if (N->isMachineOpcode()) {
     N->setNodeId(-1);
@@ -94,6 +117,61 @@ void RVMinDAGToDAGISel::Select(SDNode *N) {
     ReplaceNode(
         N, CurDAG->getMachineNode(RVMin::ADDI, DL, MVT::i32, Lui, LoV));
     return;
+  }
+
+  // A frame index used as a value is the address of a stack object.  Select it
+  // as `addi rd, sp, offset`; eliminateFrameIndex fills in the real offset and
+  // base after register allocation.
+  if (N->getOpcode() == ISD::FrameIndex) {
+    int FI = cast<FrameIndexSDNode>(N)->getIndex();
+    SDValue TFI = CurDAG->getTargetFrameIndex(FI, MVT::i32);
+    SDValue Zero = CurDAG->getTargetConstant(0, DL, MVT::i32);
+    ReplaceNode(N, CurDAG->getMachineNode(RVMin::ADDI, DL, MVT::i32, TFI,
+                                          Zero));
+    return;
+  }
+
+  // Stack accesses.  Fold the frame index (and any constant offset folded into
+  // the address by DAGCombine) into the load/store immediate, so the result is
+  // a single `lw/sw rd, off(sp)`.  Everything else falls through to the
+  // TableGen patterns at the end of Select.
+  if (N->getOpcode() == ISD::LOAD) {
+    LoadSDNode *LD = cast<LoadSDNode>(N);
+    SDValue FI;
+    int64_t Off;
+    if (LD->getMemoryVT() == MVT::i32 &&
+        matchFrameAddr(LD->getBasePtr(), FI, Off)) {
+      SDValue TFI =
+          CurDAG->getTargetFrameIndex(cast<FrameIndexSDNode>(FI)->getIndex(),
+                                      MVT::i32);
+      SDValue Imm = CurDAG->getTargetConstant(Off, DL, MVT::i32);
+      // Machine nodes put the chain after the explicit operands.
+      SDValue Ops[] = {TFI, Imm, LD->getChain()};
+      MachineSDNode *MN = CurDAG->getMachineNode(RVMin::LW, DL, MVT::i32,
+                                                 MVT::Other, Ops);
+      CurDAG->setNodeMemRefs(MN, {LD->getMemOperand()});
+      ReplaceNode(N, MN);
+      return;
+    }
+  }
+
+  if (N->getOpcode() == ISD::STORE) {
+    StoreSDNode *ST = cast<StoreSDNode>(N);
+    SDValue FI;
+    int64_t Off;
+    if (ST->getMemoryVT() == MVT::i32 &&
+        matchFrameAddr(ST->getBasePtr(), FI, Off)) {
+      SDValue TFI =
+          CurDAG->getTargetFrameIndex(cast<FrameIndexSDNode>(FI)->getIndex(),
+                                      MVT::i32);
+      SDValue Imm = CurDAG->getTargetConstant(Off, DL, MVT::i32);
+      SDValue Ops[] = {ST->getValue(), TFI, Imm, ST->getChain()};
+      MachineSDNode *MN = CurDAG->getMachineNode(RVMin::SW, DL, MVT::Other,
+                                                 Ops);
+      CurDAG->setNodeMemRefs(MN, {ST->getMemOperand()});
+      ReplaceNode(N, MN);
+      return;
+    }
   }
 
   SelectCode(N);

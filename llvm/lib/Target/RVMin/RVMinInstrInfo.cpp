@@ -10,6 +10,7 @@
 #include "RVMin.h"
 #include "RVMinSubtarget.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
+#include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include <iterator>
 
@@ -208,4 +209,37 @@ unsigned RVMinInstrInfo::insertBranch(MachineBasicBlock &MBB,
     ++Count;
   }
   return Count;
+}
+
+// Spill/reload for register allocation and for callee-saved registers.  The
+// frame index is left as an operand: PEI's eliminateFrameIndex turns it into
+// an sp-relative offset once the frame layout is final.
+void RVMinInstrInfo::storeRegToStackSlot(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator MI, Register SrcReg,
+    bool IsKill, int FrameIndex, const TargetRegisterClass *RC, Register VReg,
+    MachineInstr::MIFlag Flags) const {
+  assert(RC == &RVMin::GPRRegClass && "RVMin only has one register class");
+  DebugLoc DL = MI != MBB.end() ? MI->getDebugLoc() : DebugLoc();
+  MachineInstr *New = BuildMI(MBB, MI, DL, get(RVMin::SW))
+                          .addReg(SrcReg, getKillRegState(IsKill))
+                          .addFrameIndex(FrameIndex)
+                          .addImm(0);
+  if (Flags != MachineInstr::NoFlags)
+    New->setFlag(Flags);
+}
+
+void RVMinInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
+                                          MachineBasicBlock::iterator MI,
+                                          Register DestReg, int FrameIndex,
+                                          const TargetRegisterClass *RC,
+                                          Register VReg, unsigned SubReg,
+                                          MachineInstr::MIFlag Flags) const {
+  assert(RC == &RVMin::GPRRegClass && "RVMin only has one register class");
+  assert(SubReg == 0 && "RVMin has no sub-register reloads");
+  DebugLoc DL = MI != MBB.end() ? MI->getDebugLoc() : DebugLoc();
+  MachineInstr *New = BuildMI(MBB, MI, DL, get(RVMin::LW), DestReg)
+                          .addFrameIndex(FrameIndex)
+                          .addImm(0);
+  if (Flags != MachineInstr::NoFlags)
+    New->setFlag(Flags);
 }

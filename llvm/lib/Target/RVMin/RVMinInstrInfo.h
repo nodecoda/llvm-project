@@ -46,6 +46,17 @@ public:
                         ArrayRef<MachineOperand> Cond, const DebugLoc &DL,
                         int *BytesAdded = nullptr) const override;
   bool isUnconditionalBranch(const MachineInstr &MI) const;
+
+  void storeRegToStackSlot(MachineBasicBlock &MBB,
+                           MachineBasicBlock::iterator MI, Register SrcReg,
+                           bool isKill, int FrameIndex,
+                           const TargetRegisterClass *RC, Register VReg,
+                           MachineInstr::MIFlag Flags) const override;
+  void loadRegFromStackSlot(MachineBasicBlock &MBB,
+                            MachineBasicBlock::iterator MI, Register DestReg,
+                            int FrameIndex, const TargetRegisterClass *RC,
+                            Register VReg, unsigned SubReg,
+                            MachineInstr::MIFlag Flags) const override;
 };
 
 } // namespace llvm

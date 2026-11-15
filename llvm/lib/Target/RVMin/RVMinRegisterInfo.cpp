@@ -42,10 +42,35 @@ BitVector RVMinRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   return Reserved;
 }
 
+// Rewrite `lw/sw/addi ..., FI, imm` into `lw/sw/addi ..., sp, offset`.
+//
+// getFrameIndexReference returns the distance from sp *after* the prologue to
+// the object, because the frame pointer is not used.  The instruction's own
+// immediate is folded in, which is how `frameindex + 8` (a constant-indexed
+// alloca) becomes one instruction.
 bool RVMinRegisterInfo::eliminateFrameIndex(
     MachineBasicBlock::iterator II, int SPAdj, unsigned FIOperandNum,
     RegScavenger *RS) const {
-  llvm_unreachable("RVMin frame index elimination is not implemented yet");
+  assert(SPAdj == 0 && "RVMin has no dynamic stack adjustments");
+
+  MachineInstr &MI = *II;
+  MachineFunction &MF = *MI.getParent()->getParent();
+  const TargetFrameLowering *TFI = getFrameLowering(MF);
+
+  int FrameIndex = MI.getOperand(FIOperandNum).getIndex();
+  Register FrameReg;
+  int64_t Offset =
+      TFI->getFrameIndexReference(MF, FrameIndex, FrameReg).getFixed();
+  Offset += MI.getOperand(FIOperandNum + 1).getImm();
+
+  if (!isInt<12>(Offset))
+    report_fatal_error("RVMin: frame offset " + Twine(Offset) +
+                       " does not fit in 12 bits (frame larger than 2 KiB is "
+                       "not supported yet)");
+
+  MI.getOperand(FIOperandNum).ChangeToRegister(FrameReg, /*isDef=*/false);
+  MI.getOperand(FIOperandNum + 1).ChangeToImmediate(Offset);
+  return false;
 }
 
 Register RVMinRegisterInfo::getFrameRegister(const MachineFunction &MF) const {

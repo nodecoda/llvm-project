@@ -213,18 +213,42 @@ def BGEU : RVMinBInst<0b111, OPC_BRANCH, (outs),
 } // isBranch = 1, isTerminator = 1, isBarrier = 1
 
 //===----------------------------------------------------------------------===//
-// Memory (chapter 6 adds the narrower accesses)
+// Memory
 //===----------------------------------------------------------------------===//
 
-let hasSideEffects = 0, mayLoad = 1, mayStore = 0 in
-def LW : RVMinIInst<0b010, OPC_LOAD, (outs GPR:$rd),
-                   (ins GPR:$rs1, simm12:$imm12), "lw",
-                   "$rd, ${imm12}(${rs1})">;
+// Loads: funct3 selects the width and the extension:
+//   0b000 lb (sign-extend 8), 0b001 lh (16), 0b010 lw (32),
+//   0b100 lbu (zero-extend 8), 0b101 lhu (zero-extend 16).
+let hasSideEffects = 0, mayLoad = 1, mayStore = 0 in {
+def LB  : RVMinIInst<0b000, OPC_LOAD, (outs GPR:$rd),
+                    (ins GPR:$rs1, simm12:$imm12), "lb",
+                    "$rd, ${imm12}(${rs1})">;
+def LH  : RVMinIInst<0b001, OPC_LOAD, (outs GPR:$rd),
+                    (ins GPR:$rs1, simm12:$imm12), "lh",
+                    "$rd, ${imm12}(${rs1})">;
+def LW  : RVMinIInst<0b010, OPC_LOAD, (outs GPR:$rd),
+                    (ins GPR:$rs1, simm12:$imm12), "lw",
+                    "$rd, ${imm12}(${rs1})">;
+def LBU : RVMinIInst<0b100, OPC_LOAD, (outs GPR:$rd),
+                    (ins GPR:$rs1, simm12:$imm12), "lbu",
+                    "$rd, ${imm12}(${rs1})">;
+def LHU : RVMinIInst<0b101, OPC_LOAD, (outs GPR:$rd),
+                    (ins GPR:$rs1, simm12:$imm12), "lhu",
+                    "$rd, ${imm12}(${rs1})">;
+} // hasSideEffects = 0, mayLoad = 1, mayStore = 0
 
-let hasSideEffects = 1, mayLoad = 0, mayStore = 1 in
+// Stores: funct3 0b000 sb, 0b001 sh, 0b010 sw.
+let hasSideEffects = 1, mayLoad = 0, mayStore = 1 in {
+def SB : RVMinSInst<0b000, OPC_STORE, (outs),
+                   (ins GPR:$rs2, GPR:$rs1, simm12:$imm12), "sb",
+                   "$rs2, ${imm12}(${rs1})">;
+def SH : RVMinSInst<0b001, OPC_STORE, (outs),
+                   (ins GPR:$rs2, GPR:$rs1, simm12:$imm12), "sh",
+                   "$rs2, ${imm12}(${rs1})">;
 def SW : RVMinSInst<0b010, OPC_STORE, (outs),
                    (ins GPR:$rs2, GPR:$rs1, simm12:$imm12), "sw",
                    "$rs2, ${imm12}(${rs1})">;
+} // hasSideEffects = 1, mayLoad = 0, mayStore = 1
 
 //===----------------------------------------------------------------------===//
 // Selection DAG nodes
@@ -320,6 +344,17 @@ defm : RVMinBccPat<SETLT, BLT>;
 defm : RVMinBccPat<SETGE, BGE>;
 defm : RVMinBccPat<SETULT, BLTU>;
 defm : RVMinBccPat<SETUGE, BGEU>;
+
+// Generic memory accesses.  Chapter 6 only legalizes i32; i8/i16 arrive with
+// the type legalizer in chapter 9.  Frame-index addresses are folded into the
+// immediate by RVMinDAGToDAGISel::Select, so these patterns only see values
+// that are already in a register.
+def : Pat<(i32 (load GPR:$addr)), (LW GPR:$addr, 0)>;
+def : Pat<(i32 (load (add GPR:$addr, simm12:$off))),
+          (LW GPR:$addr, simm12:$off)>;
+def : Pat<(store GPR:$val, GPR:$addr), (SW GPR:$val, GPR:$addr, 0)>;
+def : Pat<(store GPR:$val, (add GPR:$addr, simm12:$off)),
+          (SW GPR:$val, GPR:$addr, simm12:$off)>;
 
 
 //===----------------------------------------------------------------------===//
