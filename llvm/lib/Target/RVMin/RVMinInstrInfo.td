@@ -383,6 +383,47 @@ def : Pat<(store GPR:$val, GPR:$addr), (SW GPR:$val, GPR:$addr, 0)>;
 def : Pat<(store GPR:$val, (add GPR:$addr, simm12:$off)),
           (SW GPR:$val, GPR:$addr, simm12:$off)>;
 
+// Chapter 9: narrow loads and truncating stores.
+//
+// The type legalizer promotes i8/i16 values to i32, so a `char`/`short` load
+// arrives as an i32 load whose memory type is still i8/i16 and whose
+// extension is part of the node:
+//
+//   sextloadi8  -> LB      zextloadi8  -> LBU
+//   sextloadi16 -> LH      zextloadi16 -> LHU
+//
+// `extload` means "any extension is fine", so a zero-extending load is a
+// valid lowering for it.  Stores go the other way: `truncstorei8/i16` write
+// the low byte/halfword of an i32 register.
+def : Pat<(i32 (sextloadi8 GPR:$addr)), (LB GPR:$addr, 0)>;
+def : Pat<(i32 (zextloadi8 GPR:$addr)), (LBU GPR:$addr, 0)>;
+def : Pat<(i32 (extloadi8 GPR:$addr)), (LBU GPR:$addr, 0)>;
+def : Pat<(i32 (sextloadi8 (add GPR:$addr, simm12:$off))),
+          (LB GPR:$addr, simm12:$off)>;
+def : Pat<(i32 (zextloadi8 (add GPR:$addr, simm12:$off))),
+          (LBU GPR:$addr, simm12:$off)>;
+def : Pat<(i32 (extloadi8 (add GPR:$addr, simm12:$off))),
+          (LBU GPR:$addr, simm12:$off)>;
+
+def : Pat<(i32 (sextloadi16 GPR:$addr)), (LH GPR:$addr, 0)>;
+def : Pat<(i32 (zextloadi16 GPR:$addr)), (LHU GPR:$addr, 0)>;
+def : Pat<(i32 (extloadi16 GPR:$addr)), (LHU GPR:$addr, 0)>;
+def : Pat<(i32 (sextloadi16 (add GPR:$addr, simm12:$off))),
+          (LH GPR:$addr, simm12:$off)>;
+def : Pat<(i32 (zextloadi16 (add GPR:$addr, simm12:$off))),
+          (LHU GPR:$addr, simm12:$off)>;
+def : Pat<(i32 (extloadi16 (add GPR:$addr, simm12:$off))),
+          (LHU GPR:$addr, simm12:$off)>;
+
+def : Pat<(truncstorei8 GPR:$val, GPR:$addr),
+          (SB GPR:$val, GPR:$addr, 0)>;
+def : Pat<(truncstorei8 GPR:$val, (add GPR:$addr, simm12:$off)),
+          (SB GPR:$val, GPR:$addr, simm12:$off)>;
+def : Pat<(truncstorei16 GPR:$val, GPR:$addr),
+          (SH GPR:$val, GPR:$addr, 0)>;
+def : Pat<(truncstorei16 GPR:$val, (add GPR:$addr, simm12:$off)),
+          (SH GPR:$val, GPR:$addr, simm12:$off)>;
+
 
 //===----------------------------------------------------------------------===//
 // Pseudo instructions (no encoding of their own)

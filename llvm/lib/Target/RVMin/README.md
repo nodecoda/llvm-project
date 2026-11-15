@@ -46,18 +46,24 @@ ninja -C "$B" llc clang llvm-mc llvm-objdump llvm-readelf FileCheck
 | 06 | [栈帧、alloca 与 load/store](docs/06-stack.md) | 完成 |
 | 07 | [全局数据、字符串与重定位](docs/07-globals.md) | 完成 |
 | 08 | [调用约定、函数调用与递归](docs/08-calls.md) | 完成 |
-| 09 | 整数类型合法化（i1/i8/i16/i64） | 待做 |
+| 09 | [整数类型合法化（i1/i8/i16/i64）](docs/09-types.md) | 完成 |
 | 10 | RV32I 缺口：乘除、浮点与内存内建 | 待做 |
 | 11 | clang 端到端、测试体系与教程收尾 | 待做 |
 | 12 | 可选：链接与 QEMU 运行 | 待做 |
 | 13 | 可选：M 扩展与优化 | 待做 |
 
-## 当前限制（第 8 章）
+## 当前限制（第 9 章）
 
 - i32 的算术/逻辑/移位/比较、分支、栈对象、load/store、全局数据与字符串、
   函数调用/递归/栈传参全部可用；`-O0`…`-O3` 都能出汇编和对象文件。
-- 只合法化 i32 的访存与参数：`char`/`short`、`i64`、结构体按值传递
-  （`byval`/`sret`）和 `memcpy` 需要第 9 章的类型合法化。
+- 窄类型可用：`char`/`short` 的读写降到 `LB`/`LBU`/`LH`/`LHU`/`SB`/`SH`，
+  `sign_extend_inreg` 展开成 `slli`+`srai`，返回值按 ABI 扩展。
+- `i64` 被拆成两个 `i32`：加减、比较、load/store、常数移位都可用；变长移位
+  展开成 `__ashldi3`/`__lshrdi3`/`__ashrdi3` 调用（需要运行时库）。
+  结构体按值拷贝经 `memcpy` 库调用工作（复用第 8 章的调用支持）。
+- 仍然缺 `i8`/`i16`/`i32`/`i64` 的乘法、除法与取模：它们在第 10 章才接上
+  （`__mulsi3`/`__divsi3`/`__muldi3` 等 libcall）。
+- `byval`/`sret`、变参函数仍然显式报错。
 - 帧内偏移限制在 `[-2048, 2047]`；更大的帧会明确报错（后续用
   `RegScavenger` 物化地址）。没有帧指针、没有 VLA/动态 `alloca`。
 - 直接调用固定展开为 `LUI+ADDI+JALR`，使用 `R_RISCV_HI20`/`LO12_I`；
@@ -70,3 +76,5 @@ ninja -C "$B" llc clang llvm-mc llvm-objdump llvm-readelf FileCheck
   汇编器逐字节一致（`scripts/check-rvmin-encodings.sh`）。
 - 分支/跳转范围是 B 型 ±4 KiB、J 型 ±1 MiB，没有 branch relaxation。
 - 乘法/除法/取模与浮点留给第 10 章的 libcall（RV32I 没有 M/F/D 扩展）。
+- 窄类型的参数依赖调用方按 ABI 扩展；函数入口不重新扩展，手写 IR 传入脏高位
+  会得到错误结果。

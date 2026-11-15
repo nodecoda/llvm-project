@@ -20,3 +20,22 @@
         jalr    ra, 0(t1)
 # Return: jalr zero, 0(ra).
         jalr    zero, 0(ra)
+
+# Chapter 9 gate: what the type legalizer emits for narrow and 64-bit values.
+# Narrow access uses the offset forms, sign extension is a shift pair, and the
+# 64-bit carry is a `sltu` on the low halves.
+        lbu     a0, 3(a1)
+        lhu     a2, 6(a1)
+        sb      a3, 7(a1)
+        sh      a4, 8(a1)
+        lw      a5, 12(a1)
+        sw      a6, 16(a1)
+        slli    a0, a0, 16
+        srai    a0, a0, 16
+        slli    a1, a1, 24
+        srai    a1, a1, 24
+        add     a0, a2, a3
+        sltu    a1, a0, a2
+        add     a1, a1, a4
+        sltiu   a5, a0, 1
+        andi    a6, a6, 255

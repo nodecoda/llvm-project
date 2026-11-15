@@ -51,6 +51,37 @@ public:
 
 namespace {
 
+/// The load opcode for an already-promoted i32 load.  The memory type decides
+/// the width, the extension type decides sign vs. zero extension.  Returns 0
+/// for memory types this chapter does not handle, so the TableGen patterns get
+/// a chance.
+unsigned getLoadOpcode(const LoadSDNode *LD) {
+  switch (LD->getMemoryVT().getSimpleVT().SimpleTy) {
+  case MVT::i8:
+    return LD->getExtensionType() == ISD::ZEXTLOAD ? RVMin::LBU : RVMin::LB;
+  case MVT::i16:
+    return LD->getExtensionType() == ISD::ZEXTLOAD ? RVMin::LHU : RVMin::LH;
+  case MVT::i32:
+    return RVMin::LW;
+  default:
+    return 0;
+  }
+}
+
+/// The store opcode for a truncating i32 store, keyed on the memory type.
+unsigned getStoreOpcode(const StoreSDNode *ST) {
+  switch (ST->getMemoryVT().getSimpleVT().SimpleTy) {
+  case MVT::i8:
+    return RVMin::SB;
+  case MVT::i16:
+    return RVMin::SH;
+  case MVT::i32:
+    return RVMin::SW;
+  default:
+    return 0;
+  }
+}
+
 /// Recognize a stack address: either a bare `frameindex` or
 /// `frameindex + constant`.  GEPs with constant indices are folded this way,
 /// so `alloca [4 x i32]` + index 2 reaches us as FI + 8.
@@ -140,19 +171,20 @@ void RVMinDAGToDAGISel::Select(SDNode *N) {
     LoadSDNode *LD = cast<LoadSDNode>(N);
     SDValue FI;
     int64_t Off;
-    if (LD->getMemoryVT() == MVT::i32 &&
-        matchFrameAddr(LD->getBasePtr(), FI, Off)) {
-      SDValue TFI =
-          CurDAG->getTargetFrameIndex(cast<FrameIndexSDNode>(FI)->getIndex(),
-                                      MVT::i32);
-      SDValue Imm = CurDAG->getTargetConstant(Off, DL, MVT::i32);
-      // Machine nodes put the chain after the explicit operands.
-      SDValue Ops[] = {TFI, Imm, LD->getChain()};
-      MachineSDNode *MN = CurDAG->getMachineNode(RVMin::LW, DL, MVT::i32,
-                                                 MVT::Other, Ops);
-      CurDAG->setNodeMemRefs(MN, {LD->getMemOperand()});
-      ReplaceNode(N, MN);
-      return;
+    if (matchFrameAddr(LD->getBasePtr(), FI, Off)) {
+      if (unsigned Opc = getLoadOpcode(LD)) {
+        SDValue TFI =
+            CurDAG->getTargetFrameIndex(cast<FrameIndexSDNode>(FI)->getIndex(),
+                                        MVT::i32);
+        SDValue Imm = CurDAG->getTargetConstant(Off, DL, MVT::i32);
+        // Machine nodes put the chain after the explicit operands.
+        SDValue Ops[] = {TFI, Imm, LD->getChain()};
+        MachineSDNode *MN = CurDAG->getMachineNode(Opc, DL, MVT::i32,
+                                                   MVT::Other, Ops);
+        CurDAG->setNodeMemRefs(MN, {LD->getMemOperand()});
+        ReplaceNode(N, MN);
+        return;
+      }
     }
   }
 
@@ -160,18 +192,18 @@ void RVMinDAGToDAGISel::Select(SDNode *N) {
     StoreSDNode *ST = cast<StoreSDNode>(N);
     SDValue FI;
     int64_t Off;
-    if (ST->getMemoryVT() == MVT::i32 &&
-        matchFrameAddr(ST->getBasePtr(), FI, Off)) {
-      SDValue TFI =
-          CurDAG->getTargetFrameIndex(cast<FrameIndexSDNode>(FI)->getIndex(),
-                                      MVT::i32);
-      SDValue Imm = CurDAG->getTargetConstant(Off, DL, MVT::i32);
-      SDValue Ops[] = {ST->getValue(), TFI, Imm, ST->getChain()};
-      MachineSDNode *MN = CurDAG->getMachineNode(RVMin::SW, DL, MVT::Other,
-                                                 Ops);
-      CurDAG->setNodeMemRefs(MN, {ST->getMemOperand()});
-      ReplaceNode(N, MN);
-      return;
+    if (matchFrameAddr(ST->getBasePtr(), FI, Off)) {
+      if (unsigned Opc = getStoreOpcode(ST)) {
+        SDValue TFI =
+            CurDAG->getTargetFrameIndex(cast<FrameIndexSDNode>(FI)->getIndex(),
+                                        MVT::i32);
+        SDValue Imm = CurDAG->getTargetConstant(Off, DL, MVT::i32);
+        SDValue Ops[] = {ST->getValue(), TFI, Imm, ST->getChain()};
+        MachineSDNode *MN = CurDAG->getMachineNode(Opc, DL, MVT::Other, Ops);
+        CurDAG->setNodeMemRefs(MN, {ST->getMemOperand()});
+        ReplaceNode(N, MN);
+        return;
+      }
     }
   }
 

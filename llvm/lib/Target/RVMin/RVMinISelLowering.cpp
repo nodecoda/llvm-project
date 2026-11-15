@@ -55,6 +55,35 @@ RVMinTargetLowering::RVMinTargetLowering(const TargetMachine &TM,
   // which TableGen matches against BEQ/BNE/BLT/BGE/BLTU/BGEU.
   setOperationAction(ISD::BRCOND, MVT::Other, Custom);
   setOperationAction(ISD::BR_CC, MVT::i32, Custom);
+
+  // Chapter 9: `(a + b)` on promoted `char`/`short` values ends in
+  // `sign_extend_inreg`, because the result must be truncated back to the
+  // narrow type.  RV32I has no such instruction, but two shifts do the job:
+  // `srai(slli(x, 32-n), 32-n)`.  Letting the legalizer expand it keeps the
+  // instruction selector free of special cases.
+  //
+  // Careful: SelectionDAG legalizes SIGN_EXTEND_INREG with the *inner* value
+  // type (the operand of the VTSDNode), not with the result type.  Registering
+  // the action for MVT::i32 therefore has no effect -- the queries are for
+  // i1/i8/i16.
+  for (MVT VT : {MVT::i1, MVT::i8, MVT::i16})
+    setOperationAction(ISD::SIGN_EXTEND_INREG, VT, Expand);
+
+  // Chapter 9: an `i1` (`_Bool`) is one byte in memory, exactly like a
+  // `char`.  Promoting the memory type to i8 reuses the LB/LBU/SB patterns
+  // instead of asking TableGen for an i1 load it cannot encode.
+  setLoadExtAction(ISD::SEXTLOAD, MVT::i32, MVT::i1, Promote);
+  setLoadExtAction(ISD::ZEXTLOAD, MVT::i32, MVT::i1, Promote);
+  setLoadExtAction(ISD::EXTLOAD, MVT::i32, MVT::i1, Promote);
+  setTruncStoreAction(MVT::i32, MVT::i1, Promote);
+
+  // Chapter 9: 64-bit shifts.  RV32I shifts one register at a time, so the
+  // legalizer would otherwise leave SHL_PARTS/SRL_PARTS/SRA_PARTS for the
+  // selector.  Expanding them emits the standard compiler-runtime libcalls
+  // (__ashldi3/__lshrdi3/__ashrdi3), which chapter 8 can already call.
+  setOperationAction(ISD::SHL_PARTS, MVT::i32, Expand);
+  setOperationAction(ISD::SRL_PARTS, MVT::i32, Expand);
+  setOperationAction(ISD::SRA_PARTS, MVT::i32, Expand);
 }
 
 // Comparisons produce a 0/1 integer, not an i1: RV32I has no i1 registers and
