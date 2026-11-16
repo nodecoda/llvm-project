@@ -14,6 +14,7 @@
 #include "RVMinAsmPrinter.h"
 #include "RVMin.h"
 #include "RVMinBaseInfo.h"
+#include "MCTargetDesc/RVMinInstPrinter.h"
 #include "RVMinMCInstLower.h"
 #include "RVMinTargetMachine.h"
 #include "TargetInfo/RVMinTargetInfo.h"
@@ -44,6 +45,27 @@ public:
       : AsmPrinter(TM, std::move(Streamer), ID) {}
 
   StringRef getPassName() const override { return "RVMin Assembly Printer"; }
+
+  /// Chapter 22: inline asm operands.  The LL/SC loop created by AtomicExpand
+  /// embeds `lr.w.aqrl` / `sc.w.aqrl` as one-instruction inline asm, so the
+  /// printer has to render its register operands.
+  bool PrintAsmOperand(const MachineInstr *MI, unsigned OpNo,
+                       const char *ExtraCode, raw_ostream &O) override {
+    if (!AsmPrinter::PrintAsmOperand(MI, OpNo, ExtraCode, O))
+      return false;
+    if (ExtraCode && ExtraCode[0])
+      return true; // Unknown modifier.
+    const MachineOperand &MO = MI->getOperand(OpNo);
+    if (MO.isReg()) {
+      O << RVMinInstPrinter::getRegisterName(MO.getReg(), /*AltIdx=*/0);
+      return false;
+    }
+    if (MO.isImm()) {
+      O << MO.getImm();
+      return false;
+    }
+    return true;
+  }
 
   bool runOnMachineFunction(MachineFunction &MF) override {
     SetupMachineFunction(MF);

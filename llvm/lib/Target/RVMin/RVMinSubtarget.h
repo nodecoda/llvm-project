@@ -39,6 +39,7 @@ class RVMinSubtarget : public RVMinGenSubtargetInfo {
   // own feature bit and query.
   bool HasStdExtZbb = false;
   bool HasStdExtZbs = false;
+  bool HasStdExtA = false;
 
   RVMinInstrInfo InstrInfo;
   RVMinTargetLowering TLInfo;
@@ -56,6 +57,7 @@ public:
   bool hasStdExtM() const { return HasStdExtM; }
   bool hasStdExtZbb() const { return HasStdExtZbb; }
   bool hasStdExtZbs() const { return HasStdExtZbs; }
+  bool hasStdExtA() const { return HasStdExtA; }
 
   void ParseSubtargetFeatures(StringRef CPU, StringRef TuneCPU, StringRef FS);
 

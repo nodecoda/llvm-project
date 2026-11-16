@@ -4,7 +4,7 @@
 #
 # Usage: rvmin-verify-all.sh <llvm-bin-dir>
 #
-# Five independent checks, in increasing order of cost:
+# Six independent checks, in increasing order of cost:
 #   1. the target is registered;
 #   2. lit: CodeGen + MC tests;
 #   3. encoding gate: byte-exact against the reference RISC-V assembler;

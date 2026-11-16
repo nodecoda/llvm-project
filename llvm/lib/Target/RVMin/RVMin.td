@@ -45,6 +45,14 @@ def HasStdExtZbs : Predicate<"Subtarget->hasStdExtZbs()">,
                    AssemblerPredicate<(all_of FeatureStdExtZbs),
                                       "'Zbs' (Single-Bit Instructions)">;
 
+// Chapter 22: the A extension (atomic memory operations plus lr/sc).
+def FeatureStdExtA : SubtargetFeature<"a", "HasStdExtA", "true",
+                                      "Atomic memory operations">;
+
+def HasStdExtA : Predicate<"Subtarget->hasStdExtA()">,
+                 AssemblerPredicate<(all_of FeatureStdExtA),
+                                    "'A' (Atomic Instructions)">;
+
 //===----------------------------------------------------------------------===//
 // Processors
 //===----------------------------------------------------------------------===//
@@ -56,6 +64,7 @@ def : RVMinProc<"generic-rv32", []>;
 def : RVMinProc<"generic-rv32-m", [FeatureStdExtM]>;
 def : RVMinProc<"generic-rv32-zbb", [FeatureStdExtZbb]>;
 def : RVMinProc<"generic-rv32-zbs", [FeatureStdExtZbs]>;
+def : RVMinProc<"generic-rv32-a", [FeatureStdExtA]>;
 
 //===----------------------------------------------------------------------===//
 // Register File

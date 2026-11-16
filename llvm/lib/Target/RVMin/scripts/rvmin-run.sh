@@ -236,6 +236,43 @@ for variant in "rv32i:" "m:+m"; do
 done
 echo "PASS: constant multiply/divide program ran under $QEMU with and without M"
 
+# Chapter 22 gate: atomics under QEMU.  QEMU's default rv32 CPU implements A,
+# so the lr.w/sc.w instructions execute for real.  The static greps make the
+# gate meaningful even if a future QEMU loses A: amoadd proves the AMO path,
+# lr/sc prove the cmpxchg/LL-SC path.
+run_atomics() {
+  "$CC" --target="$TRIPLE" -march=rv32ia -mabi=ilp32 -O2 -ffreestanding \
+    -fno-builtin -S -emit-llvm "$RT/atomics.c" -o "$TMP/atomics.ll" \
+    || fail "clang could not compile atomics.c"
+  "$LLC" -march=rvmin -mtriple="$TRIPLE" -mattr=+a -O2 -verify-machineinstrs \
+    "$TMP/atomics.ll" -o "$TMP/atomics.s" \
+    || fail "llc could not select atomics.c"
+  grep -q 'amoadd.w.aqrl' "$TMP/atomics.s" \
+    || fail "atomics.c emitted no AMO for fetch_add"
+  grep -q 'lr.w.aqrl' "$TMP/atomics.s" \
+    || fail "atomics.c emitted no lr.w"
+  grep -q 'sc.w.aqrl' "$TMP/atomics.s" \
+    || fail "atomics.c emitted no sc.w"
+  grep -q '^[[:space:]]*fence$' "$TMP/atomics.s" \
+    || fail "atomics.c emitted no fence"
+  "$MC" -triple=rvmin -mattr=+a -filetype=obj "$TMP/atomics.s" \
+    -o "$TMP/atomics.o" || fail "llvm-mc rejected the atomic output"
+  "$MC" -triple=rvmin -mattr=+a -filetype=obj "$RT/rvmin-rt.S" \
+    -o "$TMP/rt-at.o" || fail "llvm-mc rejected rvmin-rt.S"
+  "$MC" -triple=rvmin -mattr=+a -filetype=obj "$RT/start.S" \
+    -o "$TMP/start-at.o" || fail "llvm-mc rejected start.S"
+  "$LD" -m elf32lriscv -T "$RT/link.ld" -o "$TMP/atomics" \
+    "$TMP/start-at.o" "$TMP/atomics.o" "$TMP/rt-at.o" \
+    || fail "ld.lld could not link the atomics program"
+  "$QEMU" "$TMP/atomics"
+}
+
+STATUS=0
+OUT=$(run_atomics) || STATUS=$?
+[[ "$STATUS" -eq 0 ]] || fail "atomics program exited with $STATUS"
+echo "atomics: $OUT"
+echo "PASS: A-extension atomics ran under $QEMU (amoadd + lr.w/sc.w loops)"
+
 SIZE1=$(stat -c%s "$TMP/demo")
 SIZE2=$(stat -c%s "$TMP/demo-m")
 echo "PASS: linked $SIZE1 bytes (rv32i) and $SIZE2 bytes (rv32i+m), both ran under $QEMU"

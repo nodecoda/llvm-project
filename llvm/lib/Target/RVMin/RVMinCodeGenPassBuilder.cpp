@@ -10,6 +10,7 @@
 #include "RVMinAsmPrinter.h"
 #include "RVMinISelDAGToDAG.h"
 #include "RVMinTargetMachine.h"
+#include "llvm/CodeGen/AtomicExpand.h"
 #include "llvm/CodeGen/MachineFunctionAnalysisManager.h"
 #include "llvm/IR/Analysis.h"
 #include "llvm/IR/PassInstrumentation.h"
@@ -36,11 +37,20 @@ public:
                                    PassInstrumentationCallbacks *PIC)
       : CodeGenPassBuilder(TM, Opts, PIC) {}
 
+  void addIRPasses(PassManagerWrapper &PMW) override;
   Error addInstSelector(PassManagerWrapper &PMW) override;
   void addAsmPrinterBegin(PassManagerWrapper &PMW) override;
   void addAsmPrinter(PassManagerWrapper &PMW) override;
   void addAsmPrinterEnd(PassManagerWrapper &PMW) override;
 };
+
+void RVMinCodeGenPassBuilder::addIRPasses(PassManagerWrapper &PMW) {
+  // Chapter 22: needs to run before instruction selection so that
+  // setMaxAtomicSizeInBitsSupported, shouldInsertFencesForAtomic and the
+  // cmpxchg hook in RVMinISelLowering are honoured.
+  addFunctionPass(AtomicExpandPass(TM), PMW);
+  Base::addIRPasses(PMW);
+}
 
 Error RVMinCodeGenPassBuilder::addInstSelector(PassManagerWrapper &PMW) {
   addMachineFunctionPass(RVMinDAGToDAGISelPass(getTM()), PMW);

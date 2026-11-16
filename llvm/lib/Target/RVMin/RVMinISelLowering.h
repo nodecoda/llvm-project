@@ -42,6 +42,41 @@ public:
   /// magic-number sequence and should win the cost model.
   bool isIntDivCheap(EVT VT, AttributeList Attr) const override;
 
+  /// Chapter 22: atomics.  Atomic loads and stores become `fence` plus an
+  /// ordinary load/store; only read-modify-write operations keep an atomic
+  /// node, and those are selected as AMO instructions.
+  bool shouldInsertFencesForAtomic(const Instruction *I) const override {
+    return true;
+  }
+
+  /// Chapter 22: operations with a native AMO stay in the DAG (see the
+  /// patterns in RVMinInstrInfo.td); the rest become a cmpxchg loop.
+  TargetLowering::AtomicExpansionKind
+  shouldExpandAtomicRMWInIR(const AtomicRMWInst *RMW) const override;
+
+  /// Chapter 22: a 32-bit cmpxchg becomes a `lr.w`/`sc.w` retry loop.
+  /// Narrower cmpxchg values first widen to a word (see
+  /// setMinCmpXchgSizeInBits(32)) and then use the same loop.
+  TargetLowering::AtomicExpansionKind
+  shouldExpandAtomicCmpXchgInIR(const AtomicCmpXchgInst *CI) const override {
+    return CI->getCompareOperand()->getType()->isIntegerTy(32)
+               ? AtomicExpansionKind::LLSC
+               : AtomicExpansionKind::None;
+  }
+
+  /// Chapter 22: `lr.w` / `sc.w` for the LL/SC loop.  There is no target
+  /// intrinsic yet, so the cleanest way to get exactly these two instructions
+  /// into the loop is a single-instruction inline asm.
+  Value *emitLoadLinked(IRBuilderBase &Builder, Type *ValueType, Value *Addr,
+                        AtomicOrdering Ord) const override;
+  Value *emitStoreConditional(IRBuilderBase &Builder, Value *Val, Value *Addr,
+                              AtomicOrdering Ord) const override;
+
+  /// Chapter 22: inline asm constraint support, needed by the two hooks above.
+  std::pair<unsigned, const TargetRegisterClass *>
+  getRegForInlineAsmConstraint(const TargetRegisterInfo *TRI,
+                               StringRef Constraint, MVT VT) const override;
+
   SDValue LowerFormalArguments(SDValue Chain, CallingConv::ID CallConv,
                                bool IsVarArg,
                                const SmallVectorImpl<ISD::InputArg> &Ins,

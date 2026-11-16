@@ -27,7 +27,7 @@ RVMin 是一个从零写的 LLVM 后端，只实现 RISC-V 最小整数集（RV3
 | 11 | [11-e2e.md](11-e2e.md) | 端到端、CFI、switch、测试体系 | `scripts/rvmin-e2e.sh`、`cfi.ll` | `8c8c83378834` |
 | 12 | [12-run.md](12-run.md) | 链接与 QEMU 运行（ecall、运行时） | `scripts/rvmin-run.sh` | `4f71aa883223` |
 | 13 | [13-m-extension.md](13-m-extension.md) | 可选 M 扩展与优化空间 | `m-ext.ll`、M 语料 | `b075676cca65` |
-| 14 | [本索引](README.md) | 上篇验收：AC1–AC10 | `rvmin-verify-all.sh`（5 项） | `b3d4b6da5e43` |
+| 14 | [本索引](README.md) | 上篇验收：AC1–AC10 | `rvmin-verify-all.sh`（当时 5 项，现 6 项） | `b3d4b6da5e43` |
 
 ### 下篇：从能跑到像样（15–23）
 
@@ -40,7 +40,7 @@ RVMin 是一个从零写的 LLVM 后端，只实现 RISC-V 最小整数集（RV3
 | 19 | [19-const-muldiv.md](19-const-muldiv.md) | 常量乘除强度削减 | `+m` 下 `x/7` 无 libcall | `rvmin-ch19` |
 | 20 | [20-disassembler.md](20-disassembler.md) | 反汇编器 | 97 条语料往返 | `rvmin-ch20` |
 | 21 | [21-zbb-zbs.md](21-zbb-zbs.md) | Zbb/Zbs | `clz/cpop/rev8` 单条 | `rvmin-ch21` |
-| 22 | （规划中） | A 扩展 | `lr/sc` 程序在 QEMU 运行 | `rvmin-ch22` |
+| 22 | [22-atomics.md](22-atomics.md) | A 扩展与 AtomicExpand | 20 条 A 编码与 `riscv32` 一致；`lr/sc` 程序在 QEMU 运行 | `rvmin-ch22` |
 | 23 | （规划中） | 下篇验收 | 下篇 AC 表 | `rvmin-ch23` |
 
 每个章末都有对应 tag：`git checkout rvmin-ch16` 即可看到该章结束时的完整代码。
@@ -74,6 +74,7 @@ RVMin 是一个从零写的 LLVM 后端，只实现 RISC-V 最小整数集（RV3
 | 19 | `## 背景` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
 | 20 | `## 背景` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
 | 21 | `## 背景` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
+| 22 | `## 背景` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
 
 > 第 14、23 章是验收章，本身即证据表，不套用八要素模板。
 

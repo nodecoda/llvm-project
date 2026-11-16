@@ -366,6 +366,19 @@ bool RVMinAsmParser::parseOperand(OperandVector &Operands, StringRef Mnemonic) {
     return false;
   }
 
+  // `(rs1)` is a memory operand with a zero displacement, e.g.
+  // `lr.w a0, (a1)`.  Expressions can also start with a parenthesis, so only
+  // take this path when the token after `(` is a register.
+  if (getLexer().is(AsmToken::LParen)) {
+    const AsmToken &Next = getLexer().peekTok();
+    if (Next.is(AsmToken::Identifier) &&
+        matchRegister(Next.getIdentifier()) != RVMin::NoRegister) {
+      if (parseMemOpBaseReg(Operands).isFailure())
+        return Error(getLoc(), "expected memory base register");
+      return false;
+    }
+  }
+
   if (parseExpression(Operands).isSuccess()) {
     // `8(sp)` is two operands: the offset expression and the base register.
     if (getLexer().is(AsmToken::LParen)) {

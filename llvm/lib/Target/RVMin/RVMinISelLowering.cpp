@@ -26,7 +26,11 @@
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/SelectionDAG.h"
 #include "llvm/CodeGen/SelectionDAGNodes.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/IR/DiagnosticInfo.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InlineAsm.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace llvm;
@@ -39,6 +43,13 @@ RVMinTargetLowering::RVMinTargetLowering(const TargetMachine &TM,
     : TargetLowering(TM, STI) {
   addRegisterClass(MVT::i32, &RVMin::GPRRegClass);
   computeRegisterProperties(STI.getRegisterInfo());
+
+  // Chapter 22: with A, the RV32A instructions (lr.w/sc.w/amo*.w) are exactly
+  // what a 32-bit atomic needs.  Without A the size stays zero, which tells
+  // AtomicExpand to lower every atomic to an `__atomic_*` libcall.
+  setMaxAtomicSizeInBitsSupported(STI.hasStdExtA() ? 32 : 0);
+  // Narrow atomics are widened to a word before the LL/SC loop is built.
+  setMinCmpXchgSizeInBits(32);
 
   setStackPointerRegisterToSaveRestore(RVMin::X2);
   setBooleanContents(ZeroOrOneBooleanContent);
@@ -256,6 +267,72 @@ SDValue RVMinTargetLowering::PerformDAGCombine(SDNode *N,
 // right trade-off, except when the function is optimized for size: then one
 // `div`/`rem` is smaller than the sequence.  This mirrors what upstream
 // RISC-V does (`RISCVTargetLowering::isIntDivCheap`).
+static CallInst *emitAtomicAsm(IRBuilderBase &Builder, StringRef Asm,
+                              ArrayRef<Type *> ArgTys, ArrayRef<Value *> Args,
+                              StringRef Constraints) {
+  FunctionType *FTy =
+      FunctionType::get(Builder.getInt32Ty(), ArgTys, /*isVarArg=*/false);
+  InlineAsm *IA = InlineAsm::get(FTy, Asm, Constraints,
+                                 /*hasSideEffects=*/true);
+  return Builder.CreateCall(IA, Args);
+}
+
+Value *RVMinTargetLowering::emitLoadLinked(IRBuilderBase &Builder,
+                                           Type *ValueType, Value *Addr,
+                                           AtomicOrdering Ord) const {
+  assert(ValueType->isIntegerTy(32) && "RVMin A is a 32-bit LL/SC");
+  Value *AddrInt = Builder.CreatePtrToInt(Addr, Builder.getInt32Ty());
+  // aqrl is the conservative encoding: correct for every ordering.
+  return emitAtomicAsm(Builder, "lr.w.aqrl $0, ($1)",
+                       {Builder.getInt32Ty()}, {AddrInt}, "=r,r,~{memory}");
+}
+
+Value *RVMinTargetLowering::emitStoreConditional(IRBuilderBase &Builder,
+                                                 Value *Val, Value *Addr,
+                                                 AtomicOrdering Ord) const {
+  Value *AddrInt = Builder.CreatePtrToInt(Addr, Builder.getInt32Ty());
+  // sc.w returns 0 on success; AtomicExpand branches back while it is != 0.
+  return emitAtomicAsm(Builder, "sc.w.aqrl $0, $2, ($1)",
+                       {Builder.getInt32Ty(), Builder.getInt32Ty()},
+                       {AddrInt, Val}, "=r,r,r,~{memory}");
+}
+
+std::pair<unsigned, const TargetRegisterClass *>
+RVMinTargetLowering::getRegForInlineAsmConstraint(
+    const TargetRegisterInfo *TRI, StringRef Constraint, MVT VT) const {
+  if (Constraint == "r")
+    return {0, &RVMin::GPRRegClass};
+  return TargetLowering::getRegForInlineAsmConstraint(TRI, Constraint, VT);
+}
+
+TargetLowering::AtomicExpansionKind
+RVMinTargetLowering::shouldExpandAtomicRMWInIR(const AtomicRMWInst *RMW) const {
+  // These have a native AMO instruction and are matched in RVMinInstrInfo.td.
+  // Every AMO is emitted in its .aqrl form, which is a valid (if
+  // conservative) implementation of any ordering.
+  // Only i32 has AMO instructions; everything narrower is widened to a word
+  // by expandPartwordAtomicRMW and ends up in the LL/SC loop instead.
+  if (!RMW->getType()->isIntegerTy(32))
+    return AtomicExpansionKind::CmpXChg;
+
+  switch (RMW->getOperation()) {
+  case AtomicRMWInst::Add:
+  case AtomicRMWInst::And:
+  case AtomicRMWInst::Or:
+  case AtomicRMWInst::Xor:
+  case AtomicRMWInst::Xchg:
+  case AtomicRMWInst::Max:
+  case AtomicRMWInst::Min:
+  case AtomicRMWInst::UMax:
+  case AtomicRMWInst::UMin:
+    return AtomicExpansionKind::None;
+  default:
+    // No AMO for sub/nand/smin/smax: let AtomicExpand build a cmpxchg loop,
+    // which shouldExpandAtomicCmpXchgInIR then turns into lr.w/sc.w.
+    return AtomicExpansionKind::CmpXChg;
+  }
+}
+
 bool RVMinTargetLowering::isIntDivCheap(EVT VT, AttributeList Attr) const {
   return VT == MVT::i32 && Attr.hasFnAttr(Attribute::MinSize) &&
          isOperationLegal(ISD::SDIV, VT);

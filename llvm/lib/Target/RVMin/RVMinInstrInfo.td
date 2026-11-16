@@ -393,6 +393,16 @@ def : Pat<(i32 (load GPR:$addr)), (LW GPR:$addr, 0)>;
 def : Pat<(i32 (load (add GPR:$addr, simm12:$off))),
           (LW GPR:$addr, simm12:$off)>;
 def : Pat<(store GPR:$val, GPR:$addr), (SW GPR:$val, GPR:$addr, 0)>;
+// Chapter 22: after AtomicExpand has split the fences out, an atomic load or
+// store is a plain LW/SW in the DAG.  These patterns are what keeps the
+// monotonic load/store that bracketInstWithFences leaves behind selectable.
+def : Pat<(i32 (atomic_load GPR:$addr)), (LW GPR:$addr, 0)>;
+def : Pat<(i32 (atomic_load (add GPR:$addr, simm12:$off))),
+          (LW GPR:$addr, simm12:$off)>;
+def : Pat<(atomic_store GPR:$val, GPR:$addr),
+          (SW GPR:$val, GPR:$addr, 0)>;
+def : Pat<(atomic_store GPR:$val, (add GPR:$addr, simm12:$off)),
+          (SW GPR:$val, GPR:$addr, simm12:$off)>;
 def : Pat<(store GPR:$val, (add GPR:$addr, simm12:$off)),
           (SW GPR:$val, GPR:$addr, simm12:$off)>;
 
@@ -642,6 +652,127 @@ def : Pat<(and GPR:$rs1, (not (shl 1, GPR:$rs2))),
 def : Pat<(and (srl GPR:$rs1, GPR:$rs2), 1), (BEXT GPR:$rs1, GPR:$rs2)>;
 
 } // Predicates = [HasStdExtZbs]
+
+//===----------------------------------------------------------------------===//
+// A extension (chapter 22)
+//===----------------------------------------------------------------------===//
+//
+// RV32A has eleven instructions in two groups:
+//
+//   lr.w  rd, (rs1)              load-reserved
+//   sc.w  rd, rs2, (rs1)         store-conditional
+//   amo<op>.w rd, rs2, (rs1)     atomic memory operation
+//
+// All use opcode 0b0101111 and funct3 010.  The operation is funct5 in
+// Inst{31:27}; aq/rl are Inst{26:25}; rs2 is Inst{24:20}.  LR.W leaves rs2
+// zero.  Every instruction has plain, .aq, .rl and .aqrl spellings.
+//
+// Code generation uses the strongest .aqrl form for every atomic RMW: a
+// teaching backend is allowed to be conservative, and aq=rl=1 is correct for
+// all orderings (it is exactly what seq_cst needs).
+
+class RVMinAMOBase<bits<5> funct5, bits<2> aqrl> : RVMinInst<(outs), (ins), "", []> {
+  let Inst{6-0}   = OPC_AMO.Value;
+  let Inst{14-12} = 0b010;
+  let Inst{26-25} = aqrl;
+  let Inst{31-27} = funct5;
+  let TSFlags{4-0} = FmtR.Value;
+  let mayLoad = 1;
+  let mayStore = 1;
+}
+
+class RVMinAMOLR<bits<2> aqrl, string mnemonic> : RVMinAMOBase<0b00010, aqrl> {
+  bits<5> rd;
+  bits<5> rs1;
+  let OutOperandList = (outs GPR:$rd);
+  let InOperandList = (ins GPR:$rs1);
+  let AsmString = mnemonic # " $rd, (${rs1})";
+  let Inst{11-7}  = rd;
+  let Inst{19-15} = rs1;
+  let Inst{24-20} = 0;
+}
+
+class RVMinAMORO<bits<5> funct5, bits<2> aqrl, string mnemonic>
+    : RVMinAMOBase<funct5, aqrl> {
+  bits<5> rd;
+  bits<5> rs1;
+  bits<5> rs2;
+  let OutOperandList = (outs GPR:$rd);
+  let InOperandList = (ins GPR:$rs2, GPR:$rs1);
+  let AsmString = mnemonic # " $rd, $rs2, (${rs1})";
+  let Inst{11-7}  = rd;
+  let Inst{19-15} = rs1;
+  let Inst{24-20} = rs2;
+}
+
+multiclass RVMinAMOLR<string base> {
+  def ""    : RVMinAMOLR<0b00, base>;
+  def _AQ   : RVMinAMOLR<0b10, base # ".aq">;
+  def _RL   : RVMinAMOLR<0b01, base # ".rl">;
+  def _AQRL : RVMinAMOLR<0b11, base # ".aqrl">;
+}
+
+multiclass RVMinAMORO<string base, bits<5> funct5> {
+  def ""    : RVMinAMORO<funct5, 0b00, base>;
+  def _AQ   : RVMinAMORO<funct5, 0b10, base # ".aq">;
+  def _RL   : RVMinAMORO<funct5, 0b01, base # ".rl">;
+  def _AQRL : RVMinAMORO<funct5, 0b11, base # ".aqrl">;
+}
+
+let Predicates = [HasStdExtA] in {
+defm LR_W : RVMinAMOLR<"lr.w">;
+defm SC_W : RVMinAMORO<"sc.w", 0b00011>;
+defm AMOSWAP_W : RVMinAMORO<"amoswap.w", 0b00001>;
+defm AMOADD_W  : RVMinAMORO<"amoadd.w",  0b00000>;
+defm AMOXOR_W  : RVMinAMORO<"amoxor.w",  0b00100>;
+defm AMOAND_W  : RVMinAMORO<"amoand.w",  0b01100>;
+defm AMOOR_W   : RVMinAMORO<"amoor.w",   0b01000>;
+defm AMOMIN_W  : RVMinAMORO<"amomin.w",  0b10000>;
+defm AMOMAX_W  : RVMinAMORO<"amomax.w",  0b10100>;
+defm AMOMINU_W : RVMinAMORO<"amominu.w", 0b11000>;
+defm AMOMAXU_W : RVMinAMORO<"amomaxu.w", 0b11100>;
+} // Predicates = [HasStdExtA]
+
+// FENCE and FENCE.I have no explicit operands in this course.  The FENCE
+// encoding is the strongest form (`fence iorw, iorw`); using it for every
+// ordering is conservative and always correct.
+class RVMinFixedInst<bits<32> inst, string mnemonic>
+    : RVMinInst<(outs), (ins), mnemonic, []> {
+  let Inst = inst;
+  let hasSideEffects = 1;
+}
+
+let Predicates = [HasStdExtA] in {
+def FENCE   : RVMinFixedInst<0x0ff0000f, "fence">;
+def FENCE_I : RVMinFixedInst<0x0000100f, "fence.i">;
+
+// IR `fence` instructions (ordering 4=acquire, 5=release, 6=acq_rel,
+// 7=seq_cst) all become the same fence.  ATOMIC_FENCE's second operand is
+// the sync scope, matched with `timm`.
+def : Pat<(atomic_fence (i32 4), (timm)), (FENCE)>;
+def : Pat<(atomic_fence (i32 5), (timm)), (FENCE)>;
+def : Pat<(atomic_fence (i32 6), (timm)), (FENCE)>;
+def : Pat<(atomic_fence (i32 7), (timm)), (FENCE)>;
+
+// Atomic read-modify-write operations that have a native AMO.  The DAG node
+// carries the ordering, but every form uses the .aqrl encoding: stronger than
+// needed, yet correct for every ordering, and it keeps the pattern table small
+// enough to read.  Operand order in the AMO instruction is (rs2, rs1); the
+// atomic node is (address, value).
+class RVMinAMOPat<SDPatternOperator OpNode, RVMinInst Inst>
+    : Pat<(i32 (OpNode (i32 GPR:$rs1), (i32 GPR:$rs2))),
+          (Inst GPR:$rs2, GPR:$rs1)>;
+
+def : RVMinAMOPat<atomic_load_add,  AMOADD_W_AQRL>;
+def : RVMinAMOPat<atomic_load_and,  AMOAND_W_AQRL>;
+def : RVMinAMOPat<atomic_load_or,   AMOOR_W_AQRL>;
+def : RVMinAMOPat<atomic_load_xor,  AMOXOR_W_AQRL>;
+def : RVMinAMOPat<atomic_swap,      AMOSWAP_W_AQRL>;
+def : RVMinAMOPat<atomic_load_max,  AMOMAX_W_AQRL>;
+def : RVMinAMOPat<atomic_load_min,  AMOMIN_W_AQRL>;
+def : RVMinAMOPat<atomic_load_umax, AMOMAXU_W_AQRL>;
+def : RVMinAMOPat<atomic_load_umin, AMOMINU_W_AQRL>;
+} // Predicates = [HasStdExtA]
 
 //===----------------------------------------------------------------------===//
 // SYSTEM: environment calls

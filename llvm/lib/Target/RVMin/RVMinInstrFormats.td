@@ -68,6 +68,8 @@ def OPC_BRANCH  : RVMinOpcode<0b1100011>;
 def OPC_JALR    : RVMinOpcode<0b1100111>;
 def OPC_JAL     : RVMinOpcode<0b1101111>;
 def OPC_SYSTEM  : RVMinOpcode<0b1110011>;
+def OPC_AMO     : RVMinOpcode<0b0101111>;  // ATOMIC
+def OPC_MISC_MEM: RVMinOpcode<0b0001111>;  // FENCE / FENCE.I
 
 class RVMinInst<dag outs, dag ins, string asmstr, list<dag> pattern>
     : Instruction {

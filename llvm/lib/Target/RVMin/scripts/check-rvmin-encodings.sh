@@ -137,9 +137,28 @@ fi
 grep -q "'Zbs' (Single-Bit Instructions)" "$TMP/no-zs.err" \
   || fail "missing Zbs diagnostic without +zbs"
 
+# 2g. A extension (chapter 22).  Same shape again: byte-identical encodings
+# with -mattr=+a, and a diagnostic when the feature is missing.
+AC="$HERE/rvmin-a-encoding-corpus.s"
+"$BIN/llvm-mc" -triple=rvmin -mattr=+a -show-encoding "$AC" > "$TMP/rvmin-a.txt"
+"$BIN/llvm-mc" -triple=riscv32 -mattr=+a -show-encoding "$AC" > "$TMP/ref-a.txt"
+extract "$TMP/rvmin-a.txt" > "$TMP/rvmin-a.enc"
+extract "$TMP/ref-a.txt" > "$TMP/ref-a.enc"
+NA=$(wc -l < "$TMP/rvmin-a.enc")
+[[ "$NA" -eq 20 ]] || fail "A corpus produced $NA encodings, want 20"
+diff -u "$TMP/ref-a.enc" "$TMP/rvmin-a.enc" > "$TMP/diff-a.txt" \
+  || { head -20 "$TMP/diff-a.txt" >&2; fail "A encoding mismatch between rvmin and riscv32"; }
+
+if "$BIN/llvm-mc" -triple=rvmin -filetype=obj "$AC" -o "$TMP/no-a.o" \
+     > /dev/null 2> "$TMP/no-a.err"; then
+  fail "llvm-mc -triple=rvmin accepted A instructions without +a"
+fi
+grep -q "'A' (Atomic Instructions)" "$TMP/no-a.err" \
+  || fail "missing A diagnostic without +a"
+
 # 3. ELF identification.
 MACHINE=$("$BIN/llvm-readelf" -h "$TMP/rvmin.o" | awk -F: '/Machine:/ {gsub(/^ +| +$/, "", $2); print $2}')
 [[ "$MACHINE" == "RISC-V" ]] || fail "ELF machine is '$MACHINE', want RISC-V"
 
-echo "PASS: $N RV32I + $NM M + $NZB Zbb + $NZS Zbs instructions, .text identical"
+echo "PASS: $N RV32I + $NM M + $NZB Zbb + $NZS Zbs + $NA A instructions, .text identical"
 echo "      (incl. label fixups and %hi/%lo), ELF machine RISC-V, missing-feature diagnostic OK"

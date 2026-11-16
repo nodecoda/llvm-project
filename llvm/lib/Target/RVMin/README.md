@@ -76,7 +76,7 @@ git checkout rvmin-ch16     # 第 16 章（大栈帧）结束
 | 19 | [常量乘除的强度削减](docs/19-const-muldiv.md) | 完成 |
 | 20 | [反汇编器](docs/20-disassembler.md) | 完成 |
 | 21 | [Zbb/Zbs 位操作扩展](docs/21-zbb-zbs.md) | 完成 |
-| 22 | A 扩展与 AtomicExpand | 规划中 |
+| 22 | [A 扩展与 AtomicExpand](docs/22-atomics.md) | 完成 |
 | 23 | 下篇验收 | 规划中 |
 
 ## 当前限制（上篇结束时，第 14 章）
