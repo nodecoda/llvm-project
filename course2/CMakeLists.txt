@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_executable(rsim
   rsim/main.cpp
+  rsim/cpu.cpp
   rsim/elf.cpp
   rsim/memory.cpp
 )

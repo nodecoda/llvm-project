@@ -4,12 +4,17 @@
 #
 # Usage: course2-verify.sh <llvm-bin-dir> <rsim-binary>
 #
-# Chapter 01 checks:
+# Chapter 01-02 checks:
 #   * five executables built by the first course load with an entry point and
 #     a PT_LOAD list identical to llvm-readelf's;
 #   * `rsim FILE` loads the image and reports it;
 #   * truncated headers, bad magic, non-ET_EXEC input and missing files all
 #     fail with exit code 125 and a one-line diagnostic.
+#
+# Chapter 02 checks:
+#   * a .bss array (p_memsz > p_filesz) reads back as zero;
+#   * sp is 16-byte aligned, inside the stack region, and its page is mapped;
+#   * an access outside mapped memory is a trap (exit code 126).
 #
 set -euo pipefail
 
@@ -143,5 +148,65 @@ expect_reject truncated "$TMP/truncated"
 expect_reject bad-magic "$TMP/bad-magic"
 expect_reject et-rel "$TMP/demo.o"
 expect_reject missing "$TMP/does-not-exist"
+
+# --- Chapter 02: .bss, stack, traps -------------------------------------
+
+cat > "$TMP/bss.c" <<'C'
+int zeroed[16];
+int initialized = 0x12345678;
+int main(void) { return zeroed[0] + initialized; }
+C
+build_program bss "$TMP/bss.c" 2
+
+# The zeroed array lives past p_filesz, in the tail of a PT_LOAD that has
+# p_memsz > p_filesz.  If the loader forgot to zero-fill, the dump below
+# would show stale bytes.
+python3 - "$READELF" "$TMP/bss" <<'PY'
+import re, subprocess, sys
+readelf, elf = sys.argv[1:3]
+out = subprocess.run([readelf, "-l", elf], capture_output=True, text=True,
+                     check=True).stdout
+ok = False
+for line in out.splitlines():
+    m = re.search(r"LOAD\s+0x[0-9a-f]+\s+0x[0-9a-f]+\s+0x[0-9a-f]+\s+"
+                  r"0x([0-9a-f]+)\s+0x([0-9a-f]+)", line)
+    if m and int(m.group(2), 16) > int(m.group(1), 16):
+        ok = True
+if not ok:
+    sys.exit("no PT_LOAD with p_memsz > p_filesz; the .bss case is not set up")
+PY
+CHECKS=$((CHECKS + 1))
+
+ADDR=$("$READELF" -s "$TMP/bss" | awk '$8 == "zeroed" {print "0x" $2; exit}')
+[[ -n "$ADDR" ]] || fail "zeroed symbol not found in .symtab"
+"$RSIM" --dump-mem "$TMP/bss" "$ADDR" 64 > "$TMP/bss.dump" \
+  || fail "rsim could not dump the .bss array"
+[[ -z "$(tr -d ' 0\n' < "$TMP/bss.dump")" ]] \
+  || fail ".bss array is not zero: $(cat "$TMP/bss.dump")"
+CHECKS=$((CHECKS + 1))
+
+# sp must be 16-byte aligned and inside the documented stack region, and the
+# stack must be mapped (dump the bytes just below sp).
+"$RSIM" "$TMP/demo" > "$TMP/state.txt" || fail "rsim could not reset demo"
+SP=$(sed -n 's/.*sp 0x\([0-9a-f]*\).*/\1/p' "$TMP/state.txt")
+[[ -n "$SP" ]] || fail "reset output has no sp"
+python3 - "$SP" <<'PY'
+import sys
+sp = int(sys.argv[1], 16)
+assert sp % 16 == 0, "sp 0x%08x is not 16-byte aligned" % sp
+assert 0x7ff00000 <= sp < 0x80000000, "sp 0x%08x is outside the stack region" % sp
+PY
+"$RSIM" --dump-mem "$TMP/demo" "$((16#$SP - 16))" 16 > /dev/null \
+  || fail "the stack page below sp is not mapped"
+CHECKS=$((CHECKS + 1))
+
+# An access to unmapped memory is a trap, not a silent zero.
+set +e
+"$RSIM" --dump-mem "$TMP/bss" 0x90000000 4 > "$TMP/oob.out" 2> "$TMP/oob.err"
+OOB_RC=$?
+set -e
+[[ "$OOB_RC" -eq 126 ]] || fail "out-of-bounds access exited $OOB_RC, want 126"
+grep -q '^rsim: trap: ' "$TMP/oob.err" || fail "out-of-bounds access had no trap line"
+CHECKS=$((CHECKS + 1))
 
 echo "$CHECKS checks"

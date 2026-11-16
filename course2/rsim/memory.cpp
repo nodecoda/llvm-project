@@ -62,6 +62,15 @@ const uint8_t *Memory::pageFor(uint32_t addr) const {
   return it->second.data();
 }
 
+std::vector<uint8_t> Memory::readBytes(uint64_t addr, uint64_t size) const {
+  if (!isMapped(addr, size))
+    throw MemoryError("unmapped access at " + addrString(uint32_t(addr)));
+  std::vector<uint8_t> bytes(size);
+  for (uint64_t i = 0; i < size; ++i)
+    bytes[i] = read8(uint32_t(addr + i));
+  return bytes;
+}
+
 uint8_t Memory::read8(uint32_t addr) const {
   return pageFor(addr)[addr & (kPageSize - 1)];
 }

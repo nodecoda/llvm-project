@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <unordered_map>
+#include <vector>
 
 namespace rsim {
 
@@ -30,6 +31,8 @@ public:
   void map(uint64_t addr, uint64_t size);
   bool isMapped(uint64_t addr, uint64_t size) const;
   void load(const Image &image);
+
+  std::vector<uint8_t> readBytes(uint64_t addr, uint64_t size) const;
 
   uint8_t read8(uint32_t addr) const;
   uint16_t read16(uint32_t addr) const;
