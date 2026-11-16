@@ -73,6 +73,7 @@ class Backend:
 MAIN_OUTPUTS = {
     "register-info": "<Target>GenRegisterInfo.inc",
     "instr-info": "<Target>GenInstrInfo.inc",
+    "asm-writer": "<Target>GenAsmWriter.inc",
 }
 
 BACKENDS = {
@@ -141,6 +142,50 @@ BACKENDS = {
         extra_roots=(
             ("Instruction", "llvm/utils/TableGen/Common/CodeGenTarget.cpp",
              'getAllDerivedDefinitions("Instruction")'),
+        ),
+        helper_classes=(
+            "HwModeSelect", "RegInfoByHwMode", "RegInfo",
+            "SubRegRangeByHwMode", "SubRegRange", "DwarfRegAlias",
+            "RegClassByHwMode",
+        ),
+    ),
+    "asm-writer": Backend(
+        name="asm-writer",
+        emitter="llvm/utils/TableGen/AsmWriterEmitter.cpp",
+        sources=(
+            ("llvm/utils/TableGen/AsmWriterEmitter.cpp", "emitter"),
+            ("llvm/utils/TableGen/Common/AsmWriterInst.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/AsmWriterInst.h", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenInstAlias.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenInstAlias.h", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenInstruction.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenInstruction.h", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenTarget.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenTarget.h", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenRegisters.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenRegisters.h", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenHwModes.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenHwModes.h", "shared"),
+            ("llvm/utils/TableGen/Common/InfoByHwMode.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/InfoByHwMode.h", "shared"),
+        ),
+        td_files=("llvm/include/llvm/Target/Target.td",),
+        roots_from=("llvm/utils/TableGen/AsmWriterEmitter.cpp",),
+        extra_roots=(
+            ("Instruction", "llvm/utils/TableGen/Common/CodeGenTarget.cpp",
+             'getAllDerivedDefinitions("Instruction")'),
+            ("Register", "llvm/utils/TableGen/Common/CodeGenRegisters.cpp",
+             'getAllDerivedDefinitions("Register")'),
+            ("RegisterClass", "llvm/utils/TableGen/Common/CodeGenRegisters.cpp",
+             'getAllDerivedDefinitions("RegisterClass")'),
+            ("Operand", "llvm/utils/TableGen/InstrInfoEmitter.cpp",
+             'getAllDerivedDefinitions("Operand")'),
+            ("RegisterOperand", "llvm/utils/TableGen/InstrInfoEmitter.cpp",
+             'getAllDerivedDefinitions("RegisterOperand")'),
+            ("RegAltNameIndex", "llvm/utils/TableGen/RegisterInfoEmitter.cpp",
+             "Target.getRegAltNameIndices()"),
+            ("AsmWriter", "llvm/utils/TableGen/Common/CodeGenTarget.cpp",
+             'getValueAsListOfDefs("AssemblyWriters")'),
         ),
         helper_classes=(
             "HwModeSelect", "RegInfoByHwMode", "RegInfo",
@@ -307,10 +352,44 @@ INSTR_INFO_ANNOTATIONS = {
     "Objects": "按 HwMode 绑定的对象列表；`RegisterByHwMode` 是寄存器，`RegInfoByHwMode`/`SubRegRangeByHwMode` 是参数。",
     "Offset": "子寄存器/范围的起始位；`-1` 表示不固定。",
 }
+# -gen-asm-writer consumes the instruction/register schemas through the same
+# shared closure as instr-info, plus the alias and asm-writer-specific fields.
+# Reuse the common instruction semantics and override the entries where the
+# asm-writer meaning differs.
+ASM_WRITER_ANNOTATIONS = {
+    k: v for k, v in INSTR_INFO_ANNOTATIONS.items()
+    if k not in {"Body", "FunctionName", "Instruction"}
+}
+ASM_WRITER_ANNOTATIONS.update({
+    # --- asm-writer-specific ----------------------------------------------
+    "AsmString": "汇编模板；asm writer 解析 `$operand`/`{a|b}` 并生成打印 switch。",
+    "AsmWriterClassName": "`AsmWriter` 的 C++ 类名后缀；生成 `<Target><ClassName>`。",
+    "PassSubtarget": "是否把 `MCSubtargetInfo` 传给 print 方法；影响生成函数签名。",
+    "Variant": "汇编变体编号；展开 `{a|b|c}` 时选择第几个分支。",
+    "UseBytecode": "为 true 时生成 bytecode 表 + 解释器，而不是大 switch。",
+    # --- InstAlias ---------------------------------------------------------
+    "EmitPriority": "`InstAlias` 的打印优先级；0 禁用别名打印，1 在无冲突时启用。",
+    "ResultInst": "`InstAlias` 的目标指令 dag；决定别名展开成哪个 MCInst。",
+    # --- registers / alt names --------------------------------------------
+    "AsmName": "寄存器的主汇编名；asm writer 打印寄存器操作数时使用。",
+    "AltNames": "寄存器的备用汇编名列表；与 `RegAltNameIndices` 配对。",
+    "RegAltNameIndices": "与 `AltNames` 一一对应的别名索引；asm writer 按索引选名字。",
+    "FallbackRegAltNameIndex": "备用寄存器别名索引；`AltNames` 缺失时的回退。",
+    "Aliases": "寄存器别名列表；asm writer 用于别名/规范化寄存器名。",
+    "CostPerUse": "每寄存器成本序列；共享寄存器模型消费。",
+    "CoveredBySubRegs": "值由子寄存器决定；共享寄存器模型消费。",
+    "SubRegs": "子寄存器列表；共享寄存器模型消费。",
+    "SubRegIndices": "子寄存器索引；与 `SubRegs` 一一对应。",
+    "isArtificial": "合成寄存器标记；asm writer 特殊处理。",
+    "isConstant": "常量寄存器标记；asm writer/寄存器模型消费。",
+    "MCOperandPredicate": "`Operand` 的 MC operand 谓词；asm writer 判断能否打印。",
+    "Predicates": "指令/别名谓词列表；共享层解析，asm writer 用于打印条件。",
+})
 
 ANNOTATIONS = {
     "register-info": REGISTER_INFO_ANNOTATIONS,
     "instr-info": INSTR_INFO_ANNOTATIONS,
+    "asm-writer": ASM_WRITER_ANNOTATIONS,
 }
 
 # Fields that are declared on a consumed class but intentionally not read by
@@ -363,10 +442,22 @@ INSTR_INFO_UNUSED_NOTES = {
     "isAsmParserOnly": "仅汇编器使用，codegen 不可见。",
     "supportsDeactivationSymbol": "指令级 deactivation 标记；其它后端消费。",
 }
+ASM_WRITER_UNUSED_NOTES = dict(INSTR_INFO_UNUSED_NOTES)
+# MCOperandPredicate is consumed by asm-writer, so drop the instr-info note.
+ASM_WRITER_UNUSED_NOTES.pop("MCOperandPredicate", None)
+ASM_WRITER_UNUSED_NOTES.update({
+    "DwarfNumbers": "DWARF 编号；`-gen-register-info` 消费。",
+    "HWEncoding": "寄存器编码；`-gen-register-info` 消费。",
+    "PositionOrder": "寄存器枚举顺序；核心排序器消费。",
+    "UseInstAsmMatchConverter": "别名是否复用目标的 AsmMatchConverter；asm matcher 消费。",
+    "UseLogicalOperandMappings": "逻辑操作数映射开关；`-gen-instr-info` 消费。",
+    "UseNamedOperandTable": "命名操作数表开关；`-gen-instr-info` 消费。",
+})
 
 UNUSED_NOTES = {
     "register-info": REGISTER_INFO_UNUSED_NOTES,
     "instr-info": INSTR_INFO_UNUSED_NOTES,
+    "asm-writer": ASM_WRITER_UNUSED_NOTES,
 }
 
 # Name-level contract: record names and generated identifiers that are not
@@ -404,12 +495,21 @@ REGISTER_INFO_MAGIC_NAMES = (
      r'"LLVM_READONLY MCRegister get"',
      "`RegisterByHwMode` def 名派生的 getter。"),
 )
-
 # -gen-instr-info has no name-level API: it compares target/opcode names, not
 # magic def names, so this table is intentionally empty.
+ASM_WRITER_MAGIC_NAMES = (
+    ("NoRegAltName",
+     r'"NoRegAltName"',
+     "缺少 AltName 时的哨兵；asm writer 回退到主 `AsmName`。"),
+    ("PHI",
+     r'"PHI"',
+     "asm writer 跳过 PHI 的别名排序/打印。"),
+)
+
 MAGIC_NAMES = {
     "register-info": REGISTER_INFO_MAGIC_NAMES,
     "instr-info": (),
+    "asm-writer": ASM_WRITER_MAGIC_NAMES,
 }
 
 MATRIX_BEGIN = "<!-- BEGIN: GENERATED PROJECTION MATRIX -->"
@@ -482,10 +582,37 @@ INSTR_INFO_DERIVATIONS = (
      r'getValueAsDef\("RegClass"\)',
      "把 `RegisterOperand` 解析到具体 `RegisterClass`，决定寄存器操作数信息。"),
 )
+ASM_WRITER_DERIVATIONS = (
+    ("alias construction", "InstAlias",
+     r'CodeGenInstAlias::CodeGenInstAlias',
+     "把 `ResultInst` dag 展开成别名操作数，并解析寄存器/立即数。"),
+    ("asm string parsing", "Instruction.AsmString",
+     r'AsmWriterInst::AsmWriterInst',
+     "把汇编模板拆成 literal/operand/variant 片段，供打印 switch 使用。"),
+    ("asm writer selection", "Target.AssemblyWriters",
+     r'getValueAsListOfDefs\("AssemblyWriters"\)',
+     "按 `-asmwriternum` 选择目标的一个 `AsmWriter`。"),
+    ("instruction ordering", "Instruction",
+     r'getAllDerivedDefinitions\("Instruction"\)',
+     "按记录名排序，决定 opcode 编号与打印表顺序。"),
+    ("register ordering", "Register",
+     r'getAllDerivedDefinitions\("Register"\)',
+     "按 `PositionOrder`/名字排序，决定寄存器枚举与名字表顺序。"),
+    ("alt-name resolution", "Register.RegAltNameIndices",
+     r'getRegAltNameIndices',
+     "把 `RegAltNameIndices` 解析成实际的别名索引表。"),
+    ("hw-mode selection", "HwModeSelect.Objects",
+     r'zip_equal\(Modes, Objects\)',
+     "按 ModeId 把 `Objects[i]` 绑定到 `Modes[i]`。"),
+    ("operand type resolution", "RegisterOperand.RegClass",
+     r'getValueAsDef\("RegClass"\)',
+     "把 `RegisterOperand` 解析到具体 `RegisterClass`。"),
+)
 
 DERIVATIONS = {
     "register-info": REGISTER_INFO_DERIVATIONS,
     "instr-info": INSTR_INFO_DERIVATIONS,
+    "asm-writer": ASM_WRITER_DERIVATIONS,
 }
 
 
