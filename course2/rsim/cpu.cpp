@@ -1,16 +1,18 @@
-//===-- cpu.cpp - reset and the decode/execute loop, chapters 02-03 -------===//
+//===-- cpu.cpp - reset and the decode/execute loop, chapters 02-04 -------===//
 //
 // Every instruction is one step: fetch a word from pc, decode it, compute the
 // result, write it back through setReg() (which drops x0 writes), and move pc.
-// Loads and stores go through Memory, so an unmapped address is a trap rather
-// than a silent zero.
+//
+// Chapter 04 makes the traps precise: a misaligned target, a misaligned load
+// or store, an unmapped page and an unknown encoding all raise a Trap that
+// carries (cause, tval, epc) where epc is the address of the *faulting*
+// instruction.  Chapter 08 copies exactly these fields into the CSRs.
 //
 //===----------------------------------------------------------------------===//
 
 #include "cpu.h"
 #include "decode.h"
 
-#include <cstdarg>
 #include <cstdio>
 #include <limits>
 
@@ -18,17 +20,12 @@ namespace rsim {
 
 namespace {
 
-[[noreturn]] void trapf(const char *fmt, ...) {
-  char buf[256];
-  va_list ap;
-  va_start(ap, fmt);
-  std::vsnprintf(buf, sizeof(buf), fmt, ap);
-  va_end(ap);
-  throw Trap(buf);
+uint32_t sext8(uint8_t v) {
+  return static_cast<uint32_t>(static_cast<int32_t>(static_cast<int8_t>(v)));
 }
-
-uint32_t sext8(uint8_t v) { return static_cast<uint32_t>(static_cast<int32_t>(static_cast<int8_t>(v))); }
-uint32_t sext16(uint16_t v) { return static_cast<uint32_t>(static_cast<int32_t>(static_cast<int16_t>(v))); }
+uint32_t sext16(uint16_t v) {
+  return static_cast<uint32_t>(static_cast<int32_t>(static_cast<int16_t>(v)));
+}
 
 } // namespace
 
@@ -45,15 +42,74 @@ void Cpu::reset(const Image &image, Memory &memory) {
   executed_ = 0;
 }
 
+uint8_t Cpu::load8(uint32_t addr, uint32_t epc) {
+  try {
+    return memory().read8(addr);
+  } catch (const MemoryError &err) {
+    throw Trap(TrapCause::LoadAccessFault, addr, epc, err.what());
+  }
+}
+
+uint16_t Cpu::load16(uint32_t addr, uint32_t epc) {
+  try {
+    return memory().read16(addr);
+  } catch (const MemoryError &err) {
+    throw Trap(TrapCause::LoadAccessFault, addr, epc, err.what());
+  }
+}
+
+uint32_t Cpu::load32(uint32_t addr, uint32_t epc) {
+  try {
+    return memory().read32(addr);
+  } catch (const MemoryError &err) {
+    throw Trap(TrapCause::LoadAccessFault, addr, epc, err.what());
+  }
+}
+
+void Cpu::store8(uint32_t addr, uint8_t value, uint32_t epc) {
+  try {
+    memory().write8(addr, value);
+  } catch (const MemoryError &err) {
+    throw Trap(TrapCause::StoreAccessFault, addr, epc, err.what());
+  }
+}
+
+void Cpu::store16(uint32_t addr, uint16_t value, uint32_t epc) {
+  try {
+    memory().write16(addr, value);
+  } catch (const MemoryError &err) {
+    throw Trap(TrapCause::StoreAccessFault, addr, epc, err.what());
+  }
+}
+
+void Cpu::store32(uint32_t addr, uint32_t value, uint32_t epc) {
+  try {
+    memory().write32(addr, value);
+  } catch (const MemoryError &err) {
+    throw Trap(TrapCause::StoreAccessFault, addr, epc, err.what());
+  }
+}
+
 bool Cpu::step() {
   if (halted_)
     return false;
 
   const uint32_t at = pc;
-  const uint32_t word = memory().read32(at);
+  if (at & 3u)
+    throw Trap(TrapCause::InstructionAddressMisaligned, at, at,
+               "pc is not 4-byte aligned");
+
+  uint32_t word = 0;
+  try {
+    word = memory().read32(at);
+  } catch (const MemoryError &err) {
+    throw Trap(TrapCause::InstructionAccessFault, at, at, err.what());
+  }
+
   const Decoded d = decode(word);
   if (d.id == Insn::ILLEGAL)
-    trapf("illegal instruction 0x%08x at 0x%08x", word, at);
+    throw Trap(TrapCause::IllegalInstruction, word, at,
+               "no RV32I/M instruction matches");
   ++executed_;
 
   uint32_t next = at + 4;
@@ -66,72 +122,102 @@ bool Cpu::step() {
   case Insn::ILLEGAL:
     break; // not reachable: rejected above
 
-  case Insn::LUI:   // decode() already zeroed the low 12 bits
+  case Insn::LUI: // decode() already zeroed the low 12 bits
     setReg(d.rd, imm);
     break;
   case Insn::AUIPC:
     setReg(d.rd, at + imm);
     break;
-  case Insn::JAL:
+  case Insn::JAL: {
+    const uint32_t target = at + imm;
+    if (target & 3u)
+      throw Trap(TrapCause::InstructionAddressMisaligned, target, at,
+                 "jal target");
     setReg(d.rd, at + 4);
-    next = at + imm;
+    next = target;
     break;
+  }
   case Insn::JALR: {
     const uint32_t target = (a + imm) & ~1u; // the LSB is never part of it
+    if (target & 3u)
+      throw Trap(TrapCause::InstructionAddressMisaligned, target, at,
+                 "jalr target");
     setReg(d.rd, at + 4);
     next = target;
     break;
   }
 
   case Insn::BEQ:
-    if (a == b)
-      next = at + imm;
-    break;
   case Insn::BNE:
-    if (a != b)
-      next = at + imm;
-    break;
   case Insn::BLT:
-    if (static_cast<int32_t>(a) < static_cast<int32_t>(b))
-      next = at + imm;
-    break;
   case Insn::BGE:
-    if (static_cast<int32_t>(a) >= static_cast<int32_t>(b))
-      next = at + imm;
-    break;
   case Insn::BLTU:
-    if (a < b)
-      next = at + imm;
+  case Insn::BGEU: {
+    bool taken = false;
+    switch (d.id) {
+    case Insn::BEQ:
+      taken = a == b;
+      break;
+    case Insn::BNE:
+      taken = a != b;
+      break;
+    case Insn::BLT:
+      taken = static_cast<int32_t>(a) < static_cast<int32_t>(b);
+      break;
+    case Insn::BGE:
+      taken = static_cast<int32_t>(a) >= static_cast<int32_t>(b);
+      break;
+    case Insn::BLTU:
+      taken = a < b;
+      break;
+    default:
+      taken = a >= b;
+      break;
+    }
+    if (!taken)
+      break;
+    const uint32_t target = at + imm;
+    if (target & 3u)
+      throw Trap(TrapCause::InstructionAddressMisaligned, target, at,
+                 "branch target");
+    next = target;
     break;
-  case Insn::BGEU:
-    if (a >= b)
-      next = at + imm;
-    break;
+  }
 
   case Insn::LB:
-    setReg(d.rd, sext8(memory().read8(addr)));
+    setReg(d.rd, sext8(load8(addr, at)));
     break;
   case Insn::LH:
-    setReg(d.rd, sext16(memory().read16(addr)));
+    if (addr & 1u)
+      throw Trap(TrapCause::LoadAddressMisaligned, addr, at, "lh");
+    setReg(d.rd, sext16(load16(addr, at)));
     break;
   case Insn::LW:
-    setReg(d.rd, memory().read32(addr));
+    if (addr & 3u)
+      throw Trap(TrapCause::LoadAddressMisaligned, addr, at, "lw");
+    setReg(d.rd, load32(addr, at));
     break;
   case Insn::LBU:
-    setReg(d.rd, memory().read8(addr));
+    setReg(d.rd, load8(addr, at));
     break;
   case Insn::LHU:
-    setReg(d.rd, memory().read16(addr));
+    if (addr & 1u)
+      throw Trap(TrapCause::LoadAddressMisaligned, addr, at, "lhu");
+    setReg(d.rd, load16(addr, at));
     break;
 
   case Insn::SB:
-    memory().write8(addr, static_cast<uint8_t>(b));
+    store8(addr, static_cast<uint8_t>(b), at);
     break;
   case Insn::SH:
-    memory().write16(addr, static_cast<uint16_t>(b));
+    if (addr & 1u)
+      throw Trap(TrapCause::StoreAddressMisaligned, addr, at, "sh");
+    store16(addr, static_cast<uint16_t>(b), at);
     break;
   case Insn::SW:
-    memory().write32(addr, b);
+    if (addr & 3u)
+      throw Trap(TrapCause::StoreAddressMisaligned, addr, at, "sw");
+    store32(addr, b, at);
     break;
 
   case Insn::ADDI:
@@ -236,7 +322,7 @@ bool Cpu::step() {
     const int32_t sb = static_cast<int32_t>(b);
     constexpr int32_t kMin = std::numeric_limits<int32_t>::min();
     if (sb == 0)
-      setReg(d.rd, a); // remainder is the dividend
+      setReg(d.rd, a); // the remainder is the dividend
     else if (sa == kMin && sb == -1)
       setReg(d.rd, 0u);
     else

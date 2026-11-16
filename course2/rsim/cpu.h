@@ -10,18 +10,11 @@
 
 #include "elf.h"
 #include "memory.h"
+#include "trap.h"
 
 #include <cstdint>
-#include <stdexcept>
-#include <string>
 
 namespace rsim {
-
-/// A trap the guest cannot ignore.  Chapter 08 will add mtvec/mepc/mcause;
-/// for now a trap is just "stop with an explanation".
-struct Trap : std::runtime_error {
-  using std::runtime_error::runtime_error;
-};
 
 class Cpu {
 public:
@@ -40,7 +33,8 @@ public:
 
   Memory &memory() {
     if (!memory_)
-      throw Trap("CPU is not attached to memory");
+      throw Trap(TrapCause::InstructionAccessFault, 0, pc,
+                 "CPU is not attached to memory");
     return *memory_;
   }
 
@@ -65,6 +59,15 @@ public:
   }
 
 private:
+  // Every access goes through these so that an unusable address becomes a
+  // trap with the *faulting* pc, never a silently zeroed register.
+  uint8_t load8(uint32_t addr, uint32_t epc);
+  uint16_t load16(uint32_t addr, uint32_t epc);
+  uint32_t load32(uint32_t addr, uint32_t epc);
+  void store8(uint32_t addr, uint8_t value, uint32_t epc);
+  void store16(uint32_t addr, uint16_t value, uint32_t epc);
+  void store32(uint32_t addr, uint32_t value, uint32_t epc);
+
   Memory *memory_ = nullptr;
   bool halted_ = false;
   uint64_t executed_ = 0;

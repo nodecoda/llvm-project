@@ -1,4 +1,4 @@
-//===-- main.cpp - rsim entry point, chapter 03 -----------------*- C++ -*-===//
+//===-- main.cpp - rsim entry point, chapter 04 -----------------*- C++ -*-===//
 //
 // Chapter 03 adds execution: `--run` drives the step loop, `--decode-hex`
 // decodes the same hex text `llvm-mc -disassemble` reads, and `--selftest`
@@ -24,7 +24,7 @@
 
 namespace {
 
-constexpr const char *kVersion = "0.3";
+constexpr const char *kVersion = "0.4";
 constexpr int kExitUsage = 2;
 constexpr int kExitLoadError = 125;
 constexpr int kExitTrap = 126;
@@ -105,7 +105,7 @@ void usage() {
 
 int main(int argc, char **argv) {
   if (argc == 2 && std::strcmp(argv[1], "--version") == 0) {
-    std::printf("rsim %s (chapter 03)\n", kVersion);
+    std::printf("rsim %s (chapter 04)\n", kVersion);
     return 0;
   }
 

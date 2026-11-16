@@ -253,6 +253,69 @@ int runSelfTest() {
     expect("ecall sets halted", f.cpu.halted() ? 1u : 0u, 1u);
   }
 
+  // Chapter 04: precise traps.  epc must be the faulting instruction, not the
+  // one after it, and tval must be the address that could not be used.
+  auto trap = [](const char *name, uint32_t word, unsigned reg, uint32_t value,
+                 TrapCause want_cause, uint32_t want_tval) {
+    Fixture f;
+    f.cpu.x[reg] = value;
+    f.cpu.x[kB] = value; // branch vectors compare rs1 against rs2
+    try {
+      f.exec(word);
+    } catch (const Trap &t) {
+      ++g_checks;
+      if (t.cause == want_cause && t.tval == want_tval && t.epc == kCode)
+        return;
+      ++g_failures;
+      std::printf("FAIL %-24s got cause %u tval 0x%08x epc 0x%08x\n", name,
+                  static_cast<unsigned>(t.cause), t.tval, t.epc);
+      return;
+    }
+    ++g_checks;
+    ++g_failures;
+    std::printf("FAIL %-24s did not trap\n", name);
+  };
+
+  trap("jalr off a 4-byte boundary", encI(0x67, 0x0, kD, kA, 2), kA, kData,
+       TrapCause::InstructionAddressMisaligned, kData + 2);
+  trap("jal off a 4-byte boundary", encJ(kD, 2), kA, 0,
+       TrapCause::InstructionAddressMisaligned, kCode + 2);
+  trap("branch off a 4-byte boundary", encB(0x0, kA, kB, 2), kA, 1,
+       TrapCause::InstructionAddressMisaligned, kCode + 2);
+  trap("lw misaligned", encI(0x03, 0x2, kD, kA, 2), kA, kData,
+       TrapCause::LoadAddressMisaligned, kData + 2);
+  trap("lh misaligned", encI(0x03, 0x1, kD, kA, 1), kA, kData,
+       TrapCause::LoadAddressMisaligned, kData + 1);
+  trap("sw misaligned", encS(0x2, kA, kB, 3), kA, kData,
+       TrapCause::StoreAddressMisaligned, kData + 3);
+  trap("sh misaligned", encS(0x1, kA, kB, 1), kA, kData,
+       TrapCause::StoreAddressMisaligned, kData + 1);
+  trap("load from nowhere", encI(0x03, 0x0, kD, kA, 0), kA, 0x90000000u,
+       TrapCause::LoadAccessFault, 0x90000000u);
+  trap("store to nowhere", encS(0x2, kA, kB, 0), kA, 0x90000000u,
+       TrapCause::StoreAccessFault, 0x90000000u);
+  trap("illegal instruction", 0x00000000u, kA, 0,
+       TrapCause::IllegalInstruction, 0x00000000u);
+  {
+    Fixture f;
+    f.cpu.pc = kCode + 2;
+    try {
+      f.cpu.step();
+      ++g_checks;
+      ++g_failures;
+      std::printf("FAIL %-24s did not trap\n", "fetch off a boundary");
+    } catch (const Trap &t) {
+      ++g_checks;
+      if (t.cause != TrapCause::InstructionAddressMisaligned ||
+          t.tval != kCode + 2 || t.epc != kCode + 2) {
+        ++g_failures;
+        std::printf("FAIL %-24s got cause %u tval 0x%08x epc 0x%08x\n",
+                    "fetch off a boundary", static_cast<unsigned>(t.cause),
+                    t.tval, t.epc);
+      }
+    }
+  }
+
   std::printf("selftest: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures;
 }

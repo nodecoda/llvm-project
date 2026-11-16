@@ -13,6 +13,7 @@ add_executable(rsim
   rsim/elf.cpp
   rsim/memory.cpp
   rsim/selftest.cpp
+  rsim/trap.cpp
 )
 
 target_compile_options(rsim PRIVATE -Wall -Wextra -Wpedantic)

@@ -22,6 +22,12 @@
 #   * the five programs from chapter 01 run to the first ecall with
 #     main() returning 0 in t0.
 #
+# Chapter 04 checks:
+#   * tests/control-flow.s exercises both branch directions, jal linking and
+#     a jalr whose target has bit 0 set; main() must return 0;
+#   * a misaligned jump/load traps with the *faulting* pc as epc, checked
+#     against llvm-objdump's address of that instruction.
+#
 set -euo pipefail
 
 BIN=${1:?usage: course2-verify.sh <llvm-bin-dir> <rsim-binary>}
@@ -260,5 +266,53 @@ for name in demo muldiv_m large_frame switch tail; do
     || fail "$name: main() did not return 0 in t0 ($(cat "$TMP/$name.run"))"
   CHECKS=$((CHECKS + 1))
 done
+
+# --- Chapter 04: control flow and precise traps -------------------------
+
+build_test_asm() {
+  local name=$1 src=$2
+  "$MC" -triple=rvmin -filetype=obj "$src" -o "$TMP/$name.o" \
+    || fail "llvm-mc rejected $src"
+  "$MC" -triple=rvmin -filetype=obj "$RT/start.S" -o "$TMP/start-$name.o" \
+    || fail "llvm-mc rejected start.S for $name"
+  "$MC" -triple=rvmin -filetype=obj "$RT/rvmin-rt.S" -o "$TMP/rt-$name.o" \
+    || fail "llvm-mc rejected rvmin-rt.S for $name"
+  "$LD" -m elf32lriscv -T "$RT/link.ld" -o "$TMP/$name" \
+    "$TMP/start-$name.o" "$TMP/$name.o" "$TMP/rt-$name.o" \
+    || fail "ld.lld could not link $name"
+}
+
+build_test_asm control_flow "$COURSE2/tests/control-flow.s"
+"$RSIM" --run "$TMP/control_flow" > "$TMP/control_flow.run" \
+  || fail "control-flow.s trapped or hit the step limit"
+grep -q 't0=0x00000000' "$TMP/control_flow.run" \
+  || fail "control-flow.s failed ($(cat "$TMP/control_flow.run"))"
+CHECKS=$((CHECKS + 1))
+
+# The trapped pc must be the faulting instruction, not the one after it.
+check_precise_trap() {
+  local name=$1 file=$2 cause=$3 tval=$4
+  set +e
+  "$RSIM" --run "$TMP/$file" --max-steps 100 > "$TMP/$file.out" 2> "$TMP/$file.err"
+  local rc=$?
+  set -e
+  [[ "$rc" -eq 126 ]] || fail "$file: exit code $rc, want 126"
+  grep -q "^rsim: trap: $cause: tval=$tval " "$TMP/$file.err" \
+    || fail "$file: wrong trap line: $(cat "$TMP/$file.err")"
+  local epc line
+  epc=$(sed -n 's/.*epc=0x\([0-9a-f]*\).*/\1/p' "$TMP/$file.err")
+  line=$("$BIN/llvm-objdump" -d "$TMP/$file" \
+         | awk -v a="$(printf '%x' $((16#$epc)))" \
+               '$1 == a":" { found = $0 } END { print found }')
+  [[ -n "$line" ]] || fail "$file: objdump has no word at epc 0x$epc"
+  grep -q "\<$name\>" <<<"$line" \
+    || fail "$file: epc 0x$epc is not a $name ($line)"
+  CHECKS=$((CHECKS + 1))
+}
+
+build_test_asm misaligned_jump "$COURSE2/tests/misaligned-jump.s"
+build_test_asm misaligned_load "$COURSE2/tests/misaligned-load.s"
+check_precise_trap jalr misaligned_jump "instruction address misaligned" 0x20000002
+check_precise_trap lw misaligned_load "load address misaligned" 0x20000002
 
 echo "$CHECKS checks"
