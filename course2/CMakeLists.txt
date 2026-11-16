@@ -13,6 +13,7 @@ add_executable(rsim
   rsim/elf.cpp
   rsim/memory.cpp
   rsim/selftest.cpp
+  rsim/syscall.cpp
   rsim/trap.cpp
 )
 

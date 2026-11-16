@@ -249,8 +249,10 @@ int runSelfTest() {
   }
   {
     Fixture f;
+    f.cpu.x[17] = 93; // exit(0)
     expect("ecall halts", f.exec(encI(0x73, 0x0, 0, 0, 0)) ? 1u : 0u, 0u);
     expect("ecall sets halted", f.cpu.halted() ? 1u : 0u, 1u);
+    expect("ecall exit code", static_cast<uint32_t>(f.cpu.exitCode()), 0u);
   }
 
   // Chapter 04: precise traps.  epc must be the faulting instruction, not the

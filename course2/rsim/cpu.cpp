@@ -40,6 +40,7 @@ void Cpu::reset(const Image &image, Memory &memory) {
   x[2] = kStackTop; // sp
   halted_ = false;
   executed_ = 0;
+  exit_code_ = 0;
 }
 
 uint8_t Cpu::load8(uint32_t addr, uint32_t epc) {
@@ -341,10 +342,12 @@ bool Cpu::step() {
     break; // single hart, single memory: nothing to order
 
   case Insn::ECALL:
+    if (!ecall(at)) // exit(2) stops the loop; everything else returns
+      return false;
+    break;
   case Insn::EBREAK:
-    // Chapter 03 only needs to stop; chapters 05 and 08 give these meaning.
-    halted_ = true;
-    return false;
+    // Chapter 08 turns this into the breakpoint trap the debugger sees.
+    throw Trap(TrapCause::Breakpoint, at, at, "ebreak");
   }
 
   pc = next;

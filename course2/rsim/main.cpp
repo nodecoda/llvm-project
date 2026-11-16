@@ -1,4 +1,4 @@
-//===-- main.cpp - rsim entry point, chapter 04 -----------------*- C++ -*-===//
+//===-- main.cpp - rsim entry point, chapter 05 -----------------*- C++ -*-===//
 //
 // Chapter 03 adds execution: `--run` drives the step loop, `--decode-hex`
 // decodes the same hex text `llvm-mc -disassemble` reads, and `--selftest`
@@ -24,7 +24,7 @@
 
 namespace {
 
-constexpr const char *kVersion = "0.4";
+constexpr const char *kVersion = "0.5";
 constexpr int kExitUsage = 2;
 constexpr int kExitLoadError = 125;
 constexpr int kExitTrap = 126;
@@ -105,7 +105,7 @@ void usage() {
 
 int main(int argc, char **argv) {
   if (argc == 2 && std::strcmp(argv[1], "--version") == 0) {
-    std::printf("rsim %s (chapter 04)\n", kVersion);
+    std::printf("rsim %s (chapter 05)\n", kVersion);
     return 0;
   }
 
@@ -181,11 +181,15 @@ int main(int argc, char **argv) {
       return kExitTrap;
     }
 
-    // start.S keeps main()'s result in t0 before it calls write(2).
-    std::printf("rsim: halted at 0x%08" PRIx32 " after %" PRIu64
-                " instructions (a0=0x%08" PRIx32 ", t0=0x%08" PRIx32 ")\n",
-                cpu.pc, cpu.executed(), cpu.reg(10), cpu.reg(5));
-    return 0;
+    // The guest's stdout must stay byte-exact for the QEMU diff, so the
+    // summary goes to stderr.  start.S keeps main()'s result in t0 before it
+    // calls write(2), which makes t0 the cheapest way to see it.
+    std::fprintf(stderr,
+                 "rsim: halted at 0x%08" PRIx32 " after %" PRIu64
+                 " instructions (exit %d, a0=0x%08" PRIx32 ", t0=0x%08" PRIx32
+                 ")\n",
+                 cpu.pc, cpu.executed(), cpu.exitCode(), cpu.reg(10), cpu.reg(5));
+    return cpu.exitCode();
   } catch (const rsim::ElfError &err) {
     std::fprintf(stderr, "rsim: %s: %s\n", path.c_str(), err.what());
     return kExitLoadError;

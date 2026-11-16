@@ -44,6 +44,7 @@ public:
 
   bool halted() const { return halted_; }
   uint64_t executed() const { return executed_; }
+  int exitCode() const { return exit_code_; }
 
   /// x0 discards writes, wherever they come from.
   void setReg(unsigned reg, uint32_t value) {
@@ -59,6 +60,9 @@ public:
   }
 
 private:
+  /// Handle one ecall.  Returns true when the program continues.
+  bool ecall(uint32_t at);
+
   // Every access goes through these so that an unusable address becomes a
   // trap with the *faulting* pc, never a silently zeroed register.
   uint8_t load8(uint32_t addr, uint32_t epc);
@@ -71,6 +75,7 @@ private:
   Memory *memory_ = nullptr;
   bool halted_ = false;
   uint64_t executed_ = 0;
+  int exit_code_ = 0;
 };
 
 } // namespace rsim

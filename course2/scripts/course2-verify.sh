@@ -28,6 +28,12 @@
 #   * a misaligned jump/load traps with the *faulting* pc as epc, checked
 #     against llvm-objdump's address of that instruction.
 #
+# Chapter 05 checks:
+#   * the five programs produce byte-identical stdout and exit codes under
+#     rsim and qemu-riscv32-static;
+#   * exit(2) propagates the guest's status (42);
+#   * an unknown syscall stops with status 127.
+#
 set -euo pipefail
 
 BIN=${1:?usage: course2-verify.sh <llvm-bin-dir> <rsim-binary>}
@@ -260,7 +266,7 @@ decode_corpus rvmin-m-encoding-corpus +m
 for name in demo muldiv_m large_frame switch tail; do
   max_steps=10000000
   [[ "$name" == tail ]] && max_steps=50000000
-  "$RSIM" --run "$TMP/$name" --max-steps "$max_steps" > "$TMP/$name.run" \
+  "$RSIM" --run "$TMP/$name" --max-steps "$max_steps" > "$TMP/$name.run" 2>&1 \
     || fail "$name did not halt under rsim"
   grep -q 't0=0x00000000' "$TMP/$name.run" \
     || fail "$name: main() did not return 0 in t0 ($(cat "$TMP/$name.run"))"
@@ -283,7 +289,7 @@ build_test_asm() {
 }
 
 build_test_asm control_flow "$COURSE2/tests/control-flow.s"
-"$RSIM" --run "$TMP/control_flow" > "$TMP/control_flow.run" \
+"$RSIM" --run "$TMP/control_flow" > "$TMP/control_flow.run" 2>&1 \
   || fail "control-flow.s trapped or hit the step limit"
 grep -q 't0=0x00000000' "$TMP/control_flow.run" \
   || fail "control-flow.s failed ($(cat "$TMP/control_flow.run"))"
@@ -314,5 +320,51 @@ build_test_asm misaligned_jump "$COURSE2/tests/misaligned-jump.s"
 build_test_asm misaligned_load "$COURSE2/tests/misaligned-load.s"
 check_precise_trap jalr misaligned_jump "instruction address misaligned" 0x20000002
 check_precise_trap lw misaligned_load "load address misaligned" 0x20000002
+
+# --- Chapter 05: system calls and the runtime ---------------------------
+
+QEMU=${QEMU:-qemu-riscv32-static}
+command -v "$QEMU" > /dev/null \
+  || fail "chapter 05 needs QEMU ($QEMU) for the differential test"
+
+for name in demo muldiv_m large_frame switch tail; do
+  set +e
+  "$RSIM" --run "$TMP/$name" --max-steps 50000000 \
+    > "$TMP/$name.rsim.out" 2> "$TMP/$name.rsim.err"
+  rsim_rc=$?
+  "$QEMU" "$TMP/$name" > "$TMP/$name.qemu.out" 2> /dev/null
+  qemu_rc=$?
+  set -e
+
+  cmp -s "$TMP/$name.rsim.out" "$TMP/$name.qemu.out" \
+    || fail "$name: stdout differs from QEMU ($(cat "$TMP/$name.rsim.out"))"
+  [[ "$rsim_rc" -eq "$qemu_rc" ]] \
+    || fail "$name: exit code $rsim_rc, QEMU says $qemu_rc"
+  CHECKS=$((CHECKS + 1))
+done
+
+# The five programs are the runtime's own self-check: they print this on success.
+grep -q '^rvmin: ok$' "$TMP/demo.rsim.out" || fail "demo did not print rvmin: ok"
+
+build_test_asm exit_code "$COURSE2/tests/exit-code.s"
+set +e
+"$RSIM" --run "$TMP/exit_code" > /dev/null 2>&1
+rsim_rc=$?
+"$QEMU" "$TMP/exit_code" > /dev/null 2>&1
+qemu_rc=$?
+set -e
+[[ "$rsim_rc" -eq 42 ]] || fail "exit-code.s: rsim exited $rsim_rc, want 42"
+[[ "$qemu_rc" -eq 42 ]] || fail "exit-code.s: QEMU exited $qemu_rc, want 42"
+CHECKS=$((CHECKS + 1))
+
+build_test_asm unknown_syscall "$COURSE2/tests/unknown-syscall.s"
+set +e
+"$RSIM" --run "$TMP/unknown_syscall" > /dev/null 2> "$TMP/unknown.err"
+rsim_rc=$?
+set -e
+[[ "$rsim_rc" -eq 127 ]] || fail "unknown syscall exited $rsim_rc, want 127"
+grep -q 'unknown ecall a7=999' "$TMP/unknown.err" \
+  || fail "unknown syscall left no diagnostic"
+CHECKS=$((CHECKS + 1))
 
 echo "$CHECKS checks"
