@@ -48,9 +48,9 @@ void expectTrap(F fn, TrapCause expected, const char *what) {
 int runSelfTest() {
   rsim::Image image;
   image.entry = 0x80000000;
-  rsim::Memory memory;
+  Bus bus;
   Machine m;
-  m.reset(image, memory);
+  m.reset(image, bus);
 
   // mstatus only keeps MIE/MPIE/MPP.
   m.writeCsr(kCsrMstatus, 0xffffffffu);

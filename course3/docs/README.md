@@ -12,7 +12,7 @@
 | 02 | [02-csr-privilege.md](02-csr-privilege.md) | CSR 文件与特权级 | 22 条 CSR 自测；U 访问特权 CSR 非法 | `c3-ch02` |
 | 03 | [03-traps-mret.md](03-traps-mret.md) | 精确陷阱与 `mret` | 6 种 M 态 cause + 3 种 U 态 cause | `c3-ch03` |
 | 04 | [04-clint-timer.md](04-clint-timer.md) | CLINT 与定时器中断 | `mcause=0x80000007`；向量模式 | `c3-ch04` |
-| 05 | （规划中） | MMIO 总线与 UART | stdout 与 golden 逐字节一致 | `c3-ch05` |
+| 05 | [05-bus-uart.md](05-bus-uart.md) | MMIO 总线与 UART | hello/echo 的 stdout 逐字节一致；test word 退出码 | `c3-ch05` |
 | 06 | （规划中） | Sv32 分页 | 恒等/非恒等映射一致；页错误 12/13/15 | `c3-ch06` |
 | 07 | （规划中） | U 态与系统调用 | 第二课 `demo` 作为 U 程序运行 | `c3-ch07` |
 | 08 | （规划中） | 上下文与两进程调度 | 两进程轮转、退出码回传 | `c3-ch08` |

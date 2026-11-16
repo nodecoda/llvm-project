@@ -7,11 +7,10 @@
 #
 # Chapter 01 checks:
 #   * the kernel ELF's entry point and PT_LOAD list match llvm-readelf;
-#   * _start runs and ebreak halts with the kernel's status;
+#   * the kernel reaches the test finisher and exits 0;
 #   * the first trace line is the reset vector 0x80000000.
 #
 # Chapter 02 checks:
-#   * the kernel reads mhartid/misa and round-trips mscratch, exiting 0;
 #   * --selftest passes every hand-computed CSR vector (22 at this chapter).
 #
 # Chapter 03 checks:
@@ -23,6 +22,11 @@
 #   * three CLINT timer interrupts in vectored mode (mcause=0x80000007,
 #     mtval=0, mepc inside the wait loop, monotonic mtime);
 #   * MIE+MTIE with an unreachable mtimecmp never fires.
+#
+# Chapter 05 checks:
+#   * the kernel's UART stdout is exactly "hello, rmach\n";
+#   * --input drives RBR and the echo stops at the first newline;
+#   * a store of 0x00075555 to the test word halts with exit code 7.
 #
 set -euo pipefail
 
@@ -52,19 +56,21 @@ CHECKS=0
 
 # --- Chapter 01: the bare-metal image and the reset vector --------------
 
-build_kernel() {
-  local name=$1
+build_c_image() {
+  local name=$1 src=$2
   "$CC" --target="$TRIPLE" -march=rv32im_zicsr -mabi=ilp32 -mno-relax \
-    -ffreestanding -fno-builtin -O2 -c "$COURSE3/kernel/kmain.c" \
-    -o "$TMP/$name-kmain.o" || fail "clang could not compile kmain.c"
+    -ffreestanding -fno-builtin -O2 -c "$src" \
+    -o "$TMP/$name-main.o" || fail "clang could not compile $src"
   "$CC" --target="$TRIPLE" -march=rv32im_zicsr -mabi=ilp32 -mno-relax \
     -ffreestanding -fno-builtin -O2 -c "$COURSE3/kernel/start.S" \
     -o "$TMP/$name-start.o" || fail "clang could not assemble start.S"
   "$LD" -m elf32lriscv -T "$COURSE3/kernel/link.ld" -o "$TMP/$name.elf" \
-    "$TMP/$name-start.o" "$TMP/$name-kmain.o" \
-    || fail "ld.lld could not link the kernel"
+    "$TMP/$name-start.o" "$TMP/$name-main.o" \
+    || fail "ld.lld could not link $src"
 }
-build_kernel kernel
+
+build_kernel() { build_c_image kernel "$COURSE3/kernel/kmain.c"; }
+build_kernel
 
 build_asm_image() {
   local name=$1 src=$2
@@ -104,7 +110,8 @@ if int(o.group(1), 16) != 0x80000000:
 PY
 CHECKS=$((CHECKS + 1))
 
-# _start must run: the chapter-02 kernel checks CSRs and returns 0.
+# _start must run.  At chapter 05 the kernel prints hello and finishes
+# through the test word with exit code 0.
 set +e
 "$RMACH" --kernel "$TMP/kernel.elf" > "$TMP/kernel.out" 2> "$TMP/kernel.err"
 kernel_rc=$?
@@ -164,6 +171,42 @@ set +e
 timer_off_rc=$?
 set -e
 [[ "$timer_off_rc" -eq 0 ]] || fail "timer-off.s exited $timer_off_rc"
+CHECKS=$((CHECKS + 1))
+
+# --- Chapter 05: the bus, the UART and the test finisher ----------------
+
+# The kernel's stdout is the UART, so compare it byte for byte, not with grep.
+printf 'hello, rmach\n' > "$TMP/hello.golden"
+set +e
+"$RMACH" --kernel "$TMP/kernel.elf" > "$TMP/hello.out" 2> "$TMP/hello.err"
+hello_rc=$?
+set -e
+[[ "$hello_rc" -eq 0 ]] || fail "hello exited $hello_rc, want 0"
+cmp -s "$TMP/hello.out" "$TMP/hello.golden" \
+  || fail "hello stdout is $(od -An -tx1c "$TMP/hello.out" | tr '\n' ' ')"
+CHECKS=$((CHECKS + 1))
+
+# RX comes from --input; the program stops at the first newline.
+build_c_image uart_echo "$COURSE3/tests/uart-echo.c"
+printf 'ping 42\nignored\n' > "$TMP/echo.in"
+printf 'ping 42\n' > "$TMP/echo.golden"
+set +e
+"$RMACH" --kernel "$TMP/uart_echo.elf" --input "$TMP/echo.in" \
+  > "$TMP/echo.out" 2> "$TMP/echo.err"
+echo_rc=$?
+set -e
+[[ "$echo_rc" -eq 0 ]] || fail "uart-echo exited $echo_rc, want 0"
+cmp -s "$TMP/echo.out" "$TMP/echo.golden" \
+  || fail "uart-echo stdout is $(od -An -tx1c "$TMP/echo.out" | tr '\n' ' ')"
+CHECKS=$((CHECKS + 1))
+
+# A store to the test word halts the machine; the upper half is the exit code.
+build_asm_image finisher "$COURSE3/tests/finisher.s"
+set +e
+"$RMACH" --kernel "$TMP/finisher.elf" > /dev/null 2> "$TMP/finisher.err"
+finisher_rc=$?
+set -e
+[[ "$finisher_rc" -eq 7 ]] || fail "finisher.s exited $finisher_rc, want 7"
 CHECKS=$((CHECKS + 1))
 
 echo "$CHECKS checks"

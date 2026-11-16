@@ -9,11 +9,10 @@
 #ifndef RMACH_MACHINE_H
 #define RMACH_MACHINE_H
 
-#include "clint.h"
+#include "bus.h"
 #include "csr.h"
 #include "elf.h"
 #include "decode.h"
-#include "memory.h"
 #include "trap.h"
 
 #include <cstdint>
@@ -34,7 +33,7 @@ public:
   uint32_t x[32] = {};
   uint32_t pc = 0;
 
-  void reset(const rsim::Image &image, rsim::Memory &memory);
+  void reset(const rsim::Image &image, Bus &bus);
   void setIsa(uint32_t mask) { isa_ = mask; }
 
   // Chapter 02: the CSR file and the current privilege level.  The selftest
@@ -46,9 +45,6 @@ public:
 
   /// Execute one instruction.  Returns false once the machine has halted.
   bool step();
-
-  /// Chapter 04: the CLINT is visible through --dump-clint in the tests.
-  const Clint &clint() const { return clint_; }
 
   bool halted() const { return halted_; }
   uint64_t executed() const { return executed_; }
@@ -80,7 +76,7 @@ private:
   void store16(uint32_t addr, uint16_t value, uint32_t epc);
   void store32(uint32_t addr, uint32_t value, uint32_t epc);
 
-  rsim::Memory *memory_ = nullptr;
+  Bus *bus_ = nullptr;
   bool halted_ = false;
   uint64_t executed_ = 0;
   int exit_code_ = 0;
@@ -88,7 +84,6 @@ private:
   uint32_t isa_ = kIsaDefault;
   uint32_t csr_[4096] = {};
   Priv priv_ = Priv::M;
-  Clint clint_;
 };
 
 } // namespace rmach

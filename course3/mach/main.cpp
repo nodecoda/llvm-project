@@ -15,17 +15,19 @@
 #include <cinttypes>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
 
 namespace {
 
-constexpr const char *kVersion = "0.4";
+constexpr const char *kVersion = "0.5";
 constexpr int kExitUsage = 2;
 constexpr int kExitLoadError = 125;
 constexpr int kExitTrap = 126;
 
 struct Options {
   std::string kernel;
+  std::string input;
   uint64_t max_steps = 10000000;
   bool trace = false;
   bool dump_boot = false;
@@ -35,7 +37,8 @@ void usage() {
   std::fprintf(stderr, "usage: rmach --version\n"
                        "       rmach --selftest\n"
                        "       rmach --kernel <elf> [--dump-boot]\n"
-                       "       rmach --kernel <elf> [--max-steps <n>] [--trace]\n");
+                       "       rmach --kernel <elf> [--max-steps <n>] [--trace]\n"
+                       "                    [--input <file>]\n");
 }
 
 bool parse(int argc, char **argv, Options &opt) {
@@ -54,6 +57,11 @@ bool parse(int argc, char **argv, Options &opt) {
       if (!p)
         return false;
       opt.kernel = p;
+    } else if (arg == "--input") {
+      const char *p = next("--input");
+      if (!p)
+        return false;
+      opt.input = p;
     } else if (arg == "--max-steps") {
       const char *v = next("--max-steps");
       if (!v)
@@ -84,7 +92,7 @@ void dumpBoot(const rsim::Image &image) {
 
 int main(int argc, char **argv) {
   if (argc == 2 && std::strcmp(argv[1], "--version") == 0) {
-    std::printf("rmach %s (chapter 04)\n", kVersion);
+    std::printf("rmach %s (chapter 05)\n", kVersion);
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--selftest") == 0)
@@ -104,9 +112,21 @@ int main(int argc, char **argv) {
       return 0;
     }
 
-    rsim::Memory memory;
+    std::unique_ptr<std::FILE, int (*)(std::FILE *)> input(nullptr, std::fclose);
+    if (!opt.input.empty()) {
+      std::FILE *file = std::fopen(opt.input.c_str(), "rb");
+      if (!file) {
+        std::fprintf(stderr, "rmach: %s: cannot open input\n",
+                     opt.input.c_str());
+        return kExitUsage;
+      }
+      input.reset(file);
+    }
+
+    rmach::Bus bus;
+    bus.uart().setInput(input.get());
     rmach::Machine machine;
-    machine.reset(image, memory);
+    machine.reset(image, bus);
     if (opt.trace)
       machine.traceTo(stderr);
 

@@ -78,10 +78,11 @@ std::string formatForTrace(const rsim::Decoded &d) {
 
 } // namespace
 
-void Machine::reset(const rsim::Image &image, rsim::Memory &memory) {
-  memory_ = &memory;
-  memory.load(image);
-  memory.map(kKernelStackTop - kKernelStackSize, kKernelStackSize);
+void Machine::reset(const rsim::Image &image, Bus &bus) {
+  bus_ = &bus;
+  bus_->reset();
+  bus_->ram().load(image);
+  bus_->ram().map(kKernelStackTop - kKernelStackSize, kKernelStackSize);
 
   for (uint32_t &reg : x)
     reg = 0;
@@ -95,84 +96,52 @@ void Machine::reset(const rsim::Image &image, rsim::Memory &memory) {
   for (uint32_t &word : csr_)
     word = 0;
   priv_ = Priv::M;
-  clint_.reset();
 }
 
 uint8_t Machine::load8(uint32_t addr, uint32_t epc) {
-  if (clint_.contains(addr))
-    throw Trap(TrapCause::LoadAccessFault, addr, epc,
-               "CLINT is 32-bit wide");
   try {
-    return memory_->read8(addr);
+    return bus_->read8(addr);
   } catch (const rsim::MemoryError &err) {
     throw Trap(TrapCause::LoadAccessFault, addr, epc, err.what());
   }
 }
 
 uint16_t Machine::load16(uint32_t addr, uint32_t epc) {
-  if (clint_.contains(addr))
-    throw Trap(TrapCause::LoadAccessFault, addr, epc,
-               "CLINT is 32-bit wide");
   try {
-    return memory_->read16(addr);
+    return bus_->read16(addr);
   } catch (const rsim::MemoryError &err) {
     throw Trap(TrapCause::LoadAccessFault, addr, epc, err.what());
   }
 }
 
 uint32_t Machine::load32(uint32_t addr, uint32_t epc) {
-  if (clint_.contains(addr)) {
-    if (addr == Clint::kMtime)
-      return static_cast<uint32_t>(clint_.mtime());
-    if (addr == Clint::kMtime + 4)
-      return static_cast<uint32_t>(clint_.mtime() >> 32);
-    if (addr == Clint::kMtimecmp)
-      return static_cast<uint32_t>(clint_.mtimecmp());
-    if (addr == Clint::kMtimecmp + 4)
-      return static_cast<uint32_t>(clint_.mtimecmp() >> 32);
-    throw Trap(TrapCause::LoadAccessFault, addr, epc, "unmapped CLINT word");
-  }
   try {
-    return memory_->read32(addr);
+    return bus_->read32(addr);
   } catch (const rsim::MemoryError &err) {
     throw Trap(TrapCause::LoadAccessFault, addr, epc, err.what());
   }
 }
 
 void Machine::store8(uint32_t addr, uint8_t value, uint32_t epc) {
-  if (clint_.contains(addr))
-    throw Trap(TrapCause::StoreAccessFault, addr, epc,
-               "CLINT is 32-bit wide");
   try {
-    memory_->write8(addr, value);
+    bus_->write8(addr, value);
   } catch (const rsim::MemoryError &err) {
     throw Trap(TrapCause::StoreAccessFault, addr, epc, err.what());
   }
 }
 
 void Machine::store16(uint32_t addr, uint16_t value, uint32_t epc) {
-  if (clint_.contains(addr))
-    throw Trap(TrapCause::StoreAccessFault, addr, epc,
-               "CLINT is 32-bit wide");
   try {
-    memory_->write16(addr, value);
+    bus_->write16(addr, value);
   } catch (const rsim::MemoryError &err) {
     throw Trap(TrapCause::StoreAccessFault, addr, epc, err.what());
   }
 }
 
 void Machine::store32(uint32_t addr, uint32_t value, uint32_t epc) {
-  if (clint_.contains(addr)) {
-    if (addr == Clint::kMtimecmp || addr == Clint::kMtimecmp + 4) {
-      clint_.writeMtimecmp(value, addr == Clint::kMtimecmp + 4);
-      updateTimer();
-      return;
-    }
-    throw Trap(TrapCause::StoreAccessFault, addr, epc,
-               "mtime is read-only");
-  }
   try {
-    memory_->write32(addr, value);
+    bus_->write32(addr, value);
+    updateTimer();
   } catch (const rsim::MemoryError &err) {
     throw Trap(TrapCause::StoreAccessFault, addr, epc, err.what());
   }
@@ -269,7 +238,7 @@ bool Machine::timerInterruptPending() const {
 }
 
 void Machine::updateTimer() {
-  if (clint_.pending())
+  if (bus_->clint().pending())
     csr_[kCsrMip] |= kMTIP;
   else
     csr_[kCsrMip] &= ~kMTIP;
@@ -321,7 +290,7 @@ bool Machine::executeOne() {
 
   uint32_t word = 0;
   try {
-    word = memory_->read32(at);
+    word = bus_->read32(at);
   } catch (const rsim::MemoryError &err) {
     throw Trap(TrapCause::InstructionAccessFault, at, at, err.what());
   }
@@ -334,7 +303,7 @@ bool Machine::executeOne() {
     throw Trap(TrapCause::IllegalInstruction, word, at,
                "instruction not enabled by the ISA mask");
   ++executed_;
-  clint_.tick();
+  bus_->clint().tick();
   updateTimer();
 
   if (trace_)
@@ -633,6 +602,10 @@ bool Machine::executeOne() {
   }
 
   pc = next;
+  if (bus_->finished()) {
+    halted_ = true;
+    exit_code_ = bus_->exitCode();
+  }
   return !halted_;
 }
 
