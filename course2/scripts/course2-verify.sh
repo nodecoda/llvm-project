@@ -58,6 +58,12 @@
 #     --isa=rv32im (real M instructions), both matching QEMU;
 #   * --isa=rv32i refuses a +m build, and a malformed spec exits 2.
 #
+# Chapter 10 checks:
+#   * tail executes more than a million jalr instructions and --stats reports
+#     them without touching the guest's stdout;
+#   * the histogram total, its per-mnemonic sum and the step counter agree;
+#   * the top five rows match an independent aggregation of --trace.
+#
 set -euo pipefail
 
 BIN=${1:?usage: course2-verify.sh <llvm-bin-dir> <rsim-binary>}
@@ -615,6 +621,52 @@ set -e
 [[ "$badisa_rc" -eq 2 ]] || fail "a bad --isa spec exited $badisa_rc, want 2"
 grep -q 'bad --isa spec' "$TMP/badisa.err" \
   || fail "a bad --isa spec left no diagnostic"
+CHECKS=$((CHECKS + 1))
+
+# --- Chapter 10: the instruction histogram ------------------------------
+
+# tail is the only program with a million tail calls: with one cycle per
+# instruction, the jalr count is the number the chapter cares about.
+"$RSIM" --run "$TMP/tail" --max-steps 50000000 --stats \
+  > "$TMP/tail.stats.out" 2> "$TMP/tail.stats" \
+  || fail "tail failed under --stats"
+JALR=$(awk '$1 == "jalr" { print $2 }' "$TMP/tail.stats")
+[[ -n "$JALR" ]] || fail "tail --stats printed no jalr row"
+[[ "$JALR" -ge 1000000 ]] || fail "tail: jalr count $JALR is below 1e6"
+grep -q '^rvmin: ok$' "$TMP/tail.stats.out" \
+  || fail "tail --stats changed the guest's stdout"
+CHECKS=$((CHECKS + 1))
+
+# The histogram has to account for exactly the retired instructions: its own
+# total, the sum of the rows, and the step loop's counter must agree.
+TOTAL=$(awk 'NR == 1 { print $2 }' "$TMP/tail.stats")
+SUM=$(awk 'NR > 1 { s += $2 } END { print s + 0 }' "$TMP/tail.stats")
+EXECUTED=$(sed -n 's/.* after \([0-9][0-9]*\) instructions.*/\1/p' "$TMP/tail.stats")
+[[ -n "$TOTAL" && -n "$EXECUTED" ]] || fail "tail --stats: missing totals"
+[[ "$TOTAL" -eq "$SUM" ]] || fail "tail: rows sum to $SUM, not $TOTAL"
+[[ "$TOTAL" -eq "$EXECUTED" ]] || fail "tail: $TOTAL counted vs $EXECUTED executed"
+CHECKS=$((CHECKS + 1))
+
+# Independent cross-check on a small program: aggregate --trace by mnemonic
+# and compare the top five with --stats.
+"$RSIM" --run "$TMP/demo" --stats > "$TMP/demo.stats.out" 2> "$TMP/demo.stats" \
+  || fail "demo failed under --stats"
+"$RSIM" --run "$TMP/demo" --trace > /dev/null 2> "$TMP/demo.trace" \
+  || fail "demo failed under --trace"
+LC_ALL=C awk 'NR > 1 { print $1, $2 }' "$TMP/demo.stats" | head -5 \
+  > "$TMP/demo.top"
+LC_ALL=C awk '{ print $4 }' "$TMP/demo.trace" | sort | uniq -c \
+  | LC_ALL=C sort -k1,1nr -k2,2 | awk '{ print $2, $1 }' | head -5 \
+  > "$TMP/demo.trace.top"
+diff -u "$TMP/demo.trace.top" "$TMP/demo.top" > "$TMP/top.diff" \
+  || fail "--stats top-5 differs from the --trace histogram"
+CHECKS=$((CHECKS + 1))
+
+# --stats is a report, not a behavior change: stdout and status must match a
+# plain run exactly.
+"$RSIM" --run "$TMP/demo" > "$TMP/demo.plain" 2> /dev/null
+cmp -s "$TMP/demo.plain" "$TMP/demo.stats.out" \
+  || fail "--stats changed the guest's stdout"
 CHECKS=$((CHECKS + 1))
 
 echo "$CHECKS checks"

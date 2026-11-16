@@ -176,6 +176,7 @@ bool Cpu::executeOne() {
     throw Trap(TrapCause::IllegalInstruction, word, at,
                "instruction not enabled by --isa");
   ++executed_;
+  stats_.add(d.id);
 
   if (trace_)
     std::fprintf(trace_, "T %08" PRIx32 " %08" PRIx32 " %s\n", at, word,

@@ -10,6 +10,7 @@
 
 #include "elf.h"
 #include "memory.h"
+#include "stats.h"
 #include "trap.h"
 
 #include <cstdint>
@@ -50,6 +51,7 @@ public:
   bool step();
 
   bool halted() const { return halted_; }
+  const Stats &stats() const { return stats_; }
   uint64_t executed() const { return executed_; }
   int exitCode() const { return exit_code_; }
 
@@ -97,6 +99,7 @@ private:
   Memory *memory_ = nullptr;
   bool halted_ = false;
   uint64_t executed_ = 0;
+  Stats stats_;
   int exit_code_ = 0;
   std::FILE *trace_ = nullptr;
   uint32_t mtvec_ = 0;

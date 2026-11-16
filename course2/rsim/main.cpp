@@ -27,7 +27,7 @@
 
 namespace {
 
-constexpr const char *kVersion = "0.9";
+constexpr const char *kVersion = "0.10";
 constexpr int kExitUsage = 2;
 constexpr int kExitLoadError = 125;
 constexpr int kExitTrap = 126;
@@ -43,6 +43,7 @@ struct Options {
   uint64_t max_steps = 10000000;
   bool trace = false;
   bool dump_csr = false;
+  bool stats = false;
   uint32_t isa = static_cast<uint32_t>(rsim::Isa::RV32I) |
                  static_cast<uint32_t>(rsim::Isa::RV32M);
 };
@@ -199,7 +200,7 @@ void usage() {
                        "       rsim --run <elf> [--max-steps <n>] [--trace]\n"
                        "       rsim --debug <elf> [--script <file>]\n"
                        "       rsim --run <elf> [--max-steps <n>] [--trace] [--dump-csr]\n"
-                       "                    [--isa[=]<rv32i[m][_zbb][_zbs][_a]>]\n"
+                       "                    [--isa[=]<rv32i[m][_zbb][_zbs][_a]>] [--stats]\n"
                        "       rsim <elf>\n");
 }
 
@@ -270,6 +271,8 @@ bool parse(int argc, char **argv, Options &opt) {
       opt.trace = true;
     } else if (arg == "--dump-csr") {
       opt.dump_csr = true;
+    } else if (arg == "--stats") {
+      opt.stats = true;
     } else if (arg == "--isa" || arg.rfind("--isa=", 0) == 0) {
       // Both spellings are accepted: `--isa rv32im` and `--isa=rv32im`.
       const char *p = arg == "--isa" ? next("--isa") : arg.c_str() + 6;
@@ -297,7 +300,7 @@ bool parse(int argc, char **argv, Options &opt) {
 
 int main(int argc, char **argv) {
   if (argc == 2 && std::strcmp(argv[1], "--version") == 0) {
-    std::printf("rsim %s (chapter 09)\n", kVersion);
+    std::printf("rsim %s (chapter 10)\n", kVersion);
     return 0;
   }
 
@@ -391,6 +394,11 @@ int main(int argc, char **argv) {
 
     if (opt.dump_csr)
       dumpCsr(cpu);
+
+    // The guest owns stdout (the QEMU diff is byte-exact), so the chapter-10
+    // histogram goes to stderr, like --trace.
+    if (opt.stats)
+      cpu.stats().print(stderr);
 
     // The guest's stdout must stay byte-exact for the QEMU diff, so the
     // summary goes to stderr.  start.S keeps main()'s result in t0 before it

@@ -43,7 +43,11 @@ enum class Insn : uint16_t {
 #define RSIM_INSN(ID, MNEM, FMT, OPC, F3, F7, IMM, ISA, F5) ID,
 #include "insn.def"
 #undef RSIM_INSN
+  Count, // one past the last real instruction, for the chapter-10 histogram
 };
+
+/// Number of encoding buckets, including ILLEGAL.
+constexpr unsigned kInsnCount = static_cast<unsigned>(Insn::Count);
 
 struct Decoded {
   Insn id = Insn::ILLEGAL;

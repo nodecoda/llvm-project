@@ -15,7 +15,7 @@
 | 07 | [07-debugger.md](07-debugger.md) | 断点、单步与脚本调试 | transcript 与 golden 逐字节一致 | `rsim-ch07` |
 | 08 | [08-traps.md](08-traps.md) | 陷阱模型与 ebreak | `mcause=2/3`、`mepc` 正确 | `rsim-ch08` |
 | 09 | [09-extensions.md](09-extensions.md) | M/Zbb/Zbs/A 与 `--isa` | 19+8+20 条语料对拍；严格模式退出 126 | `rsim-ch09` |
-| 10 | （规划中） | 指令统计与“性能” | `jalr` 计数 ≥ 1e6 | `rsim-ch10` |
+| 10 | [10-statistics.md](10-statistics.md) | 指令统计与“性能” | `jalr` ≥ 1e6；top-5 与 trace 一致 | `rsim-ch10` |
 | 11 | （规划中） | 第二课验收 | C2-AC1–8 全绿 | `rsim-ch11` |
 
 第 00 章只是骨架，因此没有行为检查；`scripts/course2-verify.sh` 打印
