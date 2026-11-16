@@ -1,23 +1,24 @@
-# 第 32 章：跨后端 status 矩阵——一张表看完三种投影
+# 第 32 章：跨后端 status 矩阵——一张表看完跨后端投影
 
 ## 目标
 
-第 29、30、31 章各自有一张“RVMin `.td` 用法对照”表，但它们是**按后端**
-分开的。读的时候要在三张表之间来回跳，才能回答一个最实际的问题：
+第 29–31 章各自有一张“RVMin `.td` 用法对照”表，但它们是**按后端**
+分开的。读的时候要在几张表之间来回跳，才能回答一个最实际的问题：
 
 > 我改这一行 `let`，到底会影响哪些后端？
 
 本章把三张表合并成一张**跨后端 status 矩阵**：
 
 - 行：`RVMinRegisterInfo.td` / `RVMin.td` 里的每一处 `let`/`field`；
-- 列：`register-info` / `instr-info` / `asm-writer`；
+- 列：`register-info` / `instr-info` / `asm-writer` / `asm-matcher`
+  （最后一列由第 34 章加入，矩阵自动扩展）；
 - 单元格：该字段在这个后端里的投影状态。
 
 本章产出：
 
 - `dsl-surface.py` 新增 `--status-matrix`；
 - 同一个模式支持 `--check` / `--update`，所以矩阵本身也是可漂移文档；
-- 一张 13 行 × 3 后端的对照表，直接展示“同一行 `.td`，三种命运”。
+- 一张 13 行 × 4 后端的对照表，直接展示“同一行 `.td`，不同命运”。
 
 非目标：
 
@@ -130,70 +131,71 @@ python3 dsl-surface.py --status-matrix --update DOC --usage a.td b.td
 
 同一份 `.td` 在每个后端下的投影状态；`—` 表示该字段不在这个后端的 schema 里。
 
-| 文件:行 | 字段 | 声明于 | `register-info` | `instr-info` | `asm-writer` |
-| --- | --- | --- | --- | --- | --- |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:12` | `FallbackRegAltNameIndex` | `RegAltNameIndex` | 未消费 | — | `project` |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:17` | `Namespace` | `Instruction`, `RegAltNameIndex`, `Register`, `RegisterClass`, `SubRegIndex` | `derive+project` | `derive` | `derive+project` |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:18` | `HWEncoding` | `Register` | `project` | — | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:19` | `AltNames` | `Register` | 未消费 | — | `project` |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:20` | `DwarfNumbers` | `Register` | `project` | — | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:25` | `RegAltNameIndices` | `Register` | 未消费 | — | `project` |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:16` | `Num` | — | 自定义 | 自定义 | 自定义 |
-| `llvm/lib/Target/RVMin/RVMin.td:96` | `AsmWriterClassName` | `AsmWriter` | — | — | `project` |
-| `llvm/lib/Target/RVMin/RVMin.td:103` | `ShouldEmitMatchRegisterAltName` | — | — | — | — |
-| `llvm/lib/Target/RVMin/RVMin.td:104` | `AllowDuplicateRegisterNames` | — | — | — | — |
-| `llvm/lib/Target/RVMin/RVMin.td:112` | `InstructionSet` | — | — | — | — |
-| `llvm/lib/Target/RVMin/RVMin.td:113` | `AssemblyParsers` | — | — | — | — |
-| `llvm/lib/Target/RVMin/RVMin.td:114` | `AssemblyWriters` | `Target` | — | — | `derive` |
+| 文件:行 | 字段 | 声明于 | `register-info` | `instr-info` | `asm-writer` | `asm-matcher` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:12` | `FallbackRegAltNameIndex` | `RegAltNameIndex` | 未消费 | — | `project` | — |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:17` | `Namespace` | `Instruction`, `RegAltNameIndex`, `Register`, `RegisterClass`, `SubRegIndex` | `derive+project` | `derive` | `derive+project` | `derive+project` |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:18` | `HWEncoding` | `Register` | `project` | — | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:19` | `AltNames` | `Register` | 未消费 | — | `project` | `project` |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:20` | `DwarfNumbers` | `Register` | `project` | — | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:25` | `RegAltNameIndices` | `Register` | 未消费 | — | `project` | `project` |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:16` | `Num` | — | 自定义 | 自定义 | 自定义 | 自定义 |
+| `llvm/lib/Target/RVMin/RVMin.td:96` | `AsmWriterClassName` | `AsmWriter` | — | — | `project` | — |
+| `llvm/lib/Target/RVMin/RVMin.td:103` | `ShouldEmitMatchRegisterAltName` | `AsmParser` | — | — | — | `project` |
+| `llvm/lib/Target/RVMin/RVMin.td:104` | `AllowDuplicateRegisterNames` | `AsmParser` | — | — | — | `project` |
+| `llvm/lib/Target/RVMin/RVMin.td:112` | `InstructionSet` | — | — | — | — | — |
+| `llvm/lib/Target/RVMin/RVMin.td:113` | `AssemblyParsers` | `Target` | — | — | — | `derive` |
+| `llvm/lib/Target/RVMin/RVMin.td:114` | `AssemblyWriters` | `Target` | — | — | `derive` | — |
 
-共 13 处使用；3 个后端都消费 1 处，至少一个消费 8 处，自定义字段 1 处。
+共 13 处使用；4 个后端都消费 1 处，至少一个消费 11 处，自定义字段 1 处。
 <!-- END: GENERATED CROSS-BACKEND STATUS -->
 
 ## 深读：这张表告诉了我们什么
 
-### 1. `AltNames`：三列两空一满
+### 1. `AltNames`：两列空、两列满
 
-`AltNames` 在 `register-info` / `instr-info` 下是 `—`，在 `asm-writer` 下是
-`project`。这不是“字段写错了”，而是它只属于汇编打印投影。第 29 章把它标成
+`AltNames` 在 `register-info` / `instr-info` 下是 `—`，在 `asm-writer` /
+`asm-matcher` 下都是 `project`。这不是“字段写错了”，而是它只属于汇编打印投影。第 29 章把它标成
 “asm writer / asm matcher（无效）”时，说的是 register-info 视角；本章把它
-放回全局，就能看到它在 asm-writer 里是核心输入。
+放回全局，就能看到它在 asm-writer / asm-matcher 里都是核心输入。
 
 ### 2. `DwarfNumbers` / `HWEncoding`：反向案例
 
-它们在 `register-info` 下是 `project`，在 `asm-writer` 下是 `未消费`，
-在 `instr-info` 下是 `—`。同一行 `.td`，在三个后端里分别是“核心输入”
-“看得到但不用”“根本看不到”。
+它们在 `register-info` 下是 `project`，在 `asm-writer` / `asm-matcher`
+下是 `未消费`，在 `instr-info` 下是 `—`。同一行 `.td`，在四个后端里分别是
+“核心输入”“看得到但不用”“根本看不到”。
 
-### 3. `Namespace`：唯一三列都消费的字段
+### 3. `Namespace`：唯一四列都消费的字段
 
-`Namespace` 在三个后端里都是 `derive` 或 `derive+project`。这是真正的共享
+`Namespace` 在四个后端里都是 `derive` 或 `derive+project`。这是真正的共享
 字段：指令、寄存器、汇编打印都要 namespace。跨后端矩阵里，这种行最适合
-作为“改之前必须三处都验证”的候选。
+作为“改之前必须四处都验证”的候选。
 
-### 4. `Num`：三列都是“自定义”
+### 4. `Num`：四列都是“自定义”
 
 `Num` 是 RVMin 自己在 `.td` 里声明的 `field`，不属于 `Target.td` 的通用
-schema。三个后端都不认识它；只有读它的 C++ 才需要保证语义。矩阵把
+schema。四个后端都不认识它；只有读它的 C++ 才需要保证语义。矩阵把
 “自定义字段”单独标出来，避免被误认为“未消费”。
 
 ### 5. `AssemblyWriters`：ambient 字段
 
 `AssemblyWriters` 在 asm-writer 下是 `derive`，因为它被
 `CodeGenTarget::getAsmWriter()` 读取。它不是任何根类的字段，而是
-`Target` 记录上的 ambient 配置。矩阵里它只亮一列，正好说明“目标级字段”
-和“记录类字段”的区别。
+`Target` 记录上的 ambient 配置。asm-matcher 没有把它纳入 schema（匹配器
+不使用打印器配置），所以只亮一列，正好说明“目标级字段”和“记录类字段”的区别。
 
-### 6. `ShouldEmitMatchRegisterAltName` / `AllowDuplicateRegisterNames`：三列全空
+### 6. `ShouldEmitMatchRegisterAltName` / `AllowDuplicateRegisterNames`：新增一列后才亮
 
-这两行是 asm-matcher 的输入，不属于本章三个后端的任何一个 schema。矩阵里
-三列都是 `—`，提醒你：**没被这三张表覆盖，不等于没被任何后端消费**。
-要回答它们的影响面，需要把 asm-matcher 也加进 `BACKENDS`。
+这两行是 asm-matcher 的输入。第 32 章首次发布时，矩阵只有三个后端，
+两行都是 `—`；第 34 章把 asm-matcher 加进 `BACKENDS` 后，它们自动变成
+`project`。这正好演示了**后端集合是 SSOT**：文档不需要手改逻辑，只需重新
+`--update`。
 
 ### 7. 汇总数字怎么读
 
-“3 个后端都消费 1 处，至少一个消费 8 处”说明：13 处用法里只有 1 处是真正
-三后端共享的（`Namespace`），但有 8 处至少被一个后端消费。剩下 5 处要么是
-自定义字段，要么属于未纳入本章的后端。
+“4 个后端都消费 1 处，至少一个消费 11 处”说明：13 处用法里只有 1 处是真正
+四后端共享的（`Namespace`），但有 11 处至少被一个后端消费。剩下 1 处是
+`InstructionSet`（见常见坑 3），另有 1 处是自定义字段（`Num`）。
 
 ### 8. 为什么不做成“字段 × 所有 43 个后端”
 
@@ -239,12 +241,12 @@ python3 "$T" --backend asm-writer --check \
 
 ```text
 $ python3 dsl-surface.py --status-matrix --check doc32.md --usage ...
-dsl-surface: OK (cross-backend status: 13 usages, 3 backends)
+dsl-surface: OK (cross-backend status: 13 usages, 4 backends)
 
 $ python3 dsl-surface.py --status-matrix --usage ...
 | 文件:行 | 字段 | 声明于 | register-info | instr-info | asm-writer |
 ...
-共 13 处使用；3 个后端都消费 1 处，至少一个消费 8 处，自定义字段 1 处。
+共 13 处使用；4 个后端都消费 1 处，至少一个消费 11 处，自定义字段 1 处。
 
 $ scripts/rvmin-verify-all.sh "$B/bin"
 ...
@@ -263,7 +265,7 @@ ALL GATES PASS (run rvmin-run.sh separately for the QEMU check)
    `ambient_fields` 才会出现在该列；否则会被误标成 `—`。
 5. **矩阵列顺序就是 `BACKENDS` 的插入顺序。** 新增后端会自动多一列，
    但列名和顺序会变，文档需要 `--update`。
-6. **不要拿三列全 `—` 判断字段无用。** 它可能属于尚未纳入的 asm-matcher /
+6. **不要拿全 `—` 判断字段无用。** 它可能属于尚未纳入的 dag-isel /
    dag-isel 等后端。
 7. **status 矩阵不替代单后端契约。** 它只给 stage 速览；默认值、类型、
    读取点、语义仍在各后端的 contract 块里。
@@ -272,11 +274,11 @@ ALL GATES PASS (run rvmin-run.sh separately for the QEMU check)
 
 1. 把 `RVMinInstrInfo.td` 也加进 `--usage`，看矩阵会膨胀到多少行；先按
    `(field, status)` 聚合再决定是否适合放进文档。
-2. 给矩阵增加一列“三后端消费计数”，或增加一个 `--status-summary` 模式，
+2. 给矩阵增加一列“后端消费计数”，或增加一个 `--status-summary` 模式，
    只输出汇总数字。
 3. 把 `asm-matcher` 加进 `BACKENDS`，观察
    `ShouldEmitMatchRegisterAltName` / `AllowDuplicateRegisterNames` 两行
-   从三列全空变成有值。
+   从全空变成有值。
 4. 设计一个“影响面”命令：输入字段名，输出所有读它的后端与读取点。
    复用 `scan_matrix()` 的数据即可。
 5. 把 status 矩阵扩展到 `llvm/docs/TableGen/BackEnds.md`，需要解决哪些

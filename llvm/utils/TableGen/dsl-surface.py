@@ -78,6 +78,7 @@ MAIN_OUTPUTS = {
     "register-info": "<Target>GenRegisterInfo.inc",
     "instr-info": "<Target>GenInstrInfo.inc",
     "asm-writer": "<Target>GenAsmWriter.inc",
+    "asm-matcher": "<Target>GenAsmMatcher.inc",
 }
 
 BACKENDS = {
@@ -197,6 +198,60 @@ BACKENDS = {
             "RegClassByHwMode",
         ),
         ambient_fields=(("Target", "AssemblyWriters"),),
+    ),
+    "asm-matcher": Backend(
+        name="asm-matcher",
+        emitter="llvm/utils/TableGen/AsmMatcherEmitter.cpp",
+        sources=(
+            ("llvm/utils/TableGen/AsmMatcherEmitter.cpp", "emitter"),
+            ("llvm/utils/TableGen/Common/CodeGenInstAlias.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenInstAlias.h", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenInstruction.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenInstruction.h", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenRegisters.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenRegisters.h", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenTarget.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenTarget.h", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenHwModes.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenHwModes.h", "shared"),
+            ("llvm/utils/TableGen/Common/InfoByHwMode.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/InfoByHwMode.h", "shared"),
+            ("llvm/utils/TableGen/Common/SubtargetFeatureInfo.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/SubtargetFeatureInfo.h", "shared"),
+        ),
+        td_files=(
+            "llvm/include/llvm/Target/Target.td",
+            "llvm/include/llvm/Target/TargetSubtarget.td",
+        ),
+        roots_from=(
+            "llvm/utils/TableGen/AsmMatcherEmitter.cpp",
+            "llvm/utils/TableGen/Common/CodeGenRegisters.cpp",
+            "llvm/utils/TableGen/Common/SubtargetFeatureInfo.cpp",
+        ),
+        extra_roots=(
+            ("Instruction", "llvm/utils/TableGen/Common/CodeGenTarget.cpp",
+             'getAllDerivedDefinitions("Instruction")'),
+            ("Register", "llvm/utils/TableGen/Common/CodeGenRegisters.cpp",
+             'getAllDerivedDefinitions("Register")'),
+            ("RegisterClass", "llvm/utils/TableGen/Common/CodeGenRegisters.cpp",
+             'getAllDerivedDefinitions("RegisterClass")'),
+            ("Operand", "llvm/utils/TableGen/InstrInfoEmitter.cpp",
+             'getAllDerivedDefinitions("Operand")'),
+            ("AsmParser", "llvm/utils/TableGen/Common/CodeGenTarget.cpp",
+             "getAsmParser()"),
+            ("AsmParserVariant",
+             "llvm/utils/TableGen/Common/CodeGenTarget.cpp",
+             "getAsmParserVariant"),
+        ),
+        helper_classes=(
+            "HwModeSelect", "RegInfoByHwMode", "RegInfo",
+            "SubRegRangeByHwMode", "SubRegRange", "DwarfRegAlias",
+            "RegClassByHwMode", "DAGOperand",
+        ),
+        ambient_fields=(
+            ("Target", "AssemblyParsers"),
+            ("Target", "AssemblyParserVariants"),
+        ),
     ),
 }
 
@@ -392,10 +447,91 @@ ASM_WRITER_ANNOTATIONS.update({
     "AssemblyWriters": "目标级 `AsmWriter` 记录列表；`-asmwriternum` 选择其中一个。",
 })
 
+# The asm matcher shares most instruction-level semantics with instr-info;
+# only the fields it reads on its own records are added below.
+ASM_MATCHER_ANNOTATIONS = {
+    k: v for k, v in INSTR_INFO_ANNOTATIONS.items()
+    if k not in {"Body", "FunctionName", "Instruction"}
+}
+
+ASM_MATCHER_ANNOTATIONS.update({
+    # --- AsmOperandClass / AsmParserVariant -------------------------------
+    "Name": "操作数类的 `MCK_<Name>` 枚举名与默认方法名前缀；`AsmParserVariant` 中则是变体名，用于过滤 `AsmVariantName`。",
+    "SuperClasses": "操作数类的父类列表；决定分类层级与匹配优先级。",
+    "PredicateMethod": "操作数类判定方法名；未设时由 `Name` 派生 `is<Name>`。",
+    "RenderMethod": "操作数写回 MCInst 的方法名；未设时派生 `add<Name>Operands`。",
+    "ParserMethod": "自定义操作数解析方法名；非空时生成 parse switch 分支。",
+    "DiagnosticType": "匹配失败时使用的诊断类型；`AsmParser` 侧映射成文本。",
+    "DiagnosticString": "参数化诊断文本；用于非法操作数报错。",
+    "IsOptional": "该操作数类是否可省略；匹配结束时允许缺少。",
+    "DefaultMethod": "可选操作数的默认构造方法名；未设时由 `Name` 派生 `default<Name>Operands`。",
+    # --- AsmParser ---------------------------------------------------------
+    "AsmParserClassName": "生成解析器的类名后缀；默认 `AsmParser`。",
+    "AsmParserInstCleanup": "每条指令匹配成功后调用的目标自定义清理函数；空则不生成。",
+    "ShouldEmitMatchRegisterName": "是否生成主寄存器名匹配函数。",
+    "ShouldEmitMatchRegisterAltName": "是否生成备用寄存器名匹配函数。",
+    "ShouldEmitMatchRegisterAltNameWithIndex": "是否按 AltNameIndex 生成逐索引匹配函数，不做回退。",
+    "AllowDuplicateRegisterNames": "允许寄存器名重复；控制是否仍生成匹配函数并去重。",
+    "HasMnemonicFirst": "输入是否总是助记符在前；决定匹配表布局。",
+    "OperandParserMethod": "自定义操作数解析入口方法名；生成调用点使用。",
+    "CallCustomParserForAllOperands": "对所有操作数调用自定义 parser，而不仅是声明了 `ParserMethod` 的类。",
+    "EmitTokenDiagnosticTypes": "为 token 匹配失败生成带诊断类型的返回值。",
+    "PreferSmallerInstructions": "同等匹配时优先较小（`Size` 小）的指令。",
+    "ReportMultipleNearMisses": "生成 near-miss 候选列表，而不是只报第一个失败。",
+    "PrioritizeFeatureInMultiMismatchFallback": "多重不匹配回退时优先报告 feature 冲突。",
+    # --- AsmParserVariant --------------------------------------------------
+    "Variant": "汇编变体编号；写入 `AsmVariantID` 并参与匹配比较。",
+    "CommentDelimiter": "汇编模板中的注释定界符。",
+    "RegisterPrefix": "寄存器 token 前缀；用于自动识别寄存器。",
+    "TokenizingCharacters": "独立成 token 的字符集合（默认 `[]*!`）。",
+    "SeparatorCharacters": "不属于 token 的分隔字符（默认空格/制表/逗号）。",
+    "BreakCharacters": "开始新标识符的字符集合；tokenizer 使用。",
+    # --- InstAlias / MnemonicAlias / TokenAlias ---------------------------
+    "ResultInst": "别名展开的目标指令 dag；`CodeGenInstAlias` 解析成 MCInst 操作数。",
+    "UseInstAsmMatchConverter": "是否复用目标指令的 `AsmMatchConverter`。",
+    "AsmVariantName": "所属汇编变体；非空时只在同名变体下参与匹配。",
+    "FromMnemonic": "`MnemonicAlias` 的源助记符；生成助记符重写表。",
+    "ToMnemonic": "`MnemonicAlias` 的目标助记符；重写后的规范形式。",
+    "FromToken": "`TokenAlias` 的源 token 字面量。",
+    "ToToken": "`TokenAlias` 的目标 token 字面量；建立 token 子类关系。",
+    # --- Instruction / Operand --------------------------------------------
+    "AsmMatchConverter": "自定义汇编匹配转换函数名；非空时替代 dag 生成的转换代码。",
+    "HasPositionOrder": "指令是否带位置排序；影响 alias/匹配排序。",
+    "TwoOperandAliasConstraint": "两操作数 alias 的额外约束表达式；asm matcher 生成检查。",
+    "ParserMatchClass": "操作数对应的 `AsmOperandClass`；决定分类与自定义解析。",
+    # --- Predicate ---------------------------------------------------------
+    "AssemblerMatcherPredicate": "是否作为汇编匹配谓词参与生成。",
+    "AssemblerCondDag": "汇编器谓词的 dag 条件；展开成 feature 检查代码。",
+    "CondString": "谓词条件的字符串形式；`SubtargetFeatureInfo` 用其判空。",
+    "PredicateName": "生成 `getSubtargetFeatureName` 时使用的谓词名。",
+    "RecomputePerFunction": "是否每个函数重新计算该谓词。",
+    # --- registers / register tuples / subreg indices ----------------------
+    "AsmName": "寄存器主汇编名；生成寄存器名匹配表。",
+    "AltNames": "寄存器备用汇编名；asm matcher 生成 alt-name 匹配表。",
+    "RegAltNameIndices": "与 `AltNames` 一一对应的别名索引。",
+    "Aliases": "寄存器别名列表；共享寄存器模型合并别名。",
+    "CostPerUse": "每寄存器使用成本序列；共享寄存器模型消费。",
+    "CoveredBySubRegs": "值由子寄存器决定；共享寄存器模型消费。",
+    "SubRegs": "子寄存器列表；共享寄存器模型消费。",
+    "SubRegIndices": "与 `SubRegs` 一一对应的子寄存器索引。",
+    "isArtificial": "合成寄存器标记；不参与用户可见匹配。",
+    "isConstant": "常量寄存器标记；共享寄存器模型消费。",
+    "RegAsmNames": "`RegisterTuples` 展开时覆盖每个合成寄存器的 `AsmName`。",
+    "Classes": "`RegisterCategory` 包含的寄存器类；共享寄存器模型用于分类。",
+    "CoerceFromRegClass": "匹配时把该寄存器类强制转换到另一个类。",
+    "ComposedOf": "复合子寄存器索引的组成列表。",
+    "CoveringSubRegIndices": "覆盖该子寄存器索引的父索引列表。",
+    "SubRegRanges": "按 HwMode 的子寄存器范围。",
+    # --- Target ------------------------------------------------------------
+    "AssemblyParsers": "目标选用的 `AsmParser` 记录列表；`-asmparsernum` 选择。",
+    "AssemblyParserVariants": "汇编变体记录列表；决定 `Variant` 匹配循环。",
+})
+
 ANNOTATIONS = {
     "register-info": REGISTER_INFO_ANNOTATIONS,
     "instr-info": INSTR_INFO_ANNOTATIONS,
     "asm-writer": ASM_WRITER_ANNOTATIONS,
+    "asm-matcher": ASM_MATCHER_ANNOTATIONS,
 }
 
 # Fields that are declared on a consumed class but intentionally not read by
@@ -460,10 +596,22 @@ ASM_WRITER_UNUSED_NOTES.update({
     "UseNamedOperandTable": "命名操作数表开关；`-gen-instr-info` 消费。",
 })
 
+ASM_MATCHER_UNUSED_NOTES = dict(INSTR_INFO_UNUSED_NOTES)
+ASM_MATCHER_UNUSED_NOTES.update({
+    "DwarfNumbers": "DWARF 编号；`-gen-register-info` 消费。",
+    "HWEncoding": "寄存器编码；`-gen-register-info` 消费。",
+    "PositionOrder": "寄存器枚举顺序；核心排序器消费。",
+    "UseLogicalOperandMappings": "逻辑操作数映射开关；`-gen-instr-info` 消费。",
+    "UseNamedOperandTable": "命名操作数表开关；`-gen-instr-info` 消费。",
+    "EmitPriority": "别名打印优先级；`-gen-asm-writer` 消费，asm matcher 不读。",
+    "isAsmParserOnly": "仅汇编器可见的标记；本后端的匹配表不直接读它。",
+})
+
 UNUSED_NOTES = {
     "register-info": REGISTER_INFO_UNUSED_NOTES,
     "instr-info": INSTR_INFO_UNUSED_NOTES,
     "asm-writer": ASM_WRITER_UNUSED_NOTES,
+    "asm-matcher": ASM_MATCHER_UNUSED_NOTES,
 }
 
 # Name-level contract: record names and generated identifiers that are not
@@ -512,10 +660,18 @@ ASM_WRITER_MAGIC_NAMES = (
      "asm writer 跳过 PHI 的别名排序/打印。"),
 )
 
+ASM_MATCHER_MAGIC_NAMES = (
+    ("Imm", r'"Imm"',
+     "内置立即数操作数类；`ParserMatchClass` 为 Imm 时走立即数分类。"),
+    ("MCK_", r'"MCK_"',
+     "生成的操作数类枚举名前缀；`MatchClassKind` 的基本单位。"),
+)
+
 MAGIC_NAMES = {
     "register-info": REGISTER_INFO_MAGIC_NAMES,
     "instr-info": (),
     "asm-writer": ASM_WRITER_MAGIC_NAMES,
+    "asm-matcher": ASM_MATCHER_MAGIC_NAMES,
 }
 
 MATRIX_BEGIN = "<!-- BEGIN: GENERATED PROJECTION MATRIX -->"
@@ -615,10 +771,35 @@ ASM_WRITER_DERIVATIONS = (
      "把 `RegisterOperand` 解析到具体 `RegisterClass`。"),
 )
 
+ASM_MATCHER_DERIVATIONS = (
+    ("alias construction", "InstAlias",
+     r'CodeGenInstAlias::CodeGenInstAlias',
+     "把 `ResultInst` dag 展开成别名操作数，并解析寄存器/立即数。"),
+    ("operand class hierarchy", "AsmOperandClass.SuperClasses",
+     r'getValueAsListInit\("SuperClasses"\)',
+     "把父类列表展开成 `isSubclass()` 判定的偏序关系。"),
+    ("register ordering", "Register",
+     r'getAllDerivedDefinitions\("Register"\)',
+     "按 `PositionOrder`/名字排序，决定寄存器枚举与匹配表顺序。"),
+    ("operand type resolution", "RegisterOperand.RegClass",
+     r'getValueAsDef\("RegClass"\)',
+     "把 `RegisterOperand` 解析到具体 `RegisterClass`。"),
+    ("mnemonic lowering", "MnemonicAlias",
+     r'getAllDerivedDefinitions\("MnemonicAlias"\)',
+     "收集助记符别名，生成匹配前的重写表。"),
+    ("token substitution", "TokenAlias",
+     r'getAllDerivedDefinitions\("TokenAlias"\)',
+     "把 FromToken 的匹配类标记为 ToToken 的子类。"),
+    ("subtarget predicate collection", "Predicate.AssemblerMatcherPredicate",
+     r'SubtargetFeatureInfo::getAll',
+     "收集汇编器谓词并分配 feature bit，供匹配表做条件检查。"),
+)
+
 DERIVATIONS = {
     "register-info": REGISTER_INFO_DERIVATIONS,
     "instr-info": INSTR_INFO_DERIVATIONS,
     "asm-writer": ASM_WRITER_DERIVATIONS,
+    "asm-matcher": ASM_MATCHER_DERIVATIONS,
 }
 
 
