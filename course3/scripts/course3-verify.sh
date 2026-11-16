@@ -38,6 +38,12 @@
 #   * a write buffer that crosses a page boundary is copied byte by byte;
 #   * --dump-pagetable shows the demo text page, the UART and the user stack.
 #
+# Chapter 08 checks:
+#   * two U-mode processes alternate: 300 "A" lines and 200 "B" lines, exit 7;
+#   * --stats proves the timer fired and both processes made progress;
+#   * --dump-procs reports both EXITED with exit codes 7 and 0;
+#   * the two processes' output is interleaved, not serialized.
+#
 set -euo pipefail
 
 BIN=${1:?usage: course3-verify.sh <llvm-bin-dir> <rmach-binary>}
@@ -104,7 +110,7 @@ build_mmu_image() {
 # build_c_image above stays for standalone test kernels such as uart-echo.c.
 build_kernel() {
   local name=kernel f
-  for f in kmain uart mmu exit; do
+  for f in kmain uart mmu exit proc string; do
     "$CC" "${KFLAGS[@]}" -c "$COURSE3/kernel/$f.c" -o "$TMP/$name-$f.o" \
       || fail "clang could not compile kernel/$f.c"
   done
@@ -115,6 +121,7 @@ build_kernel() {
   "$LD" -m elf32lriscv -T "$COURSE3/kernel/link.ld" -o "$TMP/$name.elf" \
     "$TMP/$name-start.o" "$TMP/$name-trap.o" "$TMP/$name-kmain.o" \
     "$TMP/$name-uart.o" "$TMP/$name-mmu.o" "$TMP/$name-exit.o" \
+    "$TMP/$name-proc.o" "$TMP/$name-string.o" \
     || fail "ld.lld could not link the kernel"
 }
 build_kernel
@@ -367,6 +374,70 @@ grep -q '^leaf va=0x10000000 pa=0x10000000 .* flags=VRWUAD$' "$TMP/demo.dump" \
   || fail "dump lacks the UART page: $(cat "$TMP/demo.dump")"
 grep -q '^leaf va=0x7feff000 pa=0x80423000 .* flags=VRWUAD$' "$TMP/demo.dump" \
   || fail "dump lacks the last stack page: $(cat "$TMP/demo.dump")"
+CHECKS=$((CHECKS + 1))
+
+# --- Chapter 08: two processes and round-robin scheduling ---------------
+
+build_proc() {
+  local name=$1
+  "$CC" --target="$TRIPLE" -march=rv32i -mabi=ilp32 -mno-relax \
+    -c "$COURSE3/tests/$name.S" -o "$TMP/$name.o" \
+    || fail "clang could not assemble $name.S"
+  "$LD" -m elf32lriscv -T "$RT/link.ld" -o "$TMP/$name" "$TMP/$name.o" \
+    || fail "ld.lld could not link $name"
+}
+build_proc proc-a
+build_proc proc-b
+
+# Both processes print one line per write syscall, so a corrupt context switch
+# shows up as a missing line, a stray byte, or the wrong process order.
+set +e
+"$RMACH" --kernel "$TMP/kernel.elf" --user "$TMP/proc-a" --user "$TMP/proc-b" \
+  --stats > "$TMP/proc.out" 2> "$TMP/proc.err"
+proc_rc=$?
+set -e
+[[ "$proc_rc" -eq 7 ]] || fail "two-process run exited $proc_rc, want 7"
+awk 'BEGIN { a = 0; b = 0; bad = 0 }
+     $0 == "A" { a++ }
+     $0 == "B" { b++ }
+     $0 != "A" && $0 != "B" { bad = 1 }
+     END { if (bad || a != 300 || b != 200) exit 1 }' "$TMP/proc.out" \
+  || fail "two-process output is not 300 A + 200 B lines"
+CHECKS=$((CHECKS + 1))
+
+# The timer must have preempted the U-mode programs, and every write/exit
+# syscall must have gone through the handler.
+grep -q 'timer_ticks=' "$TMP/proc.err" \
+  || fail "no stats line: $(cat "$TMP/proc.err")"
+grep -Eq 'timer_ticks=([4-9]|[1-9][0-9]+)' "$TMP/proc.err" \
+  || fail "timer did not fire at least four times: $(cat "$TMP/proc.err")"
+grep -q 'ecalls=502' "$TMP/proc.err" \
+  || fail "expected 300 write + 200 write + 2 exit ecalls: $(cat "$TMP/proc.err")"
+CHECKS=$((CHECKS + 1))
+
+# The kernel publishes its process table at BOOT_RESULT_ADDR; both processes
+# ran to completion and their exit codes were collected independently.
+set +e
+"$RMACH" --kernel "$TMP/kernel.elf" --user "$TMP/proc-a" --user "$TMP/proc-b" \
+  --dump-procs > "$TMP/procs.dump" 2> /dev/null
+procs_rc=$?
+set -e
+[[ "$procs_rc" -eq 7 ]] || fail "two-process --dump-procs exited $procs_rc"
+grep -q '^nproc 2$' "$TMP/procs.dump" || fail "dump lacks nproc 2"
+grep -q '^proc 0 state=EXITED exit=7 ' "$TMP/procs.dump" \
+  || fail "dump lacks process 0 exit 7: $(cat "$TMP/procs.dump")"
+grep -q '^proc 1 state=EXITED exit=0 ' "$TMP/procs.dump" \
+  || fail "dump lacks process 1 exit 0: $(cat "$TMP/procs.dump")"
+CHECKS=$((CHECKS + 1))
+
+# Interleaving: B must start before A prints its 300th line, and A must start
+# before B prints its 200th.  Serial execution would fail one of these.
+awk 'BEGIN { firstA = 0; firstB = 0 }
+     $0 == "A" && firstA == 0 { firstA = NR }
+     $0 == "B" && firstB == 0 { firstB = NR }
+     END { if (firstA == 0 || firstB == 0 || firstA >= 200 || firstB >= 300)
+             exit 1 }' "$TMP/proc.out" \
+  || fail "process output is not interleaved: $(head -20 "$TMP/proc.out" | tr '\n' ' ')"
 CHECKS=$((CHECKS + 1))
 
 echo "$CHECKS checks"

@@ -1,8 +1,9 @@
-/* Chapter 07: build the U-mode page tables and copy through them.
+/* Chapter 07-08: build U-mode page tables and copy through them.
  *
  * The kernel runs in M-mode, so its own loads and stores use physical
- * addresses.  The write syscall receives a user virtual buffer; user_translate
- * walks the same table the hardware walks and returns the physical byte.
+ * addresses.  The write syscall receives a user virtual buffer;
+ * user_translate() walks the same table the hardware walks and returns the
+ * physical byte.
  */
 #include "mmu.h"
 
@@ -17,9 +18,9 @@
 #define PTE_D 0x080u
 
 #define PTE_PPN(pa) (((uint32_t)(pa) >> 12) << 10)
-#define MAX_TABLES 8
+#define MAX_TABLES 16
 
-static uint32_t root[1024] __attribute__((aligned(4096)));
+static uint32_t roots[BOOT_MAX_PROCS][1024] __attribute__((aligned(4096)));
 static uint32_t tables[MAX_TABLES][1024] __attribute__((aligned(4096)));
 static unsigned used_tables;
 
@@ -32,7 +33,7 @@ static uint32_t *alloc_table(void) {
   return table;
 }
 
-static int map_page(uint32_t va, uint32_t pa, uint32_t flags) {
+static int map_page(uint32_t *root, uint32_t va, uint32_t pa, uint32_t flags) {
   const uint32_t vpn1 = (va >> 22) & 0x3ff;
   const uint32_t vpn0 = (va >> 12) & 0x3ff;
   uint32_t pte = root[vpn1];
@@ -63,10 +64,13 @@ static uint32_t seg_flags(uint32_t elf_flags) {
   return flags;
 }
 
-int mmu_init(const struct boot_info *boot) {
+int mmu_init(uint32_t pid, const struct boot_info *boot) {
+  if (pid >= BOOT_MAX_PROCS)
+    return -1;
+
+  uint32_t *root = roots[pid];
   for (unsigned i = 0; i < 1024; ++i)
     root[i] = 0;
-  used_tables = 0;
 
   for (uint32_t i = 0; i < boot->nseg; ++i) {
     const struct boot_seg *seg = &boot->seg[i];
@@ -79,28 +83,36 @@ int mmu_init(const struct boot_info *boot) {
     const uint32_t flags = seg_flags(seg->flags);
 
     for (uint32_t va = first; va < end; va += 4096) {
-      if (map_page(va, phys_page + (va - first), flags) != 0)
+      if (map_page(root, va, phys_page + (va - first), flags) != 0)
         return -1;
     }
   }
 
+  const uint32_t stack_phys = BOOT_USER_STACK_PHYS(pid);
   const uint32_t stack_start = BOOT_USER_SP - BOOT_USER_STACK_SIZE;
   for (uint32_t va = stack_start; va < BOOT_USER_SP; va += 4096) {
-    const uint32_t pa = BOOT_USER_STACK_PHYS + (va - stack_start);
-    if (map_page(va, pa, PTE_V | PTE_R | PTE_W | PTE_U | PTE_A | PTE_D) != 0)
+    const uint32_t pa = stack_phys + (va - stack_start);
+    if (map_page(root, va, pa, PTE_V | PTE_R | PTE_W | PTE_U | PTE_A | PTE_D) !=
+        0)
       return -1;
   }
 
-  if (map_page(0x10000000u, 0x10000000u,
+  if (map_page(root, 0x10000000u, 0x10000000u,
                PTE_V | PTE_R | PTE_W | PTE_U | PTE_A | PTE_D) != 0)
     return -1;
 
   return 0;
 }
 
-uint32_t mmu_satp(void) { return 0x80000000u | ((uint32_t)root >> 12); }
+uint32_t mmu_satp(uint32_t pid) {
+  return 0x80000000u | ((uint32_t)roots[pid] >> 12);
+}
 
-uint32_t user_translate(uint32_t va) {
+uint32_t user_translate(uint32_t pid, uint32_t va) {
+  if (pid >= BOOT_MAX_PROCS)
+    return 0;
+
+  const uint32_t *root = roots[pid];
   const uint32_t pte1 = root[(va >> 22) & 0x3ff];
   if (!(pte1 & PTE_V))
     return 0;

@@ -33,6 +33,7 @@ public:
   static constexpr uint32_t kUserBase = BOOT_USER_BASE;
   static constexpr uint32_t kUserSize = BOOT_USER_SIZE;
   static constexpr uint32_t kBootInfo = BOOT_INFO_ADDR;
+  static constexpr uint32_t kBootResult = BOOT_RESULT_ADDR;
 
   static constexpr uint32_t kIsaDefault =
       static_cast<uint32_t>(rsim::Isa::RV32I) |
@@ -42,9 +43,9 @@ public:
   uint32_t pc = 0;
 
   void reset(const rsim::Image &image, Bus &bus);
-  /// Copy a user image into the arena and write the boot_info page.  Call
+  /// Copy process pid's image into its arena and write boot_info[pid].  Call
   /// after reset(); an empty image leaves nseg == 0 (chapter-05 fallback).
-  void setUser(const rsim::Image &user);
+  void setUser(uint32_t pid, const rsim::Image &user);
   void setIsa(uint32_t mask) { isa_ = mask; }
 
   // Chapter 02: the CSR file and the current privilege level.  The selftest
@@ -62,6 +63,8 @@ public:
   bool halted() const { return halted_; }
   uint64_t executed() const { return executed_; }
   int exitCode() const { return exit_code_; }
+  uint32_t timerTicks() const { return timer_ticks_; }
+  uint32_t ecallCount() const { return ecall_count_; }
 
   void traceTo(std::FILE *file) { trace_ = file; }
 
@@ -96,6 +99,8 @@ private:
   bool halted_ = false;
   uint64_t executed_ = 0;
   int exit_code_ = 0;
+  uint32_t timer_ticks_ = 0;
+  uint32_t ecall_count_ = 0;
   std::FILE *trace_ = nullptr;
   uint32_t isa_ = kIsaDefault;
   uint32_t csr_[4096] = {};

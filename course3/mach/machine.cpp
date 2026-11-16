@@ -25,6 +25,8 @@ namespace rmach {
 static_assert(sizeof(boot_seg) == 20, "boot_seg must be 20 bytes");
 static_assert(sizeof(boot_info) == 16 + BOOT_MAX_SEGS * 20,
               "boot_info layout changed");
+static_assert(sizeof(boot_info) * BOOT_MAX_PROCS <= 4096,
+              "boot_info array must fit in its page");
 
 namespace {
 
@@ -88,6 +90,7 @@ void Machine::reset(const rsim::Image &image, Bus &bus) {
   bus_->ram().load(image);
   bus_->ram().map(kKernelStackTop - kKernelStackSize, kKernelStackSize);
   bus_->ram().map(kBootInfo, 4096);
+  bus_->ram().map(kBootResult, 4096);
   bus_->ram().map(kUserBase, kUserSize);
 
   for (uint32_t &reg : x)
@@ -97,6 +100,8 @@ void Machine::reset(const rsim::Image &image, Bus &bus) {
   halted_ = false;
   executed_ = 0;
   exit_code_ = 0;
+  timer_ticks_ = 0;
+  ecall_count_ = 0;
   trace_ = nullptr;
   isa_ = kIsaDefault;
   for (uint32_t &word : csr_)
@@ -104,16 +109,19 @@ void Machine::reset(const rsim::Image &image, Bus &bus) {
   priv_ = Priv::M;
 }
 
-void Machine::setUser(const rsim::Image &user) {
+void Machine::setUser(uint32_t pid, const rsim::Image &user) {
   if (bus_ == nullptr)
     throw rsim::ElfError("setUser() called before reset()");
+  if (pid >= BOOT_MAX_PROCS)
+    throw rsim::ElfError("setUser() pid out of range");
 
   boot_info info = {};
   info.magic = BOOT_MAGIC;
   info.user_entry = user.entry;
   info.user_sp = BOOT_USER_SP;
 
-  uint32_t cursor = BOOT_USER_BASE;
+  uint32_t cursor = BOOT_USER_IMAGE_BASE(pid);
+  const uint32_t stack_phys = BOOT_USER_STACK_PHYS(pid);
   auto findPage = [&](uint32_t page_va) -> boot_seg * {
     for (uint32_t i = 0; i < info.nseg; ++i)
       if (info.seg[i].vaddr == page_va)
@@ -133,7 +141,7 @@ void Machine::setUser(const rsim::Image &user) {
       if (page == nullptr) {
         if (info.nseg >= BOOT_MAX_SEGS)
           throw rsim::ElfError("too many user pages for boot_info");
-        if (cursor + 4096 > BOOT_USER_STACK_PHYS)
+        if (cursor + 4096 > stack_phys)
           throw rsim::ElfError("user image overlaps the reserved stack arena");
 
         page = &info.seg[info.nseg++];
@@ -161,9 +169,10 @@ void Machine::setUser(const rsim::Image &user) {
 
   // The host and the guest are both little-endian; writing the struct byte by
   // byte keeps the C and C++ layouts honest (see the static_asserts above).
+  const uint32_t info_addr = kBootInfo + pid * sizeof(boot_info);
   const auto *bytes = reinterpret_cast<const uint8_t *>(&info);
   for (size_t i = 0; i < sizeof(info); ++i)
-    bus_->ram().write8(kBootInfo + static_cast<uint32_t>(i), bytes[i]);
+    bus_->ram().write8(info_addr + static_cast<uint32_t>(i), bytes[i]);
   x[10] = kBootInfo; // a0: kmain(boot_info *)
 }
 
@@ -359,6 +368,11 @@ bool Machine::enterTrap(uint32_t cause, uint32_t tval, uint32_t epc) {
   // Vectored mtvec only affects interrupts; synchronous traps use the base.
   if ((cause & kInterruptBit) && (csr_[kCsrMtvec] & 1u))
     base += 4u * (cause & 0x7fffffffu);
+
+  if ((cause & kInterruptBit) && (cause & 0x7fffffffu) == 7)
+    ++timer_ticks_;
+  if (cause == 8)
+    ++ecall_count_;
 
   csr_[kCsrMepc] = epc;
   csr_[kCsrMcause] = cause;

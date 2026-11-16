@@ -1,8 +1,9 @@
 //===-- main.cpp - rmach entry point, chapter 01 ----------------*- C++ -*-===//
 //
 // Load a bare-metal ELF, reset the machine at its entry point and step until
-// ebreak/ecall or the step limit.  --dump-boot prints the same entry/segment
-// view chapter 01 compares against llvm-readelf.
+// ebreak/ecall or the step limit.  --user may be repeated: each image becomes
+// one U-mode process.  --dump-boot/--dump-procs/--stats expose the boot
+// protocol, the process table and the interrupt counters.
 //
 //===----------------------------------------------------------------------===//
 
@@ -18,22 +19,25 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace {
 
-constexpr const char *kVersion = "0.7";
+constexpr const char *kVersion = "0.8";
 constexpr int kExitUsage = 2;
 constexpr int kExitLoadError = 125;
 constexpr int kExitTrap = 126;
 
 struct Options {
   std::string kernel;
-  std::string user;
+  std::vector<std::string> user;
   std::string input;
   uint64_t max_steps = 10000000;
   bool trace = false;
   bool dump_boot = false;
   bool dump_pagetable = false;
+  bool dump_procs = false;
+  bool stats = false;
   bool have_pagetable_satp = false;
   uint32_t pagetable_satp = 0;
 };
@@ -41,10 +45,11 @@ struct Options {
 void usage() {
   std::fprintf(stderr, "usage: rmach --version\n"
                        "       rmach --selftest\n"
-                       "       rmach --kernel <elf> [--user <elf>] [--dump-boot]\n"
-                       "       rmach --kernel <elf> [--user <elf>] [--max-steps <n>]\n"
+                       "       rmach --kernel <elf> [--user <elf>]... [--dump-boot]\n"
+                       "       rmach --kernel <elf> [--user <elf>]... [--max-steps <n>]\n"
                        "                    [--trace] [--input <file>]\n"
-                       "                    [--dump-pagetable [<satp>]]\n");
+                       "                    [--dump-pagetable [<satp>]]\n"
+                       "                    [--dump-procs] [--stats]\n");
 }
 
 bool parse(int argc, char **argv, Options &opt) {
@@ -67,7 +72,7 @@ bool parse(int argc, char **argv, Options &opt) {
       const char *p = next("--user");
       if (!p)
         return false;
-      opt.user = p;
+      opt.user.emplace_back(p);
     } else if (arg == "--input") {
       const char *p = next("--input");
       if (!p)
@@ -82,6 +87,10 @@ bool parse(int argc, char **argv, Options &opt) {
       opt.trace = true;
     } else if (arg == "--dump-boot") {
       opt.dump_boot = true;
+    } else if (arg == "--dump-procs") {
+      opt.dump_procs = true;
+    } else if (arg == "--stats") {
+      opt.stats = true;
     } else if (arg == "--dump-pagetable") {
       opt.dump_pagetable = true;
       // An optional satp argument lets the reader dump a table that the
@@ -140,19 +149,54 @@ void dumpPageTable(const rsim::Memory &ram, uint32_t satp) {
     std::printf("... %zu more leaves\n", leaves.size() - kMaxLeaves);
 }
 
-void dumpBoot(const rsim::Image &image, const char *prefix = "") {
-  std::printf("%sentry 0x%08" PRIx32 "\n", prefix, image.entry);
+void dumpBoot(const rsim::Image &image, const std::string &prefix = "") {
+  std::printf("%sentry 0x%08" PRIx32 "\n", prefix.c_str(), image.entry);
   for (const rsim::Segment &seg : image.segments)
     std::printf("%sload vaddr=0x%08" PRIx32 " filesz=0x%08" PRIx32
                 " memsz=0x%08" PRIx32 " flags=0x%x align=0x%x\n",
-                prefix, seg.vaddr, seg.filesz, seg.memsz, seg.flags, seg.align);
+                prefix.c_str(), seg.vaddr, seg.filesz, seg.memsz, seg.flags,
+                seg.align);
+}
+
+const char *stateName(uint32_t state) {
+  switch (state) {
+  case 0:
+    return "RUNNABLE";
+  case 1:
+    return "RUNNING";
+  case 2:
+    return "EXITED";
+  default:
+    return "ABSENT";
+  }
+}
+
+void dumpProcs(const rsim::Memory &ram) {
+  const uint32_t base = rmach::Machine::kBootResult;
+  const uint32_t magic = ram.read32(base);
+  if (magic != BOOT_RESULT_MAGIC) {
+    std::printf("(no process table)\n");
+    return;
+  }
+  const uint32_t nproc = ram.read32(base + 4);
+  std::printf("nproc %" PRIu32 "\n", nproc);
+  for (uint32_t i = 0; i < BOOT_MAX_PROCS; ++i) {
+    const uint32_t off = base + 8 + i * 16;
+    const uint32_t pid = ram.read32(off);
+    const uint32_t state = ram.read32(off + 4);
+    const uint32_t exit_code = ram.read32(off + 8);
+    const uint32_t pc = ram.read32(off + 12);
+    std::printf("proc %" PRIu32 " state=%s exit=%" PRId32
+                " pc=0x%08" PRIx32 "\n",
+                pid, stateName(state), static_cast<int32_t>(exit_code), pc);
+  }
 }
 
 } // namespace
 
 int main(int argc, char **argv) {
   if (argc == 2 && std::strcmp(argv[1], "--version") == 0) {
-    std::printf("rmach %s (chapter 07)\n", kVersion);
+    std::printf("rmach %s (chapter 08)\n", kVersion);
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--selftest") == 0)
@@ -163,18 +207,32 @@ int main(int argc, char **argv) {
     usage();
     return kExitUsage;
   }
+  if (opt.user.size() > BOOT_MAX_PROCS) {
+    std::fprintf(stderr, "rmach: at most %d --user images\n", BOOT_MAX_PROCS);
+    return kExitUsage;
+  }
 
   try {
     const rsim::Image image = rsim::loadElf(opt.kernel);
-    rsim::Image user_image;
-    const bool has_user = !opt.user.empty();
-    if (has_user)
-      user_image = rsim::loadElf(opt.user);
+    std::vector<rsim::Image> user_images;
+    user_images.reserve(opt.user.size());
+    for (const std::string &path : opt.user) {
+      try {
+        user_images.push_back(rsim::loadElf(path));
+      } catch (const rsim::ElfError &err) {
+        std::fprintf(stderr, "rmach: %s: %s\n", path.c_str(), err.what());
+        return kExitLoadError;
+      }
+    }
 
     if (opt.dump_boot) {
       dumpBoot(image);
-      if (has_user)
-        dumpBoot(user_image, "user ");
+      const bool many = user_images.size() > 1;
+      for (size_t i = 0; i < user_images.size(); ++i) {
+        const std::string prefix =
+            many ? "user" + std::to_string(i) + " " : "user ";
+        dumpBoot(user_images[i], prefix);
+      }
       return 0;
     }
 
@@ -193,10 +251,13 @@ int main(int argc, char **argv) {
     bus.uart().setInput(input.get());
     rmach::Machine machine;
     machine.reset(image, bus);
-    if (has_user)
-      machine.setUser(user_image);
+    if (user_images.empty())
+      machine.setUser(0, rsim::Image{});
     else
-      machine.setUser(rsim::Image{});
+      for (size_t i = 0; i < user_images.size(); ++i)
+        machine.setUser(static_cast<uint32_t>(i), user_images[i]);
+    machine.x[10] = rmach::Machine::kBootInfo; // a0: boot_info[]
+    machine.x[11] = static_cast<uint32_t>(user_images.size()); // a1: nproc
     if (opt.trace)
       machine.traceTo(stderr);
 
@@ -224,6 +285,14 @@ int main(int argc, char **argv) {
                                                     : machine.satp();
       dumpPageTable(bus.ram(), satp);
     }
+    if (opt.dump_procs)
+      dumpProcs(bus.ram());
+    if (opt.stats)
+      std::fprintf(stderr,
+                   "rmach: stats: instructions=%" PRIu64 " timer_ticks=%" PRIu32
+                   " ecalls=%" PRIu32 "\n",
+                   machine.executed(), machine.timerTicks(),
+                   machine.ecallCount());
 
     std::fprintf(stderr,
                  "rmach: halted at 0x%08" PRIx32 " after %" PRIu64

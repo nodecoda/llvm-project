@@ -93,7 +93,8 @@ enter_user:
         csrw    mepc, a0
         li      t0, 0x80100000
         csrw    mscratch, t0
-        csrw    mstatus, zero
+        li      t0, 0x80            # MPIE=1: U-mode runs with MIE=1
+        csrw    mstatus, t0
         mv      sp, a1
         mret
 
