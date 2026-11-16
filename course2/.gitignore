@@ -1,0 +1,6 @@
+# The supported build directory lives outside the tree
+# (/home/ubuntu/llvm/builds/pr-ctpop/course2), but keep local experiments out.
+build/
+*.o
+*.a
+*.bin
