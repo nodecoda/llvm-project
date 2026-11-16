@@ -476,6 +476,174 @@ def : Pat<(mulhu  GPR:$rs1, GPR:$rs2), (MULHU  GPR:$rs1, GPR:$rs2)>;
 } // Predicates = [HasStdExtM]
 
 //===----------------------------------------------------------------------===//
+// Zbb / Zbs (chapter 21)
+//===----------------------------------------------------------------------===//
+//
+// Two optional bit-manipulation subsets:
+//
+//   Zbb  clz ctz cpop sext.b sext.h rev8 zext.h rol ror rori
+//        andn orn xnor min minu max maxu
+//   Zbs  bset bclr binv bext (register and 5-bit immediate forms)
+//
+// The encodings are the standard RISC-V ones: OP-IMM with funct7 0b0110000 for
+// the unary operations, OP with funct7 0b0100000 for andn/orn/xnor, funct7
+// 0b0000101 for min/max, and funct7 0b0010100/0b0100100/0b0110100 for the Zbs
+// single-bit instructions.  zext.h is R-type with rs2 = x0.
+//
+// All patterns are gated by the feature predicate, so the default subtarget
+// keeps the chapter 10 expansions and its output stays byte-identical.
+
+// Unary instruction with a fixed imm[11:0] (clz/ctz/cpop/sext.b/sext.h/rev8).
+class RVMinZbUnary<bits<12> imm12, bits<3> funct3, string mnemonic>
+    : RVMinInst<(outs GPR:$rd), (ins GPR:$rs1), mnemonic # " $rd, $rs1", []> {
+  bits<5> rd;
+  bits<5> rs1;
+
+  let Inst{6-0}   = OPC_IMM.Value;
+  let Inst{11-7}  = rd;
+  let Inst{14-12} = funct3;
+  let Inst{19-15} = rs1;
+  let Inst{31-20} = imm12;
+
+  let TSFlags{4-0} = FmtI.Value;
+}
+
+// Unary R-type with rs2 hard-wired to zero (zext.h is `pack rd, rs1, x0`).
+class RVMinZbUnaryR<bits<7> funct7, bits<3> funct3, string mnemonic>
+    : RVMinInst<(outs GPR:$rd), (ins GPR:$rs1), mnemonic # " $rd, $rs1", []> {
+  bits<5> rd;
+  bits<5> rs1;
+
+  let Inst{6-0}   = OPC_OP.Value;
+  let Inst{11-7}  = rd;
+  let Inst{14-12} = funct3;
+  let Inst{19-15} = rs1;
+  let Inst{24-20} = 0;
+  let Inst{31-25} = funct7;
+
+  let TSFlags{4-0} = FmtR.Value;
+}
+
+// 32 - shamt: there is no `roli` encoding, a rotate-left by N is `rori` by
+// 32-N.  The operand is masked by `uimm5`, so the result is in 0..31.
+def ImmSub32 : SDNodeXForm<imm, [{
+  return CurDAG->getTargetConstant((32 - N->getZExtValue()) & 31, SDLoc(N),
+                                   N->getValueType(0));
+}]>;
+
+let Predicates = [HasStdExtZbb] in {
+
+def CLZ    : RVMinZbUnary<0b011000000000, 0b001, "clz">;
+def CTZ    : RVMinZbUnary<0b011000000001, 0b001, "ctz">;
+def CPOP   : RVMinZbUnary<0b011000000010, 0b001, "cpop">;
+def SEXT_B : RVMinZbUnary<0b011000000100, 0b001, "sext.b">;
+def SEXT_H : RVMinZbUnary<0b011000000101, 0b001, "sext.h">;
+def REV8   : RVMinZbUnary<0b011010011000, 0b101, "rev8">;
+
+def ZEXT_H : RVMinZbUnaryR<0b0000100, 0b100, "zext.h">;
+
+def ROL  : RVMinRInst<0b0110000, 0b001, OPC_OP, (outs GPR:$rd),
+                      (ins GPR:$rs1, GPR:$rs2), "rol", "$rd, $rs1, $rs2">;
+def ROR  : RVMinRInst<0b0110000, 0b101, OPC_OP, (outs GPR:$rd),
+                      (ins GPR:$rs1, GPR:$rs2), "ror", "$rd, $rs1, $rs2">;
+def RORI : RVMinIShiftInst<0b0110000, 0b101, OPC_IMM, (outs GPR:$rd),
+                           (ins GPR:$rs1, uimm5:$shamt), "rori",
+                           "$rd, $rs1, $shamt">;
+
+def ANDN : RVMinRInst<0b0100000, 0b111, OPC_OP, (outs GPR:$rd),
+                      (ins GPR:$rs1, GPR:$rs2), "andn", "$rd, $rs1, $rs2">;
+def ORN  : RVMinRInst<0b0100000, 0b110, OPC_OP, (outs GPR:$rd),
+                      (ins GPR:$rs1, GPR:$rs2), "orn", "$rd, $rs1, $rs2">;
+def XNOR : RVMinRInst<0b0100000, 0b100, OPC_OP, (outs GPR:$rd),
+                      (ins GPR:$rs1, GPR:$rs2), "xnor", "$rd, $rs1, $rs2">;
+
+def MIN  : RVMinRInst<0b0000101, 0b100, OPC_OP, (outs GPR:$rd),
+                      (ins GPR:$rs1, GPR:$rs2), "min", "$rd, $rs1, $rs2">;
+def MINU : RVMinRInst<0b0000101, 0b101, OPC_OP, (outs GPR:$rd),
+                      (ins GPR:$rs1, GPR:$rs2), "minu", "$rd, $rs1, $rs2">;
+def MAX  : RVMinRInst<0b0000101, 0b110, OPC_OP, (outs GPR:$rd),
+                      (ins GPR:$rs1, GPR:$rs2), "max", "$rd, $rs1, $rs2">;
+def MAXU : RVMinRInst<0b0000101, 0b111, OPC_OP, (outs GPR:$rd),
+                      (ins GPR:$rs1, GPR:$rs2), "maxu", "$rd, $rs1, $rs2">;
+
+def : Pat<(ctlz GPR:$rs1), (CLZ GPR:$rs1)>;
+def : Pat<(cttz GPR:$rs1), (CTZ GPR:$rs1)>;
+def : Pat<(ctpop GPR:$rs1), (CPOP GPR:$rs1)>;
+def : Pat<(bswap GPR:$rs1), (REV8 GPR:$rs1)>;
+
+// `sext.b`/`sext.h` are exactly sign_extend_inreg with an 8/16-bit source.
+def : Pat<(sext_inreg GPR:$rs1, i8), (SEXT_B GPR:$rs1)>;
+def : Pat<(sext_inreg GPR:$rs1, i16), (SEXT_H GPR:$rs1)>;
+// `zext.h` is (x & 0xFFFF); the immediate does not fit in ANDI's 12 bits, so
+// without Zbb the backend materializes the mask in a register first.
+def : Pat<(and GPR:$rs1, 0xFFFF), (ZEXT_H GPR:$rs1)>;
+
+def : Pat<(rotl GPR:$rs1, GPR:$rs2), (ROL GPR:$rs1, GPR:$rs2)>;
+def : Pat<(rotr GPR:$rs1, GPR:$rs2), (ROR GPR:$rs1, GPR:$rs2)>;
+def : Pat<(rotr GPR:$rs1, uimm5:$shamt), (RORI GPR:$rs1, uimm5:$shamt)>;
+def : Pat<(rotl GPR:$rs1, uimm5:$shamt),
+          (RORI GPR:$rs1, (ImmSub32 uimm5:$shamt))>;
+
+// `(and x, (not y))` and friends.  TableGen treats AND/OR/XOR as commutative,
+// so only one operand order needs to be written down.
+def : Pat<(and (not GPR:$rs1), GPR:$rs2), (ANDN GPR:$rs1, GPR:$rs2)>;
+def : Pat<(or  (not GPR:$rs1), GPR:$rs2), (ORN  GPR:$rs1, GPR:$rs2)>;
+def : Pat<(xor (not GPR:$rs1), GPR:$rs2), (XNOR GPR:$rs1, GPR:$rs2)>;
+
+def : Pat<(smin GPR:$rs1, GPR:$rs2), (MIN  GPR:$rs1, GPR:$rs2)>;
+def : Pat<(smax GPR:$rs1, GPR:$rs2), (MAX  GPR:$rs1, GPR:$rs2)>;
+def : Pat<(umin GPR:$rs1, GPR:$rs2), (MINU GPR:$rs1, GPR:$rs2)>;
+def : Pat<(umax GPR:$rs1, GPR:$rs2), (MAXU GPR:$rs1, GPR:$rs2)>;
+
+} // Predicates = [HasStdExtZbb]
+
+let Predicates = [HasStdExtZbs] in {
+
+def BSET : RVMinRInst<0b0010100, 0b001, OPC_OP, (outs GPR:$rd),
+                      (ins GPR:$rs1, GPR:$rs2), "bset", "$rd, $rs1, $rs2">;
+def BCLR : RVMinRInst<0b0100100, 0b001, OPC_OP, (outs GPR:$rd),
+                      (ins GPR:$rs1, GPR:$rs2), "bclr", "$rd, $rs1, $rs2">;
+def BINV : RVMinRInst<0b0110100, 0b001, OPC_OP, (outs GPR:$rd),
+                      (ins GPR:$rs1, GPR:$rs2), "binv", "$rd, $rs1, $rs2">;
+def BEXT : RVMinRInst<0b0100100, 0b101, OPC_OP, (outs GPR:$rd),
+                      (ins GPR:$rs1, GPR:$rs2), "bext", "$rd, $rs1, $rs2">;
+
+def BSETI : RVMinIShiftInst<0b0010100, 0b001, OPC_IMM, (outs GPR:$rd),
+                            (ins GPR:$rs1, uimm5:$shamt), "bseti",
+                            "$rd, $rs1, $shamt">;
+def BCLRI : RVMinIShiftInst<0b0100100, 0b001, OPC_IMM, (outs GPR:$rd),
+                            (ins GPR:$rs1, uimm5:$shamt), "bclri",
+                            "$rd, $rs1, $shamt">;
+def BINVI : RVMinIShiftInst<0b0110100, 0b001, OPC_IMM, (outs GPR:$rd),
+                            (ins GPR:$rs1, uimm5:$shamt), "binvi",
+                            "$rd, $rs1, $shamt">;
+def BEXTI : RVMinIShiftInst<0b0100100, 0b101, OPC_IMM, (outs GPR:$rd),
+                            (ins GPR:$rs1, uimm5:$shamt), "bexti",
+                            "$rd, $rs1, $shamt">;
+
+// Idioms from real code.  `1 << n` becomes bset x0, n; the three read-modify
+// forms use the same shift; bext matches `(x >> n) & 1`.
+// With Zbb enabled the DAG combiner canonicalizes `1 << n` into a rotate,
+// because ROTL becomes legal; both spellings have to be matched.
+def : Pat<(shl 1, GPR:$rs2), (BSET X0, GPR:$rs2)>;
+def : Pat<(rotl 1, GPR:$rs2), (BSET X0, GPR:$rs2)>;
+def : Pat<(or  GPR:$rs1, (shl 1, GPR:$rs2)), (BSET GPR:$rs1, GPR:$rs2)>;
+def : Pat<(or  GPR:$rs1, (rotl 1, GPR:$rs2)), (BSET GPR:$rs1, GPR:$rs2)>;
+def : Pat<(xor GPR:$rs1, (shl 1, GPR:$rs2)), (BINV GPR:$rs1, GPR:$rs2)>;
+def : Pat<(xor GPR:$rs1, (rotl 1, GPR:$rs2)), (BINV GPR:$rs1, GPR:$rs2)>;
+// Clearing bit n is `x & ~(1 << n)`.  The DAG canonicalizes the mask as
+// `rotl(-2, n)` (all ones with a zero at bit n), so that is the shape to
+// match; the `not` spelling is also accepted for IR that reaches the matcher
+// before canonicalization.
+def : Pat<(and (rotl -2, GPR:$rs2), GPR:$rs1),
+          (BCLR GPR:$rs1, GPR:$rs2)>;
+def : Pat<(and GPR:$rs1, (not (shl 1, GPR:$rs2))),
+          (BCLR GPR:$rs1, GPR:$rs2)>;
+def : Pat<(and (srl GPR:$rs1, GPR:$rs2), 1), (BEXT GPR:$rs1, GPR:$rs2)>;
+
+} // Predicates = [HasStdExtZbs]
+
+//===----------------------------------------------------------------------===//
 // SYSTEM: environment calls
 //===----------------------------------------------------------------------===//
 //

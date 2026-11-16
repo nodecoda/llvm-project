@@ -28,6 +28,23 @@ def HasStdExtM : Predicate<"Subtarget->hasStdExtM()">,
                  AssemblerPredicate<(all_of FeatureStdExtM),
                                     "'M' (Integer Multiplication and Division)">;
 
+// Chapter 21: the two bit-manipulation subsets the course implements.  Both
+// are optional and independent of M; the default subtarget still expands every
+// operation into plain RV32I sequences.
+def FeatureStdExtZbb : SubtargetFeature<"zbb", "HasStdExtZbb", "true",
+                                        "Basic bit manipulation">;
+
+def HasStdExtZbb : Predicate<"Subtarget->hasStdExtZbb()">,
+                   AssemblerPredicate<(all_of FeatureStdExtZbb),
+                                      "'Zbb' (Basic Bit-Manipulation)">;
+
+def FeatureStdExtZbs : SubtargetFeature<"zbs", "HasStdExtZbs", "true",
+                                        "Single-bit instructions">;
+
+def HasStdExtZbs : Predicate<"Subtarget->hasStdExtZbs()">,
+                   AssemblerPredicate<(all_of FeatureStdExtZbs),
+                                      "'Zbs' (Single-Bit Instructions)">;
+
 //===----------------------------------------------------------------------===//
 // Processors
 //===----------------------------------------------------------------------===//
@@ -37,6 +54,8 @@ class RVMinProc<string Name, list<SubtargetFeature> Features>
 
 def : RVMinProc<"generic-rv32", []>;
 def : RVMinProc<"generic-rv32-m", [FeatureStdExtM]>;
+def : RVMinProc<"generic-rv32-zbb", [FeatureStdExtZbb]>;
+def : RVMinProc<"generic-rv32-zbs", [FeatureStdExtZbs]>;
 
 //===----------------------------------------------------------------------===//
 // Register File

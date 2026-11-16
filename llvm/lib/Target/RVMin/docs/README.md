@@ -39,7 +39,7 @@ RVMin 是一个从零写的 LLVM 后端，只实现 RISC-V 最小整数集（RV3
 | 18 | [18-jump-tables.md](18-jump-tables.md) | 跳转表与间接跳转 | 8-case switch 只有 load+jalr | `rvmin-ch18` |
 | 19 | [19-const-muldiv.md](19-const-muldiv.md) | 常量乘除强度削减 | `+m` 下 `x/7` 无 libcall | `rvmin-ch19` |
 | 20 | [20-disassembler.md](20-disassembler.md) | 反汇编器 | 97 条语料往返 | `rvmin-ch20` |
-| 21 | （规划中） | Zbb/Zbs | `clz/cpop/rev8` 单条 | `rvmin-ch21` |
+| 21 | [21-zbb-zbs.md](21-zbb-zbs.md) | Zbb/Zbs | `clz/cpop/rev8` 单条 | `rvmin-ch21` |
 | 22 | （规划中） | A 扩展 | `lr/sc` 程序在 QEMU 运行 | `rvmin-ch22` |
 | 23 | （规划中） | 下篇验收 | 下篇 AC 表 | `rvmin-ch23` |
 
@@ -73,6 +73,7 @@ RVMin 是一个从零写的 LLVM 后端，只实现 RISC-V 最小整数集（RV3
 | 18 | `## 背景` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
 | 19 | `## 背景` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
 | 20 | `## 背景` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
+| 21 | `## 背景` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
 
 > 第 14、23 章是验收章，本身即证据表，不套用八要素模板。
 

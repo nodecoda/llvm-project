@@ -75,7 +75,7 @@ git checkout rvmin-ch16     # 第 16 章（大栈帧）结束
 | 18 | [跳转表与间接跳转](docs/18-jump-tables.md) | 完成 |
 | 19 | [常量乘除的强度削减](docs/19-const-muldiv.md) | 完成 |
 | 20 | [反汇编器](docs/20-disassembler.md) | 完成 |
-| 21 | Zbb/Zbs 位操作扩展 | 规划中 |
+| 21 | [Zbb/Zbs 位操作扩展](docs/21-zbb-zbs.md) | 完成 |
 | 22 | A 扩展与 AtomicExpand | 规划中 |
 | 23 | 下篇验收 | 规划中 |
 

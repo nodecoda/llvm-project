@@ -100,9 +100,46 @@ fi
 grep -q "requires the following: 'M'" "$TMP/no-m.err" \
   || fail "missing 'requires M' diagnostic without +m"
 
+# 2e. Zbb (chapter 21).  The same shape as the M corpus: byte-identical
+# encodings with -mattr=+zbb, and a diagnostic when the feature is missing.
+ZB="$HERE/rvmin-zbb-encoding-corpus.s"
+"$BIN/llvm-mc" -triple=rvmin -mattr=+zbb -show-encoding "$ZB" > "$TMP/rvmin-zb.txt"
+"$BIN/llvm-mc" -triple=riscv32 -mattr=+zbb -show-encoding "$ZB" > "$TMP/ref-zb.txt"
+extract "$TMP/rvmin-zb.txt" > "$TMP/rvmin-zb.enc"
+extract "$TMP/ref-zb.txt" > "$TMP/ref-zb.enc"
+NZB=$(wc -l < "$TMP/rvmin-zb.enc")
+[[ "$NZB" -eq 19 ]] || fail "Zbb corpus produced $NZB encodings, want 19"
+diff -u "$TMP/ref-zb.enc" "$TMP/rvmin-zb.enc" > "$TMP/diff-zb.txt" \
+  || { head -20 "$TMP/diff-zb.txt" >&2; fail "Zbb encoding mismatch between rvmin and riscv32"; }
+
+if "$BIN/llvm-mc" -triple=rvmin -filetype=obj "$ZB" -o "$TMP/no-zb.o" \
+     > /dev/null 2> "$TMP/no-zb.err"; then
+  fail "llvm-mc -triple=rvmin accepted Zbb instructions without +zbb"
+fi
+grep -q "'Zbb' (Basic Bit-Manipulation)" "$TMP/no-zb.err" \
+  || fail "missing Zbb diagnostic without +zbb"
+
+# 2f. Zbs.
+ZS="$HERE/rvmin-zbs-encoding-corpus.s"
+"$BIN/llvm-mc" -triple=rvmin -mattr=+zbs -show-encoding "$ZS" > "$TMP/rvmin-zs.txt"
+"$BIN/llvm-mc" -triple=riscv32 -mattr=+zbs -show-encoding "$ZS" > "$TMP/ref-zs.txt"
+extract "$TMP/rvmin-zs.txt" > "$TMP/rvmin-zs.enc"
+extract "$TMP/ref-zs.txt" > "$TMP/ref-zs.enc"
+NZS=$(wc -l < "$TMP/rvmin-zs.enc")
+[[ "$NZS" -eq 8 ]] || fail "Zbs corpus produced $NZS encodings, want 8"
+diff -u "$TMP/ref-zs.enc" "$TMP/rvmin-zs.enc" > "$TMP/diff-zs.txt" \
+  || { head -20 "$TMP/diff-zs.txt" >&2; fail "Zbs encoding mismatch between rvmin and riscv32"; }
+
+if "$BIN/llvm-mc" -triple=rvmin -filetype=obj "$ZS" -o "$TMP/no-zs.o" \
+     > /dev/null 2> "$TMP/no-zs.err"; then
+  fail "llvm-mc -triple=rvmin accepted Zbs instructions without +zbs"
+fi
+grep -q "'Zbs' (Single-Bit Instructions)" "$TMP/no-zs.err" \
+  || fail "missing Zbs diagnostic without +zbs"
+
 # 3. ELF identification.
 MACHINE=$("$BIN/llvm-readelf" -h "$TMP/rvmin.o" | awk -F: '/Machine:/ {gsub(/^ +| +$/, "", $2); print $2}')
 [[ "$MACHINE" == "RISC-V" ]] || fail "ELF machine is '$MACHINE', want RISC-V"
 
-echo "PASS: $N RV32I instructions + $NM M-extension instructions, .text identical"
+echo "PASS: $N RV32I + $NM M + $NZB Zbb + $NZS Zbs instructions, .text identical"
 echo "      (incl. label fixups and %hi/%lo), ELF machine RISC-V, missing-feature diagnostic OK"

@@ -35,6 +35,10 @@ class RVMinSubtarget : public RVMinGenSubtargetInfo {
   // (generated from RVMin.td) writes these fields when the feature string
   // contains `+m`.
   bool HasStdExtM = false;
+  // Chapter 21: Zbb/Zbs are independent optional extensions, so each gets its
+  // own feature bit and query.
+  bool HasStdExtZbb = false;
+  bool HasStdExtZbs = false;
 
   RVMinInstrInfo InstrInfo;
   RVMinTargetLowering TLInfo;
@@ -50,6 +54,8 @@ public:
   // Feature query used by TableGen predicates (`HasStdExtM` in the .td files)
   // and by hand-written lowering code.
   bool hasStdExtM() const { return HasStdExtM; }
+  bool hasStdExtZbb() const { return HasStdExtZbb; }
+  bool hasStdExtZbs() const { return HasStdExtZbs; }
 
   void ParseSubtargetFeatures(StringRef CPU, StringRef TuneCPU, StringRef FS);
 

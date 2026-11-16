@@ -67,8 +67,13 @@ RVMinTargetLowering::RVMinTargetLowering(const TargetMachine &TM,
   // type (the operand of the VTSDNode), not with the result type.  Registering
   // the action for MVT::i32 therefore has no effect -- the queries are for
   // i1/i8/i16.
-  for (MVT VT : {MVT::i1, MVT::i8, MVT::i16})
-    setOperationAction(ISD::SIGN_EXTEND_INREG, VT, Expand);
+  // Chapter 21: with Zbb, i8/i16 sign extension is `sext.b`/`sext.h`, so the
+  // node must survive to instruction selection.  i1 stays expanded: there is
+  // no single-bit instruction in the subsets this course implements.
+  setOperationAction(ISD::SIGN_EXTEND_INREG, MVT::i1, Expand);
+  for (MVT VT : {MVT::i8, MVT::i16})
+    setOperationAction(ISD::SIGN_EXTEND_INREG, VT,
+                       STI.hasStdExtZbb() ? Legal : Expand);
 
   // Chapter 9: an `i1` (`_Bool`) is one byte in memory, exactly like a
   // `char`.  Promoting the memory type to i8 reuses the LB/LBU/SB patterns
@@ -108,16 +113,25 @@ RVMinTargetLowering::RVMinTargetLowering(const TargetMachine &TM,
       setOperationAction(ISD::UREM, VT, Expand);
     }
 
-    // The bit-manipulation builtins (Zbb's cpop/clz/ctz) are expanded into
-    // plain arithmetic sequences by the legalizer, not into calls.  The byte
-    // swap is first rewritten into rotates by the DAG combiner, so ROTL/ROTR
-    // have to be expandable as well (a rotate is a shift pair on RV32I).
-    setOperationAction(ISD::ROTL, VT, Expand);
-    setOperationAction(ISD::ROTR, VT, Expand);
-    setOperationAction(ISD::CTPOP, VT, Expand);
-    setOperationAction(ISD::CTLZ, VT, Expand);
-    setOperationAction(ISD::CTTZ, VT, Expand);
-    setOperationAction(ISD::BSWAP, VT, Expand);
+    // The bit-manipulation builtins (cpop/clz/ctz, rotates, byte swap) are
+    // expanded into plain arithmetic sequences by the legalizer, not into
+    // calls.  Chapter 21 makes the same operations legal when Zbb is enabled:
+    // the patterns in RVMinInstrInfo.td then select one instruction each, and
+    // the default subtarget keeps the expansion (and its output) unchanged.
+    const TargetLowering::LegalizeAction BitAction =
+        STI.hasStdExtZbb() ? Legal : Expand;
+    setOperationAction(ISD::ROTL, VT, BitAction);
+    setOperationAction(ISD::ROTR, VT, BitAction);
+    setOperationAction(ISD::CTPOP, VT, BitAction);
+    setOperationAction(ISD::CTLZ, VT, BitAction);
+    setOperationAction(ISD::CTTZ, VT, BitAction);
+    setOperationAction(ISD::BSWAP, VT, BitAction);
+
+    // min/max only exist in Zbb; otherwise the legalizer expands them into
+    // compares and selects.
+    if (STI.hasStdExtZbb())
+      setOperationAction({ISD::SMIN, ISD::SMAX, ISD::UMIN, ISD::UMAX}, VT,
+                         Legal);
   }
 
   // Chapter 19: constant multiplies.  The generic combiner already rewrites
