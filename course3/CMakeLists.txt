@@ -8,6 +8,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_executable(rmach
   mach/main.cpp
+  mach/machine.cpp
+  mach/trap.cpp
+  ../course2/rsim/decode.cpp
+  ../course2/rsim/elf.cpp
+  ../course2/rsim/memory.cpp
 )
 
 # Chapter 03 onwards will compile the shared decoder and ELF loader straight
