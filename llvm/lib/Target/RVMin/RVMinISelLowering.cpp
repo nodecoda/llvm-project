@@ -126,13 +126,18 @@ RVMinTargetLowering::RVMinTargetLowering(const TargetMachine &TM,
   // __muldf3, __ltsf2, __fixsfsi, ... fall out of the same machinery, and the
   // `ilp32` ABI already passes floats in integer registers.
 
-  // Chapter 11: a `switch` with many cases becomes a jump table: an array of
-  // code labels in .rodata plus a load and an indirect jump.  RVMin has no
-  // such sequence, so neither BR_JT nor BRIND may be "legal" -- those are the
-  // two tests the switch builder uses before deciding to build one.  With
-  // this, `switch` lowers to a comparison chain at every optimization level.
-  setOperationAction(ISD::BR_JT, MVT::Other, Expand);
-  setOperationAction(ISD::BRIND, MVT::Other, Expand);
+  // Chapter 11 built `switch` as a comparison chain because RVMin had no
+  // jump table: the switch builder only builds one when the target can lower
+  // BR_JT *and* an indirect branch.  Chapter 18 provides both:
+  //
+  //   BR_JT   -> LW from an array of block addresses, then BRIND  (custom)
+  //   BRIND   -> `jalr zero, 0(rs)`                               (legal)
+  //
+  // The table itself lives in .rodata: the generic AsmPrinter emits one
+  // `.word <block>` per entry (EK_BlockAddress), and R_RISCV_32 already
+  // resolves those to absolute addresses at link time.
+  setOperationAction(ISD::BR_JT, MVT::Other, Custom);
+  setOperationAction(ISD::BRIND, MVT::Other, Legal);
 
   // Chapter 9: 64-bit shifts.  RV32I shifts one register at a time, so the
   // legalizer would otherwise leave SHL_PARTS/SRL_PARTS/SRA_PARTS for the
@@ -162,6 +167,8 @@ SDValue RVMinTargetLowering::LowerOperation(SDValue Op,
     return lowerBRCOND(Op, DAG);
   case ISD::BR_CC:
     return lowerBR_CC(Op, DAG);
+  case ISD::BR_JT:
+    return lowerBR_JT(Op, DAG);
   }
 }
 
@@ -231,6 +238,38 @@ SDValue RVMinTargetLowering::lowerBR_CC(SDValue Op, SelectionDAG &DAG) const {
   canonicalizeBranchCC(CC, LHS, RHS);
   return DAG.getNode(RVMinISD::BR_CC, DL, MVT::Other, Chain, LHS, RHS,
                      DAG.getCondCode(CC), Dest);
+}
+
+// `switch` with many cases: the DAG builder hands us the jump table index and
+// a normalized 0-based selector.  Lowering is three steps:
+//
+//   lui/addi  t, %hi(.LJTI0)       address of the table (R_RISCV_HI20/LO12)
+//   slli      i, index, 2          one 4-byte entry per case
+//   add       t, t, i
+//   lw        t, 0(t)
+//   jalr      zero, 0(t)           BRIND
+//
+// The entries themselves are emitted by the generic AsmPrinter from the jump
+// table info installed below; the DAG only sees the load and the branch.
+SDValue RVMinTargetLowering::lowerBR_JT(SDValue Op, SelectionDAG &DAG) const {
+  SDValue Chain = Op.getOperand(0);
+  SDValue Table = Op.getOperand(1);
+  SDValue Index = Op.getOperand(2);
+  SDLoc DL(Op);
+  EVT PtrVT = getPointerTy(DAG.getDataLayout());
+  MachineFunction &MF = DAG.getMachineFunction();
+
+  auto *JT = cast<JumpTableSDNode>(Table);
+  SDValue TableAddr = DAG.getTargetJumpTable(JT->getIndex(), PtrVT);
+
+  // Entries are 4 bytes wide; the selector is already 0-based.
+  SDValue Scale = DAG.getConstant(2, DL, PtrVT);
+  SDValue Offset = DAG.getNode(ISD::SHL, DL, PtrVT, Index, Scale);
+  SDValue EntryAddr = DAG.getNode(ISD::ADD, DL, PtrVT, TableAddr, Offset);
+
+  SDValue Entry = DAG.getLoad(PtrVT, DL, Chain, EntryAddr,
+                              MachinePointerInfo::getJumpTable(MF));
+  return DAG.getNode(ISD::BRIND, DL, MVT::Other, Entry.getValue(1), Entry);
 }
 
 // RV32I has no conditional move.  Chapter 4 lowers select branchlessly with a

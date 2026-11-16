@@ -230,6 +230,28 @@ void RVMinDAGToDAGISel::Select(SDNode *N) {
     return;
   }
 
+  // Chapter 18: the address of a jump table.  A `switch` lowers to
+  //
+  //   lui  rd, %hi(.LJTI0)
+  //   addi rd, rd, %lo(.LJTI0)
+  //   slli idx, idx, 2
+  //   add  rd, rd, idx
+  //   lw   rd, 0(rd)
+  //   jalr zero, 0(rd)
+  //
+  // The table itself is emitted by the generic AsmPrinter; this node only
+  // needs its address, so it uses the same %hi/%lo pair as a global.
+  if (N->getOpcode() == ISD::TargetJumpTable) {
+    unsigned JTI = cast<JumpTableSDNode>(N)->getIndex();
+    SDValue Hi = CurDAG->getTargetJumpTable(JTI, MVT::i32, RVMinII::MO_HI20);
+    SDValue Lo = CurDAG->getTargetJumpTable(JTI, MVT::i32, RVMinII::MO_LO12_I);
+    SDValue Lui =
+        SDValue(CurDAG->getMachineNode(RVMin::LUI, DL, MVT::i32, Hi), 0);
+    ReplaceNode(N,
+                CurDAG->getMachineNode(RVMin::ADDI, DL, MVT::i32, Lui, Lo));
+    return;
+  }
+
   SelectCode(N);
 }
 

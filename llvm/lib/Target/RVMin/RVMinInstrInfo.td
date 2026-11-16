@@ -591,3 +591,21 @@ def PseudoTAILIND : RVMinPseudo<(outs), (ins GPR:$rs1), "", []>,
                     PseudoInstExpansion<(JALR X0, GPR:$rs1, 0)>;
 
 def : Pat<(RVMinTail GPR:$rs1), (PseudoTAILIND GPR:$rs1)>;
+
+// Chapter 18: the second half of a jump table.  BR_JT is lowered to a load of
+// the entry followed by BRIND, and BRIND is exactly `jalr zero, 0(rs)` -- the
+// same encoding as an indirect tail call, but reached from a table instead of
+// from a `musttail` call.  Unlike a call it is a branch: no link, no return.
+def PseudoBRIND : RVMinPseudo<(outs), (ins GPR:$rs1), "", []>,
+                  PseudoInstExpansion<(JALR X0, GPR:$rs1, 0)> {
+  let isBranch = 1;
+  let isBarrier = 1;
+  let isTerminator = 1;
+  // The target is in a register, not in the instruction stream: this matters
+  // to AsmPrinter's fallthrough analysis, which must keep the label of a jump
+  // table's first block (it is a layout successor of the indirect jump).
+  let isIndirectBranch = 1;
+  let Size = 4;
+}
+
+def : Pat<(brind GPR:$rs1), (PseudoBRIND GPR:$rs1)>;

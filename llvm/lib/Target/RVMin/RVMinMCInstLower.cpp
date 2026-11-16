@@ -8,6 +8,7 @@
 
 #include "RVMinBaseInfo.h"
 #include "RVMinMCInstLower.h"
+#include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineOperand.h"
@@ -22,7 +23,8 @@ using namespace llvm;
 
 void llvm::LowerRVMinMachineInstrToMCInst(const MachineInstr *MI,
                                           MCInst &OutMI, MCContext &Ctx,
-                                          const TargetMachine &TM) {
+                                          const TargetMachine &TM,
+                                          AsmPrinter &AP) {
   OutMI.setOpcode(MI->getOpcode());
 
   for (const MachineOperand &MO : MI->explicit_operands()) {
@@ -55,6 +57,26 @@ void llvm::LowerRVMinMachineInstrToMCInst(const MachineInstr *MI,
         break;
       default:
         llvm_unreachable("RVMin: global address without a %hi/%lo flag");
+      }
+      OutMI.addOperand(MCOperand::createExpr(Expr));
+      break;
+    }
+    case MachineOperand::MO_JumpTableIndex: {
+      // Chapter 18: a jump table lives in .rodata under a linker-private
+      // symbol such as .LJTI0.  AsmPrinter owns that symbol, so ask it for the
+      // name and then print the half selected by the target flag, exactly like
+      // a global address.
+      const MCExpr *Expr =
+          MCSymbolRefExpr::create(AP.GetJTISymbol(MO.getIndex()), Ctx);
+      switch (MO.getTargetFlags()) {
+      case RVMinII::MO_HI20:
+        Expr = MCSpecifierExpr::create(Expr, rvmin::S_HI20, Ctx);
+        break;
+      case RVMinII::MO_LO12_I:
+        Expr = MCSpecifierExpr::create(Expr, rvmin::S_LO12_I, Ctx);
+        break;
+      default:
+        llvm_unreachable("RVMin: jump table without a %hi/%lo flag");
       }
       OutMI.addOperand(MCOperand::createExpr(Expr));
       break;

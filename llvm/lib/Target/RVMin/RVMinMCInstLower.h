@@ -11,16 +11,20 @@
 
 namespace llvm {
 
+class AsmPrinter;
 class MCContext;
 class MCInst;
 class MachineInstr;
 class TargetMachine;
 
 /// Copy a MachineInstr into an MCInst.  Handles registers, immediates,
-/// basic-block operands (branch targets) and, since chapter 7, global
-/// addresses with %hi/%lo relocation specifiers.
+/// basic-block operands (branch targets), global addresses with %hi/%lo
+/// relocation specifiers (chapter 7), and jump-table addresses (chapter 18).
+/// The AsmPrinter is needed for the latter: the .LJTI symbol is owned by its
+/// jump-table machinery.
 void LowerRVMinMachineInstrToMCInst(const MachineInstr *MI, MCInst &OutMI,
-                                    MCContext &Ctx, const TargetMachine &TM);
+                                    MCContext &Ctx, const TargetMachine &TM,
+                                    AsmPrinter &AP);
 
 } // namespace llvm
 

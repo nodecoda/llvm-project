@@ -1,6 +1,8 @@
-// Control flow: switch statements.  The backend has no jump tables (BR_JT and
-// BRIND are not legal, chapter 11), so every switch becomes a comparison
-// chain -- at -O0 as well as -O2, which is what this file checks.
+// Control flow: switch statements.  Since chapter 18 a dense switch becomes a
+// jump table (BR_JT is custom, BRIND is legal), at -O0 as well as -O2, because
+// the switch lowering runs in SelectionDAG; a sparse switch still becomes a
+// comparison chain.  This file is compiled at every -O level by rvmin-e2e.sh,
+// so it also guards the jump-table path against assembler/relocation drift.
 int dense(int x) {
   switch (x) {
   case 0: return 100;

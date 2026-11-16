@@ -6,7 +6,8 @@
 # output.  Chapter 16 adds a second program whose stack frames are larger than
 # 2 KiB, compiled at -O0 and -O2.  Chapter 17 adds a third one that recurses a
 # million levels deep and only fits in the default stack because the recursive
-# calls became jumps.
+# calls became jumps.  Chapter 18 adds a fourth: switch statements whose dense
+# cases become a jump table in .rodata.
 #
 # Usage: rvmin-run.sh <llvm-bin-dir> [qemu]
 #
@@ -152,6 +153,35 @@ STATUS=0
 run_tail_calls || STATUS=$?
 [[ "$STATUS" -eq 0 ]] || fail "tail-call program exited with $STATUS"
 echo "PASS: 1e6 tail calls ran under $QEMU (16 MiB of frames would not fit)"
+
+# Chapter 18 gate: a dense switch becomes a jump table, a sparse one stays a
+# comparison chain, and both have to produce the answers encoded in the C file.
+run_switch() {
+  "$CC" --target="$TRIPLE" -march=rv32i -mabi=ilp32 -O2 -ffreestanding \
+    -fno-builtin -S -emit-llvm "$RT/switch.c" -o "$TMP/switch.ll" \
+    || fail "clang could not compile switch.c"
+  "$LLC" -march=rvmin -mtriple="$TRIPLE" -O2 -verify-machineinstrs \
+    "$TMP/switch.ll" -o "$TMP/switch.s" \
+    || fail "llc could not select switch.c"
+  grep -q 'LJTI' "$TMP/switch.s" || fail "switch.c emitted no jump table"
+  grep -q 'jalr zero, 0(' "$TMP/switch.s" \
+    || fail "switch.c emitted no indirect jump"
+  "$MC" -triple=rvmin -filetype=obj "$TMP/switch.s" -o "$TMP/switch.o" \
+    || fail "llvm-mc rejected the jump-table output"
+  "$MC" -triple=rvmin -filetype=obj "$RT/rvmin-rt.S" -o "$TMP/rt-switch.o" \
+    || fail "llvm-mc rejected rvmin-rt.S"
+  "$MC" -triple=rvmin -filetype=obj "$RT/start.S" -o "$TMP/start-switch.o" \
+    || fail "llvm-mc rejected start.S"
+  "$LD" -m elf32lriscv -T "$RT/link.ld" -o "$TMP/switch" \
+    "$TMP/start-switch.o" "$TMP/switch.o" "$TMP/rt-switch.o" \
+    || fail "ld.lld could not link the switch program"
+  "$QEMU" "$TMP/switch"
+}
+
+STATUS=0
+run_switch || STATUS=$?
+[[ "$STATUS" -eq 0 ]] || fail "switch program exited with $STATUS"
+echo "PASS: jump-table switch program ran under $QEMU"
 
 SIZE1=$(stat -c%s "$TMP/demo")
 SIZE2=$(stat -c%s "$TMP/demo-m")
