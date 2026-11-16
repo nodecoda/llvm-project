@@ -23,7 +23,7 @@
 本章产出：
 
 - `dsl-surface.py` 增加 `--backend asm-writer`；
-- 契约：8 个记录类入口、129 个字段、98 个被消费、50 行投影矩阵、
+- 契约：8 个记录类入口、130 个字段、99 个被消费、50 行投影矩阵、
   8 条派生改写、2 个硬编码名字；
 - 复用第 30 章的指令注解，只补 18 个 asm-writer 特有字段；
 - 证明“同一 schema、不同投影”可以用同一套 `(declaring class, field)` 主键表达。
@@ -32,7 +32,7 @@
 
 - 不修改 `AsmWriterEmitter` 的行为；
 - 不覆盖 `-gen-asm-matcher`（它更大，留作练习）；
-- 不把 98 个字段逐个讲一遍；正文只讲新增机制。
+- 不把 99 个字段逐个讲一遍；正文只讲新增机制。
 
 ## 背景：为什么 `asm-writer` 是第三个
 
@@ -57,7 +57,7 @@ AsmWriter ─┴─→ asm-writer（打印 switch、别名、寄存器名）
 - `AsmWriter`：目标级打印器配置，字段 `AsmWriterClassName` / `PassSubtarget` /
   `Variant` / `UseBytecode`。
 
-因此 `asm-writer` 的字段数（129）比 `instr-info`（111）还多，但两者共享
+因此 `asm-writer` 的字段数（130）比 `instr-info`（111）还多，但两者共享
 绝大部分指令/寄存器字段。第 30 章的注解可以直接复用，只需覆盖语义发生变化
 的条目。
 
@@ -117,7 +117,7 @@ AsmWriter ─┴─→ asm-writer（打印 switch、别名、寄存器名）
 对比两个后端的被消费字段：
 
 - `instr-info`：85 个；
-- `asm-writer`：98 个；
+- `asm-writer`：99 个；
 - `asm-writer` 比 `instr-info` 多 18 个字段；
 - 只有 `Body` / `FunctionName` / `Instruction` 是 instr-info 独有。
 
@@ -147,7 +147,7 @@ ASM_WRITER_ANNOTATIONS.update({
 <!-- BEGIN: GENERATED DSL CONTRACT -->
 
 后端：`gen-asm-writer` · emitter：`llvm/utils/TableGen/AsmWriterEmitter.cpp`
-统计：8 个记录类入口 · 129 个字段（schema 31 · derive 83 · project 9 · derive+project 6）。
+统计：8 个记录类入口 · 130 个字段（schema 31 · derive 84 · project 9 · derive+project 6）。
 
 **记录类入口**
 
@@ -264,6 +264,7 @@ ASM_WRITER_ANNOTATIONS.update({
 | `PassSubtarget` | `AsmWriter` | `int` | `0` | `project` | `llvm/utils/TableGen/AsmWriterEmitter.cpp:420`, `llvm/utils/TableGen/AsmWriterEmitter.cpp:582`, `llvm/utils/TableGen/AsmWriterEmitter.cpp:944` | 是否把 `MCSubtargetInfo` 传给 print 方法；影响生成函数签名。 |
 | `UseBytecode` | `AsmWriter` | `bit` | `0` | `project` | `llvm/utils/TableGen/AsmWriterEmitter.cpp:583` | 为 true 时生成 bytecode 表 + 解释器，而不是大 switch。 |
 | `Variant` | `AsmWriter` | `int` | `0` | `project` | `llvm/utils/TableGen/AsmWriterEmitter.cpp:943`, `llvm/utils/TableGen/AsmWriterEmitter.cpp:1451` | 汇编变体编号；展开 `{a\|b\|c}` 时选择第几个分支。 |
+| `AssemblyWriters` | `Target` | `list<AsmWriter>` | `[DefaultAsmWriter]` | `derive` | `llvm/utils/TableGen/Common/CodeGenTarget.cpp:194` | 目标级 `AsmWriter` 记录列表；`-asmwriternum` 选择其中一个。 |
 
 `stage`：`schema` 仅声明 · `derive` 只被共享派生层读 · `project` 只被本 emitter 读 · `derive+project` 两者都读。
 
@@ -375,7 +376,7 @@ ASM_WRITER_ANNOTATIONS.update({
 | `PassSubtarget` | `AsmWriter` | — | `compress-inst-emitter` | — | — |
 | `Variant` | `AsmWriter` | — | `asm-matcher`, `x86-fold-tables`, `x86-mnemonic-tables` | — | — |
 
-矩阵覆盖 50 个字段（共 129 个）。
+矩阵覆盖 50 个字段（共 130 个）。
 <!-- END: GENERATED PROJECTION MATRIX -->
 
 ### 派生层改写（Record → 投影之间的模型变换）
@@ -509,7 +510,7 @@ emitter 直接读取，用于判断操作数能否打印。它再次说明：**�
 | --- | --- | --- | --- | --- | --- |
 | `register-info` | 15 | 39 | 4 | 1 | 44/59 |
 | `instr-info` | 26 | 74 | 5 | 6 | 85/111 |
-| `asm-writer` | 31 | 83 | 9 | 6 | 98/129 |
+| `asm-writer` | 31 | 84 | 9 | 6 | 99/130 |
 
 规律很稳定：**derive 层占大头，project 层很小**。这就是“只看 emitter 会漏掉
 大部分语义”的量化证据。
@@ -551,11 +552,11 @@ python3 "$T" --backend instr-info --check \
 
 ```text
 $ python3 dsl-surface.py --backend asm-writer
-asm-writer: {'roots': 8, 'fields': 129, 'consumed': 98, 'unused': 31,
- 'stages': {'schema': 31, 'derive': 83, 'project': 9, 'derive+project': 6}}
+asm-writer: {'roots': 8, 'fields': 130, 'consumed': 99, 'unused': 31,
+ 'stages': {'schema': 31, 'derive': 84, 'project': 9, 'derive+project': 6}}
 
 $ python3 dsl-surface.py --backend asm-writer --check ... --usage ...
-dsl-surface: OK (asm-writer: 98/129 fields consumed [83 derive, 9 project, 6 both], 2 magic names, 8 derivations)
+dsl-surface: OK (asm-writer: 99/130 fields consumed [84 derive, 9 project, 6 both], 2 magic names, 8 derivations)
 
 $ scripts/rvmin-verify-all.sh "$B/bin"
 ...
@@ -577,7 +578,7 @@ ALL GATES PASS (run rvmin-run.sh separately for the QEMU check)
    这是有意的。
 5. **`--usage` 的“契约状态”随后端变化。** 同一行 `AltNames` 在三个后端下
    分别是“无效 / 无效 / project”，不要拿一张表当绝对结论。
-6. **不要用 asm-writer 的 129 字段去推断 instr-info 的 schema。** 两者的
+6. **不要用 asm-writer 的 130 字段去推断 instr-info 的 schema。** 两者的
    root 集合不同；字段计数只有加上 `declared_in` 才有意义。
 7. **`-asmwriternum` 只影响一次投影。** 契约覆盖所有 `AsmWriter` 定义，
    但生成时只选一个；对比产物时需要显式传 `-asmwriternum`。

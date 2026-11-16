@@ -89,6 +89,11 @@ python3 "$W/llvm/utils/TableGen/dsl-surface.py" --backend asm-writer --check \
   "$W/llvm/lib/Target/RVMin/docs/31-asm-writer-dsl.md" \
   --usage "$W/llvm/lib/Target/RVMin/RVMinRegisterInfo.td" \
   || fail "TableGen DSL contract (asm-writer)"
-echo "PASS 7/7: TableGen DSL contracts (register-info + instr-info + asm-writer)"
+python3 "$W/llvm/utils/TableGen/dsl-surface.py" --status-matrix --check \
+  "$W/llvm/lib/Target/RVMin/docs/32-cross-backend-status.md" \
+  --usage "$W/llvm/lib/Target/RVMin/RVMinRegisterInfo.td" \
+          "$W/llvm/lib/Target/RVMin/RVMin.td" \
+  || fail "cross-backend status matrix"
+echo "PASS 7/7: TableGen DSL contracts + cross-backend status matrix"
 
 echo "ALL GATES PASS (run rvmin-run.sh separately for the QEMU check)"

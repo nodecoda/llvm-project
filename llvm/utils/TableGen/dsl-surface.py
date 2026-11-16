@@ -46,6 +46,8 @@ BEGIN_MARKER = "<!-- BEGIN: GENERATED DSL CONTRACT -->"
 END_MARKER = "<!-- END: GENERATED DSL CONTRACT -->"
 USAGE_BEGIN = "<!-- BEGIN: GENERATED TD USAGE -->"
 USAGE_END = "<!-- END: GENERATED TD USAGE -->"
+STATUS_BEGIN = "<!-- BEGIN: GENERATED CROSS-BACKEND STATUS -->"
+STATUS_END = "<!-- END: GENERATED CROSS-BACKEND STATUS -->"
 
 
 @dataclass(frozen=True)
@@ -192,6 +194,7 @@ BACKENDS = {
             "SubRegRangeByHwMode", "SubRegRange", "DwarfRegAlias",
             "RegClassByHwMode",
         ),
+        ambient_fields=(("Target", "AssemblyWriters"),),
     ),
 }
 
@@ -384,6 +387,7 @@ ASM_WRITER_ANNOTATIONS.update({
     "isConstant": "常量寄存器标记；asm writer/寄存器模型消费。",
     "MCOperandPredicate": "`Operand` 的 MC operand 谓词；asm writer 判断能否打印。",
     "Predicates": "指令/别名谓词列表；共享层解析，asm writer 用于打印条件。",
+    "AssemblyWriters": "目标级 `AsmWriter` 记录列表；`-asmwriternum` 选择其中一个。",
 })
 
 ANNOTATIONS = {
@@ -1206,16 +1210,29 @@ def _display_path(root: Path, path) -> str:
         return str(p)
 
 
-def collect_usage(root: Path, contract, files):
-    """Cross-check a target's .td files against the extracted contract."""
-    by_field = {r["field"]: r for r in contract["fields"]}
+def collect_td_usages(root: Path, files):
+    """Raw `let`/`field` usages: (file, line, field, is_custom_field)."""
     rows = []
     for path in files:
         rel = _display_path(root, path)
         text = strip_comments((root / rel).read_text())
         for m in LET_RE.finditer(text):
-            fld = m.group(1)
-            line = _line_of(text, m.start())
+            rows.append((rel, _line_of(text, m.start()), m.group(1), False))
+        for m in TD_FIELD_DECL_RE.finditer(text):
+            rows.append((rel, _line_of(text, m.start()), m.group(1), True))
+    if not rows:
+        raise ContractError("no `let`/`field` usages found")
+    return rows
+
+
+def collect_usage(root: Path, contract, files):
+    """Cross-check a target's .td files against one backend contract."""
+    by_field = {r["field"]: r for r in contract["fields"]}
+    rows = []
+    for rel, line, fld, custom in collect_td_usages(root, files):
+        if custom:
+            status = "自定义字段（需自行保证 name-based 读取方存在）"
+        else:
             r = by_field.get(fld)
             if r is None:
                 status = "不在本后端契约（其它后端消费或拼写错误）"
@@ -1223,13 +1240,64 @@ def collect_usage(root: Path, contract, files):
                 status = f"消费（{r['stage']}）"
             else:
                 status = r["unused_note"] or "本后端不读"
-            rows.append((rel, line, fld, status))
-        for m in TD_FIELD_DECL_RE.finditer(text):
-            rows.append((rel, _line_of(text, m.start()), m.group(1),
-                         "自定义字段（需自行保证 name-based 读取方存在）"))
-    if not rows:
-        raise ContractError("no `let`/`field` usages found")
+        rows.append((rel, line, fld, status))
     return rows
+
+
+def collect_status_rows(root: Path, contracts, files):
+    """One row per .td usage with a status cell for every backend."""
+    by_backend = [
+        (c["backend"], {r["field"]: r for r in c["fields"]})
+        for c in contracts
+    ]
+    rows = []
+    for rel, line, fld, custom in collect_td_usages(root, files):
+        cells, decls = [], set()
+        for _, fields in by_backend:
+            r = fields.get(fld)
+            if custom:
+                cells.append("自定义")
+            elif r is None:
+                cells.append("—")
+            elif r["sites"]:
+                cells.append(r["stage"])
+            else:
+                cells.append("未消费")
+            if r:
+                decls.update(r["declared_in"])
+        rows.append({"file": rel, "line": line, "field": fld,
+                     "custom": custom, "declared_in": sorted(decls),
+                     "cells": cells})
+    return rows
+
+
+def render_status_matrix(rows, backend_names) -> str:
+    stages = {"derive", "project", "derive+project"}
+    out = [STATUS_BEGIN, "",
+           "同一份 `.td` 在每个后端下的投影状态；"
+           "`—` 表示该字段不在这个后端的 schema 里。", "",
+           "| 文件:行 | 字段 | 声明于 | " +
+           " | ".join(f"`{n}`" for n in backend_names) + " |",
+           "| --- | --- | --- | " + " | ".join("---" for _ in backend_names) +
+           " |"]
+    for r in rows:
+        decl = ", ".join(f"`{c}`" for c in r["declared_in"]) or "—"
+        cells = [f"`{c}`" if c in stages else c for c in r["cells"]]
+        out.append(f"| `{r['file']}:{r['line']}` | `{r['field']}` | {decl} | " +
+                   " | ".join(cells) + " |")
+    total = len(rows)
+    any_consumed = sum(
+        1 for r in rows if any(c in stages for c in r["cells"]))
+    all_consumed = sum(
+        1 for r in rows if all(c in stages for c in r["cells"]))
+    custom = sum(1 for r in rows if r["custom"])
+    out.extend([
+        "",
+        f"共 {total} 处使用；{len(backend_names)} 个后端都消费 "
+        f"{all_consumed} 处，至少一个消费 {any_consumed} 处，"
+        f"自定义字段 {custom} 处。",
+        STATUS_END])
+    return "\n".join(out)
 
 
 def render_usage_block(rows) -> str:
@@ -1255,7 +1323,19 @@ def _get_block(text: str, begin: str, end: str) -> str:
     return text[start:stop + len(end)]
 
 
-def _doc_blocks(root, backend, contract, usage_files):
+def build_all_contracts(root: Path):
+    return [build_contract(root, be) for be in BACKENDS.values()]
+
+
+def _doc_blocks(root, backend, contract, usage_files, status_matrix=False):
+    if status_matrix:
+        if not usage_files:
+            raise ContractError("--status-matrix requires --usage")
+        contracts = build_all_contracts(root)
+        rows = collect_status_rows(root, contracts,
+                                   [str(p) for p in usage_files])
+        names = [c["backend"] for c in contracts]
+        return [(STATUS_BEGIN, STATUS_END, render_status_matrix(rows, names))]
     blocks = [
         (BEGIN_MARKER, END_MARKER, render_block(contract)),
         (MATRIX_BEGIN, MATRIX_END, render_matrix_block(contract)),
@@ -1268,18 +1348,24 @@ def _doc_blocks(root, backend, contract, usage_files):
     return blocks
 
 
-def check_doc(root: Path, backend: Backend, doc: Path, usage_files):
-    contract = build_contract(root, backend)
+def check_doc(root: Path, backend: Backend, doc: Path, usage_files,
+              status_matrix=False):
+    contract = None if status_matrix else build_contract(root, backend)
+    contracts = build_all_contracts(root) if status_matrix else [contract]
     problems = []
-    if contract["problems"]["missing_annotations"]:
-        problems.append("consumed fields without a semantic annotation: " +
-                        ", ".join(contract["problems"]["missing_annotations"]))
-    if contract["problems"]["stale_annotations"]:
-        problems.append("annotations for fields that no longer exist: " +
-                        ", ".join(contract["problems"]["stale_annotations"]))
+    for c in contracts:
+        prefix = "" if not status_matrix else f"{c['backend']}: "
+        if c["problems"]["missing_annotations"]:
+            problems.append(prefix +
+                            "consumed fields without a semantic annotation: " +
+                            ", ".join(c["problems"]["missing_annotations"]))
+        if c["problems"]["stale_annotations"]:
+            problems.append(prefix +
+                            "annotations for fields that no longer exist: " +
+                            ", ".join(c["problems"]["stale_annotations"]))
     text = doc.read_text()
     for begin, end, expected in _doc_blocks(root, backend, contract,
-                                            usage_files):
+                                            usage_files, status_matrix):
         try:
             actual = _get_block(text, begin, end)
         except ContractError as e:
@@ -1292,6 +1378,12 @@ def check_doc(root: Path, backend: Backend, doc: Path, usage_files):
         for p in problems:
             print(f"  - {p}", file=sys.stderr)
         return 1
+    if status_matrix:
+        rows = collect_status_rows(root, contracts,
+                                   [str(p) for p in usage_files])
+        print(f"dsl-surface: OK (cross-backend status: {len(rows)} usages, "
+              f"{len(contracts)} backends)")
+        return 0
     st = contract["stats"]["stages"]
     print(f"dsl-surface: OK ({contract['backend']}: "
           f"{contract['stats']['consumed']}/{contract['stats']['fields']} "
@@ -1301,13 +1393,18 @@ def check_doc(root: Path, backend: Backend, doc: Path, usage_files):
     return 0
 
 
-def update_doc(root: Path, backend: Backend, doc: Path, usage_files):
-    contract = build_contract(root, backend)
-    if contract["problems"]["missing_annotations"]:
-        raise ContractError("missing annotations: " +
-                            ", ".join(contract["problems"]["missing_annotations"]))
+def update_doc(root: Path, backend: Backend, doc: Path, usage_files,
+               status_matrix=False):
+    contract = None if status_matrix else build_contract(root, backend)
+    contracts = build_all_contracts(root) if status_matrix else [contract]
+    for c in contracts:
+        if c["problems"]["missing_annotations"]:
+            raise ContractError(
+                f"{c['backend']}: missing annotations: " +
+                ", ".join(c["problems"]["missing_annotations"]))
     text = doc.read_text()
-    for begin, end, block in _doc_blocks(root, backend, contract, usage_files):
+    for begin, end, block in _doc_blocks(root, backend, contract, usage_files,
+                                         status_matrix):
         text = _replace_block(text, begin, end, block)
     doc.write_text(text)
     print(f"dsl-surface: updated {doc}")
@@ -1324,6 +1421,9 @@ def main(argv=None):
                         help="print the generated contract block")
     parser.add_argument("--matrix", action="store_true",
                         help="print the cross-backend projection matrix")
+    parser.add_argument("--status-matrix", action="store_true",
+                        help="print/update/check a merged .td status table "
+                             "for every backend (requires --usage)")
     parser.add_argument("--update", type=Path, metavar="DOC")
     parser.add_argument("--check", type=Path, metavar="DOC")
     parser.add_argument("--usage", type=Path, nargs="+", metavar="TD",
@@ -1332,10 +1432,21 @@ def main(argv=None):
 
     backend = BACKENDS[args.backend]
     try:
+        if args.status_matrix and not (args.check or args.update):
+            if not args.usage:
+                raise ContractError("--status-matrix requires --usage")
+            contracts = build_all_contracts(args.root)
+            rows = collect_status_rows(args.root, contracts,
+                                       [str(p) for p in args.usage])
+            print(render_status_matrix(rows,
+                                       [c["backend"] for c in contracts]))
+            return 0
         if args.check:
-            return check_doc(args.root, backend, args.check, args.usage)
+            return check_doc(args.root, backend, args.check, args.usage,
+                             args.status_matrix)
         if args.update:
-            return update_doc(args.root, backend, args.update, args.usage)
+            return update_doc(args.root, backend, args.update, args.usage,
+                              args.status_matrix)
         contract = build_contract(args.root, backend)
         if args.usage:
             rows = collect_usage(args.root, contract,
