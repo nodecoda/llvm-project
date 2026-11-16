@@ -318,6 +318,60 @@ int runSelfTest() {
     }
   }
 
+  // Chapter 08: the CSR file and the trap entry.
+  {
+    Fixture f;
+    f.cpu.x[kA] = kData;
+    f.exec(encI(0x73, 0x1, kD, kA, 0x305)); // csrrw t2, mtvec, t0
+    expect("csrrw writes mtvec", f.cpu.mtvec(), kData);
+    expect("csrrw returns the old value", f.cpu.x[kD], 0);
+  }
+  {
+    Fixture f;
+    f.cpu.x[kA] = 5;
+    f.exec(encI(0x73, 0x1, 0, kA, 0x342)); // mcause = 5
+    expect("csrrw writes mcause", f.cpu.mcause(), 5);
+    f.cpu.x[kA] = 2;
+    f.exec(encI(0x73, 0x2, 0, kA, 0x342)); // csrrs sets bits
+    expect("csrrs sets bits", f.cpu.mcause(), 7);
+    f.cpu.x[kA] = 1;
+    f.exec(encI(0x73, 0x3, 0, kA, 0x342)); // csrrc clears bits
+    expect("csrrc clears bits", f.cpu.mcause(), 6);
+    f.exec(encI(0x73, 0x6, 0, 1, 0x342));  // csrrsi zimm = 1
+    expect("csrrsi", f.cpu.mcause(), 7);
+    f.exec(encI(0x73, 0x5, kD, 7, 0x343)); // csrrwi zimm = 7
+    expect("csrrwi", f.cpu.mtval(), 7);
+  }
+  {
+    Fixture f;
+    f.cpu.x[kA] = kData;
+    f.exec(encI(0x73, 0x1, 0, kA, 0x341)); // mepc = 0x2000
+    f.exec(0x30200073u);                    // mret
+    expect("mret returns to mepc", f.cpu.pc, kData);
+  }
+  {
+    Fixture f;
+    f.cpu.x[kA] = kData;
+    f.exec(encI(0x73, 0x1, 0, kA, 0x305)); // mtvec = handler
+    expect("trap enters the handler",
+           f.exec(0x00000000u) ? 1u : 0u, 1u);
+    expect("trap jumps to mtvec", f.cpu.pc, kData);
+    expect("trap mcause", f.cpu.mcause(), 2);
+    expect("trap mepc", f.cpu.mepc(), kCode);
+    expect("trap mtval", f.cpu.mtval(), 0);
+  }
+  {
+    Fixture f;
+    f.cpu.x[kA] = kData;
+    f.exec(encI(0x73, 0x1, 0, kA, 0x305));
+    f.exec(encI(0x73, 0x0, 0, 0, 1)); // ebreak
+    expect("ebreak mcause", f.cpu.mcause(), 3);
+    expect("ebreak mepc", f.cpu.mepc(), kCode);
+    expect("ebreak mtval", f.cpu.mtval(), kCode);
+  }
+  trap("unknown CSR", encI(0x73, 0x1, 0, 0, 0xfff), kA, 0,
+       TrapCause::IllegalInstruction, 0xfff);
+
   std::printf("selftest: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures;
 }

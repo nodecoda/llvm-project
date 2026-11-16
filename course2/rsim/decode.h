@@ -25,6 +25,7 @@ enum class Fmt : uint8_t {
   Jalr,   // jalr rd, imm(rs1)
   Fence,  // fence / fence.i
   System, // ecall / ebreak
+  Csr,    // csrrw/csrrs/csrrc + immediate forms, plus mret
 };
 
 enum class Isa : uint8_t {
@@ -46,6 +47,7 @@ struct Decoded {
   uint8_t rs1 = 0;
   uint8_t rs2 = 0;
   int32_t imm = 0;
+  uint16_t csr = 0; // chapter 08: the CSR number of a Zicsr instruction
   uint32_t raw = 0;
 };
 
@@ -57,6 +59,12 @@ Isa isaOf(Insn id);
 /// The exact text llvm-mc prints for the same encoding, e.g.
 /// "add a0, a1, a2" or "lw a0, -4(sp)".
 std::string format(const Decoded &insn);
+
+/// "mtvec", "mepc", ... for the CSRs the course implements.
+const char *csrName(uint16_t csr);
+
+/// True for csrrwi/csrrsi/csrrci, whose rs1 field is a 5-bit immediate.
+bool isImmediateCsr(Insn id);
 
 /// Register names in ABI order: zero, ra, sp, gp, tp, t0-t6, s0-s11, a0-a7.
 const char *registerName(unsigned reg);

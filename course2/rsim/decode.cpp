@@ -11,7 +11,7 @@ struct Entry {
   uint8_t opcode;
   uint8_t funct3;
   uint8_t funct7;
-  uint8_t match_imm;
+  uint16_t match_imm; // 0xff means "don't care"; mret's 0x302 does not fit u8
   Insn id;
 };
 
@@ -128,6 +128,16 @@ Decoded decode(uint32_t word) {
     out.fmt = Fmt::Shift;
     out.imm = static_cast<int32_t>(bits(word, 24, 20));
     break;
+  case Insn::CSRRW:
+  case Insn::CSRRS:
+  case Insn::CSRRC:
+  case Insn::CSRRWI:
+  case Insn::CSRRSI:
+  case Insn::CSRRCI:
+  case Insn::MRET:
+    out.fmt = Fmt::Csr;
+    out.csr = static_cast<uint16_t>(bits(word, 31, 20));
+    break;
   case Insn::FENCE:
   case Insn::FENCE_I:
     out.fmt = Fmt::Fence;
@@ -159,6 +169,29 @@ Isa isaOf(Insn id) {
 #include "insn.def"
 #undef RSIM_INSN
   return Isa::RV32I;
+}
+
+const char *csrName(uint16_t csr) {
+  switch (csr) {
+  case 0x300:
+    return "mstatus";
+  case 0x305:
+    return "mtvec";
+  case 0x341:
+    return "mepc";
+  case 0x342:
+    return "mcause";
+  case 0x343:
+    return "mtval";
+  case 0xb02:
+    return "minstret";
+  default:
+    return nullptr;
+  }
+}
+
+bool isImmediateCsr(Insn id) {
+  return id == Insn::CSRRWI || id == Insn::CSRRSI || id == Insn::CSRRCI;
 }
 
 const char *registerName(unsigned reg) {
@@ -196,6 +229,15 @@ std::string format(const Decoded &d) {
     return m + " " + rd + ", " + std::to_string(d.imm);
   case Fmt::Jalr:
     return m + " " + rd + ", " + std::to_string(d.imm) + "(" + rs1 + ")";
+  case Fmt::Csr: {
+    if (d.id == Insn::MRET)
+      return m;
+    const char *name = csrName(d.csr);
+    const std::string csr =
+        name ? std::string(name) : "0x" + std::to_string(d.csr);
+    const std::string src = isImmediateCsr(d.id) ? std::to_string(d.rs1) : rs1;
+    return m + " " + rd + ", " + csr + ", " + src;
+  }
   case Fmt::Fence:
   case Fmt::System:
     return m;

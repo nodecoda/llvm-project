@@ -46,6 +46,12 @@
 #   * b resolves through .symtab, a breakpoint on the current pc stops before
 #     the instruction runs, and `s 2` advances exactly two instructions.
 #
+# Chapter 08 checks:
+#   * an unknown encoding traps with mcause=2 and mepc == the address of main;
+#   * ebreak traps with mcause=3 and mtval == mepc;
+#   * tests/trap-handler.s installs mtvec, validates mcause/mepc/mtval for
+#     both traps, skips the faulting instruction and returns with mret.
+#
 set -euo pipefail
 
 BIN=${1:?usage: course2-verify.sh <llvm-bin-dir> <rsim-binary>}
@@ -489,6 +495,65 @@ grep -q '^stopped at 0x00010000 <_start>$' "$TMP/debug2.out" \
   || fail "c did not stop on a breakpoint set at the current pc"
 grep -q '^stopped at 0x00010008 <_start+8>$' "$TMP/debug2.out" \
   || fail "s 2 did not advance exactly two instructions"
+CHECKS=$((CHECKS + 1))
+
+# --- Chapter 08: the trap model ----------------------------------------
+
+# The course-1 assembler has no Zicsr, so these three use clang's RISC-V
+# assembler.  The encodings are standard and chapter 03 already proved the
+# decoder agrees with the reference on every RV32I word.
+build_csr_program() {
+  local name=$1 src=$2
+  local cflags=(--target="$TRIPLE" -march=rv32i_zicsr -mabi=ilp32 -mno-relax -c)
+  "$CC" "${cflags[@]}" "$src" -o "$TMP/$name.o" \
+    || fail "clang could not assemble $src"
+  "$CC" "${cflags[@]}" "$RT/start.S" -o "$TMP/start-$name.o" \
+    || fail "clang could not assemble start.S for $name"
+  "$CC" "${cflags[@]}" "$RT/rvmin-rt.S" -o "$TMP/rt-$name.o" \
+    || fail "clang could not assemble rvmin-rt.S for $name"
+  "$LD" -m elf32lriscv -T "$RT/link.ld" -o "$TMP/$name" \
+    "$TMP/start-$name.o" "$TMP/$name.o" "$TMP/rt-$name.o" \
+    || fail "ld.lld could not link $name"
+}
+
+csr_field() {
+  sed -n "s/^$1 *0x\\([0-9a-f]*\\)$/\\1/p" "$TMP/$2.crs"
+}
+
+build_csr_program illegal "$COURSE2/tests/illegal.s"
+set +e
+"$RSIM" --run "$TMP/illegal" --dump-csr > "$TMP/illegal.crs" 2> "$TMP/illegal.err"
+illegal_rc=$?
+set -e
+[[ "$illegal_rc" -eq 126 ]] || fail "illegal.s exited $illegal_rc, want 126"
+grep -q '^mcause   0x00000002$' "$TMP/illegal.crs" \
+  || fail "illegal instruction did not set mcause=2"
+grep -q 'illegal instruction' "$TMP/illegal.err" \
+  || fail "illegal instruction left no diagnostic"
+MAIN=$("$READELF" -s "$TMP/illegal" | awk '$8 == "main" { print "0x" $2; exit }')
+[[ -n "$MAIN" ]] || fail "illegal: no main symbol"
+[[ $((16#$(csr_field mepc illegal))) -eq $((MAIN)) ]] \
+  || fail "illegal: mepc is not main's address"
+CHECKS=$((CHECKS + 1))
+
+build_csr_program ebreak "$COURSE2/tests/ebreak.s"
+set +e
+"$RSIM" --run "$TMP/ebreak" --dump-csr > "$TMP/ebreak.crs" 2> /dev/null
+ebreak_rc=$?
+set -e
+[[ "$ebreak_rc" -eq 126 ]] || fail "ebreak.s exited $ebreak_rc, want 126"
+grep -q '^mcause   0x00000003$' "$TMP/ebreak.crs" \
+  || fail "ebreak did not set mcause=3"
+[[ "$(csr_field mepc ebreak)" == "$(csr_field mtval ebreak)" ]] \
+  || fail "ebreak: mtval should be the ebreak address"
+CHECKS=$((CHECKS + 1))
+
+build_csr_program trap_handler "$COURSE2/tests/trap-handler.s"
+"$RSIM" --run "$TMP/trap_handler" --dump-csr > "$TMP/trap_handler.crs" \
+  2> "$TMP/trap_handler.err" \
+  || fail "trap-handler.s failed: $(cat "$TMP/trap_handler.err")"
+grep -q '^mcause   0x00000003$' "$TMP/trap_handler.crs" \
+  || fail "trap-handler did not take both traps"
 CHECKS=$((CHECKS + 1))
 
 echo "$CHECKS checks"

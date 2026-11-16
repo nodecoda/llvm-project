@@ -47,6 +47,14 @@ public:
   uint64_t executed() const { return executed_; }
   int exitCode() const { return exit_code_; }
 
+  // Chapter 08: the minimum machine-mode CSR set.
+  uint32_t mtvec() const { return mtvec_; }
+  uint32_t mepc() const { return mepc_; }
+  uint32_t mcause() const { return mcause_; }
+  uint32_t mtval() const { return mtval_; }
+  uint32_t readCsr(uint16_t csr) const;
+  void writeCsr(uint16_t csr, uint32_t value);
+
   /// Chapter 06: print one line per executed instruction to `file`.
   void traceTo(std::FILE *file) { trace_ = file; }
 
@@ -64,6 +72,10 @@ public:
   }
 
 private:
+  /// One instruction without the trap wrapper: `step()` turns a Trap into an
+  /// entry into the handler when mtvec is programmed.
+  bool executeOne();
+
   /// Handle one ecall.  Returns true when the program continues.
   bool ecall(uint32_t at);
 
@@ -81,6 +93,10 @@ private:
   uint64_t executed_ = 0;
   int exit_code_ = 0;
   std::FILE *trace_ = nullptr;
+  uint32_t mtvec_ = 0;
+  uint32_t mepc_ = 0;
+  uint32_t mcause_ = 0;
+  uint32_t mtval_ = 0;
 };
 
 } // namespace rsim

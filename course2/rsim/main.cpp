@@ -1,7 +1,7 @@
-//===-- main.cpp - rsim entry point, chapter 07 -----------------*- C++ -*-===//
+//===-- main.cpp - rsim entry point, chapter 08 -----------------*- C++ -*-===//
 //
-// Chapter 07 adds `--debug`: a small scriptable debugger.  `--trace` and
-// `--disas` are still the batch views of the same information.
+// Chapter 08 turns traps into data: `--dump-csr` shows mtvec/mepc/mcause/
+// mtval/minstret after a run, including the run that trapped.
 //
 // Exit codes: 0 success, 2 usage, 125 load error, 126 trap, otherwise the
 // guest's own exit status.
@@ -26,7 +26,7 @@
 
 namespace {
 
-constexpr const char *kVersion = "0.7";
+constexpr const char *kVersion = "0.8";
 constexpr int kExitUsage = 2;
 constexpr int kExitLoadError = 125;
 constexpr int kExitTrap = 126;
@@ -41,6 +41,7 @@ struct Options {
   uint64_t len = 0;
   uint64_t max_steps = 10000000;
   bool trace = false;
+  bool dump_csr = false;
 };
 
 void dumpElf(const rsim::Image &image) {
@@ -123,6 +124,14 @@ int decodeHex(const char *path) {
   return 0;
 }
 
+void dumpCsr(const rsim::Cpu &cpu) {
+  std::printf("mtvec    0x%08" PRIx32 "\n", cpu.mtvec());
+  std::printf("mepc     0x%08" PRIx32 "\n", cpu.mepc());
+  std::printf("mcause   0x%08" PRIx32 "\n", cpu.mcause());
+  std::printf("mtval    0x%08" PRIx32 "\n", cpu.mtval());
+  std::printf("minstret %" PRIu64 "\n", cpu.executed());
+}
+
 void usage() {
   std::fprintf(stderr, "usage: rsim --version\n"
                        "       rsim --selftest\n"
@@ -132,6 +141,7 @@ void usage() {
                        "       rsim --disas <elf>\n"
                        "       rsim --run <elf> [--max-steps <n>] [--trace]\n"
                        "       rsim --debug <elf> [--script <file>]\n"
+                       "       rsim --run <elf> [--max-steps <n>] [--trace] [--dump-csr]\n"
                        "       rsim <elf>\n");
 }
 
@@ -200,6 +210,8 @@ bool parse(int argc, char **argv, Options &opt) {
       opt.max_steps = std::strtoull(v, nullptr, 0);
     } else if (arg == "--trace") {
       opt.trace = true;
+    } else if (arg == "--dump-csr") {
+      opt.dump_csr = true;
     } else if (arg == "--selftest") {
       opt.mode = Mode::SelfTest;
     } else if (!arg.empty() && arg[0] == '-') {
@@ -217,7 +229,7 @@ bool parse(int argc, char **argv, Options &opt) {
 
 int main(int argc, char **argv) {
   if (argc == 2 && std::strcmp(argv[1], "--version") == 0) {
-    std::printf("rsim %s (chapter 07)\n", kVersion);
+    std::printf("rsim %s (chapter 08)\n", kVersion);
     return 0;
   }
 
@@ -288,9 +300,16 @@ int main(int argc, char **argv) {
       cpu.traceTo(stderr);
 
     uint64_t steps = 0;
-    while (!cpu.halted() && steps < opt.max_steps) {
-      cpu.step();
-      ++steps;
+    try {
+      while (!cpu.halted() && steps < opt.max_steps) {
+        cpu.step();
+        ++steps;
+      }
+    } catch (const rsim::Trap &err) {
+      if (opt.dump_csr)
+        dumpCsr(cpu);
+      std::fprintf(stderr, "rsim: trap: %s\n", err.what());
+      return kExitTrap;
     }
 
     if (!cpu.halted()) {
@@ -300,6 +319,9 @@ int main(int argc, char **argv) {
                    opt.max_steps, cpu.pc);
       return kExitTrap;
     }
+
+    if (opt.dump_csr)
+      dumpCsr(cpu);
 
     // The guest's stdout must stay byte-exact for the QEMU diff, so the
     // summary goes to stderr.  start.S keeps main()'s result in t0 before it

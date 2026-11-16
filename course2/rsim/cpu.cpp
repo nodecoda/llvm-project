@@ -42,6 +42,10 @@ void Cpu::reset(const Image &image, Memory &memory) {
   halted_ = false;
   executed_ = 0;
   exit_code_ = 0;
+  mtvec_ = 0;
+  mepc_ = 0;
+  mcause_ = 0;
+  mtval_ = 0;
 }
 
 uint8_t Cpu::load8(uint32_t addr, uint32_t epc) {
@@ -92,10 +96,65 @@ void Cpu::store32(uint32_t addr, uint32_t value, uint32_t epc) {
   }
 }
 
+uint32_t Cpu::readCsr(uint16_t csr) const {
+  switch (csr) {
+  case 0x300: // mstatus
+    return 0;
+  case 0x305:
+    return mtvec_;
+  case 0x341:
+    return mepc_;
+  case 0x342:
+    return mcause_;
+  case 0x343:
+    return mtval_;
+  case 0xb02: // minstret
+    return static_cast<uint32_t>(executed_);
+  default:
+    throw Trap(TrapCause::IllegalInstruction, csr, pc, "unknown CSR");
+  }
+}
+
+void Cpu::writeCsr(uint16_t csr, uint32_t value) {
+  switch (csr) {
+  case 0x300: // mstatus: nothing to model yet
+    return;
+  case 0x305:
+    mtvec_ = value & ~3u; // direct mode only
+    return;
+  case 0x341:
+    mepc_ = value & ~3u;
+    return;
+  case 0x342:
+    mcause_ = value;
+    return;
+  case 0x343:
+    mtval_ = value;
+    return;
+  default:
+    throw Trap(TrapCause::IllegalInstruction, csr, pc, "unknown CSR");
+  }
+}
+
 bool Cpu::step() {
   if (halted_)
     return false;
+  try {
+    return executeOne();
+  } catch (const Trap &trap) {
+    // Chapter 08: the trap is data before it is a stop.  With mtvec == 0
+    // there is no handler, so the host has to see it.
+    mepc_ = trap.epc;
+    mcause_ = static_cast<uint32_t>(trap.cause);
+    mtval_ = trap.tval;
+    if (mtvec_ == 0)
+      throw;
+    pc = mtvec_ & ~3u;
+    return true;
+  }
+}
 
+bool Cpu::executeOne() {
   const uint32_t at = pc;
   if (at & 3u)
     throw Trap(TrapCause::InstructionAddressMisaligned, at, at,
@@ -345,6 +404,36 @@ bool Cpu::step() {
   case Insn::FENCE:
   case Insn::FENCE_I:
     break; // single hart, single memory: nothing to order
+
+  case Insn::CSRRW:
+  case Insn::CSRRS:
+  case Insn::CSRRC:
+  case Insn::CSRRWI:
+  case Insn::CSRRSI:
+  case Insn::CSRRCI: {
+    const uint32_t old = readCsr(d.csr);
+    const uint32_t src = isImmediateCsr(d.id) ? d.rs1 : a;
+    switch (d.id) {
+    case Insn::CSRRW:
+    case Insn::CSRRWI:
+      writeCsr(d.csr, src);
+      break;
+    case Insn::CSRRS:
+    case Insn::CSRRSI:
+      if (src != 0) // csrr with x0 reads without writing
+        writeCsr(d.csr, old | src);
+      break;
+    default:
+      if (src != 0)
+        writeCsr(d.csr, old & ~src);
+      break;
+    }
+    setReg(d.rd, old);
+    break;
+  }
+  case Insn::MRET:
+    next = mepc_;
+    break;
 
   case Insn::ECALL:
     if (!ecall(at)) // exit(2) stops the loop; everything else returns
