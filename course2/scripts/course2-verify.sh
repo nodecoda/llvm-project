@@ -16,6 +16,12 @@
 #   * sp is 16-byte aligned, inside the stack region, and its page is mapped;
 #   * an access outside mapped memory is a trap (exit code 126).
 #
+# Chapter 03 checks:
+#   * --selftest passes every hand-computed instruction vector;
+#   * all 97 corpus instructions decode to exactly llvm-mc's text;
+#   * the five programs from chapter 01 run to the first ecall with
+#     main() returning 0 in t0.
+#
 set -euo pipefail
 
 BIN=${1:?usage: course2-verify.sh <llvm-bin-dir> <rsim-binary>}
@@ -208,5 +214,51 @@ set -e
 [[ "$OOB_RC" -eq 126 ]] || fail "out-of-bounds access exited $OOB_RC, want 126"
 grep -q '^rsim: trap: ' "$TMP/oob.err" || fail "out-of-bounds access had no trap line"
 CHECKS=$((CHECKS + 1))
+
+# --- Chapter 03: decode and execute ------------------------------------
+
+"$RSIM" --selftest > "$TMP/selftest.txt" || fail "selftest reported failures"
+grep -q '0 failures' "$TMP/selftest.txt" || fail "selftest summary is not clean"
+CHECKS=$((CHECKS + 1))
+
+# llvm-mc -disassemble reads hex text, so feed it and rsim the same bytes.
+hex_words() {
+  xxd -p -c4 "$1" | awk '{printf "0x%s 0x%s 0x%s 0x%s\n",
+                          substr($0,1,2), substr($0,3,2),
+                          substr($0,5,2), substr($0,7,2)}'
+}
+
+decode_corpus() {
+  local name=$1 mattr=${2:-}
+  local mc_args=(-triple=rvmin)
+  [[ -n "$mattr" ]] && mc_args+=(-mattr="$mattr")
+
+  "$MC" "${mc_args[@]}" -filetype=obj "$CORPUS/$name.s" -o "$TMP/$name.o" \
+    || fail "llvm-mc rejected $name.s"
+  "$BIN/llvm-objcopy" -O binary --only-section=.text "$TMP/$name.o" "$TMP/$name.bin" \
+    || fail "llvm-objcopy could not extract .text from $name.o"
+  hex_words "$TMP/$name.bin" > "$TMP/$name.hex"
+  "$RSIM" --decode-hex "$TMP/$name.hex" > "$TMP/$name.ours" \
+    || fail "rsim could not decode $name"
+  "$MC" "${mc_args[@]}" -disassemble "$TMP/$name.hex" \
+    | sed 's/^\t//' > "$TMP/$name.ref" || fail "llvm-mc could not disassemble $name"
+  diff -u "$TMP/$name.ref" "$TMP/$name.ours" > "$TMP/$name.diff" \
+    || fail "$name: decode differs from llvm-mc (see $TMP/$name.diff)"
+  CHECKS=$((CHECKS + $(wc -l < "$TMP/$name.ours")))
+}
+
+CORPUS="$COURSE2/../llvm/lib/Target/RVMin/scripts"
+decode_corpus rvmin-encoding-corpus
+decode_corpus rvmin-m-encoding-corpus +m
+
+for name in demo muldiv_m large_frame switch tail; do
+  max_steps=10000000
+  [[ "$name" == tail ]] && max_steps=50000000
+  "$RSIM" --run "$TMP/$name" --max-steps "$max_steps" > "$TMP/$name.run" \
+    || fail "$name did not halt under rsim"
+  grep -q 't0=0x00000000' "$TMP/$name.run" \
+    || fail "$name: main() did not return 0 in t0 ($(cat "$TMP/$name.run"))"
+  CHECKS=$((CHECKS + 1))
+done
 
 echo "$CHECKS checks"

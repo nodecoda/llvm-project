@@ -1,0 +1,71 @@
+//===-- insn.def - the single list of instructions, chapter 03 ---*- C++ -*-===//
+//
+// X(ID, "mnemonic", Format, opcode, funct3, funct7, match_imm, isa)
+//
+// 0xff in funct3/funct7/match_imm means "don't care".  match_imm is only
+// meaningful for SYSTEM instructions (ecall = 0, ebreak = 1).
+//
+// This file is included several times with different definitions of
+// RSIM_INSN: once for the enum, once for the decode table, once for the ISA
+// mask.  Adding an instruction here is enough for the decoder to find it.
+//
+//===----------------------------------------------------------------------===//
+
+RSIM_INSN(LUI,    "lui",    FmtU,     0x37, 0xff, 0xff, 0xff, RV32I)
+RSIM_INSN(AUIPC,  "auipc",  FmtU,     0x17, 0xff, 0xff, 0xff, RV32I)
+RSIM_INSN(JAL,    "jal",    FmtJ,     0x6f, 0xff, 0xff, 0xff, RV32I)
+RSIM_INSN(JALR,   "jalr",   FmtJalr,  0x67, 0x00, 0xff, 0xff, RV32I)
+
+RSIM_INSN(BEQ,    "beq",    FmtBranch, 0x63, 0x00, 0xff, 0xff, RV32I)
+RSIM_INSN(BNE,    "bne",    FmtBranch, 0x63, 0x01, 0xff, 0xff, RV32I)
+RSIM_INSN(BLT,    "blt",    FmtBranch, 0x63, 0x04, 0xff, 0xff, RV32I)
+RSIM_INSN(BGE,    "bge",    FmtBranch, 0x63, 0x05, 0xff, 0xff, RV32I)
+RSIM_INSN(BLTU,   "bltu",   FmtBranch, 0x63, 0x06, 0xff, 0xff, RV32I)
+RSIM_INSN(BGEU,   "bgeu",   FmtBranch, 0x63, 0x07, 0xff, 0xff, RV32I)
+
+RSIM_INSN(LB,     "lb",     FmtLoad,  0x03, 0x00, 0xff, 0xff, RV32I)
+RSIM_INSN(LH,     "lh",     FmtLoad,  0x03, 0x01, 0xff, 0xff, RV32I)
+RSIM_INSN(LW,     "lw",     FmtLoad,  0x03, 0x02, 0xff, 0xff, RV32I)
+RSIM_INSN(LBU,    "lbu",    FmtLoad,  0x03, 0x04, 0xff, 0xff, RV32I)
+RSIM_INSN(LHU,    "lhu",    FmtLoad,  0x03, 0x05, 0xff, 0xff, RV32I)
+
+RSIM_INSN(SB,     "sb",     FmtStore, 0x23, 0x00, 0xff, 0xff, RV32I)
+RSIM_INSN(SH,     "sh",     FmtStore, 0x23, 0x01, 0xff, 0xff, RV32I)
+RSIM_INSN(SW,     "sw",     FmtStore, 0x23, 0x02, 0xff, 0xff, RV32I)
+
+RSIM_INSN(ADDI,   "addi",   FmtI,     0x13, 0x00, 0xff, 0xff, RV32I)
+RSIM_INSN(SLTI,   "slti",   FmtI,     0x13, 0x02, 0xff, 0xff, RV32I)
+RSIM_INSN(SLTIU,  "sltiu",  FmtI,     0x13, 0x03, 0xff, 0xff, RV32I)
+RSIM_INSN(XORI,   "xori",   FmtI,     0x13, 0x04, 0xff, 0xff, RV32I)
+RSIM_INSN(ORI,    "ori",    FmtI,     0x13, 0x06, 0xff, 0xff, RV32I)
+RSIM_INSN(ANDI,   "andi",   FmtI,     0x13, 0x07, 0xff, 0xff, RV32I)
+
+RSIM_INSN(SLLI,   "slli",   FmtShift, 0x13, 0x01, 0x00, 0xff, RV32I)
+RSIM_INSN(SRLI,   "srli",   FmtShift, 0x13, 0x05, 0x00, 0xff, RV32I)
+RSIM_INSN(SRAI,   "srai",   FmtShift, 0x13, 0x05, 0x20, 0xff, RV32I)
+
+RSIM_INSN(ADD,    "add",    FmtR,     0x33, 0x00, 0x00, 0xff, RV32I)
+RSIM_INSN(SUB,    "sub",    FmtR,     0x33, 0x00, 0x20, 0xff, RV32I)
+RSIM_INSN(SLL,    "sll",    FmtR,     0x33, 0x01, 0x00, 0xff, RV32I)
+RSIM_INSN(SLT,    "slt",    FmtR,     0x33, 0x02, 0x00, 0xff, RV32I)
+RSIM_INSN(SLTU,   "sltu",   FmtR,     0x33, 0x03, 0x00, 0xff, RV32I)
+RSIM_INSN(XOR,    "xor",    FmtR,     0x33, 0x04, 0x00, 0xff, RV32I)
+RSIM_INSN(SRL,    "srl",    FmtR,     0x33, 0x05, 0x00, 0xff, RV32I)
+RSIM_INSN(SRA,    "sra",    FmtR,     0x33, 0x05, 0x20, 0xff, RV32I)
+RSIM_INSN(OR,     "or",     FmtR,     0x33, 0x06, 0x00, 0xff, RV32I)
+RSIM_INSN(AND,    "and",    FmtR,     0x33, 0x07, 0x00, 0xff, RV32I)
+
+RSIM_INSN(FENCE,  "fence",  FmtFence, 0x0f, 0x00, 0xff, 0xff, RV32I)
+RSIM_INSN(FENCE_I,"fence.i",FmtFence, 0x0f, 0x01, 0xff, 0xff, RV32I)
+
+RSIM_INSN(ECALL,  "ecall",  FmtSystem,0x73, 0x00, 0x00, 0x00, RV32I)
+RSIM_INSN(EBREAK, "ebreak", FmtSystem,0x73, 0x00, 0x00, 0x01, RV32I)
+
+RSIM_INSN(MUL,    "mul",    FmtR,     0x33, 0x00, 0x01, 0xff, RV32M)
+RSIM_INSN(MULH,   "mulh",   FmtR,     0x33, 0x01, 0x01, 0xff, RV32M)
+RSIM_INSN(MULHSU, "mulhsu", FmtR,     0x33, 0x02, 0x01, 0xff, RV32M)
+RSIM_INSN(MULHU,  "mulhu",  FmtR,     0x33, 0x03, 0x01, 0xff, RV32M)
+RSIM_INSN(DIV,    "div",    FmtR,     0x33, 0x04, 0x01, 0xff, RV32M)
+RSIM_INSN(DIVU,   "divu",   FmtR,     0x33, 0x05, 0x01, 0xff, RV32M)
+RSIM_INSN(REM,    "rem",    FmtR,     0x33, 0x06, 0x01, 0xff, RV32M)
+RSIM_INSN(REMU,   "remu",   FmtR,     0x33, 0x07, 0x01, 0xff, RV32M)

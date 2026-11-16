@@ -1,7 +1,7 @@
-//===-- cpu.h - register file and reset state, chapter 02 -------*- C++ -*-===//
+//===-- cpu.h - register file, reset state and the step loop, ch 02/03 -*- C++ -*-===//
 //
-// Chapter 02 only needs the architectural state and the stack.  Instructions
-// arrive in chapter 03.
+// Chapter 02 gave the CPU its architectural state and the user stack.
+// Chapter 03 adds step(): fetch, decode, execute, update pc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -12,8 +12,16 @@
 #include "memory.h"
 
 #include <cstdint>
+#include <stdexcept>
+#include <string>
 
 namespace rsim {
+
+/// A trap the guest cannot ignore.  Chapter 08 will add mtvec/mepc/mcause;
+/// for now a trap is just "stop with an explanation".
+struct Trap : std::runtime_error {
+  using std::runtime_error::runtime_error;
+};
 
 class Cpu {
 public:
@@ -28,12 +36,27 @@ public:
   uint32_t pc = 0;
 
   void reset(const Image &image, Memory &memory);
+  void attach(Memory &memory) { memory_ = &memory; }
 
   Memory &memory() {
     if (!memory_)
-      throw MemoryError("CPU is not attached to memory");
+      throw Trap("CPU is not attached to memory");
     return *memory_;
   }
+
+  /// Execute one instruction.  Returns false once the program has halted
+  /// (ecall, ebreak until chapter 05/08 give them meaning).
+  bool step();
+
+  bool halted() const { return halted_; }
+  uint64_t executed() const { return executed_; }
+
+  /// x0 discards writes, wherever they come from.
+  void setReg(unsigned reg, uint32_t value) {
+    if (reg != 0)
+      x[reg & 31] = value;
+  }
+  uint32_t reg(unsigned r) const { return x[r & 31]; }
 
   uint32_t sp() const { return x[2]; }
   static bool inStackRange(uint64_t addr, uint64_t size) {
@@ -43,6 +66,8 @@ public:
 
 private:
   Memory *memory_ = nullptr;
+  bool halted_ = false;
+  uint64_t executed_ = 0;
 };
 
 } // namespace rsim
