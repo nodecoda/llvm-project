@@ -13,7 +13,8 @@
 #   6. every CodeGen test at -O0..-O3 x {rv32i,+m} with -verify-machineinstrs
 #      (tests that expect a diagnostic, i.e. "RUN: not llc", are skipped);
 #   7. the TableGen DSL contracts for four backends, the cross-backend
-#      status matrix, and the TSFlags field-effect report (chapters 29-34).
+#      status matrix, the TSFlags field-effect report, and the upstream
+#      BackEnds.md section (chapters 29-35).
 #
 # The QEMU run gate is separate (rvmin-run.sh) because it needs a linker and an
 # emulator, which the other checks do not.
@@ -103,6 +104,28 @@ python3 "$W/llvm/utils/TableGen/dsl-surface.py" --backend asm-matcher --check \
   --usage "$W/llvm/lib/Target/RVMin/RVMin.td" \
           "$W/llvm/lib/Target/RVMin/RVMinRegisterInfo.td" \
   || fail "TableGen DSL contract (asm-matcher)"
+python3 - "$W" <<'PY' || fail "upstream BackEnds contract section"
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+doc = root / "llvm/docs/TableGen/BackEnds.md"
+text = doc.read_text()
+required = [
+    "## Backend field contracts",
+    "### The `(declaring class, field)` key",
+    "### Four projection stages",
+    "### Extracting a contract",
+    "llvm/utils/TableGen/dsl-surface.py",
+]
+missing = [item for item in required if item not in text]
+if not (root / "llvm/utils/TableGen/dsl-surface.py").is_file():
+    missing.append("llvm/utils/TableGen/dsl-surface.py")
+if missing:
+    print("missing upstream docs content: " + ", ".join(missing),
+          file=sys.stderr)
+    sys.exit(1)
+PY
 echo "PASS 7/7: TableGen DSL contracts + status matrix + field effect"
 
 echo "ALL GATES PASS (run rvmin-run.sh separately for the QEMU check)"

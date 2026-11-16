@@ -26,6 +26,102 @@ See the {doc}`TableGen Programmer's Reference <./ProgRef>` for an in-depth
 description of TableGen, and the {doc}`TableGen Backend Developer's Guide
 <./BackGuide>` for a guide to writing a new backend.
 
+## Backend field contracts
+
+The introduction above mentions an implicit contract between TableGen files,
+backends, and their users. This section describes the input half of that
+contract: which record fields a backend actually reads, and how to make that
+surface explicit.
+
+### Why the field names are the DSL
+
+A backend reads fields with string keys:
+
+```c++
+unsigned Cost = Rec->getValueAsInt("CostPerUse");
+```
+
+Nothing in `Target.td` says which backends read `CostPerUse`, whether the read
+happens before or after shared rewriting, or what a target author should assume
+when copying an existing definition. The field name is the DSL, the declaration
+is the schema, and a backend is a projection of that schema.
+
+### The `(declaring class, field)` key
+
+Field lookup in TableGen is by name, not by type. `Namespace` is declared by
+`Instruction`, `Register`, `RegisterClass`, and `SubRegIndex`; a backend that
+reads `"Namespace"` may be reading any of them. A contract therefore keys
+fields by `(declaring class, field)` and reports every declaration that shares
+a name.
+
+### Four projection stages
+
+For a given backend and field:
+
+| Stage | Meaning |
+| --- | --- |
+| `schema` | Declared on a root or helper class but never read by this backend. |
+| `derive` | Read only by shared C++ that builds or rewrites the record model. |
+| `project` | Read only by the backend's own emitter. |
+| `derive+project` | Read by both. |
+
+Three related categories are not field reads:
+
+- *custom field*: not declared by any class in the parsed schema; a target
+  extension that only name-based readers know about;
+- *magic name*: a record name or generated identifier compared against a string
+  literal, which no `getValue*` scan can see;
+- *derivation*: a shared rewrite that changes the meaning of a record before any
+  backend projects it (SetTheory expansion, tuple synthesis, ordering).
+
+### Extracting a contract
+
+`llvm/utils/TableGen/dsl-surface.py` implements the extraction for the four
+LLVM target-description backends `-gen-register-info`, `-gen-instr-info`,
+`-gen-asm-writer`, and `-gen-asm-matcher`:
+
+```bash
+# Per-backend contract: roots, fields, stages, magic names, derivations.
+llvm/utils/TableGen/dsl-surface.py --backend asm-matcher
+
+# Cross-backend projection matrix for fields used by selected .td files.
+llvm/utils/TableGen/dsl-surface.py --status-matrix --usage MyTarget.td
+
+# Field-centric impact query: declarations, per-backend stages, readers.
+llvm/utils/TableGen/dsl-surface.py --effect TSFlags
+```
+
+The extractor scans the backend's emitter and the shared files it uses, parses
+the schema declarations, and classifies every `getValue*("...")` read.
+Human-written semantics live in per-backend annotation tables next to the
+extractor; `--check` fails when a consumed field has no annotation or when an
+annotation outlives its field.
+
+### Adding a backend to the extractor
+
+A backend entry needs:
+
+- `sources`: the emitter plus the shared files it uses; this set is the
+  scanning boundary;
+- `td_files`: schema files to parse (TableGen `include` directives are not
+  followed);
+- `roots_from`: files whose `getAllDerivedDefinitions()` calls enumerate roots;
+- `extra_roots`: roots enumerated indirectly, for example through a list field
+  on the `Target` record;
+- `helper_classes`, `ambient_fields`, and `field_expanders`: schema reachability
+  and consumption that a `getValue*` scan cannot infer by itself.
+
+The backend entry is then completed with annotations, unused-field notes, magic
+names, and derivation rewrites. A backend change that introduces a new keyword
+without updating these tables fails `--check` instead of silently drifting.
+
+### Scope
+
+The contract describes what a backend *reads*, not what the generated code
+*means*. It does not model C++ types or call graphs, and it does not replace the
+per-backend descriptions below; it is a mechanical index that makes the implicit
+contract reviewable.
+
 ## LLVM BackEnds
 
 :::{warning}
