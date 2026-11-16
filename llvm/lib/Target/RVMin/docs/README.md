@@ -37,7 +37,7 @@ RVMin 是一个从零写的 LLVM 后端，只实现 RISC-V 最小整数集（RV3
 | 16 | [16-large-frames.md](16-large-frames.md) | 大栈帧与 RegScavenger | 3 KiB 帧在 QEMU 运行 | `rvmin-ch16` |
 | 17 | [17-tail-calls.md](17-tail-calls.md) | 尾调用与 musttail | 1e6 层尾递归不爆栈 | `rvmin-ch17` |
 | 18 | [18-jump-tables.md](18-jump-tables.md) | 跳转表与间接跳转 | 8-case switch 只有 load+jalr | `rvmin-ch18` |
-| 19 | （规划中） | 常量乘除强度削减 | `+m` 下 `x/7` 无 libcall | `rvmin-ch19` |
+| 19 | [19-const-muldiv.md](19-const-muldiv.md) | 常量乘除强度削减 | `+m` 下 `x/7` 无 libcall | `rvmin-ch19` |
 | 20 | （规划中） | 反汇编器 | 97 条语料往返 | `rvmin-ch20` |
 | 21 | （规划中） | Zbb/Zbs | `clz/cpop/rev8` 单条 | `rvmin-ch21` |
 | 22 | （规划中） | A 扩展 | `lr/sc` 程序在 QEMU 运行 | `rvmin-ch22` |
@@ -71,6 +71,7 @@ RVMin 是一个从零写的 LLVM 后端，只实现 RISC-V 最小整数集（RV3
 | 16 | `## 背景` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
 | 17 | `## 背景` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
 | 18 | `## 背景` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
+| 19 | `## 背景` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
 
 > 第 14、23 章是验收章，本身即证据表，不套用八要素模板。
 

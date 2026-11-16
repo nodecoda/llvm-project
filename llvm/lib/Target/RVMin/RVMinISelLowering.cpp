@@ -120,6 +120,13 @@ RVMinTargetLowering::RVMinTargetLowering(const TargetMachine &TM,
     setOperationAction(ISD::BSWAP, VT, Expand);
   }
 
+  // Chapter 19: constant multiplies.  The generic combiner already rewrites
+  // powers of two into shifts and, with M, division by a constant into a magic
+  // multiply (MULHU/MULHS are legal).  The interesting case is `x*3`: the
+  // target combine below turns it into `x + (x<<1)`, which works without M and
+  // avoids both the constant materialization and the multiply.
+  setTargetDAGCombine(ISD::MUL);
+
   // Chapter 10: soft float.  There is no f32/f64 register class, so the type
   // legalizer *softens* floating-point values into i32 pairs and rewrites
   // every FP operation as a libcall.  Nothing else is needed: __addsf3,
@@ -170,6 +177,74 @@ SDValue RVMinTargetLowering::LowerOperation(SDValue Op,
   case ISD::BR_JT:
     return lowerBR_JT(Op, DAG);
   }
+}
+
+// Chapter 19: rewrite `x * C` into shifts and adds for the constants that
+// have a cheap two-instruction form:
+//
+//   C = 2^k - 1   ->   (x << k) - x        x*3, x*7, x*15, ...
+//   C = 2^k + 1   ->   (x << k) + x        x*5, x*9, x*17, ...
+//
+// Without M every constant multiply is a call to __mulsi3, so a constant with
+// any two set bits is also worth three instructions:
+//
+//   C = 2^a + 2^b ->   (x << a) + (x << b) x*10, x*12, x*20, ...
+//
+// With M the last case is a pessimization (addi + mul is two instructions), so
+// it is gated on M being absent.  Powers of two are already handled by the
+// generic combiner and negative constants are left alone.
+SDValue RVMinTargetLowering::PerformDAGCombine(SDNode *N,
+                                               DAGCombinerInfo &DCI) const {
+  if (N->getOpcode() != ISD::MUL)
+    return SDValue();
+
+  EVT VT = N->getValueType(0);
+  if (VT != MVT::i32)
+    return SDValue();
+
+  SDValue X = N->getOperand(0);
+  SDValue C = N->getOperand(1);
+  if (!isa<ConstantSDNode>(C)) {
+    if (!isa<ConstantSDNode>(X))
+      return SDValue();
+    std::swap(X, C);
+  }
+
+  const APInt &Imm = cast<ConstantSDNode>(C)->getAPIntValue();
+  if (Imm.isNegative() || Imm.isPowerOf2() || Imm.isOne())
+    return SDValue();
+
+  SelectionDAG &DAG = DCI.DAG;
+  SDLoc DL(N);
+  auto shl = [&](unsigned K) {
+    return DAG.getNode(ISD::SHL, DL, VT, X, DAG.getConstant(K, DL, VT));
+  };
+
+  APInt Plus1 = Imm + 1;
+  if (Plus1.isPowerOf2())
+    return DAG.getNode(ISD::SUB, DL, VT, shl(Plus1.logBase2()), X);
+
+  APInt Minus1 = Imm - 1;
+  if (Minus1.isPowerOf2())
+    return DAG.getNode(ISD::ADD, DL, VT, shl(Minus1.logBase2()), X);
+
+  if (!isOperationLegal(ISD::MUL, VT) && Imm.popcount() == 2) {
+    unsigned Lo = Imm.countr_zero();
+    unsigned Hi = Imm.getActiveBits() - 1;
+    return DAG.getNode(ISD::ADD, DL, VT, shl(Lo), shl(Hi));
+  }
+
+  return SDValue();
+}
+
+// Chapter 19: the DAG combiner expands a division by a constant into a magic
+// multiply, and a remainder into `x - (x/C)*C`.  With M that is usually the
+// right trade-off, except when the function is optimized for size: then one
+// `div`/`rem` is smaller than the sequence.  This mirrors what upstream
+// RISC-V does (`RISCVTargetLowering::isIntDivCheap`).
+bool RVMinTargetLowering::isIntDivCheap(EVT VT, AttributeList Attr) const {
+  return VT == MVT::i32 && Attr.hasFnAttr(Attribute::MinSize) &&
+         isOperationLegal(ISD::SDIV, VT);
 }
 
 // Canonicalize the condition code so the TableGen patterns only need

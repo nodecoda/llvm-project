@@ -34,6 +34,14 @@ public:
   /// real jump, so `return f(x);` keeps its `tail` marker.
   bool mayBeEmittedAsTailCall(const CallInst *CI) const override;
 
+  /// Chapter 19: constant multiplies.  `x*3` becomes `x + (x<<1)` instead of
+  /// a materialized constant plus `mul` (or `__mulsi3` without M).
+  SDValue PerformDAGCombine(SDNode *N, DAGCombinerInfo &DCI) const override;
+
+  /// Chapter 19: under `minsize`, a hardware div/rem is smaller than the
+  /// magic-number sequence and should win the cost model.
+  bool isIntDivCheap(EVT VT, AttributeList Attr) const override;
+
   SDValue LowerFormalArguments(SDValue Chain, CallingConv::ID CallConv,
                                bool IsVarArg,
                                const SmallVectorImpl<ISD::InputArg> &Ins,

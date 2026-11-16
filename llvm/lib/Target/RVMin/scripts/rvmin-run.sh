@@ -7,7 +7,8 @@
 # 2 KiB, compiled at -O0 and -O2.  Chapter 17 adds a third one that recurses a
 # million levels deep and only fits in the default stack because the recursive
 # calls became jumps.  Chapter 18 adds a fourth: switch statements whose dense
-# cases become a jump table in .rodata.
+# cases become a jump table in .rodata.  Chapter 19 adds a fifth: constant
+# multiplies and divisions, run both as RV32I and with M.
 #
 # Usage: rvmin-run.sh <llvm-bin-dir> [qemu]
 #
@@ -182,6 +183,58 @@ STATUS=0
 run_switch || STATUS=$?
 [[ "$STATUS" -eq 0 ]] || fail "switch program exited with $STATUS"
 echo "PASS: jump-table switch program ran under $QEMU"
+
+# Chapter 19 gate: constant multiply/divide.  Without M the constants in
+# muldiv.c must not reach __mulsi3 (they are shifts and adds); with M the
+# division by 7/10 must not reach __divsi3/__modsi3 but use the magic-number
+# multiply instead.  Both builds must pass the same literal checks.
+run_muldiv() {
+  local suffix=$1 mattr=$2
+  local LLC_ARGS=(-march=rvmin -mtriple="$TRIPLE" -O2 -verify-machineinstrs)
+  local MC_ARGS=(-triple=rvmin)
+  if [[ -n "$mattr" ]]; then
+    LLC_ARGS+=(-mattr="$mattr")
+    MC_ARGS+=(-mattr="$mattr")
+  fi
+
+  "$CC" --target="$TRIPLE" -march=rv32i -mabi=ilp32 -O2 -ffreestanding \
+    -fno-builtin -S -emit-llvm "$RT/muldiv.c" -o "$TMP/md$suffix.ll" \
+    || fail "clang could not compile muldiv.c ($suffix)"
+  "$LLC" "${LLC_ARGS[@]}" "$TMP/md$suffix.ll" -o "$TMP/md$suffix.s" \
+    || fail "llc could not select muldiv.c ($suffix)"
+
+  if grep -q '__mulsi3' "$TMP/md$suffix.s"; then
+    fail "muldiv.c ($suffix) still calls __mulsi3"
+  fi
+  if [[ -n "$mattr" ]]; then
+    if grep -q '__divsi3\|__modsi3' "$TMP/md$suffix.s"; then
+      fail "muldiv.c (+m) still calls the division runtime"
+    fi
+    grep -q 'mulh' "$TMP/md$suffix.s" \
+      || fail "muldiv.c (+m) used no magic multiply"
+  fi
+
+  "$MC" "${MC_ARGS[@]}" -filetype=obj "$TMP/md$suffix.s" -o "$TMP/md$suffix.o" \
+    || fail "llvm-mc rejected the muldiv output ($suffix)"
+  "$MC" "${MC_ARGS[@]}" -filetype=obj "$RT/rvmin-rt.S" -o "$TMP/rt-md$suffix.o" \
+    || fail "llvm-mc rejected rvmin-rt.S"
+  "$MC" "${MC_ARGS[@]}" -filetype=obj "$RT/start.S" -o "$TMP/start-md$suffix.o" \
+    || fail "llvm-mc rejected start.S"
+  "$LD" -m elf32lriscv -T "$RT/link.ld" -o "$TMP/md$suffix" \
+    "$TMP/start-md$suffix.o" "$TMP/md$suffix.o" "$TMP/rt-md$suffix.o" \
+    || fail "ld.lld could not link the muldiv program ($suffix)"
+  "$QEMU" "$TMP/md$suffix"
+}
+
+for variant in "rv32i:" "m:+m"; do
+  SUFFIX=${variant%%:*}
+  MATTR=${variant#*:}
+  STATUS=0
+  OUT=$(run_muldiv "$SUFFIX" "$MATTR") || STATUS=$?
+  [[ "$STATUS" -eq 0 ]] || fail "muldiv ($SUFFIX) exited with $STATUS"
+  echo "muldiv $SUFFIX: $OUT"
+done
+echo "PASS: constant multiply/divide program ran under $QEMU with and without M"
 
 SIZE1=$(stat -c%s "$TMP/demo")
 SIZE2=$(stat -c%s "$TMP/demo-m")

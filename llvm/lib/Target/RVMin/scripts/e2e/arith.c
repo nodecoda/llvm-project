@@ -26,6 +26,16 @@ long long wide(long long a, long long b) {
 int div_pow2(int x) { return x / 16 + x % 32; }
 int mul_pow2(int x) { return x * 64; }
 
+// Chapter 19: constants that become shifts/adds (3/5/7/10) and the
+// magic-number division path that needs M.
+int mul3(int x) { return x * 3; }
+int mul5(int x) { return x * 5; }
+int mul7(int x) { return x * 7; }
+int mul10(int x) { return x * 10; }
+int div7(int x) { return x / 7; }
+unsigned udiv7(unsigned x) { return x / 7; }
+int mod10(int x) { return x % 10; }
+
 void globals(int a, int b) {
   gmul = a * b;
   gdiv = a / b;
