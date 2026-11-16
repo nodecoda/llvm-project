@@ -70,6 +70,11 @@ class Backend:
     field_expanders: tuple = ()
 
 
+MAIN_OUTPUTS = {
+    "register-info": "<Target>GenRegisterInfo.inc",
+    "instr-info": "<Target>GenInstrInfo.inc",
+}
+
 BACKENDS = {
     "register-info": Backend(
         name="register-info",
@@ -110,13 +115,46 @@ BACKENDS = {
             ("CalleeSavedRegs", "SaveList"),
         ),
     ),
+    "instr-info": Backend(
+        name="instr-info",
+        emitter="llvm/utils/TableGen/InstrInfoEmitter.cpp",
+        sources=(
+            ("llvm/utils/TableGen/InstrInfoEmitter.cpp", "emitter"),
+            ("llvm/utils/TableGen/Common/CodeGenInstruction.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenInstruction.h", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenTarget.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenTarget.h", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenRegisters.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenRegisters.h", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenHwModes.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenHwModes.h", "shared"),
+            ("llvm/utils/TableGen/Common/InfoByHwMode.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/InfoByHwMode.h", "shared"),
+        ),
+        td_files=(
+            "llvm/include/llvm/Target/Target.td",
+            "llvm/include/llvm/Target/TargetInstrPredicate.td",
+        ),
+        roots_from=("llvm/utils/TableGen/InstrInfoEmitter.cpp",),
+        # Instruction is enumerated through CodeGenTarget::getInstructions(),
+        # which calls getAllDerivedDefinitions("Instruction") in a shared file.
+        extra_roots=(
+            ("Instruction", "llvm/utils/TableGen/Common/CodeGenTarget.cpp",
+             'getAllDerivedDefinitions("Instruction")'),
+        ),
+        helper_classes=(
+            "HwModeSelect", "RegInfoByHwMode", "RegInfo",
+            "SubRegRangeByHwMode", "SubRegRange", "DwarfRegAlias",
+            "RegClassByHwMode",
+        ),
+    ),
 }
 
 
 # Human-written semantics for the register-info backend.  Keys are field
 # names; the same name may be declared by several classes, which is itself
 # part of the contract (TableGen lookup is by name, not by type).
-ANNOTATIONS = {
+REGISTER_INFO_ANNOTATIONS = {
     # --- Register ---------------------------------------------------------
     "Namespace": "本后端据此生成 C++ namespace；取第一个 Register / RegisterClass / SubRegIndex 的值。",
     "AsmName": "汇编名；用作 `RegistersByName` 去重 key。`RegisterTuples` 未给 `RegAsmNames` 时为空串。",
@@ -174,9 +212,110 @@ ANNOTATIONS = {
     "RegistersAreIntervals": "`Target` 记录上的开关；决定是否生成 `RegUnitIntervals` 表。",
 }
 
+# Human-written semantics for -gen-instr-info.  The instruction schema is much
+# larger than the register schema; most fields are plain MCID flags, but the
+# operand model (OutOperandList/InOperandList/MIOperandInfo) and the
+# register-class parameterization are shared with other backends.
+INSTR_INFO_ANNOTATIONS = {
+    # --- Instruction: operand model ---------------------------------------
+    "OutOperandList": "输出操作数 dag；`CodeGenInstruction` 展开成 def 列表，决定 `NumDefs`。",
+    "InOperandList": "输入操作数 dag；展开成 use 列表，参与操作数编号与 `MIOperandInfo` 解析。",
+    "AsmString": "汇编模板；`CodeGenInstruction` 保存，供 asm writer/matcher 使用；本后端只解析不直接发射。",
+    "Constraints": "内联汇编约束字符串；`ParseConstraints` 为每个操作数填约束位。",
+    "Uses": "隐式使用寄存器列表；合并进 `ImplicitUses`，发射到 `ImplicitLists`。",
+    "Defs": "隐式定义寄存器列表；合并进 `ImplicitDefs`，发射到 `ImplicitLists`。",
+    "Predicates": "指令谓词列表；`computeRequiredFeatures` 用它编码每个 opcode 的 feature bitset。",
+    "Namespace": "指令/寄存器命名空间；`Target.getInstNamespace()` 决定生成 enum 的 C++ namespace。",
+    "Size": "指令编码字节数；`emitRecord` 写入 MCInstrDesc 的 Size。同名 `RegisterClass.Size` 是 spill size。",
+    "TSFlags": "目标自定义标志位；`emitRecord` 校验位宽并写入 MCInstrDesc 的 TSFlags。同名 `RegisterClass.TSFlags` 是寄存器类标志。",
+    "Instruction": "`TargetSpecializedStandardPseudoInstruction` 的基指令；用于建立特化伪指令到标准伪指令的映射。",
+    "FunctionName": "`TIIPredicate` 的 C++ 函数名；`PredicateExpander` 用它生成 `InstrInfo` 方法。",
+    "Body": "`TIIPredicate` 的 `MCStatement` 函数体；`expandStatement` 直接展开成目标 C++ 代码。",
+    # --- Instruction: MCID flags ------------------------------------------
+    "isPreISelOpcode": "MCID::PreISelOpcode；pre-isel 伪操作码。",
+    "isPseudo": "MCID::Pseudo；伪指令。",
+    "isMeta": "MCID::Meta；元指令，不参与调度/编码。",
+    "isReturn": "MCID::Return。",
+    "isEHScopeReturn": "MCID::EHScopeReturn。",
+    "isBranch": "MCID::Branch。",
+    "isIndirectBranch": "MCID::IndirectBranch。",
+    "isCompare": "MCID::Compare。",
+    "isMoveImm": "MCID::MoveImm。",
+    "isMoveReg": "MCID::MoveReg。",
+    "isBitcast": "MCID::Bitcast。",
+    "isSelect": "MCID::Select。",
+    "isBarrier": "MCID::Barrier；控制流不能 fall through。",
+    "isCall": "MCID::Call。",
+    "isAdd": "MCID::Add。",
+    "isTrap": "MCID::Trap。",
+    "canFoldAsLoad": "MCID::FoldableAsLoad。",
+    "mayLoad": "MCID::MayLoad；值为 `?` 时由 pattern 推断。",
+    "mayStore": "MCID::MayStore；值为 `?` 时由 pattern 推断。",
+    "mayRaiseFPException": "MCID::MayRaiseFPException。",
+    "isConvertibleToThreeAddress": "MCID::ConvertibleTo3Addr。",
+    "isCommutable": "MCID::Commutable。",
+    "isTerminator": "MCID::Terminator。",
+    "isReMaterializable": "MCID::Rematerializable。",
+    "isPredicable": "MCID::Predicable。",
+    "isUnpredicable": "MCID::Unpredicable。",
+    "hasDelaySlot": "MCID::HasDelaySlot。",
+    "usesCustomInserter": "MCID::UsesCustomInserter。",
+    "hasPostISelHook": "MCID::HasPostISelHook。",
+    "hasCtrlDep": "MCID::HasCtrlDep。",
+    "isNotDuplicable": "MCID::NotDuplicable。",
+    "isConvergent": "MCID::Convergent。",
+    "isAuthenticated": "MCID::Authenticated。",
+    "isAsCheapAsAMove": "MCID::AsCheapAsAMove。",
+    "hasExtraSrcRegAllocReq": "MCID::ExtraSrcRegAllocReq。",
+    "hasExtraDefRegAllocReq": "MCID::ExtraDefRegAllocReq。",
+    "isRegSequence": "MCID::RegSequence。",
+    "isExtractSubreg": "MCID::ExtractSubreg。",
+    "isInsertSubreg": "MCID::InsertSubreg。",
+    "variadicOpsAreDefs": "MCID::VariadicOpsAreDefs。",
+    "hasSideEffects": "MCID::MayLoad/MayStore 之外的副作用；值为 `?` 时由 pattern 推断。",
+    "isCodeGenOnly": "仅 codegen 使用，汇编器不可见；影响 asm matcher 与 MCID 标志。",
+    "hasNoSchedulingInfo": "跳过调度类分配；`SchedModels.getSchedClassIdx` 返回 0。",
+    "FastISelShouldIgnore": "FastISel 忽略该指令；只保存在 `CodeGenInstruction`，不进入 MCInstrDesc。",
+    "UseNamedOperandTable": "为 true 时发射 `getNamedOperandIdx` 等命名操作数表。",
+    "UseLogicalOperandMappings": "为 true 时发射 `getLogicalOperandSize/Idx` 表。",
+    # --- Operand / RegisterOperand ----------------------------------------
+    "MIOperandInfo": "复合操作数的子操作数 dag；`CollectOperandInfo` 用它展开 MC operand 列表。",
+    "OperandType": "MC operand 的 C++ 类型名；`CodeGenInstruction` 存入 `OperandType`。",
+    "OperandNamespace": "MC operand 类型所在 namespace；与 `OperandType` 一起构成完整类型名。",
+    "RegClass": "操作数绑定的寄存器类；解析为 `RegisterClass` 并用于寄存器操作数信息。",
+    "EncoderMethod": "自定义编码函数名；`CodeGenInstruction` 保存，供 encoder 调用。",
+    "PrintMethod": "自定义打印函数名；`CodeGenInstruction` 保存，供 asm writer 调用。",
+    # --- RegisterClass / shared register model -----------------------------
+    "Alignment": "寄存器类 spill 对齐（bit）；写入 `RegClassInfo::SpillAlignment`。",
+    "AllocationPriority": "寄存器分配优先级；越高越先分配。",
+    "AltOrderSelect": "`code` 注入点；非空时生成替代分配顺序选择函数。",
+    "AltOrders": "备用分配顺序列表；与 `AltOrderSelect` 配合。",
+    "BaseClassOrder": "寄存器类在继承层次中的顺序；影响类排序。",
+    "CopyCost": "寄存器拷贝代价；8-bit，>255 fatal，负值实际按 uint8_t 截断。",
+    "GeneratePressureSet": "是否生成寄存器压力集。",
+    "GlobalPriority": "全局分配优先级。",
+    "RegInfos": "按 HwMode 的 `{RegSize,SpillSize,SpillAlignment}` 三元组；覆盖默认模式值。",
+    "RegSize": "`RegInfo` 的寄存器位数。",
+    "RegTypes": "寄存器类支持的 MVT 列表；`Size==0` 时用于推断位宽。",
+    "SpillAlignment": "`RegInfo` 的 spill slot 对齐。",
+    "SpillSize": "`RegInfo` 的 spill slot 位数。",
+    "SpillStackID": "spill stack slot 的自定义 ID；影响 frame index 分配。",
+    "Weight": "寄存器类的压力权重；影响压力集计算。",
+    "isAllocatable": "是否可分配；决定 `InAllocatableClassTable`。",
+    "MemberList": "不是普通 list：经 SetTheory field expander 展开，决定寄存器类成员集与默认分配序。",
+    "Modes": "HwMode 列表；与 `Objects` 等长，按 ModeId 绑定。",
+    "Objects": "按 HwMode 绑定的对象列表；`RegisterByHwMode` 是寄存器，`RegInfoByHwMode`/`SubRegRangeByHwMode` 是参数。",
+    "Offset": "子寄存器/范围的起始位；`-1` 表示不固定。",
+}
+
+ANNOTATIONS = {
+    "register-info": REGISTER_INFO_ANNOTATIONS,
+    "instr-info": INSTR_INFO_ANNOTATIONS,
+}
+
 # Fields that are declared on a consumed class but intentionally not read by
 # this backend.  The note points at the backend that owns them.
-UNUSED_NOTES = {
+REGISTER_INFO_UNUSED_NOTES = {
     "GIZeroRegister": "isel / regalloc（generic zero register）",
     "AltNames": "asm writer / asm matcher",
     "RegAltNameIndices": "asm writer / asm matcher",
@@ -195,10 +334,45 @@ UNUSED_NOTES = {
     "OperandType": "MC operand",
 }
 
+INSTR_INFO_UNUSED_NOTES = {
+    "AddedComplexity": "isel pattern 优先级；`-gen-dag-isel` 消费。",
+    "AsmMatchConverter": "asm matcher 的自定义转换器。",
+    "AsmVariantName": "asm variant 选择。",
+    "CodeSize": "isel 的 code size 排序；`-gen-dag-isel` 消费。",
+    "CoerceFromRegClass": "asm matcher 的寄存器类强制。",
+    "DecoderMethod": "decoder 自定义方法。",
+    "DecoderNamespace": "decoder 生成 namespace。",
+    "DiagnosticString": "asm matcher 诊断文本。",
+    "DiagnosticType": "asm matcher 诊断类型。",
+    "DwarfAlias": "DWARF 别名；`-gen-register-info` 消费。",
+    "EncodingInfos": "按 HwMode 的编码；encoder/decoder 消费。",
+    "GISelMatchGenericTypes": "GlobalISel 泛型类型匹配。",
+    "GIZeroRegister": "GlobalISel 零寄存器。",
+    "HasPositionOrder": "asm matcher 的位置排序。",
+    "Itinerary": "旧调度模型；`-gen-instr-info` 不读。",
+    "MCOperandPredicate": "MC operand 谓词；asm writer 消费。",
+    "MemberList": "寄存器类成员集合；SetTheory 展开，`-gen-register-info` 消费。",
+    "ParserMatchClass": "asm parser 匹配类。",
+    "Pattern": "isel pattern；`-gen-dag-isel` 消费。",
+    "PostEncoderMethod": "编码后处理函数。",
+    "SchedRW": "新调度模型读写资源。",
+    "TwoOperandAliasConstraint": "两操作数 alias 约束；asm matcher 消费。",
+    "Type": "操作数 ValueType；isel/asm 消费。",
+    "altNameIndex": "寄存器类别名索引；asm writer 消费。",
+    "hasCompleteDecoder": "decoder 完整性标记。",
+    "isAsmParserOnly": "仅汇编器使用，codegen 不可见。",
+    "supportsDeactivationSymbol": "指令级 deactivation 标记；其它后端消费。",
+}
+
+UNUSED_NOTES = {
+    "register-info": REGISTER_INFO_UNUSED_NOTES,
+    "instr-info": INSTR_INFO_UNUSED_NOTES,
+}
+
 # Name-level contract: record names and generated identifiers that are not
 # reachable through field lookup.  Each entry is (name, regex that must still
 # exist in the sources, effect).
-MAGIC_NAMES = (
+REGISTER_INFO_MAGIC_NAMES = (
     ("GeneralPurposeRegisters",
      r'"GeneralPurposeRegisters"',
      "`RegisterCategory` 的 def 名；生成 `isGeneralPurposeRegister()/isGeneralPurposeRegisterClass()`。"),
@@ -231,6 +405,13 @@ MAGIC_NAMES = (
      "`RegisterByHwMode` def 名派生的 getter。"),
 )
 
+# -gen-instr-info has no name-level API: it compares target/opcode names, not
+# magic def names, so this table is intentionally empty.
+MAGIC_NAMES = {
+    "register-info": REGISTER_INFO_MAGIC_NAMES,
+    "instr-info": (),
+}
+
 MATRIX_BEGIN = "<!-- BEGIN: GENERATED PROJECTION MATRIX -->"
 MATRIX_END = "<!-- END: GENERATED PROJECTION MATRIX -->"
 DERIV_BEGIN = "<!-- BEGIN: GENERATED DERIVATIONS -->"
@@ -239,7 +420,7 @@ DERIV_END = "<!-- END: GENERATED DERIVATIONS -->"
 # Derivation-layer rewrites: places where shared C++ changes what a record
 # means before any backend projects it.  (kind, schema key, regex, effect);
 # collect_derivations() fails the check if a pattern no longer matches.
-DERIVATIONS = (
+REGISTER_INFO_DERIVATIONS = (
     ("SetTheory expander", "RegisterClass.MemberList",
      r'Sets\.addFieldExpander\("RegisterClass", "MemberList"\)',
      "把 dag 展开成寄存器集合；决定成员集与默认分配序。"),
@@ -274,6 +455,38 @@ DERIVATIONS = (
      r'SubRegRange::SubRegRange',
      "把 `SubRegIndex.Size/Offset` 或 `SubRegRange` 转成内部 `SubRegRange`。"),
 )
+
+INSTR_INFO_DERIVATIONS = (
+    ("operand list expansion", "Instruction.OutOperandList/InOperandList",
+     r'CGIOperandList::CGIOperandList',
+     "把 dag 展开成 OperandInfo；同时解析 `MIOperandInfo` 复合操作数。"),
+    ("constraint parsing", "Instruction.Constraints",
+     r'ParseConstraints\(',
+     "把约束字符串拆成每个操作数的约束位。"),
+    ("instruction ordering", "Instruction",
+     r'getAllDerivedDefinitions\("Instruction"\)',
+     "按记录名排序，决定 opcode 编号与 `NumberedInstructions` 顺序。"),
+    ("pseudo specialization", "TargetSpecializedStandardPseudoInstruction",
+     r'buildTargetSpecializedPseudoInstsMap',
+     "建立特化伪指令到标准伪指令的映射，并继承其操作数/标志。"),
+    ("hw-mode selection", "HwModeSelect.Objects",
+     r'zip_equal\(Modes, Objects\)',
+     "按 ModeId 把 `Objects[i]` 绑定到 `Modes[i]`。"),
+    ("inference", "RegisterClass",
+     r'computeInferredRegisterClasses',
+     "从显式寄存器类推断出缺失的类；只存在于派生模型。"),
+    ("parameterization", "RegInfo",
+     r'RegSize = R->getValueAsInt\("RegSize"\)',
+     "把 `RegInfo` 三元组转成内部 `RegSizeInfo`。"),
+    ("operand type resolution", "RegisterOperand.RegClass",
+     r'getValueAsDef\("RegClass"\)',
+     "把 `RegisterOperand` 解析到具体 `RegisterClass`，决定寄存器操作数信息。"),
+)
+
+DERIVATIONS = {
+    "register-info": REGISTER_INFO_DERIVATIONS,
+    "instr-info": INSTR_INFO_DERIVATIONS,
+}
 
 
 READ_RE = re.compile(
@@ -407,6 +620,14 @@ def parse_td(root: Path, backend: Backend):
             if j >= n:
                 break
             if text[j] == ";":
+                # `class Foo<...> : Bar<...>;` has no body but still carries
+                # an inheritance list; forward declarations have neither.
+                # Never let a forward declaration shadow a real definition.
+                header = text[m.end():j]
+                bases = _parse_bases(header)
+                if bases and name not in classes:
+                    classes[name] = TdClass(
+                        name, kind, rel, _line_of(text, m.start()), bases, ())
                 i = j + 1
                 continue
             header = text[m.end():j]
@@ -427,6 +648,7 @@ def parse_td(root: Path, backend: Backend):
 
 
 def _parse_bases(header: str):
+    """Extract base class names, ignoring template-argument commas."""
     depth = 0
     for idx, ch in enumerate(header):
         if ch == "<":
@@ -434,8 +656,20 @@ def _parse_bases(header: str):
         elif ch == ">":
             depth -= 1
         elif ch == ":" and depth == 0:
-            return tuple(re.findall(r"(?:^|,)\s*([A-Za-z_][A-Za-z0-9_]*)",
-                                    header[idx + 1:]))
+            bases, cur, depth = [], "", 0
+            for ch2 in header[idx + 1:] + ",":
+                if ch2 in "<(":
+                    depth += 1
+                elif ch2 in ">)":
+                    depth -= 1
+                if ch2 == "," and depth == 0:
+                    m = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)", cur)
+                    if m:
+                        bases.append(m.group(1))
+                    cur = ""
+                else:
+                    cur += ch2
+            return tuple(bases)
     return ()
 
 
@@ -517,9 +751,9 @@ def scan_matrix(root: Path, field_names):
 
 
 def collect_derivations(root: Path, backend: Backend):
-    """Check the derivation-layer rewrites listed in DERIVATIONS."""
+    """Check the derivation-layer rewrites registered for this backend."""
     rows = []
-    for kind, key, pattern, effect in DERIVATIONS:
+    for kind, key, pattern, effect in DERIVATIONS[backend.name]:
         sites = []
         for rel, _ in backend.sources:
             text = strip_comments((root / rel).read_text())
@@ -645,8 +879,8 @@ def build_contract(root: Path, backend: Backend):
             "projects": [k for k in other if not k.startswith("helper:")],
             "helpers": [k for k in other if k.startswith("helper:")],
             "readers": readers,
-            "effect": ANNOTATIONS.get(fld),
-            "unused_note": UNUSED_NOTES.get(fld),
+            "effect": ANNOTATIONS[backend.name].get(fld),
+            "unused_note": UNUSED_NOTES[backend.name].get(fld),
         })
 
     rows.sort(key=lambda r: (
@@ -659,11 +893,11 @@ def build_contract(root: Path, backend: Backend):
     missing = [r["field"] for r in consumed if not r["effect"]]
     # Annotations must not rot either.
     known = {r["field"] for r in rows}
-    stale = sorted(set(ANNOTATIONS) - known)
+    stale = sorted(set(ANNOTATIONS[backend.name]) - known)
 
     magic = []
     emitter_text = strip_comments((root / backend.emitter).read_text())
-    for name, pattern, effect in MAGIC_NAMES:
+    for name, pattern, effect in MAGIC_NAMES[backend.name]:
         lines = [_line_of(emitter_text, m.start())
                  for m in re.finditer(pattern, emitter_text)]
         if not lines:
@@ -692,6 +926,7 @@ def build_contract(root: Path, backend: Backend):
         "backend_option": backend_name.group(1) if backend_name else None,
         "cli_options": sorted(cli_opts),
         "outputs": outputs,
+        "main_output": MAIN_OUTPUTS[backend.name],
         "roots": root_rows,
         "fields": rows,
         "magic": magic,
@@ -728,7 +963,7 @@ def render_block(contract) -> str:
     if contract["outputs"]:
         out.append("产物（MultiFile）：" +
                    ", ".join(f"`{o}`" for o in contract["outputs"]) +
-                   "，主文件为 `<Target>GenRegisterInfo.inc`。")
+                   f"，主文件为 `{contract['main_output']}`。")
     s = contract["stats"]
     st = s["stages"]
     out.append(f"统计：{s['roots']} 个记录类入口 · {s['fields']} 个字段"
@@ -778,14 +1013,18 @@ def render_block(contract) -> str:
                    f"{_cell(r['unused_note'] or '未知（需查其它后端）')} |")
     out.append("")
 
-    out.append("**名字即 API**（不经过字段查找的硬编码名字）")
-    out.append("")
-    out.append("| 名字 | 出现位置 | 作用 |")
-    out.append("| --- | --- | --- |")
-    for m in contract["magic"]:
-        out.append(f"| `{m['name']}` | {_sites(m['sites'], 3)} | "
-                   f"{_cell(m['effect'])} |")
-    out.append("")
+    if contract["magic"]:
+        out.append("**名字即 API**（不经过字段查找的硬编码名字）")
+        out.append("")
+        out.append("| 名字 | 出现位置 | 作用 |")
+        out.append("| --- | --- | --- |")
+        for m in contract["magic"]:
+            out.append(f"| `{m['name']}` | {_sites(m['sites'], 3)} | "
+                       f"{_cell(m['effect'])} |")
+        out.append("")
+    else:
+        out.append("本后端没有硬编码记录名（名字只作为数据/生成标识符使用）。")
+        out.append("")
     out.append(END_MARKER)
     return "\n".join(out)
 

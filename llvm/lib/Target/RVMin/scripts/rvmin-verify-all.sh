@@ -74,13 +74,17 @@ for f in "$TESTS"/CodeGen/RVMin/*.ll; do
 done
 echo "PASS 6/7: $CASES llc runs with -verify-machineinstrs"
 
-# 7. The TableGen DSL contract must stay in sync with the emitter sources and
-# with RVMin's own .td usage (chapter 29).
+# 7. The TableGen DSL contracts must stay in sync with the emitter sources and
+# with RVMin's own .td usage (chapters 29-30).
 python3 "$W/llvm/utils/TableGen/dsl-surface.py" --check \
   "$W/llvm/lib/Target/RVMin/docs/29-register-info-dsl.md" \
   --usage "$W/llvm/lib/Target/RVMin/RVMinRegisterInfo.td" \
           "$W/llvm/lib/Target/RVMin/RVMinCallingConv.td" \
   || fail "TableGen DSL contract (register-info)"
-echo "PASS 7/7: TableGen DSL contract (register-info)"
+python3 "$W/llvm/utils/TableGen/dsl-surface.py" --backend instr-info --check \
+  "$W/llvm/lib/Target/RVMin/docs/30-instr-info-dsl.md" \
+  --usage "$W/llvm/lib/Target/RVMin/RVMin.td" \
+  || fail "TableGen DSL contract (instr-info)"
+echo "PASS 7/7: TableGen DSL contracts (register-info + instr-info)"
 
 echo "ALL GATES PASS (run rvmin-run.sh separately for the QEMU check)"
