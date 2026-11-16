@@ -9,6 +9,7 @@
 #ifndef RMACH_MACHINE_H
 #define RMACH_MACHINE_H
 
+#include "csr.h"
 #include "elf.h"
 #include "decode.h"
 #include "memory.h"
@@ -34,6 +35,13 @@ public:
 
   void reset(const rsim::Image &image, rsim::Memory &memory);
   void setIsa(uint32_t mask) { isa_ = mask; }
+
+  // Chapter 02: the CSR file and the current privilege level.  The selftest
+  // drives these directly; the CPU changes them through instructions.
+  uint32_t readCsr(uint16_t csr) const;
+  void writeCsr(uint16_t csr, uint32_t value);
+  void setPrivilege(Priv p) { priv_ = p; }
+  Priv privilege() const { return priv_; }
 
   /// Execute one instruction.  Returns false once the machine has halted.
   bool step();
@@ -69,6 +77,8 @@ private:
   int exit_code_ = 0;
   std::FILE *trace_ = nullptr;
   uint32_t isa_ = kIsaDefault;
+  uint32_t csr_[4096] = {};
+  Priv priv_ = Priv::M;
 };
 
 } // namespace rmach

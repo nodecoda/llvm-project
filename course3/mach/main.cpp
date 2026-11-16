@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "machine.h"
+#include "selftest.h"
 
 #include "elf.h"
 #include "memory.h"
@@ -18,7 +19,7 @@
 
 namespace {
 
-constexpr const char *kVersion = "0.1";
+constexpr const char *kVersion = "0.2";
 constexpr int kExitUsage = 2;
 constexpr int kExitLoadError = 125;
 constexpr int kExitTrap = 126;
@@ -32,6 +33,7 @@ struct Options {
 
 void usage() {
   std::fprintf(stderr, "usage: rmach --version\n"
+                       "       rmach --selftest\n"
                        "       rmach --kernel <elf> [--dump-boot]\n"
                        "       rmach --kernel <elf> [--max-steps <n>] [--trace]\n");
 }
@@ -82,9 +84,11 @@ void dumpBoot(const rsim::Image &image) {
 
 int main(int argc, char **argv) {
   if (argc == 2 && std::strcmp(argv[1], "--version") == 0) {
-    std::printf("rmach %s (chapter 01)\n", kVersion);
+    std::printf("rmach %s (chapter 02)\n", kVersion);
     return 0;
   }
+  if (argc == 2 && std::strcmp(argv[1], "--selftest") == 0)
+    return rmach::runSelfTest() == 0 ? 0 : 1;
 
   Options opt;
   if (!parse(argc, argv, opt) || opt.kernel.empty()) {

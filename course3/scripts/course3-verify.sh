@@ -7,8 +7,12 @@
 #
 # Chapter 01 checks:
 #   * the kernel ELF's entry point and PT_LOAD list match llvm-readelf;
-#   * _start runs, kmain returns 7 and ebreak halts with status 7;
+#   * _start runs and ebreak halts with the kernel's status;
 #   * the first trace line is the reset vector 0x80000000.
+#
+# Chapter 02 checks:
+#   * the kernel reads mhartid/misa and round-trips mscratch, exiting 0;
+#   * --selftest passes every hand-computed CSR vector (22 at this chapter).
 #
 set -euo pipefail
 
@@ -82,13 +86,13 @@ if int(o.group(1), 16) != 0x80000000:
 PY
 CHECKS=$((CHECKS + 1))
 
-# _start must run: kmain returns 7, so ebreak halts with status 7.
+# _start must run: the chapter-02 kernel checks CSRs and returns 0.
 set +e
 "$RMACH" --kernel "$TMP/kernel.elf" > "$TMP/kernel.out" 2> "$TMP/kernel.err"
 kernel_rc=$?
 set -e
-[[ "$kernel_rc" -eq 7 ]] || fail "kernel exited $kernel_rc, want 7"
-grep -q 'halted at 0x80000010 after 6 instructions (exit 7)' "$TMP/kernel.err" \
+[[ "$kernel_rc" -eq 0 ]] || fail "kernel exited $kernel_rc, want 0"
+grep -q 'instructions (exit 0)' "$TMP/kernel.err" \
   || fail "unexpected halt line: $(cat "$TMP/kernel.err")"
 CHECKS=$((CHECKS + 1))
 
@@ -97,9 +101,15 @@ set +e
 "$RMACH" --kernel "$TMP/kernel.elf" --trace > /dev/null 2> "$TMP/kernel.trace"
 trace_rc=$?
 set -e
-[[ "$trace_rc" -eq 7 ]] || fail "traced run exited $trace_rc, want 7"
+[[ "$trace_rc" -eq 0 ]] || fail "traced run exited $trace_rc, want 0"
 FIRST=$(awk 'NR == 1 { print $2 }' "$TMP/kernel.trace")
 [[ "$FIRST" == "80000000" ]] || fail "first trace line is 0x$FIRST, want 0x80000000"
+CHECKS=$((CHECKS + 1))
+
+# The CSR file is also exercised without a kernel image.
+"$RMACH" --selftest > "$TMP/selftest.out" || fail "--selftest failed"
+grep -q '^selftest: 22 checks, 0 failures$' "$TMP/selftest.out" \
+  || fail "unexpected selftest line: $(cat "$TMP/selftest.out")"
 CHECKS=$((CHECKS + 1))
 
 echo "$CHECKS checks"

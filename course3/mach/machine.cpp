@@ -16,7 +16,9 @@
 
 #include <cinttypes>
 #include <cstdio>
+#include <cstring>
 #include <limits>
+#include <string>
 
 namespace rmach {
 
@@ -27,6 +29,51 @@ uint32_t sext8(uint8_t v) {
 }
 uint32_t sext16(uint16_t v) {
   return static_cast<uint32_t>(static_cast<int32_t>(static_cast<int16_t>(v)));
+}
+
+const char *csrText(uint16_t csr) {
+  switch (csr) {
+  case kCsrMstatus: return "mstatus";
+  case kCsrMisa: return "misa";
+  case kCsrMie: return "mie";
+  case kCsrMtvec: return "mtvec";
+  case kCsrMscratch: return "mscratch";
+  case kCsrMepc: return "mepc";
+  case kCsrMcause: return "mcause";
+  case kCsrMtval: return "mtval";
+  case kCsrMip: return "mip";
+  case kCsrMhartid: return "mhartid";
+  case kCsrMvendorid: return "mvendorid";
+  case kCsrMarchid: return "marchid";
+  case kCsrMimpid: return "mimpid";
+  case kCsrMinstret: return "minstret";
+  case kCsrSatp: return "satp";
+  default: return nullptr;
+  }
+}
+
+/// Course 2 formats an unknown CSR as "0x" + decimal digits, which turns
+/// mhartid (0xf14) into "0x3860".  The machine prints its own CSRs in hex.
+std::string formatForTrace(const rsim::Decoded &d) {
+  if (d.fmt != rsim::Fmt::Csr || d.id == rsim::Insn::MRET)
+    return rsim::format(d);
+  std::string out = rsim::mnemonic(d.id);
+  out += " ";
+  out += rsim::registerName(d.rd);
+  out += ", ";
+  if (const char *name = csrText(d.csr))
+    out += name;
+  else {
+    char buf[8];
+    std::snprintf(buf, sizeof(buf), "0x%03x", d.csr);
+    out += buf;
+  }
+  out += ", ";
+  if (rsim::isImmediateCsr(d.id))
+    out += std::to_string(d.rs1);
+  else
+    out += rsim::registerName(d.rs1);
+  return out;
 }
 
 } // namespace
@@ -45,6 +92,9 @@ void Machine::reset(const rsim::Image &image, rsim::Memory &memory) {
   exit_code_ = 0;
   trace_ = nullptr;
   isa_ = kIsaDefault;
+  for (uint32_t &word : csr_)
+    word = 0;
+  priv_ = Priv::M;
 }
 
 uint8_t Machine::load8(uint32_t addr, uint32_t epc) {
@@ -95,6 +145,79 @@ void Machine::store32(uint32_t addr, uint32_t value, uint32_t epc) {
   }
 }
 
+uint32_t Machine::readCsr(uint16_t csr) const {
+  if (priv_ == Priv::U && isPrivilegedCsr(csr))
+    throw Trap(TrapCause::IllegalInstruction, csr, pc,
+               "privileged CSR read from U-mode");
+  switch (csr) {
+  case kCsrMstatus:
+    return csr_[csr] & kMstatusMask;
+  case kCsrMisa: // RV32, I and M; Zicsr is not a misa bit
+    return (1u << 30) | (1u << 12) | (1u << 8);
+  case kCsrMie:
+    return csr_[csr] & kMTIE;
+  case kCsrMip:
+    return csr_[csr] & kMTIP;
+  case kCsrMinstret:
+    return static_cast<uint32_t>(executed_);
+  case kCsrMhartid:
+  case kCsrMvendorid:
+  case kCsrMarchid:
+  case kCsrMimpid:
+    return 0;
+  case kCsrMtvec:
+  case kCsrMscratch:
+  case kCsrMepc:
+  case kCsrMcause:
+  case kCsrMtval:
+  case kCsrSatp:
+    return csr_[csr];
+  default:
+    throw Trap(TrapCause::IllegalInstruction, csr, pc, "unknown CSR");
+  }
+}
+
+void Machine::writeCsr(uint16_t csr, uint32_t value) {
+  if (priv_ == Priv::U && isPrivilegedCsr(csr))
+    throw Trap(TrapCause::IllegalInstruction, csr, pc,
+               "privileged CSR write from U-mode");
+  switch (csr) {
+  case kCsrMstatus:
+    csr_[csr] = value & kMstatusMask;
+    return;
+  case kCsrMie:
+    csr_[csr] = value & kMTIE;
+    return;
+  case kCsrMip: // MTIP is owned by the CLINT (chapter 04)
+    return;
+  case kCsrMisa: // fixed WARL value: writes are ignored
+    return;
+  case kCsrMinstret:
+    return;
+  case kCsrMhartid:
+  case kCsrMvendorid:
+  case kCsrMarchid:
+  case kCsrMimpid:
+    throw Trap(TrapCause::IllegalInstruction, csr, pc, "read-only CSR write");
+  case kCsrMtvec: // base is 4-byte aligned, mode is 0 or 1
+    csr_[csr] = (value & ~3u) | (value & 1u);
+    return;
+  case kCsrMepc:
+    csr_[csr] = value & ~3u;
+    return;
+  case kCsrMscratch:
+  case kCsrMcause:
+  case kCsrMtval:
+    csr_[csr] = value;
+    return;
+  case kCsrSatp:
+    csr_[csr] = value & kSatpMask;
+    return;
+  default:
+    throw Trap(TrapCause::IllegalInstruction, csr, pc, "unknown CSR");
+  }
+}
+
 bool Machine::step() {
   if (halted_)
     return false;
@@ -126,7 +249,7 @@ bool Machine::executeOne() {
 
   if (trace_)
     std::fprintf(trace_, "T %08" PRIx32 " %08" PRIx32 " %s\n", at, word,
-                 rsim::format(d).c_str());
+                 formatForTrace(d).c_str());
 
   uint32_t next = at + 4;
   const uint32_t a = reg(d.rs1);
@@ -350,6 +473,33 @@ bool Machine::executeOne() {
   case rsim::Insn::FENCE:
   case rsim::Insn::FENCE_I:
     break; // single hart, no caches: nothing to order yet
+
+  case rsim::Insn::CSRRW:
+  case rsim::Insn::CSRRWI:
+  case rsim::Insn::CSRRS:
+  case rsim::Insn::CSRRSI:
+  case rsim::Insn::CSRRC:
+  case rsim::Insn::CSRRCI: {
+    const uint32_t old = readCsr(d.csr);
+    const uint32_t src = rsim::isImmediateCsr(d.id) ? d.rs1 : a;
+    switch (d.id) {
+    case rsim::Insn::CSRRW:
+    case rsim::Insn::CSRRWI:
+      writeCsr(d.csr, src);
+      break;
+    case rsim::Insn::CSRRS:
+    case rsim::Insn::CSRRSI:
+      if (src != 0) // csrr with x0 reads without writing
+        writeCsr(d.csr, old | src);
+      break;
+    default:
+      if (src != 0)
+        writeCsr(d.csr, old & ~src);
+      break;
+    }
+    setReg(d.rd, old);
+    break;
+  }
 
   case rsim::Insn::ECALL:
   case rsim::Insn::EBREAK:

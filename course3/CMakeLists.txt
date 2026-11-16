@@ -9,6 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_executable(rmach
   mach/main.cpp
   mach/machine.cpp
+  mach/selftest.cpp
   mach/trap.cpp
   ../course2/rsim/decode.cpp
   ../course2/rsim/elf.cpp
