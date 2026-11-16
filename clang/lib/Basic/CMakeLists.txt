@@ -113,6 +113,7 @@ add_clang_library(clangBasic
   Targets/OSTargets.cpp
   Targets/PPC.cpp
   Targets/RISCV.cpp
+  Targets/RVMin.cpp
   Targets/SPIR.cpp
   Targets/Sparc.cpp
   Targets/SystemZ.cpp

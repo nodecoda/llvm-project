@@ -84,6 +84,7 @@ git checkout rvmin-ch16     # 第 16 章（大栈帧）结束
 | 章 | 主题 | 状态 |
 | --- | --- | --- |
 | 24 | [让 triple 认识 rvmin](docs/24-clang-target-triple.md) | 完成 |
+| 25 | [clang TargetInfo](docs/25-clang-targetinfo.md) | 完成 |
 
 ## 当前限制（上篇结束时，第 14 章）
 
