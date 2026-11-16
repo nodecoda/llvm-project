@@ -13,6 +13,12 @@
 // RUN: %clang --target=rvmin-unknown-elf -march=rv32im -mabi=ilp32 -### -c %s 2>&1 | FileCheck %s --check-prefix=M
 // M: "-target-feature" "+m"
 
+// Chapter 28: the RISC-V ABI makes plain `char` unsigned.  RVMin has to say so
+// explicitly: without it, char promotions lower to `lb`/sext instead of
+// `lbu`/zext and every program touching `char` differs from riscv32.
+// RUN: %clang --target=rvmin-unknown-elf -march=rv32i -mabi=ilp32 -### -c %s 2>&1 | FileCheck %s --check-prefix=CHAR
+// CHAR: "-fno-signed-char"
+
 // RUN: %clang --target=rvmin-unknown-elf -mcpu=generic-rv32-m -### -c %s 2>&1 | FileCheck %s --check-prefix=CPU
 // CPU: "-target-cpu" "generic-rv32-m"
 // CPU: "-target-feature" "+m"

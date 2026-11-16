@@ -1241,6 +1241,11 @@ static bool isSignedCharDefault(const llvm::Triple &Triple) {
   case llvm::Triple::riscv64:
   case llvm::Triple::riscv32be:
   case llvm::Triple::riscv64be:
+  // RVMin uses the RISC-V ILP32 ABI, whose plain `char` is unsigned.  The
+  // chapter 28 differential matrix caught the omission: without this case
+  // `char` stayed signed and `lb`/`lbu` (and every char promotion) differed
+  // from the riscv32 baseline.
+  case llvm::Triple::rvmin:
   case llvm::Triple::systemz:
   case llvm::Triple::xcore:
   case llvm::Triple::xtensa:

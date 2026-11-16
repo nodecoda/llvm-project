@@ -19,21 +19,24 @@ ninja -C "$B" llc clang llvm-mc llvm-objdump llvm-readelf FileCheck
 # 2) 确认 target 已注册
 "$B/bin/llc" --version | grep -w rvmin
 
-# 3) clang 前端 → LLVM IR
+# 3) 一条命令：clang 直接产出 rvmin 对象
+"$B/bin/clang" --target=rvmin-unknown-elf -march=rv32i -mabi=ilp32 \
+  -O1 -ffreestanding -fno-builtin -c example.c -o example.o
+
+# 4) 分层调试路径：clang 出 IR → llc 选后端 → llvm-mc 汇编
 "$B/bin/clang" --target=riscv32-unknown-elf -march=rv32i -mabi=ilp32 \
   -O1 -S -emit-llvm example.c -o example.ll
-
-# 4) RVMin 后端
-"$B/bin/llc" -march=rvmin -mtriple=riscv32-unknown-elf example.ll -o example.s
+"$B/bin/llc" -march=rvmin -mtriple=rvmin-unknown-elf example.ll -o example.s
+"$B/bin/llvm-mc" -triple=rvmin example.s -filetype=obj -o example.o
 ```
 
-为什么上面仍用 `clang --target=riscv32` 接 `llc -march=rvmin`：
+第 26 章起 `clang --target=rvmin-unknown-elf` 就是正式路径：driver 选 BareMetal、
+把 `-march/-mabi` 翻成 target features、链接时给 `ld.lld` 传 `-m elf32lriscv`
+（第 27 章验证链接与运行，第 28 章用 80 个对象做矩阵验收）。
 
-- 第 24 章起 `Triple` 已经认识 `rvmin`，`llc -mtriple=rvmin-unknown-elf` 可用。
-- 但 clang 的 TargetInfo（第 25 章）与 driver（第 26 章）尚未接入，
-  `clang --target=rvmin-unknown-elf` 仍会报 unknown target triple。
-- 因此第 24 章的可用路径仍是“clang 产出 riscv32 的 IR → RVMin 后端”；
-  两边的 data layout 与 ILP32 ABI 完全一致。第 26 章会把这条路径收成一条命令。
+两条路径并存是有意的：分层那条把 frontend、指令选择、汇编拆开，调后端时更容易定位。
+注意 **`llc` 不读 IR 里的 `target-features` 属性**——要用 M 扩展必须显式
+`-mattr=+m`，否则 `mul` 会退回 `__mulsi3` libcall（第 28 章“常见坑 2”）。
 
 ## 章节
 
@@ -79,7 +82,7 @@ git checkout rvmin-ch16     # 第 16 章（大栈帧）结束
 | 22 | [A 扩展与 AtomicExpand](docs/22-atomics.md) | 完成 |
 | 23 | [下篇验收](docs/23-acceptance.md) | 完成 |
 
-### 第三篇：clang 一等 target（24–28，进行中）
+### 第三篇：clang 一等 target（24–28，已完成）
 
 | 章 | 主题 | 状态 |
 | --- | --- | --- |
@@ -87,6 +90,7 @@ git checkout rvmin-ch16     # 第 16 章（大栈帧）结束
 | 25 | [clang TargetInfo](docs/25-clang-targetinfo.md) | 完成 |
 | 26 | [clang driver](docs/26-clang-driver.md) | 完成 |
 | 27 | [clang 链接与运行](docs/27-clang-run.md) | 完成 |
+| 28 | [第三篇验收：80 对象矩阵](docs/28-acceptance.md) | 完成 |
 
 ## 当前限制（上篇结束时，第 14 章）
 
