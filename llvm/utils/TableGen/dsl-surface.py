@@ -48,6 +48,8 @@ USAGE_BEGIN = "<!-- BEGIN: GENERATED TD USAGE -->"
 USAGE_END = "<!-- END: GENERATED TD USAGE -->"
 STATUS_BEGIN = "<!-- BEGIN: GENERATED CROSS-BACKEND STATUS -->"
 STATUS_END = "<!-- END: GENERATED CROSS-BACKEND STATUS -->"
+EFFECT_BEGIN = "<!-- BEGIN: GENERATED FIELD EFFECT -->"
+EFFECT_END = "<!-- END: GENERATED FIELD EFFECT -->"
 
 
 @dataclass(frozen=True)
@@ -1300,6 +1302,74 @@ def render_status_matrix(rows, backend_names) -> str:
     return "\n".join(out)
 
 
+def render_effect(root: Path, contracts, field: str) -> str:
+    """Field-centric view: declarations, per-backend stages, all readers."""
+    decl_map = {}
+    projections = []
+    for c in contracts:
+        by_field = {r["field"]: r for r in c["fields"]}
+        r = by_field.get(field)
+        if r is None:
+            projections.append((c["backend"], None))
+            continue
+        for decl in r["declared_in"]:
+            entry = decl_map.setdefault(
+                decl, {"types": set(), "defaults": set(), "backends": set()})
+            entry["types"].update(r["types"])
+            entry["defaults"].update(r["defaults"])
+            entry["backends"].add(c["backend"])
+        projections.append((c["backend"], r))
+
+    readers = scan_matrix(root, {field}).get(field, {})
+    out = [EFFECT_BEGIN, "", f"影响面：`{field}`", ""]
+
+    out.extend(["**声明**", "",
+                "| declaring class | 类型 | 默认值 | 出现于后端 |",
+                "| --- | --- | --- | --- |"])
+    if decl_map:
+        for decl in sorted(decl_map):
+            e = decl_map[decl]
+            types = " / ".join(f"`{_cell(t)}`" for t in sorted(e["types"]))
+            defaults = " / ".join(f"`{_cell(d)}`"
+                                  for d in sorted(e["defaults"]))
+            backs = ", ".join(f"`{b}`" for b in sorted(e["backends"]))
+            out.append(f"| `{decl}` | {types} | {defaults} | {backs} |")
+    else:
+        out.append("| — | — | — | 不在已配置后端的 schema 里 |")
+    out.append("")
+
+    out.extend(["**投影**", "",
+                "| backend | stage | 读取点 | 语义 |",
+                "| --- | --- | --- | --- |"])
+    for backend, r in projections:
+        if r is None:
+            out.append(f"| `{backend}` | — | — | 不在该后端 schema 里 |")
+        elif r["sites"]:
+            out.append(f"| `{backend}` | `{r['stage']}` | "
+                       f"{_sites(r['sites'], 3)} | "
+                       f"{_cell(r['effect'] or '**未注解**')} |")
+        else:
+            note = r["unused_note"] or "本后端不读"
+            out.append(f"| `{backend}` | 未消费 | — | {_cell(note)} |")
+    out.append("")
+
+    out.extend(["**所有读取点**（扫描 `llvm/utils/TableGen/**`）", "",
+                "| reader | 读取点 |", "| --- | --- |"])
+    if readers:
+        for reader in sorted(readers):
+            out.append(f"| `{reader}` | {_sites(readers[reader], 4)} |")
+    else:
+        out.append("| — | 没有任何 `getValue*` 读取点 |")
+    out.append("")
+
+    consumed = sum(1 for _, r in projections if r and r["sites"])
+    out.extend([
+        f"共 {len(decl_map)} 个声明类 · {consumed}/{len(projections)} 个后端消费"
+        f" · {len(readers)} 个 reader。",
+        EFFECT_END])
+    return "\n".join(out)
+
+
 def render_usage_block(rows) -> str:
     out = [USAGE_BEGIN, "", "| 文件:行 | 字段 | 契约状态 |", "| --- | --- | --- |"]
     for rel, line, fld, status in rows:
@@ -1327,7 +1397,12 @@ def build_all_contracts(root: Path):
     return [build_contract(root, be) for be in BACKENDS.values()]
 
 
-def _doc_blocks(root, backend, contract, usage_files, status_matrix=False):
+def _doc_blocks(root, backend, contract, usage_files, status_matrix=False,
+                effect=None):
+    if effect:
+        contracts = build_all_contracts(root)
+        return [(EFFECT_BEGIN, EFFECT_END,
+                 render_effect(root, contracts, effect))]
     if status_matrix:
         if not usage_files:
             raise ContractError("--status-matrix requires --usage")
@@ -1349,12 +1424,13 @@ def _doc_blocks(root, backend, contract, usage_files, status_matrix=False):
 
 
 def check_doc(root: Path, backend: Backend, doc: Path, usage_files,
-              status_matrix=False):
-    contract = None if status_matrix else build_contract(root, backend)
-    contracts = build_all_contracts(root) if status_matrix else [contract]
+              status_matrix=False, effect=None):
+    all_backends = status_matrix or bool(effect)
+    contract = None if all_backends else build_contract(root, backend)
+    contracts = build_all_contracts(root) if all_backends else [contract]
     problems = []
     for c in contracts:
-        prefix = "" if not status_matrix else f"{c['backend']}: "
+        prefix = "" if not all_backends else f"{c['backend']}: "
         if c["problems"]["missing_annotations"]:
             problems.append(prefix +
                             "consumed fields without a semantic annotation: " +
@@ -1365,7 +1441,8 @@ def check_doc(root: Path, backend: Backend, doc: Path, usage_files,
                             ", ".join(c["problems"]["stale_annotations"]))
     text = doc.read_text()
     for begin, end, expected in _doc_blocks(root, backend, contract,
-                                            usage_files, status_matrix):
+                                            usage_files, status_matrix,
+                                            effect):
         try:
             actual = _get_block(text, begin, end)
         except ContractError as e:
@@ -1378,6 +1455,10 @@ def check_doc(root: Path, backend: Backend, doc: Path, usage_files,
         for p in problems:
             print(f"  - {p}", file=sys.stderr)
         return 1
+    if effect:
+        print(f"dsl-surface: OK (field effect: {effect}, "
+              f"{len(contracts)} backends)")
+        return 0
     if status_matrix:
         rows = collect_status_rows(root, contracts,
                                    [str(p) for p in usage_files])
@@ -1394,9 +1475,10 @@ def check_doc(root: Path, backend: Backend, doc: Path, usage_files,
 
 
 def update_doc(root: Path, backend: Backend, doc: Path, usage_files,
-               status_matrix=False):
-    contract = None if status_matrix else build_contract(root, backend)
-    contracts = build_all_contracts(root) if status_matrix else [contract]
+               status_matrix=False, effect=None):
+    all_backends = status_matrix or bool(effect)
+    contract = None if all_backends else build_contract(root, backend)
+    contracts = build_all_contracts(root) if all_backends else [contract]
     for c in contracts:
         if c["problems"]["missing_annotations"]:
             raise ContractError(
@@ -1404,7 +1486,7 @@ def update_doc(root: Path, backend: Backend, doc: Path, usage_files,
                 ", ".join(c["problems"]["missing_annotations"]))
     text = doc.read_text()
     for begin, end, block in _doc_blocks(root, backend, contract, usage_files,
-                                         status_matrix):
+                                         status_matrix, effect):
         text = _replace_block(text, begin, end, block)
     doc.write_text(text)
     print(f"dsl-surface: updated {doc}")
@@ -1424,6 +1506,8 @@ def main(argv=None):
     parser.add_argument("--status-matrix", action="store_true",
                         help="print/update/check a merged .td status table "
                              "for every backend (requires --usage)")
+    parser.add_argument("--effect", metavar="FIELD",
+                        help="print/update/check the impact of one .td field")
     parser.add_argument("--update", type=Path, metavar="DOC")
     parser.add_argument("--check", type=Path, metavar="DOC")
     parser.add_argument("--usage", type=Path, nargs="+", metavar="TD",
@@ -1432,6 +1516,12 @@ def main(argv=None):
 
     backend = BACKENDS[args.backend]
     try:
+        if args.effect and args.status_matrix:
+            raise ContractError("--effect and --status-matrix are exclusive")
+        if args.effect and not (args.check or args.update):
+            contracts = build_all_contracts(args.root)
+            print(render_effect(args.root, contracts, args.effect))
+            return 0
         if args.status_matrix and not (args.check or args.update):
             if not args.usage:
                 raise ContractError("--status-matrix requires --usage")
@@ -1443,10 +1533,10 @@ def main(argv=None):
             return 0
         if args.check:
             return check_doc(args.root, backend, args.check, args.usage,
-                             args.status_matrix)
+                             args.status_matrix, args.effect)
         if args.update:
             return update_doc(args.root, backend, args.update, args.usage,
-                              args.status_matrix)
+                              args.status_matrix, args.effect)
         contract = build_contract(args.root, backend)
         if args.usage:
             rows = collect_usage(args.root, contract,

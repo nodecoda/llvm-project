@@ -12,7 +12,8 @@
 #   5. e2e: 10 C programs x 4 -O levels x 2 feature sets, round-tripped;
 #   6. every CodeGen test at -O0..-O3 x {rv32i,+m} with -verify-machineinstrs
 #      (tests that expect a diagnostic, i.e. "RUN: not llc", are skipped);
-#   7. the -gen-register-info DSL contract (chapter 29).
+#   7. the TableGen DSL contracts, cross-backend status matrix, and the
+#      TSFlags field-effect report (chapters 29-33).
 #
 # The QEMU run gate is separate (rvmin-run.sh) because it needs a linker and an
 # emulator, which the other checks do not.
@@ -94,6 +95,9 @@ python3 "$W/llvm/utils/TableGen/dsl-surface.py" --status-matrix --check \
   --usage "$W/llvm/lib/Target/RVMin/RVMinRegisterInfo.td" \
           "$W/llvm/lib/Target/RVMin/RVMin.td" \
   || fail "cross-backend status matrix"
-echo "PASS 7/7: TableGen DSL contracts + cross-backend status matrix"
+python3 "$W/llvm/utils/TableGen/dsl-surface.py" --effect TSFlags --check \
+  "$W/llvm/lib/Target/RVMin/docs/33-field-effect.md" \
+  || fail "field effect (TSFlags)"
+echo "PASS 7/7: TableGen DSL contracts + status matrix + field effect"
 
 echo "ALL GATES PASS (run rvmin-run.sh separately for the QEMU check)"
