@@ -85,6 +85,7 @@ def IsOSAIX : LibcallPredicate<[{TT.isOSAIX()}]>;
 
 def IsRISCV : LibcallPredicate<[{TT.isRISCV()}]>;
 def IsRISCV64 : LibcallPredicate<[{TT.isRISCV64()}]>;
+def IsRVMin : LibcallPredicate<[{TT.isRVMin()}]>;
 def IsSPARC : LibcallPredicate<[{TT.isSPARC()}]>;
 def IsSPARC32 : LibcallPredicate<[{TT.isSPARC32()}]>;
 def IsSPARC64 : LibcallPredicate<[{TT.isSPARC64()}]>;
@@ -3704,6 +3705,15 @@ def RISCVLibc : LibcallLibrary<"libc", (add __riscv_flush_icache), isRISCV>;
 
 def RISCVSystemLibrary
     : SystemRuntimeLibrary<isRISCV,
+                           ["compiler-rt", "libatomic", "llvm-client-runtime",
+                            "libm", "libc", "unwind"]>;
+
+// RVMin uses the same compiler runtime as RISC-V.  It cannot simply reuse
+// isRISCV: Triple::isRISCV() stays false for rvmin so that the clang driver
+// does not rewrite the triple to riscv32 when -march= is present.
+def isRVMin : RuntimeLibcallAvailability<(all_of IsRVMin)>;
+def RVMinSystemLibrary
+    : SystemRuntimeLibrary<isRVMin,
                            ["compiler-rt", "libatomic", "llvm-client-runtime",
                             "libm", "libc", "unwind"]>;
 

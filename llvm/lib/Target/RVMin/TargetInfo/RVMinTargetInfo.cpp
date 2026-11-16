@@ -20,9 +20,10 @@ Target &llvm::getTheRVMinTarget() {
 
 extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void
 LLVMInitializeRVMinTargetInfo() {
-  // RVMin is selected with llc -march=rvmin; it has no Triple::ArchType
-  // mapping, so the RISC-V triple emitted by clang is kept as-is.
-  RegisterTarget<Triple::UnknownArch> X(getTheRVMinTarget(), "rvmin",
-                                        "RVMin (RV32I minimal) [experimental]",
-                                        "RVMin");
+  // RVMin has its own Triple::rvmin arch.  Registering it here lets both
+  // `llc -march=rvmin` (lookup by name) and `clang --target=rvmin`
+  // (lookup by triple) find the same backend.
+  RegisterTarget<Triple::rvmin> X(getTheRVMinTarget(), "rvmin",
+                                  "RVMin (RV32I minimal) [experimental]",
+                                  "RVMin");
 }

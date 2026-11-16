@@ -27,13 +27,13 @@ ninja -C "$B" llc clang llvm-mc llvm-objdump llvm-readelf FileCheck
 "$B/bin/llc" -march=rvmin -mtriple=riscv32-unknown-elf example.ll -o example.s
 ```
 
-为什么是 `llc -march=rvmin` 而不是 `clang --target=rvmin`：
+为什么上面仍用 `clang --target=riscv32` 接 `llc -march=rvmin`：
 
-- RVMin 没有 `Triple::ArchType` 映射，也没有改 clang 的 target 表。
-- `TargetRegistry::lookupTarget` 支持“按名字选择、没有 triple 映射的后端”
-  （见 `llvm/lib/MC/TargetRegistry.cpp`）；clang 给出的 `riscv32` triple
-  会原样保留，因此数据布局和 ILP32 ABI 与 clang 一致。
-- 这样整个项目只新增 `llvm/lib/Target/RVMin/`，不改核心与 clang。
+- 第 24 章起 `Triple` 已经认识 `rvmin`，`llc -mtriple=rvmin-unknown-elf` 可用。
+- 但 clang 的 TargetInfo（第 25 章）与 driver（第 26 章）尚未接入，
+  `clang --target=rvmin-unknown-elf` 仍会报 unknown target triple。
+- 因此第 24 章的可用路径仍是“clang 产出 riscv32 的 IR → RVMin 后端”；
+  两边的 data layout 与 ILP32 ABI 完全一致。第 26 章会把这条路径收成一条命令。
 
 ## 章节
 
@@ -65,7 +65,7 @@ git checkout rvmin-ch16     # 第 16 章（大栈帧）结束
 | 13 | [可选 M 扩展与优化空间](docs/13-m-extension.md) | 完成 |
 | 14 | [验收：AC1–AC10 逐条证据](docs/README.md) | 完成 |
 
-### 下篇：从能跑到像样（15–23，进行中）
+### 下篇：从能跑到像样（15–23，已完成）
 
 | 章 | 主题 | 状态 |
 | --- | --- | --- |
@@ -78,6 +78,12 @@ git checkout rvmin-ch16     # 第 16 章（大栈帧）结束
 | 21 | [Zbb/Zbs 位操作扩展](docs/21-zbb-zbs.md) | 完成 |
 | 22 | [A 扩展与 AtomicExpand](docs/22-atomics.md) | 完成 |
 | 23 | [下篇验收](docs/23-acceptance.md) | 完成 |
+
+### 第三篇：clang 一等 target（24–28，进行中）
+
+| 章 | 主题 | 状态 |
+| --- | --- | --- |
+| 24 | [让 triple 认识 rvmin](docs/24-clang-target-triple.md) | 完成 |
 
 ## 当前限制（上篇结束时，第 14 章）
 

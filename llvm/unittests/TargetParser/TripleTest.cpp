@@ -4122,4 +4122,36 @@ TEST(DataLayoutTest, CheriRISCV32) {
               testing::HasSubstr("A200-P200-G200"));
 }
 
+TEST(Triple, RVMin) {
+  Triple T("rvmin-unknown-unknown-elf");
+  EXPECT_EQ(Triple::rvmin, T.getArch());
+  EXPECT_EQ("rvmin", T.getArchName());
+  EXPECT_TRUE(T.isRVMin());
+  // RVMin borrows the RISC-V ABI/object format but must not be treated as
+  // riscv32: the driver rewrites riscv32 triples when -march= is present.
+  EXPECT_FALSE(T.isRISCV());
+  EXPECT_FALSE(T.isRISCV32());
+  EXPECT_FALSE(T.isRISCV64());
+
+  EXPECT_TRUE(T.isLittleEndian());
+  EXPECT_TRUE(T.isArch32Bit());
+  EXPECT_FALSE(T.isArch64Bit());
+  EXPECT_EQ(Triple::ELF, T.getObjectFormat());
+  EXPECT_EQ("e-m:e-p:32:32-i64:64-n32-S128", T.computeDataLayout());
+  EXPECT_EQ(FloatABI::Soft, T.getDefaultFloatABI());
+  EXPECT_EQ(LongDoubleFormat::IEEEquad, T.getDefaultLongDoubleFormat());
+  // Without DwarfCFI the AsmPrinter silently drops every .cfi_* directive.
+  EXPECT_EQ(ExceptionHandling::DwarfCFI, T.getDefaultExceptionHandling());
+  EXPECT_EQ("rvmin", Triple::getArchTypePrefix(Triple::rvmin));
+
+  EXPECT_EQ(Triple::rvmin, T.get32BitArchVariant().getArch());
+  EXPECT_EQ(Triple::UnknownArch, T.get64BitArchVariant().getArch());
+  EXPECT_EQ(Triple::UnknownArch, T.getBigEndianArchVariant().getArch());
+  EXPECT_EQ(Triple::rvmin, T.getLittleEndianArchVariant().getArch());
+
+  EXPECT_EQ(Triple::rvmin, Triple::getArchTypeForLLVMName("rvmin"));
+  EXPECT_EQ("rvmin", Triple::getArchTypeName(Triple::rvmin));
+  EXPECT_EQ(Triple::rvmin, Triple("rvmin").getArch());
+}
+
 } // end anonymous namespace

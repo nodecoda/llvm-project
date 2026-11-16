@@ -43,6 +43,12 @@ RVMin 是一个从零写的 LLVM 后端，只实现 RISC-V 最小整数集（RV3
 | 22 | [22-atomics.md](22-atomics.md) | A 扩展与 AtomicExpand | 20 条 A 编码与 `riscv32` 一致；`lr/sc` 程序在 QEMU 运行 | `rvmin-ch22` |
 | 23 | [23-acceptance.md](23-acceptance.md) | 下篇验收 | P2-AC1–10 表 + 未做清单 | `rvmin-ch23` |
 
+### 第三篇：clang 一等 target（24–28）
+
+| 章 | 文档 | 主题 | 本章门禁 | tag |
+| --- | --- | --- | --- | --- |
+| 24 | [24-clang-target-triple.md](24-clang-target-triple.md) | `Triple::rvmin` 与连带白名单 | `Triple.RVMin`；lit 24/24；`rvmin-verify-all.sh` 6/6 | `rvmin-ch24` |
+
 每个章末都有对应 tag：`git checkout rvmin-ch16` 即可看到该章结束时的完整代码。
 
 ## 每章固定包含什么

@@ -277,7 +277,8 @@ static std::string computeRISCVDataLayout(const Triple &TT, StringRef ABIName) {
       Ret += "-pe200:128:128:128:64";
     Ret += "-i64:64-i128:128-n32:64";
   } else {
-    assert(TT.isRISCV32() && "only RV32 and RV64 are currently supported");
+    assert((TT.isRISCV32() || TT.isRVMin()) &&
+           "only RV32, RVMin and RV64 are currently supported");
     Ret += "-p:32:32";
     if (IsPureCapABI)
       Ret += "-pe200:64:64:64:32";
@@ -518,6 +519,7 @@ std::string Triple::computeDataLayout(StringRef ABIName) const {
   case Triple::riscv64:
   case Triple::riscv32be:
   case Triple::riscv64be:
+  case Triple::rvmin:
     return computeRISCVDataLayout(*this, ABIName);
   case Triple::sparc:
   case Triple::sparcv9:

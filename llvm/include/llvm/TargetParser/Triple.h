@@ -80,6 +80,7 @@ public:
     riscv64,     // RISC-V (64-bit, little endian): riscv64
     riscv32be,   // RISC-V (32-bit, big endian): riscv32be
     riscv64be,   // RISC-V (64-bit, big endian): riscv64be
+    rvmin,       // RVMin: minimal in-tree RV32I teaching backend
     sparc,       // Sparc: sparc
     sparcv9,     // Sparcv9: Sparcv9
     sparcel,     // Sparc: (endianness = little). NB: 'Sparcle' is a CPU variant
@@ -1180,6 +1181,12 @@ public:
 
   /// Tests whether the target is RISC-V (32- and 64-bit).
   bool isRISCV() const { return isRISCV32() || isRISCV64(); }
+
+  /// Tests whether the target is RVMin.  RVMin borrows the RISC-V
+  /// ABI/object format but is a distinct architecture: it must not be
+  /// treated as riscv32 by isRISCV(), because the driver rewrites
+  /// riscv32 triples when -march= is present.
+  bool isRVMin() const { return getArch() == Triple::rvmin; }
 
   /// Tests whether the target is 32-bit SPARC (little and big endian).
   bool isSPARC32() const {
