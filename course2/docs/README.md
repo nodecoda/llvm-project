@@ -6,7 +6,7 @@
 | 章 | 文档 | 主题 | 本章门禁 | tag |
 | --- | --- | --- | --- | --- |
 | 00 | [本索引](README.md) | 导览与骨架 | `rsim --version`；verify 输出 `0 checks` | `rsim-ch00` |
-| 01 | （规划中） | ELF32 加载器 | 入口/段表与 `llvm-readelf -hl` 一致 | `rsim-ch01` |
+| 01 | [01-elf-loader.md](01-elf-loader.md) | ELF32 加载器 | 入口/段表与 `llvm-readelf -hl` 一致 | `rsim-ch01` |
 | 02 | （规划中） | 内存、栈与启动 | `.bss` 零填充、sp 对齐、越界 trap | `rsim-ch02` |
 | 03 | （规划中） | 译码与执行 RV32I | 97/97 条语料与 `llvm-mc` 一致 | `rsim-ch03` |
 | 04 | （规划中） | 控制流与精确异常 | `jalr` LSB 清零、精确 `mepc` | `rsim-ch04` |

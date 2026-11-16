@@ -8,6 +8,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_executable(rsim
   rsim/main.cpp
+  rsim/elf.cpp
+  rsim/memory.cpp
 )
 
 target_compile_options(rsim PRIVATE -Wall -Wextra -Wpedantic)
