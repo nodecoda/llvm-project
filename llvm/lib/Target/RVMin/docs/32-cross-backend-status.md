@@ -11,15 +11,15 @@
 
 - 行：`RVMinRegisterInfo.td` / `RVMin.td` 里的每一处 `let`/`field`；
 - 列：`register-info` / `instr-info` / `asm-writer` / `asm-matcher` /
-  `dag-isel` / `fast-isel`（asm-matcher、dag-isel、fast-isel 分别由第
-  34、36、37 章加入，矩阵自动扩展）；
+  `dag-isel` / `fast-isel` / `disassembler`（后四列分别由第 34、36、37、
+  38 章加入，矩阵自动扩展）；
 - 单元格：该字段在这个后端里的投影状态。
 
 本章产出：
 
 - `dsl-surface.py` 新增 `--status-matrix`；
 - 同一个模式支持 `--check` / `--update`，所以矩阵本身也是可漂移文档；
-- 一张 13 行 × 6 后端的对照表，直接展示“同一行 `.td`，不同命运”。
+- 一张 13 行 × 7 后端的对照表，直接展示“同一行 `.td`，不同命运”。
 
 非目标：
 
@@ -132,23 +132,23 @@ python3 dsl-surface.py --status-matrix --update DOC --usage a.td b.td
 
 同一份 `.td` 在每个后端下的投影状态；`—` 表示该字段不在这个后端的 schema 里。
 
-| 文件:行 | 字段 | 声明于 | `register-info` | `instr-info` | `asm-writer` | `asm-matcher` | `dag-isel` | `fast-isel` |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:12` | `FallbackRegAltNameIndex` | `RegAltNameIndex` | 未消费 | — | `project` | — | — | — |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:17` | `Namespace` | `Instruction`, `RegAltNameIndex`, `Register`, `RegisterClass`, `SubRegIndex` | `derive+project` | `derive` | `derive+project` | `derive+project` | `derive` | `derive+project` |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:18` | `HWEncoding` | `Register` | `project` | — | 未消费 | 未消费 | 未消费 | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:19` | `AltNames` | `Register` | 未消费 | — | `project` | `project` | 未消费 | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:20` | `DwarfNumbers` | `Register` | `project` | — | 未消费 | 未消费 | 未消费 | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:25` | `RegAltNameIndices` | `Register` | 未消费 | — | `project` | `project` | 未消费 | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:16` | `Num` | — | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 |
-| `llvm/lib/Target/RVMin/RVMin.td:96` | `AsmWriterClassName` | `AsmWriter` | — | — | `project` | — | — | — |
-| `llvm/lib/Target/RVMin/RVMin.td:103` | `ShouldEmitMatchRegisterAltName` | `AsmParser` | — | — | — | `project` | — | — |
-| `llvm/lib/Target/RVMin/RVMin.td:104` | `AllowDuplicateRegisterNames` | `AsmParser` | — | — | — | `project` | — | — |
-| `llvm/lib/Target/RVMin/RVMin.td:112` | `InstructionSet` | — | — | — | — | — | — | — |
-| `llvm/lib/Target/RVMin/RVMin.td:113` | `AssemblyParsers` | `Target` | — | — | — | `derive` | — | — |
-| `llvm/lib/Target/RVMin/RVMin.td:114` | `AssemblyWriters` | `Target` | — | — | `derive` | — | — | — |
+| 文件:行 | 字段 | 声明于 | `register-info` | `instr-info` | `asm-writer` | `asm-matcher` | `dag-isel` | `fast-isel` | `disassembler` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:12` | `FallbackRegAltNameIndex` | `RegAltNameIndex` | 未消费 | — | `project` | — | — | — | — |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:17` | `Namespace` | `Instruction`, `RegAltNameIndex`, `Register`, `RegisterClass`, `SubRegIndex` | `derive+project` | `derive` | `derive+project` | `derive+project` | `derive` | `derive+project` | `derive` |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:18` | `HWEncoding` | `Register` | `project` | — | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:19` | `AltNames` | `Register` | 未消费 | — | `project` | `project` | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:20` | `DwarfNumbers` | `Register` | `project` | — | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:25` | `RegAltNameIndices` | `Register` | 未消费 | — | `project` | `project` | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:16` | `Num` | — | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 |
+| `llvm/lib/Target/RVMin/RVMin.td:96` | `AsmWriterClassName` | `AsmWriter` | — | — | `project` | — | — | — | — |
+| `llvm/lib/Target/RVMin/RVMin.td:103` | `ShouldEmitMatchRegisterAltName` | `AsmParser` | — | — | — | `project` | — | — | — |
+| `llvm/lib/Target/RVMin/RVMin.td:104` | `AllowDuplicateRegisterNames` | `AsmParser` | — | — | — | `project` | — | — | — |
+| `llvm/lib/Target/RVMin/RVMin.td:112` | `InstructionSet` | — | — | — | — | — | — | — | — |
+| `llvm/lib/Target/RVMin/RVMin.td:113` | `AssemblyParsers` | `Target` | — | — | — | `derive` | — | — | — |
+| `llvm/lib/Target/RVMin/RVMin.td:114` | `AssemblyWriters` | `Target` | — | — | `derive` | — | — | — | — |
 
-共 13 处使用；6 个后端都消费 1 处，至少一个消费 11 处，自定义字段 1 处。
+共 13 处使用；7 个后端都消费 1 处，至少一个消费 11 处，自定义字段 1 处。
 <!-- END: GENERATED CROSS-BACKEND STATUS -->
 
 ## 深读：这张表告诉了我们什么
@@ -165,41 +165,42 @@ python3 dsl-surface.py --status-matrix --update DOC --usage a.td b.td
 
 它们在 `register-info` 下是 `project`，在 `asm-writer` / `asm-matcher`
 下是 `未消费`，`dag-isel` / `fast-isel` 也不读；在 `instr-info` 下是
-`—`。同一行 `.td`，在六个后端里分别是“核心输入”“看得到但不用”
+`—`。同一行 `.td`，在七个后端里分别是“核心输入”“看得到但不用”
 “根本看不到”。
 
-### 3. `Namespace`：唯一六列都消费的字段
+### 3. `Namespace`：唯一七列都消费的字段
 
-`Namespace` 在六个后端里都是 `derive` 或 `derive+project`。这是真正的共享
+`Namespace` 在七个后端里都是 `derive` 或 `derive+project`。这是真正的共享
 字段：指令、寄存器、汇编打印都要 namespace。跨后端矩阵里，这种行最适合
-作为“改之前必须六处都验证”的候选。
+作为“改之前必须七处都验证”的候选。
 
-### 4. `Num`：六列都是“自定义”
+### 4. `Num`：七列都是“自定义”
 
 `Num` 是 RVMin 自己在 `.td` 里声明的 `field`，不属于 `Target.td` 的通用
-schema。六个后端都不认识它；只有读它的 C++ 才需要保证语义。矩阵把
+schema。七个后端都不认识它；只有读它的 C++ 才需要保证语义。矩阵把
 “自定义字段”单独标出来，避免被误认为“未消费”。
 
 ### 5. `AssemblyWriters`：ambient 字段
 
 `AssemblyWriters` 在 asm-writer 下是 `derive`，因为它被
 `CodeGenTarget::getAsmWriter()` 读取。它不是任何根类的字段，而是
-`Target` 记录上的 ambient 配置。asm-matcher、dag-isel 与 fast-isel 都没有
-把它纳入 schema（匹配器不使用打印器配置），所以只亮一列，正好说明
+`Target` 记录上的 ambient 配置。asm-matcher、dag-isel、fast-isel 与
+disassembler 都没有把它纳入 schema（匹配器/解码器不使用打印器配置），
+所以只亮一列，正好说明
 “目标级字段”和“记录类字段”的区别。
 
 ### 6. `ShouldEmitMatchRegisterAltName` / `AllowDuplicateRegisterNames`：新增一列后才亮
 
 这两行是 asm-matcher 的输入。第 32 章首次发布时，矩阵只有三个后端，
 两行都是 `—`；第 34 章把 asm-matcher 加进 `BACKENDS` 后，它们自动变成
-`project`。第 36 章再加入 dag-isel、第 37 章加入 fast-isel 后，这两行仍只
-亮 asm-matcher 一列。这正好演示了**后端集合是 SSOT**：文档不需要手改逻辑，
-只需重新 `--update`。
+`project`。第 36 章再加入 dag-isel、第 37 章加入 fast-isel、第 38 章加入
+disassembler 后，这两行仍只亮 asm-matcher 一列。这正好演示了**后端集合是
+SSOT**：文档不需要手改逻辑，只需重新 `--update`。
 
 ### 7. 汇总数字怎么读
 
-“6 个后端都消费 1 处，至少一个消费 11 处”说明：13 处用法里只有 1 处是真正
-六后端共享的（`Namespace`），但有 11 处至少被一个后端消费。剩下 1 处是
+“7 个后端都消费 1 处，至少一个消费 11 处”说明：13 处用法里只有 1 处是真正
+七后端共享的（`Namespace`），但有 11 处至少被一个后端消费。剩下 1 处是
 `InstructionSet`（见常见坑 3），另有 1 处是自定义字段（`Num`）。
 
 ### 8. 为什么不做成“字段 × 所有 43 个后端”
@@ -246,12 +247,12 @@ python3 "$T" --backend asm-writer --check \
 
 ```text
 $ python3 dsl-surface.py --status-matrix --check doc32.md --usage ...
-dsl-surface: OK (cross-backend status: 13 usages, 6 backends)
+dsl-surface: OK (cross-backend status: 13 usages, 7 backends)
 
 $ python3 dsl-surface.py --status-matrix --usage ...
 | 文件:行 | 字段 | 声明于 | register-info | instr-info | asm-writer |
 ...
-共 13 处使用；6 个后端都消费 1 处，至少一个消费 11 处，自定义字段 1 处。
+共 13 处使用；7 个后端都消费 1 处，至少一个消费 11 处，自定义字段 1 处。
 
 $ scripts/rvmin-verify-all.sh "$B/bin"
 ...

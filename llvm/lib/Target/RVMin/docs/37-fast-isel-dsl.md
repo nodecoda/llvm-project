@@ -34,7 +34,7 @@
 - 注解在 dag-isel 基础上只多 1 个：`FastIselShouldIgnore`；
 - 关键修复：`ImmLeaf` 是**派生类**，必须显式列进 `helper_classes`，
   否则它的字段会静默消失（这次修复也回头改了第 36 章的数字）；
-- 第 32 章 status 矩阵与第 33 章 `--effect` 自动变成六后端。
+- 第 32 章 status 矩阵与第 33 章 `--effect` 自动变成七后端（第 38 章再加 `disassembler`）。
 
 非目标：
 
@@ -666,7 +666,7 @@ python3 "$T" --backend fast-isel --check "$DOC" \
   --usage "$W/llvm/lib/Target/RVMin/RVMinInstrInfo.td" \
           "$W/llvm/lib/Target/RVMin/RVMinRegisterInfo.td"
 
-# 3. 六后端矩阵与字段影响面
+# 3. 七后端矩阵与字段影响面
 python3 "$T" --status-matrix --usage \
   "$W/llvm/lib/Target/RVMin/RVMinRegisterInfo.td" \
   "$W/llvm/lib/Target/RVMin/RVMin.td"
@@ -735,11 +735,11 @@ ALL GATES PASS (run rvmin-run.sh separately for the QEMU check)
 | --- | --- |
 | `llvm/utils/TableGen/dsl-surface.py` | 新增 `fast-isel` Backend；57 个注解；`ImmLeaf` 进 helper（同时影响 dag-isel） |
 | `llvm/lib/Target/RVMin/docs/37-fast-isel-dsl.md` | 新增：本章（四个生成块） |
-| `llvm/lib/Target/RVMin/docs/36-dag-isel-dsl.md` | `ImmLeaf` 修复后的数字与注解表；六后端联动 |
-| `llvm/lib/Target/RVMin/docs/32-cross-backend-status.md` | 生成块升级为六后端 |
-| `llvm/lib/Target/RVMin/docs/33-field-effect.md` | 生成块升级为六后端 |
+| `llvm/lib/Target/RVMin/docs/36-dag-isel-dsl.md` | `ImmLeaf` 修复后的数字与注解表；七后端联动 |
+| `llvm/lib/Target/RVMin/docs/32-cross-backend-status.md` | 生成块升级为七后端 |
+| `llvm/lib/Target/RVMin/docs/33-field-effect.md` | 生成块升级为七后端 |
 | `llvm/lib/Target/RVMin/docs/34-asm-matcher-dsl.md` | 联动说明改为六后端 |
 | `llvm/lib/Target/RVMin/docs/35-upstream-contract.md` | 练习里的后端数改为六 |
-| `llvm/lib/Target/RVMin/docs/README.md` | 新增第 37 章索引行；范围改为 29–37 |
+| `llvm/lib/Target/RVMin/docs/README.md` | 新增第 37 章索引行；范围改为 29–37（第 38 章扩到 29–38） |
 | `llvm/lib/Target/RVMin/scripts/rvmin-verify-all.sh` | 第 7 项增加 fast-isel 校验 |
 | `llvm/docs/TableGen/BackEnds.md` | 后端列表加 `-gen-fast-isel` |

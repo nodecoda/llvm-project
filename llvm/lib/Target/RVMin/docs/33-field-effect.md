@@ -31,7 +31,7 @@
 前三章的契约和矩阵都是**行视图**：
 
 ```text
-一行 .td  → 六个后端的 stage
+一行 .td  → 七个后端的 stage
 ```
 
 本章要的是**字段视图**：
@@ -119,8 +119,8 @@ python3 dsl-surface.py --effect TSFlags --update DOC
 
 | declaring class | 类型 | 默认值 | 出现于后端 |
 | --- | --- | --- | --- |
-| `Instruction` | `bits<32>` / `bits<64>` / `bits<8>` | `0` | `asm-matcher`, `asm-writer`, `dag-isel`, `fast-isel`, `instr-info` |
-| `RegisterClass` | `bits<32>` / `bits<64>` / `bits<8>` | `0` | `asm-matcher`, `asm-writer`, `dag-isel`, `fast-isel`, `instr-info`, `register-info` |
+| `Instruction` | `bits<32>` / `bits<64>` / `bits<8>` | `0` | `asm-matcher`, `asm-writer`, `dag-isel`, `disassembler`, `fast-isel`, `instr-info` |
+| `RegisterClass` | `bits<32>` / `bits<64>` / `bits<8>` | `0` | `asm-matcher`, `asm-writer`, `dag-isel`, `disassembler`, `fast-isel`, `instr-info`, `register-info` |
 | `SDNode` | `bits<32>` / `bits<64>` / `bits<8>` | `0` | `dag-isel`, `fast-isel` |
 
 **投影**
@@ -133,6 +133,7 @@ python3 dsl-surface.py --effect TSFlags --update DOC
 | `asm-matcher` | `derive` | `llvm/utils/TableGen/Common/CodeGenRegisters.cpp:825` | 目标自定义标志位；`emitRecord` 校验位宽并写入 MCInstrDesc 的 TSFlags。同名 `RegisterClass.TSFlags` 是寄存器类标志。 |
 | `dag-isel` | `derive` | `llvm/utils/TableGen/Common/CodeGenDAGPatterns.cpp:1932`, `llvm/utils/TableGen/Common/CodeGenRegisters.cpp:825` | 目标自定义标志位：`Instruction`/`RegisterClass` 写入 MCInstrDesc/寄存器类；`SDNode.TSFlags` 是 DAG 节点标志，参与匹配。 |
 | `fast-isel` | `derive` | `llvm/utils/TableGen/Common/CodeGenDAGPatterns.cpp:1932`, `llvm/utils/TableGen/Common/CodeGenRegisters.cpp:825` | 目标自定义标志位：`Instruction`/`RegisterClass` 写入 MCInstrDesc/寄存器类；`SDNode.TSFlags` 是 DAG 节点标志，参与匹配。 |
+| `disassembler` | `derive` | `llvm/utils/TableGen/Common/CodeGenRegisters.cpp:825` | 目标自定义标志位；`emitRecord` 校验位宽并写入 MCInstrDesc 的 TSFlags。同名 `RegisterClass.TSFlags` 是寄存器类标志。 |
 
 **所有读取点**（扫描 `llvm/utils/TableGen/**`）
 
@@ -141,12 +142,12 @@ python3 dsl-surface.py --effect TSFlags --update DOC
 | `instr-info` | `llvm/utils/TableGen/InstrInfoEmitter.cpp:1415` |
 | `shared` | `llvm/utils/TableGen/Common/CodeGenDAGPatterns.cpp:1932`, `llvm/utils/TableGen/Common/CodeGenRegisters.cpp:825` |
 
-共 3 个声明类 · 6/6 个后端消费 · 2 个 reader。
+共 3 个声明类 · 7/7 个后端消费 · 2 个 reader。
 <!-- END: GENERATED FIELD EFFECT -->
 
 ## 深读：五个字段的对照（外加一个易混点）
 
-### 1. `TSFlags`：三个声明类，六个后端都“碰”
+### 1. `TSFlags`：三个声明类，七个后端都“碰”
 
 `TSFlags` 同时声明在 `Instruction`、`RegisterClass` 和 `SDNode`：
 
@@ -155,11 +156,11 @@ python3 dsl-surface.py --effect TSFlags --update DOC
 - `RegisterClass.TSFlags`：寄存器类标志，`CodeGenRegisters` 读取；
 - `SDNode.TSFlags`：DAG 节点标志，`CodeGenDAGPatterns` 在匹配时读取。
 
-影响面报告显示 6/6 后端消费，但 stage 不同：
+影响面报告显示 7/7 后端消费，但 stage 不同：
 
 - `instr-info` 是 `derive+project`（共享层 + emitter 都读）；
-- `register-info` / `asm-writer` / `asm-matcher` / `dag-isel` / `fast-isel`
-  是 `derive`。
+- `register-info` / `asm-writer` / `asm-matcher` / `dag-isel` / `fast-isel` /
+  `disassembler` 是 `derive`。
 
 这也是一个注解局限的例子：语义列按字段名合并，`TSFlags` 的说明同时提到
 指令和寄存器类。真要区分调用点的静态类型，需要 C++ 类型推导，不在本章范围。
@@ -172,7 +173,8 @@ python3 dsl-surface.py --effect TSFlags --update DOC
 - `instr-info`：`—`（`Register` 不是它的 root）；
 - `asm-writer`：`project`（emitter 直接读）；
 - `asm-matcher`：`project`（匹配表直接读）；
-- `dag-isel` / `fast-isel`：`未消费`（寄存器模型只读 `AsmName`）。
+- `dag-isel` / `fast-isel` / `disassembler`：`未消费`（寄存器模型只读
+  `AsmName`）。
 
 原始 reader 只有两个：`asm-writer` 和 `asm-matcher`。所以“改 `AltNames`”
 的真实影响面是汇编打印/匹配，不是 register-info。第 29 章把它标成无效，
@@ -184,7 +186,7 @@ python3 dsl-surface.py --effect TSFlags --update DOC
 
 - `Instruction`、`Register`、`RegisterClass`、`SubRegIndex`、`RegAltNameIndex`。
 
-6/6 后端都消费，reader 有 8 个，`shared` 一个 reader 就有 26 个读取点。
+7/7 后端都消费，reader 有 8 个，`shared` 一个 reader 就有 26 个读取点。
 这是本章最典型的“改之前必须全链路验证”的字段。
 
 ### 4. `Body`：只属于 instr-info 的代码注入点
@@ -261,12 +263,12 @@ python3 "$T" --status-matrix --check \
 
 ```text
 $ python3 dsl-surface.py --effect TSFlags --check doc33.md
-dsl-surface: OK (field effect: TSFlags, 6 backends)
+dsl-surface: OK (field effect: TSFlags, 7 backends)
 
 $ python3 dsl-surface.py --effect TSFlags
 影响面：`TSFlags`
 ...
-共 3 个声明类 · 6/6 个后端消费 · 2 个 reader。
+共 3 个声明类 · 7/7 个后端消费 · 2 个 reader。
 
 $ scripts/rvmin-verify-all.sh "$B/bin"
 ...
@@ -293,7 +295,7 @@ ALL GATES PASS (run rvmin-run.sh separately for the QEMU check)
 
 ## 练习
 
-1. 用 `--effect Size` 看四个声明类和六个后端的状态，解释为什么它是
+1. 用 `--effect Size` 看四个声明类和七个后端的状态，解释为什么它是
    `derive+project`。
 2. 用 `--effect AltOrderSelect` 看 `code` 字段的影响面，和 `Body` 对比。
 3. 给 `--effect` 增加 `--json` 输出，方便其它脚本消费。

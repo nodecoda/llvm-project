@@ -34,7 +34,7 @@
   7 条派生改写、6 个硬编码名字；
 - 注解复用 instr-info，补 56 个 pattern/SDNode 字段（含 `ImmLeaf` 的 2 个）；
 - 脚本增强：magic name 从“只扫 emitter”改为“扫整个 source set”；
-- 第 32 章 status 矩阵与第 33 章 `--effect` 自动变成六后端（第 37 章再加 `fast-isel`）。
+- 第 32 章 status 矩阵与第 33 章 `--effect` 自动变成七后端（第 37、38 章再加 `fast-isel` / `disassembler`）。
 
 非目标：
 
@@ -670,7 +670,7 @@ python3 "$T" --backend dag-isel --check "$DOC" \
   --usage "$W/llvm/lib/Target/RVMin/RVMinInstrInfo.td" \
           "$W/llvm/lib/Target/RVMin/RVMinRegisterInfo.td"
 
-# 3. 六后端矩阵与字段影响面
+# 3. 七后端矩阵与字段影响面
 python3 "$T" --status-matrix --usage \
   "$W/llvm/lib/Target/RVMin/RVMinRegisterInfo.td" \
   "$W/llvm/lib/Target/RVMin/RVMin.td"
@@ -728,7 +728,7 @@ ALL GATES PASS (run rvmin-run.sh separately for the QEMU check)
    最终排除。
 3. 给 `--usage` 增加 `def : Pat<...>` 检测：它应该输出 pattern 名、
    `PatternToMatch` 的根节点，还是整棵树？
-4. 用 `--effect PatternToMatch` 看六个后端的投影，解释为什么只有
+4. 用 `--effect PatternToMatch` 看七个后端的投影，解释为什么只有
    dag-isel 消费它。
 5. 用 `--effect TSFlags` 对比第 33 章：新增的 dag-isel 列是 `derive` 还是
    `—`？为什么？
@@ -739,8 +739,8 @@ ALL GATES PASS (run rvmin-run.sh separately for the QEMU check)
 | --- | --- |
 | `llvm/utils/TableGen/dsl-surface.py` | 新增 `dag-isel` Backend；56 个注解；`ImmLeaf` helper；magic 扫描扩到 source set |
 | `llvm/lib/Target/RVMin/docs/36-dag-isel-dsl.md` | 新增：本章（四个生成块） |
-| `llvm/lib/Target/RVMin/docs/32-cross-backend-status.md` | 生成块升级为六后端 |
-| `llvm/lib/Target/RVMin/docs/33-field-effect.md` | 生成块升级为六后端 |
-| `llvm/lib/Target/RVMin/docs/34-asm-matcher-dsl.md` | 联动说明改为六后端 |
-| `llvm/lib/Target/RVMin/docs/README.md` | 新增第 36 章索引行；范围改为 29–36（第 37 章扩到 29–37） |
+| `llvm/lib/Target/RVMin/docs/32-cross-backend-status.md` | 生成块升级为七后端 |
+| `llvm/lib/Target/RVMin/docs/33-field-effect.md` | 生成块升级为七后端 |
+| `llvm/lib/Target/RVMin/docs/34-asm-matcher-dsl.md` | 联动说明改为七后端 |
+| `llvm/lib/Target/RVMin/docs/README.md` | 新增第 36 章索引行；范围改为 29–36（第 38 章扩到 29–38） |
 | `llvm/lib/Target/RVMin/scripts/rvmin-verify-all.sh` | 第 7 项增加 dag-isel 校验 |

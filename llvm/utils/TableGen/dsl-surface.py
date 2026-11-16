@@ -81,6 +81,7 @@ MAIN_OUTPUTS = {
     "asm-matcher": "<Target>GenAsmMatcher.inc",
     "dag-isel": "<Target>GenDAGISel.inc",
     "fast-isel": "<Target>GenFastISel.inc",
+    "disassembler": "<Target>GenDisassemblerTables.inc",
 }
 
 BACKENDS = {
@@ -359,6 +360,58 @@ BACKENDS = {
             "SDTCisOpSmallerThanOp", "SDTCisEltOfVec", "SDTCisSubVecOfVec",
             "SDTCVecEltisVT", "SDTCisSameNumEltsAs", "SDTCisSameSizeAs",
             "ValueType", "Predicate", "ImmLeaf",
+        ),
+    ),
+    "disassembler": Backend(
+        name="disassembler",
+        emitter="llvm/utils/TableGen/DisassemblerEmitter.cpp",
+        sources=(
+            ("llvm/utils/TableGen/DisassemblerEmitter.cpp", "emitter"),
+            ("llvm/utils/TableGen/DecoderEmitter.cpp", "emitter"),
+            ("llvm/utils/TableGen/DecoderTableEmitter.cpp", "emitter"),
+            ("llvm/utils/TableGen/DecoderTableEmitter.h", "emitter"),
+            ("llvm/utils/TableGen/DecoderTree.cpp", "emitter"),
+            ("llvm/utils/TableGen/DecoderTree.h", "emitter"),
+            ("llvm/utils/TableGen/Common/CodeGenInstruction.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenInstruction.h", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenRegisters.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenRegisters.h", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenTarget.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenTarget.h", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenHwModes.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenHwModes.h", "shared"),
+            ("llvm/utils/TableGen/Common/InfoByHwMode.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/InfoByHwMode.h", "shared"),
+            ("llvm/utils/TableGen/Common/SubtargetFeatureInfo.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/SubtargetFeatureInfo.h", "shared"),
+        ),
+        td_files=(
+            "llvm/include/llvm/Target/Target.td",
+            "llvm/include/llvm/Target/TargetSubtarget.td",
+        ),
+        roots_from=(
+            "llvm/utils/TableGen/DecoderEmitter.cpp",
+            "llvm/utils/TableGen/Common/SubtargetFeatureInfo.cpp",
+        ),
+        extra_roots=(
+            ("Instruction", "llvm/utils/TableGen/Common/CodeGenTarget.cpp",
+             'getAllDerivedDefinitions("Instruction")'),
+            ("RegClassByHwMode", "llvm/utils/TableGen/Common/CodeGenTarget.cpp",
+             'getAllDerivedDefinitions("RegClassByHwMode")'),
+            ("Register", "llvm/utils/TableGen/Common/CodeGenRegisters.cpp",
+             'getAllDerivedDefinitions("Register")'),
+            ("RegisterClass", "llvm/utils/TableGen/Common/CodeGenRegisters.cpp",
+             'getAllDerivedDefinitions("RegisterClass")'),
+            ("Operand", "llvm/utils/TableGen/InstrInfoEmitter.cpp",
+             'getAllDerivedDefinitions("Operand")'),
+            ("RegisterOperand", "llvm/utils/TableGen/InstrInfoEmitter.cpp",
+             'getAllDerivedDefinitions("RegisterOperand")'),
+        ),
+        helper_classes=(
+            "HwModeSelect", "EncodingByHwMode",
+            "RegInfoByHwMode", "RegInfo",
+            "SubRegRangeByHwMode", "SubRegRange", "DwarfRegAlias",
+            "DAGOperand", "Predicate", "ValueType",
         ),
     ),
 }
@@ -714,6 +767,31 @@ FAST_ISEL_ANNOTATIONS.update({
     "FastIselShouldIgnore": "为 true 时 fast-isel 跳过该立即数谓词的 pattern，不进入 lookup 表。",
 })
 
+DISASSEMBLER_ANNOTATIONS = {
+    k: v for k, v in INSTR_INFO_ANNOTATIONS.items()
+    if k not in {"Body", "FunctionName", "Instruction"}
+}
+DISASSEMBLER_ANNOTATIONS.update({
+    k: REGISTER_INFO_ANNOTATIONS[k]
+    for k in (
+        "Aliases", "AsmName", "CostPerUse", "CoveredBySubRegs",
+        "SubRegIndices", "SubRegs", "isArtificial", "isConstant",
+    )
+})
+DISASSEMBLER_ANNOTATIONS.update({
+    k: ASM_MATCHER_ANNOTATIONS[k]
+    for k in (
+        "AssemblerCondDag", "AssemblerMatcherPredicate",
+        "CondString", "RecomputePerFunction",
+    )
+})
+DISASSEMBLER_ANNOTATIONS.update({
+    "DecoderNamespace": "解码器命名空间；`decodeInstruction` 按它选择子表。",
+    "EncodingInfos": "按 HwMode 的 encoding 选择；非空时忽略 `Instruction.Inst`。",
+    "isAsmParserOnly": "只给汇编器用的指令；反汇编器跳过。",
+    "AliasOf": "`AdditionalEncoding` 指向的真实指令；解码结果归到它。",
+})
+
 ANNOTATIONS = {
     "register-info": REGISTER_INFO_ANNOTATIONS,
     "instr-info": INSTR_INFO_ANNOTATIONS,
@@ -721,6 +799,7 @@ ANNOTATIONS = {
     "asm-matcher": ASM_MATCHER_ANNOTATIONS,
     "dag-isel": DAG_ISEL_ANNOTATIONS,
     "fast-isel": FAST_ISEL_ANNOTATIONS,
+    "disassembler": DISASSEMBLER_ANNOTATIONS,
 }
 
 # Fields that are declared on a consumed class but intentionally not read by
@@ -828,6 +907,7 @@ UNUSED_NOTES = {
     "asm-matcher": ASM_MATCHER_UNUSED_NOTES,
     "dag-isel": DAG_ISEL_UNUSED_NOTES,
     "fast-isel": dict(DAG_ISEL_UNUSED_NOTES),
+    "disassembler": dict(ASM_MATCHER_UNUSED_NOTES),
 }
 
 # Name-level contract: record names and generated identifiers that are not
@@ -889,6 +969,7 @@ MAGIC_NAMES = {
     "asm-writer": ASM_WRITER_MAGIC_NAMES,
     "asm-matcher": ASM_MATCHER_MAGIC_NAMES,
     "fast-isel": (),
+    "disassembler": (),
     "dag-isel": (
         ("set", r'"set"', "pattern 结果绑定节点；分隔匹配树与结果树。"),
         ("node", r'"node"', "未类型化叶子的占位节点。"),
@@ -1052,6 +1133,20 @@ DERIVATIONS = {
     "asm-writer": ASM_WRITER_DERIVATIONS,
     "asm-matcher": ASM_MATCHER_DERIVATIONS,
     "dag-isel": DAG_ISEL_DERIVATIONS,
+    "disassembler": (
+        ("encoding collection", "Instruction",
+         r'getAllDerivedDefinitions\("Instruction"\)',
+         "收集非伪指令，逐条检查 encoding 是否可解码。"),
+        ("additional encodings", "AdditionalEncoding",
+         r'getAllDerivedDefinitions\("AdditionalEncoding"\)',
+         "把额外 encoding 归并到 `AliasOf` 指向的指令。"),
+        ("hwmode encoding select", "EncodingByHwMode",
+         r'getValueAsOptionalDef\("EncodingInfos"\)',
+         "按 HwMode 取得 `EncodingByHwMode.Objects` 里的具体 encoding。"),
+        ("predicate lowering", "Predicate.AssemblerMatcherPredicate",
+         r'getValueAsListOfDefs\("Predicates"\)',
+         "把汇编匹配谓词下沉成 MCDecoder 的 feature 检查。"),
+    ),
     "fast-isel": (
         ("pattern filtering", "ImmLeaf.FastIselShouldIgnore",
          r'getValueAsBit\("FastIselShouldIgnore"\)',
