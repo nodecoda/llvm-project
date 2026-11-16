@@ -1,0 +1,108 @@
+(* ============================================================
+ * rvcsr v1 — machine-readable grammar
+ *
+ * Status:   frozen (v1, 2026-11-11)
+ * SSOT doc: rvcsr/docs/grammar-v1.md
+ * Upstream: /home/ubuntu/admin/ana-docs/rvcsr-grammar-v1-2026-11-11.md
+ *
+ * Scope: a non-Turing-complete, declarative CSR binding language.
+ *   Layer 0  declarations   csr / alias / deprecated / vendor
+ *   Layer 1  bounded macro  for / ${i} / ${i:width} / + - ( )
+ *   Layer 2  conditions     requires / rv32only [if odd|even(i)]
+ *   Layer 3  escapes        @literal / @priority  (off by default)
+ *
+ * Lexical rules are given at the bottom (section LEX).
+ * ============================================================ *)
+
+
+(* ---------- CSR source file: *.rvcsr ---------- *)
+
+csr_file        ::= { top_item } EOF ;
+
+top_item        ::= vendor_block
+                  | csr_decl
+                  | alias_decl
+                  | deprecated_decl
+                  | loop ;
+
+(* vendor is a namespace.  There is no "." in the source syntax;
+ * sf. / qc. / aif. prefixes are produced by projection only. *)
+vendor_block    ::= "vendor" ident [ "requires" feature_ref ]
+                    "{" { vendor_item } "}" ;
+vendor_item     ::= csr_decl | loop ;
+
+(* Bounds are integer literals, never expressions or variables.
+ * Iteration is ascending; sema enforces hi - lo + 1 <= 1024 (E2011).
+ * Loop bodies contain csr_decl only, so loops cannot nest. *)
+loop            ::= "for" ident "in" integer ".." integer
+                    "{" { csr_decl } "}" ;
+
+csr_decl        ::= "csr" local_name "=" expr [ attr_block ] ;
+alias_decl      ::= "alias" ident "of" expr ;
+deprecated_decl ::= "deprecated" ident "of" expr ;
+
+attr_block      ::= "{" attr { "," attr } "}" ;
+attr            ::= "rv32only" [ "if" condition ]
+                  | "requires" feature_ref ;
+condition       ::= ( "odd" | "even" ) "(" ident ")" ;
+
+(* Exactly three name shapes occur in the corpus:
+ *   ident
+ *   ident template
+ *   ident template ident
+ * The template appears at most once and binds exactly one loop variable. *)
+local_name      ::= ident [ template [ ident ] ] ;
+template        ::= "${" ident [ ":" integer ] "}" ;
+
+(* Integer arithmetic only.  No *, /, %, shifts, bitwise ops, comparisons. *)
+expr            ::= term { ( "+" | "-" ) term } ;
+term            ::= integer | ident | "(" expr ")" ;
+
+feature_ref     ::= ident ;
+
+
+(* ---------- Feature file: *.rvfeat ---------- *)
+
+feature_file    ::= { feature_decl } EOF ;
+
+feature_decl    ::= "feature" ident
+                    [ "{" [ feature_attr { "," feature_attr } ] "}" ]
+                  | "extern" "feature" ident ;
+
+feature_attr    ::= "rv32only" | "experimental" | "requires" ident ;
+
+
+(* ---------- Layer 3: escapes (default off) ----------
+ * Enabled only with --allow-escapes; every use is W2001 and is
+ * counted in --stats.  The v1 corpus budget is 0.
+ *
+ * These rules replace a local_name / extend an attr_block; they do
+ * not add code, control flow, or a new evaluation model. *)
+csr_name_escaped ::= local_name | "@literal" name_string ;
+attr_escaped     ::= attr | "@priority" integer ;
+
+
+(* ---------- LEX ----------
+ * Whitespace (including newlines) is insignificant; statements have
+ * no terminator.  ".." is the longest match; there is no "." in the
+ * core syntax.  "@" is reserved for Layer 3. *)
+
+ident           ::= ( letter | "_" ) { letter | digit | "_" } ;
+letter          ::= "A".."Z" | "a".."z" ;
+digit           ::= "0".."9" ;
+
+integer         ::= decimal | hex ;
+decimal         ::= digit { digit } ;
+hex             ::= ( "0x" | "0X" ) hexdigit { hexdigit } ;
+hexdigit        ::= digit | "A".."F" | "a".."f" ;
+
+name_string     ::= '"' lower_ident '"' ;
+lower_ident     ::= ( lower | "_" ) { lower | digit | "_" } ;
+lower           ::= "a".."z" ;
+
+comment         ::= "#" { any-char-except-newline } newline ;
+
+(* Reserved words (cannot be used as a bare ident):
+ *   csr alias deprecated of vendor requires for in
+ *   rv32only if odd even feature experimental extern
+ *)
