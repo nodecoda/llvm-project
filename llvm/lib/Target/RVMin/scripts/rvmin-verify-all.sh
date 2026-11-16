@@ -9,7 +9,8 @@
 #   2. lit: CodeGen + MC tests;
 #   3. encoding gate: byte-exact against the reference RISC-V assembler;
 #   4. e2e: 10 C programs x 4 -O levels x 2 feature sets, round-tripped;
-#   5. every CodeGen test at -O0..-O3 x {rv32i,+m} with -verify-machineinstrs.
+#   5. every CodeGen test at -O0..-O3 x {rv32i,+m} with -verify-machineinstrs
+#      (tests that expect a diagnostic, i.e. "RUN: not llc", are skipped).
 #
 # The QEMU run gate is separate (rvmin-run.sh) because it needs a linker and an
 # emulator, which the other checks do not.
@@ -53,6 +54,8 @@ echo "PASS 4/5: e2e"
 # 5. Machine-instruction verification at every optimization level.
 CASES=0
 for f in "$TESTS"/CodeGen/RVMin/*.ll; do
+  # Expected-failure tests are covered by lit; here every input must compile.
+  grep -q 'RUN: not llc' "$f" && continue
   for O in 0 1 2 3; do
     for MATTR in "" "+m"; do
       ARGS=(-march=rvmin -mtriple=riscv32-unknown-elf -O"$O" -verify-machineinstrs)

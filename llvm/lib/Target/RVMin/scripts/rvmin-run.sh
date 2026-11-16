@@ -4,7 +4,9 @@
 # program.  Chapter 13 runs the same program twice, once as plain RV32I (with
 # the runtime's libcalls) and once with the M extension, and requires identical
 # output.  Chapter 16 adds a second program whose stack frames are larger than
-# 2 KiB, compiled at -O0 and -O2.
+# 2 KiB, compiled at -O0 and -O2.  Chapter 17 adds a third one that recurses a
+# million levels deep and only fits in the default stack because the recursive
+# calls became jumps.
 #
 # Usage: rvmin-run.sh <llvm-bin-dir> [qemu]
 #
@@ -120,6 +122,36 @@ for O in 0 2; do
   grep -q 'lui' "$TMP/lf$O.s" || fail "large-frame -O$O never materialized an address"
 done
 echo "PASS: 3 KiB frames (and 9 nested ones) ran under $QEMU at -O0 and -O2"
+
+# Chapter 17 gate: one million tail calls.  Each function has a 16-byte frame,
+# so without tail call optimization the recursion would need 16 MiB of stack
+# (the program gets 8 MiB) and die with SIGSEGV -- -O0 still does exactly that,
+# which is what makes this check meaningful.
+run_tail_calls() {
+  "$CC" --target="$TRIPLE" -march=rv32i -mabi=ilp32 -O2 -ffreestanding \
+    -fno-builtin -S -emit-llvm "$RT/tail.c" -o "$TMP/tail.ll" \
+    || fail "clang could not compile tail.c"
+  "$LLC" -march=rvmin -mtriple="$TRIPLE" -O2 -verify-machineinstrs \
+    "$TMP/tail.ll" -o "$TMP/tail.s" \
+    || fail "llc could not select tail.c"
+  grep -q 'jalr zero, 0(t0)' "$TMP/tail.s" \
+    || fail "tail.c emitted no tail call (expected jalr zero, 0(t0))"
+  "$MC" -triple=rvmin -filetype=obj "$TMP/tail.s" -o "$TMP/tail.o" \
+    || fail "llvm-mc rejected the tail-call output"
+  "$MC" -triple=rvmin -filetype=obj "$RT/rvmin-rt.S" -o "$TMP/rt-tail.o" \
+    || fail "llvm-mc rejected rvmin-rt.S"
+  "$MC" -triple=rvmin -filetype=obj "$RT/start.S" -o "$TMP/start-tail.o" \
+    || fail "llvm-mc rejected start.S"
+  "$LD" -m elf32lriscv -T "$RT/link.ld" -o "$TMP/tail" \
+    "$TMP/start-tail.o" "$TMP/tail.o" "$TMP/rt-tail.o" \
+    || fail "ld.lld could not link the tail-call program"
+  "$QEMU" "$TMP/tail"
+}
+
+STATUS=0
+run_tail_calls || STATUS=$?
+[[ "$STATUS" -eq 0 ]] || fail "tail-call program exited with $STATUS"
+echo "PASS: 1e6 tail calls ran under $QEMU (16 MiB of frames would not fit)"
 
 SIZE1=$(stat -c%s "$TMP/demo")
 SIZE2=$(stat -c%s "$TMP/demo-m")

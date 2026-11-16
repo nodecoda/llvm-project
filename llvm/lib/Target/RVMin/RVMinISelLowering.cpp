@@ -26,6 +26,7 @@
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/SelectionDAG.h"
 #include "llvm/CodeGen/SelectionDAGNodes.h"
+#include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace llvm;
@@ -267,9 +268,18 @@ const char *RVMinTargetLowering::getTargetNodeName(unsigned Opcode) const {
     return "RVMinISD::BR_CC";
   case RVMinISD::CALL:
     return "RVMinISD::CALL";
+  case RVMinISD::TAIL:
+    return "RVMinISD::TAIL";
   default:
     return nullptr;
   }
+}
+
+bool RVMinTargetLowering::mayBeEmittedAsTailCall(const CallInst *CI) const {
+  // RVMin can emit a real `j` for a call in tail position (see LowerCall), so
+  // every `tail` marker survives; whether it is actually in tail position is
+  // decided by SelectionDAGBuilder::isInTailCallPosition.
+  return CI->isTailCall();
 }
 
 SDValue RVMinTargetLowering::LowerFormalArguments(
@@ -345,10 +355,6 @@ SDValue RVMinTargetLowering::LowerCall(CallLoweringInfo &CLI,
   CallingConv::ID CallConv = CLI.CallConv;
   bool IsVarArg = CLI.IsVarArg;
 
-  // Tail calls need a callee that can reuse the caller's frame; leave them for
-  // a later chapter and let the caller emit a normal call + return.
-  CLI.IsTailCall = false;
-
   if (IsVarArg)
     report_fatal_error("RVMin: varargs are not supported yet");
 
@@ -363,7 +369,32 @@ SDValue RVMinTargetLowering::LowerCall(CallLoweringInfo &CLI,
   // Size of the outgoing argument area.  The DAG builder records it in
   // CALLSEQ_START and PEI adds it to the fixed frame.
   unsigned NumBytes = CCInfo.getStackSize();
-  Chain = DAG.getCALLSEQ_START(Chain, NumBytes, 0, DL);
+
+  // Chapter 17: a tail call reuses the caller's frame.  After the epilogue sp
+  // is back at entry_sp, which is exactly where a normal call would put the
+  // outgoing argument area, and callee-saved registers are restored, so the
+  // callee can return straight to our caller.  That only works when nothing
+  // has to be written into the (already gone) frame: register arguments only,
+  // no varargs, no dynamic objects.
+  bool IsTailCall = CLI.IsTailCall;
+  if (IsTailCall &&
+      (NumBytes != 0 || MF.getFrameInfo().hasVarSizedObjects())) {
+    // `tail` is only a hint, so fall back to a normal call + return.  A
+    // `musttail` call has to be diagnosable: the frontend promised that no
+    // frame is needed after it.
+    if (CLI.CB && CLI.CB->isMustTailCall())
+      MF.getFunction().getContext().diagnose(DiagnosticInfoUnsupported{
+          MF.getFunction(),
+          "RVMin: musttail requires a fixed frame and arguments that fit in "
+          "registers"});
+    IsTailCall = false;
+  }
+  CLI.IsTailCall = IsTailCall;
+
+  // A tail call has no call sequence: there is no argument area to reserve and
+  // no return to collect.
+  if (!IsTailCall)
+    Chain = DAG.getCALLSEQ_START(Chain, NumBytes, 0, DL);
 
   SmallVector<std::pair<Register, SDValue>, 8> RegsToPass;
   SmallVector<SDValue, 8> MemOpChains;
@@ -429,6 +460,13 @@ SDValue RVMinTargetLowering::LowerCall(CallLoweringInfo &CLI,
 
   if (Glue.getNode())
     Ops.push_back(Glue);
+
+  if (IsTailCall) {
+    // The epilogue (restores + `sp += N`) is emitted in this block because
+    // PseudoTAIL is a return; all that is left is the jump.
+    MF.getFrameInfo().setHasTailCall();
+    return DAG.getNode(RVMinISD::TAIL, DL, MVT::Other, Ops);
+  }
 
   Chain = DAG.getNode(RVMinISD::CALL, DL, DAG.getVTList(MVT::Other, MVT::Glue),
                       Ops);

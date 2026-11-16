@@ -30,6 +30,10 @@ public:
 
   SDValue LowerOperation(SDValue Op, SelectionDAG &DAG) const override;
 
+  /// Chapter 17: tell the IR-level tail call passes that RVMin can emit a
+  /// real jump, so `return f(x);` keeps its `tail` marker.
+  bool mayBeEmittedAsTailCall(const CallInst *CI) const override;
+
   SDValue LowerFormalArguments(SDValue Chain, CallingConv::ID CallConv,
                                bool IsVarArg,
                                const SmallVectorImpl<ISD::InputArg> &Ins,

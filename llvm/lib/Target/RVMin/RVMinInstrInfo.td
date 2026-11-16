@@ -298,6 +298,12 @@ def RVMinCall : SDNode<"RVMinISD::CALL", SDT_RVMinCall,
                        [SDNPHasChain, SDNPOutGlue, SDNPOptInGlue,
                         SDNPVariadic]>;
 
+// Tail call (chapter 17): same operands as RVMinCall, but nothing continues
+// afterwards -- the callee returns straight to our caller.  There is no glue
+// result because the frame is already gone when this node executes.
+def RVMinTail : SDNode<"RVMinISD::TAIL", SDT_RVMinCall,
+                       [SDNPHasChain, SDNPOptInGlue, SDNPVariadic]>;
+
 //===----------------------------------------------------------------------===//
 // Selection patterns
 //===----------------------------------------------------------------------===//
@@ -555,3 +561,33 @@ def PseudoCALLR : RVMinPseudo<(outs), (ins GPR:$rs1), "", []>,
                   PseudoInstExpansion<(JALR X1, GPR:$rs1, 0)>;
 
 def : Pat<(RVMinCall GPR:$rs1), (PseudoCALLR GPR:$rs1)>;
+
+//===----------------------------------------------------------------------===//
+// Chapter 17: tail calls
+//===----------------------------------------------------------------------===//
+//
+// A tail call is a call whose result is returned immediately.  Since the
+// epilogue already restored sp and every callee-saved register, the callee can
+// return directly to *our* caller, so this is a plain jump:
+//
+//   lui   t0, %hi(callee)      (direct callee; same %hi/%lo pair as a call)
+//   addi  t0, t0, %lo(callee)
+//   jalr  zero, 0(t0)          rd = x0: no return address link
+//
+// `isReturn` is what makes PEI emit the epilogue in this block: like PseudoRET
+// it ends the function, but the register that carries the return address is
+// the caller's `ra`, which we never touch.
+
+let isTerminator = 1, isBarrier = 1, isReturn = 1, Size = 12 in
+def PseudoTAIL : RVMinPseudo<(outs), (ins bare_symbol:$func), "", []>;
+
+def : Pat<(RVMinTail tglobaladdr:$func), (PseudoTAIL tglobaladdr:$func)>;
+def : Pat<(RVMinTail texternalsym:$func), (PseudoTAIL texternalsym:$func)>;
+
+// Indirect tail call: the address is already in a register, so `jalr zero,
+// rs1, 0` is the whole instruction.
+let isTerminator = 1, isBarrier = 1, isReturn = 1, Size = 4 in
+def PseudoTAILIND : RVMinPseudo<(outs), (ins GPR:$rs1), "", []>,
+                    PseudoInstExpansion<(JALR X0, GPR:$rs1, 0)>;
+
+def : Pat<(RVMinTail GPR:$rs1), (PseudoTAILIND GPR:$rs1)>;

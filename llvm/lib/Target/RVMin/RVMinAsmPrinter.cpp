@@ -52,8 +52,9 @@ public:
   }
 
   void emitInstruction(const MachineInstr *MI) override {
-    if (MI->getOpcode() == RVMin::PseudoCALL) {
-      emitPseudoCall(*MI);
+    if (MI->getOpcode() == RVMin::PseudoCALL ||
+        MI->getOpcode() == RVMin::PseudoTAIL) {
+      emitPseudoCall(*MI, /*IsTail=*/MI->getOpcode() == RVMin::PseudoTAIL);
       return;
     }
 
@@ -76,16 +77,20 @@ public:
   /// PseudoInstExpansion (PseudoRET, PseudoBR and PseudoCALLR).
   bool lowerPseudoInstExpansion(const MachineInstr *MI, MCInst &Inst);
 
-  /// Expand a direct call into the three real instructions that materialize
-  /// the callee address and jump to it:
+  /// Expand a direct call (or a direct tail call) into the three real
+  /// instructions that materialize the callee address and jump to it:
   ///
   ///   lui  t0, %hi(callee)
   ///   addi t0, t0, %lo(callee)
-  ///   jalr ra, t0, 0
+  ///   jalr rd, t0, 0
+  ///
+  /// A call links with `rd = ra`; a tail call uses `rd = x0`, i.e. `j` -- the
+  /// return address is still our caller's, which is the whole point of the
+  /// optimization.
   ///
   /// The `%hi`/`%lo` specifiers become R_RISCV_HI20 / R_RISCV_LO12_I
   /// relocations, exactly like a global data reference.
-  void emitPseudoCall(const MachineInstr &MI) {
+  void emitPseudoCall(const MachineInstr &MI, bool IsTail) {
     const MachineOperand &Callee = MI.getOperand(0);
 
     MCSymbol *Sym;
@@ -115,7 +120,7 @@ public:
 
     MCInst Jalr;
     Jalr.setOpcode(RVMin::JALR);
-    Jalr.addOperand(MCOperand::createReg(RVMin::X1));
+    Jalr.addOperand(MCOperand::createReg(IsTail ? RVMin::X0 : RVMin::X1));
     Jalr.addOperand(MCOperand::createReg(RVMin::X5));
     Jalr.addOperand(MCOperand::createImm(0));
     OutStreamer->emitInstruction(Jalr, getSubtargetInfo());
