@@ -90,6 +90,9 @@ llvm/utils/TableGen/dsl-surface.py --status-matrix --usage MyTarget.td
 
 # Field-centric impact query: declarations, per-backend stages, readers.
 llvm/utils/TableGen/dsl-surface.py --effect TSFlags
+
+# One row per backend: roots, fields, stages, magic names, derivations.
+llvm/utils/TableGen/dsl-surface.py --summary
 ```
 
 The extractor scans the backend's emitter and the shared files it uses, parses

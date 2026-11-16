@@ -27,6 +27,9 @@ This script derives that specification from the C++ sources themselves:
 verifies the document is still in sync and that every consumed field has a
 human-written semantic annotation.  A backend change that adds a keyword
 without a spec therefore fails the check instead of silently drifting.
+`--status-matrix`, `--effect`, and `--summary` provide the aggregate views:
+one row per `.td` usage, one field across all backends, and one row per
+backend.
 
 The experiment starts with `-gen-register-info`; adding another backend means
 adding a Backend entry below (and, eventually, its annotations).
@@ -49,7 +52,9 @@ USAGE_END = "<!-- END: GENERATED TD USAGE -->"
 STATUS_BEGIN = "<!-- BEGIN: GENERATED CROSS-BACKEND STATUS -->"
 STATUS_END = "<!-- END: GENERATED CROSS-BACKEND STATUS -->"
 EFFECT_BEGIN = "<!-- BEGIN: GENERATED FIELD EFFECT -->"
+SUMMARY_BEGIN = "<!-- BEGIN: GENERATED BACKEND SUMMARY -->"
 EFFECT_END = "<!-- END: GENERATED FIELD EFFECT -->"
+SUMMARY_END = "<!-- END: GENERATED BACKEND SUMMARY -->"
 
 
 @dataclass(frozen=True)
@@ -1918,6 +1923,45 @@ def render_effect(root: Path, contracts, field: str) -> str:
     return "\n".join(out)
 
 
+def render_summary(contracts) -> str:
+    """One row per backend: the acceptance table for the tutorial."""
+    out = [SUMMARY_BEGIN, "",
+           "| backend | roots | 字段 | 消费 | derive | project | both | "
+           "schema | magic | derivations |",
+           "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+    totals = {"roots": 0, "fields": 0, "consumed": 0, "schema": 0,
+              "derive": 0, "project": 0, "derive+project": 0,
+              "magic": 0, "derivations": 0}
+    for c in contracts:
+        st = c["stats"]
+        stages = st["stages"]
+        row = {
+            "roots": st["roots"],
+            "fields": st["fields"],
+            "consumed": st["consumed"],
+            "schema": stages["schema"],
+            "derive": stages["derive"],
+            "project": stages["project"],
+            "derive+project": stages["derive+project"],
+            "magic": len(c["magic"]),
+            "derivations": len(c["derivations"]),
+        }
+        for k, v in row.items():
+            totals[k] += v
+        out.append(
+            f"| `{c['backend']}` | {row['roots']} | {row['fields']} | "
+            f"{row['consumed']} | {row['derive']} | {row['project']} | "
+            f"{row['derive+project']} | {row['schema']} | {row['magic']} | "
+            f"{row['derivations']} |")
+    out.extend([
+        "",
+        f"共 {len(contracts)} 个后端 · {totals['roots']} 个 root 条目 · "
+        f"{totals['fields']} 个后端字段条目 · {totals['consumed']} 个被消费 · "
+        f"{totals['magic']} 个 magic name · {totals['derivations']} 条派生改写。",
+        SUMMARY_END])
+    return "\n".join(out)
+
+
 def render_usage_block(rows) -> str:
     out = [USAGE_BEGIN, "", "| 文件:行 | 字段 | 契约状态 |", "| --- | --- | --- |"]
     for rel, line, fld, status in rows:
@@ -1946,7 +1990,10 @@ def build_all_contracts(root: Path):
 
 
 def _doc_blocks(root, backend, contract, usage_files, status_matrix=False,
-                effect=None):
+                effect=None, summary=False):
+    if summary:
+        contracts = build_all_contracts(root)
+        return [(SUMMARY_BEGIN, SUMMARY_END, render_summary(contracts))]
     if effect:
         contracts = build_all_contracts(root)
         return [(EFFECT_BEGIN, EFFECT_END,
@@ -1972,8 +2019,8 @@ def _doc_blocks(root, backend, contract, usage_files, status_matrix=False,
 
 
 def check_doc(root: Path, backend: Backend, doc: Path, usage_files,
-              status_matrix=False, effect=None):
-    all_backends = status_matrix or bool(effect)
+              status_matrix=False, effect=None, summary=False):
+    all_backends = status_matrix or bool(effect) or summary
     contract = None if all_backends else build_contract(root, backend)
     contracts = build_all_contracts(root) if all_backends else [contract]
     problems = []
@@ -1990,7 +2037,7 @@ def check_doc(root: Path, backend: Backend, doc: Path, usage_files,
     text = doc.read_text()
     for begin, end, expected in _doc_blocks(root, backend, contract,
                                             usage_files, status_matrix,
-                                            effect):
+                                            effect, summary):
         try:
             actual = _get_block(text, begin, end)
         except ContractError as e:
@@ -2003,6 +2050,9 @@ def check_doc(root: Path, backend: Backend, doc: Path, usage_files,
         for p in problems:
             print(f"  - {p}", file=sys.stderr)
         return 1
+    if summary:
+        print(f"dsl-surface: OK (backend summary: {len(contracts)} backends)")
+        return 0
     if effect:
         print(f"dsl-surface: OK (field effect: {effect}, "
               f"{len(contracts)} backends)")
@@ -2023,8 +2073,8 @@ def check_doc(root: Path, backend: Backend, doc: Path, usage_files,
 
 
 def update_doc(root: Path, backend: Backend, doc: Path, usage_files,
-               status_matrix=False, effect=None):
-    all_backends = status_matrix or bool(effect)
+               status_matrix=False, effect=None, summary=False):
+    all_backends = status_matrix or bool(effect) or summary
     contract = None if all_backends else build_contract(root, backend)
     contracts = build_all_contracts(root) if all_backends else [contract]
     for c in contracts:
@@ -2034,7 +2084,7 @@ def update_doc(root: Path, backend: Backend, doc: Path, usage_files,
                 ", ".join(c["problems"]["missing_annotations"]))
     text = doc.read_text()
     for begin, end, block in _doc_blocks(root, backend, contract, usage_files,
-                                         status_matrix, effect):
+                                         status_matrix, effect, summary):
         text = _replace_block(text, begin, end, block)
     doc.write_text(text)
     print(f"dsl-surface: updated {doc}")
@@ -2056,6 +2106,9 @@ def main(argv=None):
                              "for every backend (requires --usage)")
     parser.add_argument("--effect", metavar="FIELD",
                         help="print/update/check the impact of one .td field")
+    parser.add_argument("--summary", action="store_true",
+                        help="print/update/check the seven-backend summary "
+                             "table")
     parser.add_argument("--update", type=Path, metavar="DOC")
     parser.add_argument("--check", type=Path, metavar="DOC")
     parser.add_argument("--usage", type=Path, nargs="+", metavar="TD",
@@ -2066,6 +2119,9 @@ def main(argv=None):
     try:
         if args.effect and args.status_matrix:
             raise ContractError("--effect and --status-matrix are exclusive")
+        if args.summary and (args.effect or args.status_matrix):
+            raise ContractError("--summary is exclusive with --effect / "
+                                "--status-matrix")
         if args.effect and not (args.check or args.update):
             contracts = build_all_contracts(args.root)
             print(render_effect(args.root, contracts, args.effect))
@@ -2079,12 +2135,15 @@ def main(argv=None):
             print(render_status_matrix(rows,
                                        [c["backend"] for c in contracts]))
             return 0
+        if args.summary and not (args.check or args.update):
+            print(render_summary(build_all_contracts(args.root)))
+            return 0
         if args.check:
             return check_doc(args.root, backend, args.check, args.usage,
-                             args.status_matrix, args.effect)
+                             args.status_matrix, args.effect, args.summary)
         if args.update:
             return update_doc(args.root, backend, args.update, args.usage,
-                              args.status_matrix, args.effect)
+                              args.status_matrix, args.effect, args.summary)
         contract = build_contract(args.root, backend)
         if args.usage:
             rows = collect_usage(args.root, contract,

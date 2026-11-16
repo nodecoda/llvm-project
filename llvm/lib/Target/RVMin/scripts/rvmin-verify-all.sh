@@ -14,7 +14,7 @@
 #      (tests that expect a diagnostic, i.e. "RUN: not llc", are skipped);
 #   7. the TableGen DSL contracts for seven backends, the cross-backend
 #      status matrix, the TSFlags field-effect report, and the upstream
-#      BackEnds.md section (chapters 29-38).
+#      BackEnds.md section (chapters 29-39).
 #
 # The QEMU run gate is separate (rvmin-run.sh) because it needs a linker and an
 # emulator, which the other checks do not.
@@ -120,6 +120,9 @@ python3 "$W/llvm/utils/TableGen/dsl-surface.py" --backend disassembler --check \
           "$W/llvm/lib/Target/RVMin/RVMinInstrFormats.td" \
           "$W/llvm/lib/Target/RVMin/RVMinRegisterInfo.td" \
   || fail "TableGen DSL contract (disassembler)"
+python3 "$W/llvm/utils/TableGen/dsl-surface.py" --summary --check \
+  "$W/llvm/lib/Target/RVMin/docs/39-dsl-acceptance.md" \
+  || fail "backend summary"
 python3 - "$W" <<'PY' || fail "upstream BackEnds contract section"
 import pathlib
 import sys
