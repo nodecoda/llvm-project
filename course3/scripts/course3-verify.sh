@@ -33,6 +33,11 @@
 #   * --dump-pagetable shows the relocated U page and the UART leaf;
 #   * a U load from a U=0 kernel page traps with cause 13.
 #
+# Chapter 07 checks:
+#   * the course-2 demo runs as a U-mode program: stdout "rvmin: ok\n", exit 0;
+#   * a write buffer that crosses a page boundary is copied byte by byte;
+#   * --dump-pagetable shows the demo text page, the UART and the user stack.
+#
 set -euo pipefail
 
 BIN=${1:?usage: course3-verify.sh <llvm-bin-dir> <rmach-binary>}
@@ -42,8 +47,11 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 COURSE3=$(cd "$HERE/.." && pwd)
 CC="$BIN/clang"
 READELF="$BIN/llvm-readelf"
+LLC="$BIN/llc"
+MC="$BIN/llvm-mc"
 LD=${LD:-ld.lld}
 TRIPLE=riscv32-unknown-elf
+RT="$COURSE3/../llvm/lib/Target/RVMin/scripts/rt"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
@@ -92,7 +100,23 @@ build_mmu_image() {
     "$TMP/$name-trap.o" || fail "ld.lld could not link $main"
 }
 
-build_kernel() { build_c_image kernel "$COURSE3/kernel/kmain.c"; }
+# The chapter-07 kernel is four C files plus start.S and trap.S.  The generic
+# build_c_image above stays for standalone test kernels such as uart-echo.c.
+build_kernel() {
+  local name=kernel f
+  for f in kmain uart mmu exit; do
+    "$CC" "${KFLAGS[@]}" -c "$COURSE3/kernel/$f.c" -o "$TMP/$name-$f.o" \
+      || fail "clang could not compile kernel/$f.c"
+  done
+  "$CC" "${AFLAGS[@]}" -c "$COURSE3/kernel/start.S" -o "$TMP/$name-start.o" \
+    || fail "clang could not assemble start.S"
+  "$CC" "${AFLAGS[@]}" -c "$COURSE3/kernel/trap.S" -o "$TMP/$name-trap.o" \
+    || fail "clang could not assemble trap.S"
+  "$LD" -m elf32lriscv -T "$COURSE3/kernel/link.ld" -o "$TMP/$name.elf" \
+    "$TMP/$name-start.o" "$TMP/$name-trap.o" "$TMP/$name-kmain.o" \
+    "$TMP/$name-uart.o" "$TMP/$name-mmu.o" "$TMP/$name-exit.o" \
+    || fail "ld.lld could not link the kernel"
+}
 build_kernel
 
 build_asm_image() {
@@ -101,6 +125,26 @@ build_asm_image() {
     || fail "clang could not assemble $src"
   "$LD" -m elf32lriscv -T "$COURSE3/kernel/link.ld" -o "$TMP/$name.elf" \
     "$TMP/$name.o" || fail "ld.lld could not link $src"
+}
+
+# Build a course-2 program with the course-1 backend.  Chapter 07 feeds the
+# result to --user, so the three courses meet in one command.
+build_rvmin_program() {
+  local name=$1 src=$2 opt=$3
+  "$CC" --target="$TRIPLE" -march=rv32i -mabi=ilp32 -O"$opt" -ffreestanding \
+    -fno-builtin -S -emit-llvm "$src" -o "$TMP/$name.ll" \
+    || fail "clang could not compile $src"
+  "$LLC" -march=rvmin -mtriple="$TRIPLE" -O"$opt" "$TMP/$name.ll" \
+    -o "$TMP/$name.s" || fail "llc could not select $name"
+  "$MC" -triple=rvmin -filetype=obj "$TMP/$name.s" -o "$TMP/$name.o" \
+    || fail "llvm-mc rejected $name"
+  "$MC" -triple=rvmin -filetype=obj "$RT/rvmin-rt.S" \
+    -o "$TMP/rt-$name.o" || fail "llvm-mc rejected rvmin-rt.S"
+  "$MC" -triple=rvmin -filetype=obj "$RT/start.S" \
+    -o "$TMP/start-$name.o" || fail "llvm-mc rejected start.S"
+  "$LD" -m elf32lriscv -T "$RT/link.ld" -o "$TMP/$name" \
+    "$TMP/start-$name.o" "$TMP/$name.o" "$TMP/rt-$name.o" \
+    || fail "ld.lld could not link $name"
 }
 
 # The loader must see the same entry point and PT_LOAD list as llvm-readelf.
@@ -272,6 +316,57 @@ fault_rc=$?
 set -e
 [[ "$fault_rc" -eq 0 ]] || fail "mmu-fault exited $fault_rc (cause was not 13)"
 [[ ! -s "$TMP/mmu_fault.out" ]] || fail "mmu-fault produced unexpected stdout"
+CHECKS=$((CHECKS + 1))
+
+# --- Chapter 07: U-mode programs and system calls -----------------------
+
+# The course-2 demo becomes the first real U-mode program: rvmin compiled it,
+# the kernel mapped it, and the write/exit syscalls carry its output.
+build_rvmin_program demo "$RT/demo.c" 2
+printf 'rvmin: ok\n' > "$TMP/demo.golden"
+set +e
+"$RMACH" --kernel "$TMP/kernel.elf" --user "$TMP/demo" \
+  > "$TMP/demo.out" 2> "$TMP/demo.err"
+demo_rc=$?
+set -e
+[[ "$demo_rc" -eq 0 ]] || fail "demo under rmach exited $demo_rc, want 0"
+cmp -s "$TMP/demo.out" "$TMP/demo.golden" \
+  || fail "demo stdout is $(od -An -tx1c "$TMP/demo.out" | tr '\n' ' ')"
+CHECKS=$((CHECKS + 1))
+
+# A 24-byte buffer starts six bytes before a page boundary.  A kernel that
+# translates only the first page loses the tail.
+"$CC" --target="$TRIPLE" -march=rv32i -mabi=ilp32 -mno-relax \
+  -c "$COURSE3/tests/user-crosspage.S" -o "$TMP/cross.o" \
+  || fail "clang could not assemble user-crosspage.S"
+"$LD" -m elf32lriscv -T "$RT/link.ld" -o "$TMP/cross" "$TMP/cross.o" \
+  || fail "ld.lld could not link user-crosspage"
+printf '0123456789abcdefghijklmn' > "$TMP/cross.golden"
+set +e
+"$RMACH" --kernel "$TMP/kernel.elf" --user "$TMP/cross" \
+  > "$TMP/cross.out" 2> "$TMP/cross.err"
+cross_rc=$?
+set -e
+[[ "$cross_rc" -eq 0 ]] || fail "user-crosspage exited $cross_rc, want 0"
+cmp -s "$TMP/cross.out" "$TMP/cross.golden" \
+  || fail "user-crosspage stdout is $(od -An -tx1c "$TMP/cross.out" | tr '\n' ' ')"
+CHECKS=$((CHECKS + 1))
+
+# The U-mode address space comes from boot_info: one demo page (its R, RW and
+# X segments share a page, so the flags are their union), four stack pages and
+# the console.
+set +e
+"$RMACH" --kernel "$TMP/kernel.elf" --user "$TMP/demo" --dump-pagetable \
+  > "$TMP/demo.dump" 2> /dev/null
+demo_dump_rc=$?
+set -e
+[[ "$demo_dump_rc" -eq 0 ]] || fail "demo --dump-pagetable exited $demo_dump_rc"
+grep -q '^leaf va=0x00010000 pa=0x80400000 .* flags=VRWXUAD$' "$TMP/demo.dump" \
+  || fail "dump lacks the demo text page: $(cat "$TMP/demo.dump")"
+grep -q '^leaf va=0x10000000 pa=0x10000000 .* flags=VRWUAD$' "$TMP/demo.dump" \
+  || fail "dump lacks the UART page: $(cat "$TMP/demo.dump")"
+grep -q '^leaf va=0x7feff000 pa=0x80423000 .* flags=VRWUAD$' "$TMP/demo.dump" \
+  || fail "dump lacks the last stack page: $(cat "$TMP/demo.dump")"
 CHECKS=$((CHECKS + 1))
 
 echo "$CHECKS checks"

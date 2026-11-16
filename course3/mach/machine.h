@@ -9,6 +9,7 @@
 #ifndef RMACH_MACHINE_H
 #define RMACH_MACHINE_H
 
+#include "boot.h"
 #include "bus.h"
 #include "csr.h"
 #include "elf.h"
@@ -29,8 +30,9 @@ public:
 
   // Physical arena for user images and their page tables.  Chapter 06 uses a
   // fixed scratch page; chapter 07 copies each PT_LOAD segment here.
-  static constexpr uint32_t kUserBase = 0x80400000;
-  static constexpr uint32_t kUserSize = 0x00010000; // 64 KiB
+  static constexpr uint32_t kUserBase = BOOT_USER_BASE;
+  static constexpr uint32_t kUserSize = BOOT_USER_SIZE;
+  static constexpr uint32_t kBootInfo = BOOT_INFO_ADDR;
 
   static constexpr uint32_t kIsaDefault =
       static_cast<uint32_t>(rsim::Isa::RV32I) |
@@ -40,6 +42,9 @@ public:
   uint32_t pc = 0;
 
   void reset(const rsim::Image &image, Bus &bus);
+  /// Copy a user image into the arena and write the boot_info page.  Call
+  /// after reset(); an empty image leaves nseg == 0 (chapter-05 fallback).
+  void setUser(const rsim::Image &user);
   void setIsa(uint32_t mask) { isa_ = mask; }
 
   // Chapter 02: the CSR file and the current privilege level.  The selftest

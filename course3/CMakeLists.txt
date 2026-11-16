@@ -24,6 +24,7 @@ add_executable(rmach
 # dependency before it is used.
 target_include_directories(rmach PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../course2/rsim
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel
 )
 
 target_compile_options(rmach PRIVATE -Wall -Wextra -Wpedantic)

@@ -21,13 +21,14 @@
 
 namespace {
 
-constexpr const char *kVersion = "0.6";
+constexpr const char *kVersion = "0.7";
 constexpr int kExitUsage = 2;
 constexpr int kExitLoadError = 125;
 constexpr int kExitTrap = 126;
 
 struct Options {
   std::string kernel;
+  std::string user;
   std::string input;
   uint64_t max_steps = 10000000;
   bool trace = false;
@@ -40,9 +41,10 @@ struct Options {
 void usage() {
   std::fprintf(stderr, "usage: rmach --version\n"
                        "       rmach --selftest\n"
-                       "       rmach --kernel <elf> [--dump-boot]\n"
-                       "       rmach --kernel <elf> [--max-steps <n>] [--trace]\n"
-                       "                    [--input <file>] [--dump-pagetable [<satp>]]\n");
+                       "       rmach --kernel <elf> [--user <elf>] [--dump-boot]\n"
+                       "       rmach --kernel <elf> [--user <elf>] [--max-steps <n>]\n"
+                       "                    [--trace] [--input <file>]\n"
+                       "                    [--dump-pagetable [<satp>]]\n");
 }
 
 bool parse(int argc, char **argv, Options &opt) {
@@ -61,6 +63,11 @@ bool parse(int argc, char **argv, Options &opt) {
       if (!p)
         return false;
       opt.kernel = p;
+    } else if (arg == "--user") {
+      const char *p = next("--user");
+      if (!p)
+        return false;
+      opt.user = p;
     } else if (arg == "--input") {
       const char *p = next("--input");
       if (!p)
@@ -133,19 +140,19 @@ void dumpPageTable(const rsim::Memory &ram, uint32_t satp) {
     std::printf("... %zu more leaves\n", leaves.size() - kMaxLeaves);
 }
 
-void dumpBoot(const rsim::Image &image) {
-  std::printf("entry 0x%08" PRIx32 "\n", image.entry);
+void dumpBoot(const rsim::Image &image, const char *prefix = "") {
+  std::printf("%sentry 0x%08" PRIx32 "\n", prefix, image.entry);
   for (const rsim::Segment &seg : image.segments)
-    std::printf("load vaddr=0x%08" PRIx32 " filesz=0x%08" PRIx32
+    std::printf("%sload vaddr=0x%08" PRIx32 " filesz=0x%08" PRIx32
                 " memsz=0x%08" PRIx32 " flags=0x%x align=0x%x\n",
-                seg.vaddr, seg.filesz, seg.memsz, seg.flags, seg.align);
+                prefix, seg.vaddr, seg.filesz, seg.memsz, seg.flags, seg.align);
 }
 
 } // namespace
 
 int main(int argc, char **argv) {
   if (argc == 2 && std::strcmp(argv[1], "--version") == 0) {
-    std::printf("rmach %s (chapter 06)\n", kVersion);
+    std::printf("rmach %s (chapter 07)\n", kVersion);
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--selftest") == 0)
@@ -159,9 +166,15 @@ int main(int argc, char **argv) {
 
   try {
     const rsim::Image image = rsim::loadElf(opt.kernel);
+    rsim::Image user_image;
+    const bool has_user = !opt.user.empty();
+    if (has_user)
+      user_image = rsim::loadElf(opt.user);
 
     if (opt.dump_boot) {
       dumpBoot(image);
+      if (has_user)
+        dumpBoot(user_image, "user ");
       return 0;
     }
 
@@ -180,6 +193,10 @@ int main(int argc, char **argv) {
     bus.uart().setInput(input.get());
     rmach::Machine machine;
     machine.reset(image, bus);
+    if (has_user)
+      machine.setUser(user_image);
+    else
+      machine.setUser(rsim::Image{});
     if (opt.trace)
       machine.traceTo(stderr);
 

@@ -22,6 +22,10 @@
 
 namespace rmach {
 
+static_assert(sizeof(boot_seg) == 20, "boot_seg must be 20 bytes");
+static_assert(sizeof(boot_info) == 16 + BOOT_MAX_SEGS * 20,
+              "boot_info layout changed");
+
 namespace {
 
 uint32_t sext8(uint8_t v) {
@@ -83,6 +87,7 @@ void Machine::reset(const rsim::Image &image, Bus &bus) {
   bus_->reset();
   bus_->ram().load(image);
   bus_->ram().map(kKernelStackTop - kKernelStackSize, kKernelStackSize);
+  bus_->ram().map(kBootInfo, 4096);
   bus_->ram().map(kUserBase, kUserSize);
 
   for (uint32_t &reg : x)
@@ -97,6 +102,69 @@ void Machine::reset(const rsim::Image &image, Bus &bus) {
   for (uint32_t &word : csr_)
     word = 0;
   priv_ = Priv::M;
+}
+
+void Machine::setUser(const rsim::Image &user) {
+  if (bus_ == nullptr)
+    throw rsim::ElfError("setUser() called before reset()");
+
+  boot_info info = {};
+  info.magic = BOOT_MAGIC;
+  info.user_entry = user.entry;
+  info.user_sp = BOOT_USER_SP;
+
+  uint32_t cursor = BOOT_USER_BASE;
+  auto findPage = [&](uint32_t page_va) -> boot_seg * {
+    for (uint32_t i = 0; i < info.nseg; ++i)
+      if (info.seg[i].vaddr == page_va)
+        return &info.seg[i];
+    return nullptr;
+  };
+
+  for (const rsim::Segment &seg : user.segments) {
+    if (seg.memsz == 0)
+      continue;
+
+    const uint32_t first = seg.vaddr & ~0xfffu;
+    const uint32_t last = (seg.vaddr + seg.memsz - 1) & ~0xfffu;
+
+    for (uint32_t page_va = first; page_va <= last; page_va += 4096) {
+      boot_seg *page = findPage(page_va);
+      if (page == nullptr) {
+        if (info.nseg >= BOOT_MAX_SEGS)
+          throw rsim::ElfError("too many user pages for boot_info");
+        if (cursor + 4096 > BOOT_USER_STACK_PHYS)
+          throw rsim::ElfError("user image overlaps the reserved stack arena");
+
+        page = &info.seg[info.nseg++];
+        page->vaddr = page_va;
+        page->phys = cursor;
+        page->filesz = 4096;
+        page->memsz = 4096;
+        page->flags = 0;
+        for (uint32_t i = 0; i < 4096; ++i)
+          bus_->ram().write8(cursor + i, 0);
+        cursor += 4096;
+      }
+
+      page->flags |= seg.flags;
+
+      uint32_t copy_start = seg.vaddr > page_va ? seg.vaddr : page_va;
+      uint32_t copy_end = seg.vaddr + seg.filesz;
+      if (copy_end > page_va + 4096)
+        copy_end = page_va + 4096;
+      for (uint32_t va = copy_start; va < copy_end; ++va)
+        bus_->ram().write8(page->phys + (va - page_va),
+                           seg.data[va - seg.vaddr]);
+    }
+  }
+
+  // The host and the guest are both little-endian; writing the struct byte by
+  // byte keeps the C and C++ layouts honest (see the static_asserts above).
+  const auto *bytes = reinterpret_cast<const uint8_t *>(&info);
+  for (size_t i = 0; i < sizeof(info); ++i)
+    bus_->ram().write8(kBootInfo + static_cast<uint32_t>(i), bytes[i]);
+  x[10] = kBootInfo; // a0: kmain(boot_info *)
 }
 
 uint32_t Machine::translate(uint32_t va, AccessType type,
