@@ -221,8 +221,33 @@ void Machine::writeCsr(uint16_t csr, uint32_t value) {
 bool Machine::step() {
   if (halted_)
     return false;
-  executeOne();
-  return !halted_;
+  try {
+    return executeOne();
+  } catch (const Trap &trap) {
+    return enterTrap(trap);
+  }
+}
+
+bool Machine::enterTrap(const Trap &trap) {
+  const uint32_t base = csr_[kCsrMtvec] & ~3u;
+  if (base == 0)
+    throw; // no handler: the host has to see it
+
+  csr_[kCsrMepc] = trap.epc;
+  csr_[kCsrMcause] = static_cast<uint32_t>(trap.cause);
+  csr_[kCsrMtval] = trap.tval;
+
+  uint32_t ms = csr_[kCsrMstatus];
+  ms &= ~(kMstatusMPIE | kMstatusMPP);
+  if (csr_[kCsrMstatus] & kMstatusMIE)
+    ms |= kMstatusMPIE;
+  ms |= static_cast<uint32_t>(priv_) << 11;
+  ms &= ~kMstatusMIE;
+  csr_[kCsrMstatus] = ms;
+
+  priv_ = Priv::M;
+  pc = base;
+  return true;
 }
 
 bool Machine::executeOne() {
@@ -502,12 +527,40 @@ bool Machine::executeOne() {
   }
 
   case rsim::Insn::ECALL:
+    // Bootstrap shortcut: without mtvec there is nobody to handle the ecall,
+    // so a0 becomes the host exit code.  Once a handler is installed this is
+    // a real EcallFromM/EcallFromU trap.
+    if ((csr_[kCsrMtvec] & ~3u) == 0) {
+      halted_ = true;
+      exit_code_ = static_cast<int>(reg(10));
+      break;
+    }
+    throw Trap(priv_ == Priv::U ? TrapCause::EcallFromU : TrapCause::EcallFromM,
+               0, at, "ecall");
   case rsim::Insn::EBREAK:
-    // Chapter 01 shortcut: stop and let a0 speak.  Chapter 03 turns these
-    // into EcallFromM/EcallFromU and Breakpoint traps.
-    halted_ = true;
-    exit_code_ = static_cast<int>(reg(10)); // a0, the kernel's return value
+    if ((csr_[kCsrMtvec] & ~3u) == 0) {
+      halted_ = true;
+      exit_code_ = static_cast<int>(reg(10));
+      break;
+    }
+    throw Trap(TrapCause::Breakpoint, at, at, "ebreak");
+
+  case rsim::Insn::MRET: {
+    const uint32_t ms = csr_[kCsrMstatus];
+    const uint32_t mpp = (ms >> 11) & 3u;
+    if (mpp != 0 && mpp != 3)
+      throw Trap(TrapCause::IllegalInstruction, word, at,
+                 "mret with an unsupported MPP");
+    priv_ = mpp == 3 ? Priv::M : Priv::U;
+    uint32_t next_ms = ms & ~kMstatusMIE;
+    if (ms & kMstatusMPIE)
+      next_ms |= kMstatusMIE;
+    next_ms |= kMstatusMPIE;
+    next_ms &= ~kMstatusMPP; // the least-privileged level is U
+    csr_[kCsrMstatus] = next_ms;
+    next = csr_[kCsrMepc];
     break;
+  }
 
   default:
     throw Trap(TrapCause::IllegalInstruction, word, at,

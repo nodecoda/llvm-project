@@ -61,6 +61,7 @@ public:
 
 private:
   bool executeOne();
+  bool enterTrap(const Trap &trap);
 
   // Every access goes through these so that an unusable address becomes a
   // trap with the *faulting* pc, never a silently zeroed register.

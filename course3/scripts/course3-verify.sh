@@ -14,6 +14,11 @@
 #   * the kernel reads mhartid/misa and round-trips mscratch, exiting 0;
 #   * --selftest passes every hand-computed CSR vector (22 at this chapter).
 #
+# Chapter 03 checks:
+#   * six M-mode traps (ecall/ebreak/illegal/misaligned load/store/jalr) have
+#     the exact (cause, epc, tval) the handler expects;
+#   * the same handler takes ecall/ebreak/illegal from U-mode via mret.
+#
 set -euo pipefail
 
 BIN=${1:?usage: course3-verify.sh <llvm-bin-dir> <rmach-binary>}
@@ -55,6 +60,14 @@ build_kernel() {
     || fail "ld.lld could not link the kernel"
 }
 build_kernel kernel
+
+build_asm_image() {
+  local name=$1 src=$2
+  "$CC" --target="$TRIPLE" -march=rv32im_zicsr -mabi=ilp32 -mno-relax \
+    -c "$src" -o "$TMP/$name.o" || fail "clang could not assemble $src"
+  "$LD" -m elf32lriscv -T "$COURSE3/kernel/link.ld" -o "$TMP/$name.elf" \
+    "$TMP/$name.o" || fail "ld.lld could not link $src"
+}
 
 # The loader must see the same entry point and PT_LOAD list as llvm-readelf.
 python3 - "$READELF" "$RMACH" "$TMP/kernel.elf" <<'PY'
@@ -110,6 +123,24 @@ CHECKS=$((CHECKS + 1))
 "$RMACH" --selftest > "$TMP/selftest.out" || fail "--selftest failed"
 grep -q '^selftest: 22 checks, 0 failures$' "$TMP/selftest.out" \
   || fail "unexpected selftest line: $(cat "$TMP/selftest.out")"
+CHECKS=$((CHECKS + 1))
+
+# --- Chapter 03: precise traps and mret ---------------------------------
+
+build_asm_image traps "$COURSE3/tests/traps.s"
+set +e
+"$RMACH" --kernel "$TMP/traps.elf" > "$TMP/traps.out" 2> "$TMP/traps.err"
+traps_rc=$?
+set -e
+[[ "$traps_rc" -eq 0 ]] || fail "traps.s exited $traps_rc (10*trap_index+stage)"
+CHECKS=$((CHECKS + 1))
+
+build_asm_image trap_u "$COURSE3/tests/trap-u.s"
+set +e
+"$RMACH" --kernel "$TMP/trap_u.elf" > "$TMP/trap_u.out" 2> "$TMP/trap_u.err"
+trap_u_rc=$?
+set -e
+[[ "$trap_u_rc" -eq 0 ]] || fail "trap-u.s exited $trap_u_rc"
 CHECKS=$((CHECKS + 1))
 
 echo "$CHECKS checks"

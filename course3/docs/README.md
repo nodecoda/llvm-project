@@ -10,7 +10,7 @@
 | 00 | [本索引](README.md) | 导览与骨架 | `rmach --version`；verify 输出 `0 checks` | `c3-ch00` |
 | 01 | [01-bare-metal.md](01-bare-metal.md) | 裸机镜像与启动 | entry/PT_LOAD 与 `llvm-readelf` 一致 | `c3-ch01` |
 | 02 | [02-csr-privilege.md](02-csr-privilege.md) | CSR 文件与特权级 | 22 条 CSR 自测；U 访问特权 CSR 非法 | `c3-ch02` |
-| 03 | （规划中） | 精确陷阱与 `mret` | 4 种 cause + 32 寄存器保持 | `c3-ch03` |
+| 03 | [03-traps-mret.md](03-traps-mret.md) | 精确陷阱与 `mret` | 6 种 M 态 cause + 3 种 U 态 cause | `c3-ch03` |
 | 04 | （规划中） | CLINT 与定时器中断 | `mcause=0x80000007`；tick 数精确 | `c3-ch04` |
 | 05 | （规划中） | MMIO 总线与 UART | stdout 与 golden 逐字节一致 | `c3-ch05` |
 | 06 | （规划中） | Sv32 分页 | 恒等/非恒等映射一致；页错误 12/13/15 | `c3-ch06` |
