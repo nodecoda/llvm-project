@@ -91,6 +91,7 @@ git checkout rvmin-ch16     # 第 16 章（大栈帧）结束
 | 26 | [clang driver](docs/26-clang-driver.md) | 完成 |
 | 27 | [clang 链接与运行](docs/27-clang-run.md) | 完成 |
 | 28 | [第三篇验收：80 对象矩阵](docs/28-acceptance.md) | 完成 |
+| 28a | [勘误：driver 拒绝未支持扩展](docs/28-acceptance.md#勘误ch28-审计) | 完成 |
 
 ## 当前限制（上篇结束时，第 14 章）
 

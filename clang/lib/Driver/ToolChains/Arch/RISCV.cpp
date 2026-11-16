@@ -87,10 +87,27 @@ void riscv::getRISCVTargetFeatures(const Driver &D, const llvm::Triple &Triple,
     }
     if (!getArchFeatures(D, MArch, Features, Args))
       return;
-    // getArchFeatures emits the full RISC-V extension list (+i and a "-<ext>"
-    // for everything else).  The integrated assembler consumes this vector
-    // directly, without going through RVMinTargetInfo, so keep only the four
-    // extensions the backend implements; "+i" is implied by the target.
+    // Diagnose, rather than silently drop, everything the backend cannot
+    // lower (chapter 26 D5 / chapter 28 AC7).  getArchFeatures emits "+<ext>"
+    // for the enabled extensions and "-<ext>" for the disabled ones; the base
+    // ISA and the extensions implied by i/m/a are allowed because
+    // RVMinTargetInfo strips them from the backend feature string anyway.
+    for (StringRef F : Features) {
+      StringRef Ext = F;
+      if (!Ext.consume_front("+"))
+        continue;
+      if (Ext == "i" || Ext == "m" || Ext == "a" || Ext == "zbb" ||
+          Ext == "zbs" || Ext == "zaamo" || Ext == "zalrsc" ||
+          Ext == "zmmul" || Ext == "zicsr" || Ext == "zifencei" ||
+          Ext == "relax")
+        continue;
+      D.Diag(diag::err_drv_unsupported_option_argument_for_target)
+          << "-march" << MArch << Triple.str();
+      return;
+    }
+    // The integrated assembler consumes this vector directly, without going
+    // through RVMinTargetInfo, so keep only the four extensions the backend
+    // implements; "+i" is implied by the target.
     llvm::erase_if(Features, [](StringRef F) {
       return F != "+m" && F != "+a" && F != "+zbb" && F != "+zbs";
     });

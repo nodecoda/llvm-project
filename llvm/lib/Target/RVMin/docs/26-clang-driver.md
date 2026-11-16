@@ -98,8 +98,9 @@ if (Triple.isRVMin()) {
 
 - `-march=native` → `unsupported argument 'native' to option '-march' ...`；
 - `-march=rv64i` → 同样报错（rvmin 只接受 XLEN=32 的 ISA 串）；
-- `-march=rv32ic` 不在这里拒绝，而是让 cc1 的 `RVMinTargetInfo` 报
-  `extension 'c' is not supported by rvmin`——driver 不做 ISA 白名单。
+- `-march=rv32ic`/`rv32if`/`rv32i_zba`/`rv32e` → driver 在
+  `getRISCVTargetFeatures` 里逐项诊断（见下一节），消息与 `rv64i` 相同；
+  即使绕过 driver，`-cc1 -target-feature +c` 仍会被 `RVMinTargetInfo` 二次拦截。
 
 ### 3. feature 向量必须在这里过滤
 
@@ -124,11 +125,26 @@ driver: getRISCVTargetFeatures → cc1as -target-feature → MCSubtargetInfo
 '-c' is not a recognized feature for this target (ignoring feature)
 ```
 
-因此 `getRISCVTargetFeatures` 对 rvmin 走一条短路径：
+因此 `getRISCVTargetFeatures` 对 rvmin 走一条短路径。第 28 章的审计补上了
+前半段：**先诊断，再过滤**。只过滤不诊断会把 `-march=rv32ic` 变成“编译成功但
+悄悄按 RV32I 生成”，这比报错更危险。
 
 ```cpp
 if (!getArchFeatures(D, MArch, Features, Args))
   return;
+// getArchFeatures emits "+<ext>" for enabled and "-<ext>" for disabled ones.
+for (StringRef F : Features) {
+  StringRef Ext = F;
+  if (!Ext.consume_front("+"))
+    continue;
+  if (Ext == "i" || Ext == "m" || Ext == "a" || Ext == "zbb" || Ext == "zbs" ||
+      Ext == "zaamo" || Ext == "zalrsc" || Ext == "zmmul" ||
+      Ext == "zicsr" || Ext == "zifencei" || Ext == "relax")
+    continue;                      // base + implied: stripped below
+  D.Diag(diag::err_drv_unsupported_option_argument_for_target)
+      << "-march" << MArch << Triple.str();
+  return;
+}
 llvm::erase_if(Features, [](StringRef F) {
   return F != "+m" && F != "+a" && F != "+zbb" && F != "+zbs";
 });
@@ -138,9 +154,19 @@ return;
 效果：
 
 ```text
--march=rv32i  → 无 +feature（i 是隐含基底）
--march=rv32im → "-target-feature" "+m"
+-march=rv32i        → 无 +feature（i 是隐含基底）
+-march=rv32im       → "-target-feature" "+m"
+-march=rv32i_zicsr  → 无 +zicsr（隐含扩展，静默剥离）
+-march=rv32ic       → error: unsupported argument 'rv32ic' to option '-march' ...
+-march=rv32if       → error: ...
+-march=rv32i_zba    → error: ...
+-march=rv32e        → error: ...
 ```
+
+允许静默剥离的集合是“基底 + 由 i/m/a 隐含”的扩展：
+`i, m, a, zbb, zbs, zaamo, zalrsc, zmmul, zicsr, zifencei, relax`。
+注意 `+relax` 来自 BareMetal 的默认 `-mrelax`；显式 `-mrelax` 仍由
+`AddRISCVTargetArgs` 拒绝。
 
 ### 4. `-mcpu`：RVMin 自己的 CPU 列表
 
@@ -172,6 +198,8 @@ bool RVMinTargetInfo::isValidCPUName(StringRef Name) const {
 | `-mcmodel=medium/large` | 只有 small/medlow |
 | `-mrelax` | 后端没有链接松弛 |
 | `-mrvv-vector-bits=` | 没有 V |
+| `-march=rv32ic/f/d/v...` | 扩展没有后端实现；`getRISCVTargetFeatures` 逐项诊断 |
+| `-march=rv32e` | 没有 E 的寄存器堆 |
 
 错误消息形如：
 

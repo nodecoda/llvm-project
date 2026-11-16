@@ -15,3 +15,15 @@
 
 // RUN: not %clang --target=rvmin-unknown-elf -mrelax -c %s -o %t.o 2>&1 | FileCheck %s --check-prefix=RELAX
 // RELAX: unsupported argument 'relax' to option '-mrelax' for target 'rvmin-unknown-unknown-elf'
+
+// Chapter 28 AC7: every ISA extension the backend cannot lower must be
+// diagnosed by the driver, not silently stripped from the feature string.
+// RUN: not %clang --target=rvmin-unknown-elf -march=rv32ic -c %s -o %t.o 2>&1 | FileCheck %s --check-prefix=EXT
+// RUN: not %clang --target=rvmin-unknown-elf -march=rv32if -c %s -o %t.o 2>&1 | FileCheck %s --check-prefix=EXT
+// RUN: not %clang --target=rvmin-unknown-elf -march=rv32iv -c %s -o %t.o 2>&1 | FileCheck %s --check-prefix=EXT
+// RUN: not %clang --target=rvmin-unknown-elf -march=rv32i_zba -c %s -o %t.o 2>&1 | FileCheck %s --check-prefix=EXT
+// RUN: not %clang --target=rvmin-unknown-elf -march=rv32e -c %s -o %t.o 2>&1 | FileCheck %s --check-prefix=EXT
+// EXT: unsupported argument '{{rv32.*}}' to option '-march' for target 'rvmin-unknown-unknown-elf'
+
+// RUN: not %clang --target=rvmin-unknown-elf -mabi=lp64 -c %s -o %t.o 2>&1 | FileCheck %s --check-prefix=ABI
+// ABI: unknown target ABI 'lp64'

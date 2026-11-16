@@ -13,6 +13,12 @@
 // RUN: %clang --target=rvmin-unknown-elf -march=rv32im -mabi=ilp32 -### -c %s 2>&1 | FileCheck %s --check-prefix=M
 // M: "-target-feature" "+m"
 
+// Extensions implied by i/m/a are accepted and then stripped from the backend
+// feature string instead of being rejected.
+// RUN: %clang --target=rvmin-unknown-elf -march=rv32i_zicsr -mabi=ilp32 -### -c %s 2>&1 | FileCheck %s --check-prefix=IMPLIED
+// IMPLIED: "-cc1"
+// IMPLIED-NOT: "-target-feature" "+zicsr"
+
 // Chapter 28: the RISC-V ABI makes plain `char` unsigned.  RVMin has to say so
 // explicitly: without it, char promotions lower to `lb`/sext instead of
 // `lbu`/zext and every program touching `char` differs from riscv32.

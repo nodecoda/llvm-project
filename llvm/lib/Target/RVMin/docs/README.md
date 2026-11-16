@@ -53,6 +53,9 @@ RVMin 是一个从零写的 LLVM 后端，只实现 RISC-V 最小整数集（RV3
 | 27 | [27-clang-run.md](27-clang-run.md) | clang 驱动链接与 QEMU 运行 | `rvmin-clang-run.sh` 6 组程序 | `rvmin-ch27` |
 | 28 | [28-acceptance.md](28-acceptance.md) | 第三篇验收：80 对象矩阵 | `rvmin-clang-matrix.sh` 80/80 | `rvmin-ch28` |
 
+> 勘误：`rvmin-ch28` 的 AC7 漏掉了“未支持扩展必须报错”，修复与审计记录见
+> [28-acceptance.md 的勘误节](28-acceptance.md#勘误ch28-审计)，tag `rvmin-ch28a`。
+
 每个章末都有对应 tag：`git checkout rvmin-ch16` 即可看到该章结束时的完整代码。
 
 ## 每章固定包含什么

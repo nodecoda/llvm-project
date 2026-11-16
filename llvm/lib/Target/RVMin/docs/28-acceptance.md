@@ -139,7 +139,7 @@ TargetInfo 生成 IR。任何 `.text` 差异都只能来自 ABI/属性/builtin �
 | AC4 | object 可用 | `rvmin-clang-matrix.sh` 第 1 项 | 80/80 `ELF32` + `Machine: RISC-V`，stderr 全空 |
 | AC5 | 集成汇编器 | 矩阵第 2 项 | 80/80 `-S` 与 `-c` 的 `.text` 相同 |
 | AC6 | feature 正确 | `clang/test/Driver/rvmin-target.c` + 矩阵 ISA 标记 | `rv32i` 无 `+m/+a/+c`，`rv32im` 有 `+m`；对象里 `mul` 只在 `rv32im` 出现 |
-| AC7 | 负例诊断 | `clang/test/Driver/rvmin-invalid.c` | rv64 / rv32ic / rv32if / lp64 / `-fPIC` / `-mcmodel=large` 全部非零退出 |
+| AC7 | 负例诊断 | `clang/test/Driver/rvmin-invalid.c` | rv64 / rv32ic / rv32if / rv32iv / rv32i_zba / rv32e / lp64 / `-fPIC` / `-mcmodel=large` / `-mrelax` 全部非零退出；前六条是 driver 层 `unsupported argument ... to option '-march'` |
 | AC8 | 链接 | `rvmin-clang-run.sh` | link 行含 `-m elf32lriscv`，产物 `llvm-readelf -h` 为 EM_RISCV |
 | AC9 | 运行 | `rvmin-clang-run.sh`、`rvmin-run.sh` | 6 组 clang 驱动程序 + 9 次 QEMU 运行，退出码 0 |
 | AC10 | 不回归 | `rvmin-verify-all.sh` + 矩阵第 3 项 | 6/6；lit 24/24；144 条编码；117+6 反汇编；128 次机器指令校验；80/80 TargetInfo 平价 |
@@ -187,7 +187,7 @@ ALL CLANG MATRIX PASS: 80 objects, ELF32 EM_RISCV, -S/-c agree,
 
 | 项 | 数量 |
 | --- | --- |
-| 章 tag | 29 个（`rvmin-ch00`…`rvmin-ch28`） |
+| 章 tag | 30 个（`rvmin-ch00`…`rvmin-ch28` + `rvmin-ch28a` 勘误） |
 | RVMin lit | 24 个（CodeGen 13 + MC 11） |
 | clang lit | 4 个（Driver 2 + Preprocessor 1 + CodeGen 1） |
 | 编码语料 | 85 RV32I + 12 M + 19 Zbb + 8 Zbs + 20 A = 144 条 |
@@ -230,6 +230,10 @@ ALL CLANG MATRIX PASS: 80 objects, ELF32 EM_RISCV, -S/-c agree,
 5. **反汇编 `mul` 得到 `<unknown>` 不是后端坏了。**
    RVMin 没有 `.riscv.attributes`，`llvm-objdump` 默认只按 RV32I 译码；
    加 `--mattr=+m` 即可。第 20 章的往返门禁一直显式带 `-mattr`。
+6. **“过滤掉不支持的特性”不等于“诊断不支持的特性”。**
+   `getRISCVTargetFeatures` 原来只把 feature 向量裁到 `+m/+a/+zbb/+zbs`，
+   于是 `-march=rv32ic` 返回 0，生成的是 RV32I 对象——用户以为自己在用 C 扩展。
+   AC7 审计（见下节勘误）把它改成“先逐项诊断，再过滤”。
 
 ## 练习
 
@@ -242,3 +246,44 @@ ALL CLANG MATRIX PASS: 80 objects, ELF32 EM_RISCV, -S/-c agree,
    `target-features`，去掉矩阵里的 `-mattr`，验证 80 格仍然全绿；
    评估这会怎样影响第 13 章的 feature 门禁。
 4. 把 AC1–AC10 写成一个 `check-part3-ac.sh`，让每条“复现命令”都成为断言。
+
+## 勘误：ch28 审计补上的 AC7
+
+`rvmin-ch28` 推送后按计划 §5 逐条复核，发现 AC7 只做了一半：
+
+```text
+clang --target=rvmin-unknown-elf -march=rv32ic -c a.c   # rc=0（错误！）
+clang --target=rvmin-unknown-elf -march=rv32if -c a.c   # rc=0（错误！）
+```
+
+原因：`getRISCVTargetFeatures` 对 rvmin 只做“裁剪”，把 `+c/+f/...` 静默
+从 feature 向量里删掉；`RVMinTargetInfo::handleTargetFeatures` 的白名单
+只对 `-cc1` 直接调用生效，driver 路径根本走不到那里。
+已有的 `rvmin-invalid.c` 也只测了 rv64/native/PIC/代码模型/relax，没测扩展。
+
+修复（`rvmin-ch28a`）：
+
+| 文件 | 改动 |
+| --- | --- |
+| `clang/lib/Driver/ToolChains/Arch/RISCV.cpp` | `getArchFeatures` 之后、`erase_if` 之前逐项检查 `+<ext>`；只放行基底与 i/m/a 隐含扩展，其余直接 `err_drv_unsupported_option_argument_for_target` |
+| `clang/test/Driver/rvmin-invalid.c` | 新增 rv32ic / rv32if / rv32iv / rv32i_zba / rv32e / lp64 六条负例 |
+| `clang/test/Driver/rvmin-target.c` | 新增 `-march=rv32i_zicsr` 正例：隐含扩展允许被剥离 |
+| `docs/26-clang-driver.md` | §3 改写为“先诊断，再过滤” |
+
+审计命令与结果：
+
+```bash
+for m in rv32i rv32im rv32ia rv32i_zbb rv32i_zbs rv32i_zicsr \
+         rv32ic rv32if rv32id rv32iv rv32i_zba rv32e rv64i; do
+  clang --target=rvmin-unknown-elf -march=$m -mabi=ilp32 -c arith.c -o /dev/null
+  echo "$m rc=$?"
+done
+```
+
+```text
+rv32i/rv32im/rv32ia/rv32i_zbb/rv32i_zbs/rv32i_zicsr   rc=0
+rv32ic/rv32if/rv32id/rv32iv/rv32i_zba/rv32e/rv64i     rc=1
+```
+
+教训：**验收表里的每一条都要有会失败的测试**。AC7 的原始测试没有覆盖
+“扩展被静默剥离”这条路径，所以表格看起来是绿的。
