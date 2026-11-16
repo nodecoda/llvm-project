@@ -11,7 +11,7 @@
 #   * the first trace line is the reset vector 0x80000000.
 #
 # Chapter 02 checks:
-#   * --selftest passes every hand-computed CSR vector (22 at this chapter).
+#   * --selftest passes every hand-computed vector (32 at chapter 06).
 #
 # Chapter 03 checks:
 #   * six M-mode traps (ecall/ebreak/illegal/misaligned load/store/jalr) have
@@ -27,6 +27,11 @@
 #   * the kernel's UART stdout is exactly "hello, rmach\n";
 #   * --input drives RBR and the echo stops at the first newline;
 #   * a store of 0x00075555 to the test word halts with exit code 7.
+#
+# Chapter 06 checks:
+#   * the same U blob prints "U ok\n" under an identity and a relocated map;
+#   * --dump-pagetable shows the relocated U page and the UART leaf;
+#   * a U load from a U=0 kernel page traps with cause 13.
 #
 set -euo pipefail
 
@@ -56,17 +61,35 @@ CHECKS=0
 
 # --- Chapter 01: the bare-metal image and the reset vector --------------
 
+KFLAGS=(--target="$TRIPLE" -march=rv32im_zicsr -mabi=ilp32 -mno-relax
+        -ffreestanding -fno-builtin -O2 -msmall-data-limit=0)
+AFLAGS=(--target="$TRIPLE" -march=rv32im_zicsr -mabi=ilp32 -mno-relax)
+
 build_c_image() {
   local name=$1 src=$2
-  "$CC" --target="$TRIPLE" -march=rv32im_zicsr -mabi=ilp32 -mno-relax \
-    -ffreestanding -fno-builtin -O2 -c "$src" \
-    -o "$TMP/$name-main.o" || fail "clang could not compile $src"
-  "$CC" --target="$TRIPLE" -march=rv32im_zicsr -mabi=ilp32 -mno-relax \
-    -ffreestanding -fno-builtin -O2 -c "$COURSE3/kernel/start.S" \
+  "$CC" "${KFLAGS[@]}" -c "$src" -o "$TMP/$name-main.o" \
+    || fail "clang could not compile $src"
+  "$CC" "${AFLAGS[@]}" -c "$COURSE3/kernel/start.S" \
     -o "$TMP/$name-start.o" || fail "clang could not assemble start.S"
   "$LD" -m elf32lriscv -T "$COURSE3/kernel/link.ld" -o "$TMP/$name.elf" \
     "$TMP/$name-start.o" "$TMP/$name-main.o" \
     || fail "ld.lld could not link $src"
+}
+
+# An MMU test needs a C kernel, a U-mode blob and the shared trap trampoline.
+build_mmu_image() {
+  local name=$1 main=$2 blob=$3
+  "$CC" "${KFLAGS[@]}" -c "$main" -o "$TMP/$name-main.o" \
+    || fail "clang could not compile $main"
+  "$CC" "${KFLAGS[@]}" -c "$blob" -o "$TMP/$name-blob.o" \
+    || fail "clang could not assemble $blob"
+  "$CC" "${KFLAGS[@]}" -c "$COURSE3/tests/trap-entry.S" \
+    -o "$TMP/$name-trap.o" || fail "clang could not assemble trap-entry.S"
+  "$CC" "${AFLAGS[@]}" -c "$COURSE3/kernel/start.S" \
+    -o "$TMP/$name-start.o" || fail "clang could not assemble start.S"
+  "$LD" -m elf32lriscv -T "$COURSE3/kernel/link.ld" -o "$TMP/$name.elf" \
+    "$TMP/$name-start.o" "$TMP/$name-main.o" "$TMP/$name-blob.o" \
+    "$TMP/$name-trap.o" || fail "ld.lld could not link $main"
 }
 
 build_kernel() { build_c_image kernel "$COURSE3/kernel/kmain.c"; }
@@ -74,8 +97,8 @@ build_kernel
 
 build_asm_image() {
   local name=$1 src=$2
-  "$CC" --target="$TRIPLE" -march=rv32im_zicsr -mabi=ilp32 -mno-relax \
-    -c "$src" -o "$TMP/$name.o" || fail "clang could not assemble $src"
+  "$CC" "${AFLAGS[@]}" -c "$src" -o "$TMP/$name.o" \
+    || fail "clang could not assemble $src"
   "$LD" -m elf32lriscv -T "$COURSE3/kernel/link.ld" -o "$TMP/$name.elf" \
     "$TMP/$name.o" || fail "ld.lld could not link $src"
 }
@@ -133,7 +156,7 @@ CHECKS=$((CHECKS + 1))
 
 # The CSR file is also exercised without a kernel image.
 "$RMACH" --selftest > "$TMP/selftest.out" || fail "--selftest failed"
-grep -q '^selftest: 22 checks, 0 failures$' "$TMP/selftest.out" \
+grep -q '^selftest: 32 checks, 0 failures$' "$TMP/selftest.out" \
   || fail "unexpected selftest line: $(cat "$TMP/selftest.out")"
 CHECKS=$((CHECKS + 1))
 
@@ -207,6 +230,48 @@ set +e
 finisher_rc=$?
 set -e
 [[ "$finisher_rc" -eq 7 ]] || fail "finisher.s exited $finisher_rc, want 7"
+CHECKS=$((CHECKS + 1))
+
+# --- Chapter 06: Sv32 translation and page faults -----------------------
+
+# The same U blob runs twice: first at VA 0x80001000, then at VA 0x00010000;
+# both map PA 0x80400000, so stdout must contain the sentence twice.
+build_mmu_image mmu_run "$COURSE3/tests/mmu-run.c" "$COURSE3/tests/u-blob.S"
+printf 'U ok\nU ok\n' > "$TMP/mmu.golden"
+set +e
+"$RMACH" --kernel "$TMP/mmu_run.elf" > "$TMP/mmu.out" 2> "$TMP/mmu.err"
+mmu_rc=$?
+set -e
+[[ "$mmu_rc" -eq 0 ]] || fail "mmu-run exited $mmu_rc, want 0"
+cmp -s "$TMP/mmu.out" "$TMP/mmu.golden" \
+  || fail "mmu-run stdout is $(od -An -tx1c "$TMP/mmu.out" | tr '\n' ' ')"
+CHECKS=$((CHECKS + 1))
+
+# The final satp points at the relocated root: two leaves, one U code page and
+# one UART page.  This is the hand-computed table the chapter walks through.
+set +e
+"$RMACH" --kernel "$TMP/mmu_run.elf" --dump-pagetable \
+  > "$TMP/mmu.dump" 2> /dev/null
+dump_rc=$?
+set -e
+[[ "$dump_rc" -eq 0 ]] || fail "mmu-run --dump-pagetable exited $dump_rc"
+grep -q '^satp 0x[0-9a-f]* mode=1 ' "$TMP/mmu.dump" \
+  || fail "dump has no mode=1 satp line: $(cat "$TMP/mmu.dump")"
+grep -q '^leaf va=0x00010000 pa=0x80400000 .* flags=VRXUA$' "$TMP/mmu.dump" \
+  || fail "dump lacks the relocated U page: $(cat "$TMP/mmu.dump")"
+grep -q '^leaf va=0x10000000 pa=0x10000000 .* flags=VRWUAD$' "$TMP/mmu.dump" \
+  || fail "dump lacks the UART page: $(cat "$TMP/mmu.dump")"
+CHECKS=$((CHECKS + 1))
+
+# U loads from 0x80000000, which is mapped R/W/X but U=0: the handler only
+# accepts cause 13, and a 0x7777 failure word would exit 1.
+build_mmu_image mmu_fault "$COURSE3/tests/mmu-fault.c" "$COURSE3/tests/u-fault.S"
+set +e
+"$RMACH" --kernel "$TMP/mmu_fault.elf" > "$TMP/mmu_fault.out" 2> "$TMP/mmu_fault.err"
+fault_rc=$?
+set -e
+[[ "$fault_rc" -eq 0 ]] || fail "mmu-fault exited $fault_rc (cause was not 13)"
+[[ ! -s "$TMP/mmu_fault.out" ]] || fail "mmu-fault produced unexpected stdout"
 CHECKS=$((CHECKS + 1))
 
 echo "$CHECKS checks"

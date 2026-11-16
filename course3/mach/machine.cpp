@@ -83,6 +83,7 @@ void Machine::reset(const rsim::Image &image, Bus &bus) {
   bus_->reset();
   bus_->ram().load(image);
   bus_->ram().map(kKernelStackTop - kKernelStackSize, kKernelStackSize);
+  bus_->ram().map(kUserBase, kUserSize);
 
   for (uint32_t &reg : x)
     reg = 0;
@@ -98,49 +99,75 @@ void Machine::reset(const rsim::Image &image, Bus &bus) {
   priv_ = Priv::M;
 }
 
-uint8_t Machine::load8(uint32_t addr, uint32_t epc) {
+uint32_t Machine::translate(uint32_t va, AccessType type,
+                            uint32_t epc) const {
+  // M-mode bypasses translation: the kernel runs on physical addresses even
+  // after it writes satp.  U-mode uses Sv32 when MODE=1 and is bare when 0.
+  if (priv_ == Priv::M)
+    return va;
+  if ((csr_[kCsrSatp] & kSatpMode) == 0)
+    return va;
+  return Mmu::translate(bus_->ram(), csr_[kCsrSatp], va, type, epc);
+}
+
+uint32_t Machine::fetchWord(uint32_t va) {
+  const uint32_t pa = translate(va, AccessType::Fetch, va);
   try {
-    return bus_->read8(addr);
+    return bus_->read32(pa);
+  } catch (const rsim::MemoryError &err) {
+    throw Trap(TrapCause::InstructionAccessFault, va, va, err.what());
+  }
+}
+
+uint8_t Machine::load8(uint32_t addr, uint32_t epc) {
+  const uint32_t pa = translate(addr, AccessType::Load, epc);
+  try {
+    return bus_->read8(pa);
   } catch (const rsim::MemoryError &err) {
     throw Trap(TrapCause::LoadAccessFault, addr, epc, err.what());
   }
 }
 
 uint16_t Machine::load16(uint32_t addr, uint32_t epc) {
+  const uint32_t pa = translate(addr, AccessType::Load, epc);
   try {
-    return bus_->read16(addr);
+    return bus_->read16(pa);
   } catch (const rsim::MemoryError &err) {
     throw Trap(TrapCause::LoadAccessFault, addr, epc, err.what());
   }
 }
 
 uint32_t Machine::load32(uint32_t addr, uint32_t epc) {
+  const uint32_t pa = translate(addr, AccessType::Load, epc);
   try {
-    return bus_->read32(addr);
+    return bus_->read32(pa);
   } catch (const rsim::MemoryError &err) {
     throw Trap(TrapCause::LoadAccessFault, addr, epc, err.what());
   }
 }
 
 void Machine::store8(uint32_t addr, uint8_t value, uint32_t epc) {
+  const uint32_t pa = translate(addr, AccessType::Store, epc);
   try {
-    bus_->write8(addr, value);
+    bus_->write8(pa, value);
   } catch (const rsim::MemoryError &err) {
     throw Trap(TrapCause::StoreAccessFault, addr, epc, err.what());
   }
 }
 
 void Machine::store16(uint32_t addr, uint16_t value, uint32_t epc) {
+  const uint32_t pa = translate(addr, AccessType::Store, epc);
   try {
-    bus_->write16(addr, value);
+    bus_->write16(pa, value);
   } catch (const rsim::MemoryError &err) {
     throw Trap(TrapCause::StoreAccessFault, addr, epc, err.what());
   }
 }
 
 void Machine::store32(uint32_t addr, uint32_t value, uint32_t epc) {
+  const uint32_t pa = translate(addr, AccessType::Store, epc);
   try {
-    bus_->write32(addr, value);
+    bus_->write32(pa, value);
     updateTimer();
   } catch (const rsim::MemoryError &err) {
     throw Trap(TrapCause::StoreAccessFault, addr, epc, err.what());
@@ -288,12 +315,7 @@ bool Machine::executeOne() {
     throw Trap(TrapCause::InstructionAddressMisaligned, at, at,
                "pc is not 4-byte aligned");
 
-  uint32_t word = 0;
-  try {
-    word = bus_->read32(at);
-  } catch (const rsim::MemoryError &err) {
-    throw Trap(TrapCause::InstructionAccessFault, at, at, err.what());
-  }
+  const uint32_t word = fetchWord(at);
 
   const rsim::Decoded d = rsim::decode(word);
   if (d.id == rsim::Insn::ILLEGAL)

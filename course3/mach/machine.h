@@ -13,6 +13,7 @@
 #include "csr.h"
 #include "elf.h"
 #include "decode.h"
+#include "mmu.h"
 #include "trap.h"
 
 #include <cstdint>
@@ -25,6 +26,11 @@ public:
   // The kernel image is linked at 0x80000000; its stack lives just above it.
   static constexpr uint32_t kKernelStackTop = 0x80100000;
   static constexpr uint32_t kKernelStackSize = 0x00004000; // 16 KiB
+
+  // Physical arena for user images and their page tables.  Chapter 06 uses a
+  // fixed scratch page; chapter 07 copies each PT_LOAD segment here.
+  static constexpr uint32_t kUserBase = 0x80400000;
+  static constexpr uint32_t kUserSize = 0x00010000; // 64 KiB
 
   static constexpr uint32_t kIsaDefault =
       static_cast<uint32_t>(rsim::Isa::RV32I) |
@@ -42,6 +48,8 @@ public:
   void writeCsr(uint16_t csr, uint32_t value);
   void setPrivilege(Priv p) { priv_ = p; }
   Priv privilege() const { return priv_; }
+  /// Debug view of satp that ignores privilege, for --dump-pagetable.
+  uint32_t satp() const { return csr_[kCsrSatp]; }
 
   /// Execute one instruction.  Returns false once the machine has halted.
   bool step();
@@ -68,7 +76,10 @@ private:
   void updateTimer();
 
   // Every access goes through these so that an unusable address becomes a
-  // trap with the *faulting* pc, never a silently zeroed register.
+  // trap with the *faulting* pc, never a silently zeroed register.  The
+  // translate() step is identity in M-mode and Sv32 in U-mode (chapter 06).
+  uint32_t translate(uint32_t va, AccessType type, uint32_t epc) const;
+  uint32_t fetchWord(uint32_t va);
   uint8_t load8(uint32_t addr, uint32_t epc);
   uint16_t load16(uint32_t addr, uint32_t epc);
   uint32_t load32(uint32_t addr, uint32_t epc);

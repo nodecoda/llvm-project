@@ -14,13 +14,14 @@
 
 #include <cinttypes>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
 
 namespace {
 
-constexpr const char *kVersion = "0.5";
+constexpr const char *kVersion = "0.6";
 constexpr int kExitUsage = 2;
 constexpr int kExitLoadError = 125;
 constexpr int kExitTrap = 126;
@@ -31,6 +32,9 @@ struct Options {
   uint64_t max_steps = 10000000;
   bool trace = false;
   bool dump_boot = false;
+  bool dump_pagetable = false;
+  bool have_pagetable_satp = false;
+  uint32_t pagetable_satp = 0;
 };
 
 void usage() {
@@ -38,7 +42,7 @@ void usage() {
                        "       rmach --selftest\n"
                        "       rmach --kernel <elf> [--dump-boot]\n"
                        "       rmach --kernel <elf> [--max-steps <n>] [--trace]\n"
-                       "                    [--input <file>]\n");
+                       "                    [--input <file>] [--dump-pagetable [<satp>]]\n");
 }
 
 bool parse(int argc, char **argv, Options &opt) {
@@ -71,6 +75,15 @@ bool parse(int argc, char **argv, Options &opt) {
       opt.trace = true;
     } else if (arg == "--dump-boot") {
       opt.dump_boot = true;
+    } else if (arg == "--dump-pagetable") {
+      opt.dump_pagetable = true;
+      // An optional satp argument lets the reader dump a table that the
+      // program is no longer using; without it we use the final satp.
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        opt.pagetable_satp =
+            static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0));
+        opt.have_pagetable_satp = true;
+      }
     } else if (!arg.empty() && arg[0] == '-') {
       return false;
     } else {
@@ -78,6 +91,46 @@ bool parse(int argc, char **argv, Options &opt) {
     }
   }
   return true;
+}
+
+void dumpPageTable(const rsim::Memory &ram, uint32_t satp) {
+  std::printf("satp 0x%08" PRIx32 " mode=%u asid=0x%03" PRIx32
+              " ppn=0x%06" PRIx32 "\n",
+              satp, static_cast<unsigned>(satp >> 31), (satp >> 22) & 0x1ff,
+              satp & 0x3fffff);
+  if ((satp & 0x80000000u) == 0) {
+    std::printf("bare: no page table\n");
+    return;
+  }
+
+  const auto leaves = rmach::Mmu::walk(ram, satp);
+  if (leaves.empty()) {
+    std::printf("(no valid leaves)\n");
+    return;
+  }
+
+  constexpr size_t kMaxLeaves = 64;
+  for (size_t i = 0; i < leaves.size() && i < kMaxLeaves; ++i) {
+    const rmach::Mmu::Leaf &leaf = leaves[i];
+    char flags[9];
+    size_t n = 0;
+    const struct {
+      uint32_t bit;
+      char ch;
+    } names[] = {{rmach::Mmu::kPteV, 'V'}, {rmach::Mmu::kPteR, 'R'},
+                 {rmach::Mmu::kPteW, 'W'}, {rmach::Mmu::kPteX, 'X'},
+                 {rmach::Mmu::kPteU, 'U'}, {rmach::Mmu::kPteG, 'G'},
+                 {rmach::Mmu::kPteA, 'A'}, {rmach::Mmu::kPteD, 'D'}};
+    for (const auto &flag : names)
+      if (leaf.pte & flag.bit)
+        flags[n++] = flag.ch;
+    flags[n] = '\0';
+    std::printf("leaf va=0x%08" PRIx32 " pa=0x%08" PRIx32
+                " pte=0x%08" PRIx32 " level=%d flags=%s\n",
+                leaf.va, leaf.pa, leaf.pte, leaf.level, flags);
+  }
+  if (leaves.size() > kMaxLeaves)
+    std::printf("... %zu more leaves\n", leaves.size() - kMaxLeaves);
 }
 
 void dumpBoot(const rsim::Image &image) {
@@ -92,7 +145,7 @@ void dumpBoot(const rsim::Image &image) {
 
 int main(int argc, char **argv) {
   if (argc == 2 && std::strcmp(argv[1], "--version") == 0) {
-    std::printf("rmach %s (chapter 05)\n", kVersion);
+    std::printf("rmach %s (chapter 06)\n", kVersion);
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--selftest") == 0)
@@ -147,6 +200,12 @@ int main(int argc, char **argv) {
                    "\n",
                    opt.max_steps, machine.pc);
       return kExitTrap;
+    }
+
+    if (opt.dump_pagetable) {
+      const uint32_t satp = opt.have_pagetable_satp ? opt.pagetable_satp
+                                                    : machine.satp();
+      dumpPageTable(bus.ram(), satp);
     }
 
     std::fprintf(stderr,

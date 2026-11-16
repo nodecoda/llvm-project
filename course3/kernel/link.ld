@@ -3,7 +3,7 @@ ENTRY(_start)
 SECTIONS
 {
   . = 0x80000000;
-  .text   : { *(.text.start) *(.text .text.*) }
+  .text   : { *(.text.start) *(.text .text.*) *(.utext) }
   .rodata : { *(.rodata .rodata.*) *(.srodata .srodata.*) }
   .data   : { *(.data .data.*) *(.sdata .sdata.*) }
   .bss    : { *(.bss .bss.*) *(COMMON) }

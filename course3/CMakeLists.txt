@@ -10,6 +10,7 @@ add_executable(rmach
   mach/bus.cpp
   mach/main.cpp
   mach/machine.cpp
+  mach/mmu.cpp
   mach/selftest.cpp
   mach/trap.cpp
   mach/uart.cpp
