@@ -19,6 +19,11 @@
 #     the exact (cause, epc, tval) the handler expects;
 #   * the same handler takes ecall/ebreak/illegal from U-mode via mret.
 #
+# Chapter 04 checks:
+#   * three CLINT timer interrupts in vectored mode (mcause=0x80000007,
+#     mtval=0, mepc inside the wait loop, monotonic mtime);
+#   * MIE+MTIE with an unreachable mtimecmp never fires.
+#
 set -euo pipefail
 
 BIN=${1:?usage: course3-verify.sh <llvm-bin-dir> <rmach-binary>}
@@ -141,6 +146,24 @@ set +e
 trap_u_rc=$?
 set -e
 [[ "$trap_u_rc" -eq 0 ]] || fail "trap-u.s exited $trap_u_rc"
+CHECKS=$((CHECKS + 1))
+
+# --- Chapter 04: the CLINT and timer interrupts -------------------------
+
+build_asm_image timer "$COURSE3/tests/timer.s"
+set +e
+"$RMACH" --kernel "$TMP/timer.elf" > "$TMP/timer.out" 2> "$TMP/timer.err"
+timer_rc=$?
+set -e
+[[ "$timer_rc" -eq 0 ]] || fail "timer.s exited $timer_rc"
+CHECKS=$((CHECKS + 1))
+
+build_asm_image timer_off "$COURSE3/tests/timer-off.s"
+set +e
+"$RMACH" --kernel "$TMP/timer_off.elf" > "$TMP/timer_off.out" 2> "$TMP/timer_off.err"
+timer_off_rc=$?
+set -e
+[[ "$timer_off_rc" -eq 0 ]] || fail "timer-off.s exited $timer_off_rc"
 CHECKS=$((CHECKS + 1))
 
 echo "$CHECKS checks"

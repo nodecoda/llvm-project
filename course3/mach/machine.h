@@ -9,6 +9,7 @@
 #ifndef RMACH_MACHINE_H
 #define RMACH_MACHINE_H
 
+#include "clint.h"
 #include "csr.h"
 #include "elf.h"
 #include "decode.h"
@@ -46,6 +47,9 @@ public:
   /// Execute one instruction.  Returns false once the machine has halted.
   bool step();
 
+  /// Chapter 04: the CLINT is visible through --dump-clint in the tests.
+  const Clint &clint() const { return clint_; }
+
   bool halted() const { return halted_; }
   uint64_t executed() const { return executed_; }
   int exitCode() const { return exit_code_; }
@@ -62,6 +66,10 @@ public:
 private:
   bool executeOne();
   bool enterTrap(const Trap &trap);
+  bool enterTrap(uint32_t cause, uint32_t tval, uint32_t epc);
+  bool takeInterrupt();
+  bool timerInterruptPending() const;
+  void updateTimer();
 
   // Every access goes through these so that an unusable address becomes a
   // trap with the *faulting* pc, never a silently zeroed register.
@@ -80,6 +88,7 @@ private:
   uint32_t isa_ = kIsaDefault;
   uint32_t csr_[4096] = {};
   Priv priv_ = Priv::M;
+  Clint clint_;
 };
 
 } // namespace rmach

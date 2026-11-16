@@ -95,9 +95,13 @@ void Machine::reset(const rsim::Image &image, rsim::Memory &memory) {
   for (uint32_t &word : csr_)
     word = 0;
   priv_ = Priv::M;
+  clint_.reset();
 }
 
 uint8_t Machine::load8(uint32_t addr, uint32_t epc) {
+  if (clint_.contains(addr))
+    throw Trap(TrapCause::LoadAccessFault, addr, epc,
+               "CLINT is 32-bit wide");
   try {
     return memory_->read8(addr);
   } catch (const rsim::MemoryError &err) {
@@ -106,6 +110,9 @@ uint8_t Machine::load8(uint32_t addr, uint32_t epc) {
 }
 
 uint16_t Machine::load16(uint32_t addr, uint32_t epc) {
+  if (clint_.contains(addr))
+    throw Trap(TrapCause::LoadAccessFault, addr, epc,
+               "CLINT is 32-bit wide");
   try {
     return memory_->read16(addr);
   } catch (const rsim::MemoryError &err) {
@@ -114,6 +121,17 @@ uint16_t Machine::load16(uint32_t addr, uint32_t epc) {
 }
 
 uint32_t Machine::load32(uint32_t addr, uint32_t epc) {
+  if (clint_.contains(addr)) {
+    if (addr == Clint::kMtime)
+      return static_cast<uint32_t>(clint_.mtime());
+    if (addr == Clint::kMtime + 4)
+      return static_cast<uint32_t>(clint_.mtime() >> 32);
+    if (addr == Clint::kMtimecmp)
+      return static_cast<uint32_t>(clint_.mtimecmp());
+    if (addr == Clint::kMtimecmp + 4)
+      return static_cast<uint32_t>(clint_.mtimecmp() >> 32);
+    throw Trap(TrapCause::LoadAccessFault, addr, epc, "unmapped CLINT word");
+  }
   try {
     return memory_->read32(addr);
   } catch (const rsim::MemoryError &err) {
@@ -122,6 +140,9 @@ uint32_t Machine::load32(uint32_t addr, uint32_t epc) {
 }
 
 void Machine::store8(uint32_t addr, uint8_t value, uint32_t epc) {
+  if (clint_.contains(addr))
+    throw Trap(TrapCause::StoreAccessFault, addr, epc,
+               "CLINT is 32-bit wide");
   try {
     memory_->write8(addr, value);
   } catch (const rsim::MemoryError &err) {
@@ -130,6 +151,9 @@ void Machine::store8(uint32_t addr, uint8_t value, uint32_t epc) {
 }
 
 void Machine::store16(uint32_t addr, uint16_t value, uint32_t epc) {
+  if (clint_.contains(addr))
+    throw Trap(TrapCause::StoreAccessFault, addr, epc,
+               "CLINT is 32-bit wide");
   try {
     memory_->write16(addr, value);
   } catch (const rsim::MemoryError &err) {
@@ -138,6 +162,15 @@ void Machine::store16(uint32_t addr, uint16_t value, uint32_t epc) {
 }
 
 void Machine::store32(uint32_t addr, uint32_t value, uint32_t epc) {
+  if (clint_.contains(addr)) {
+    if (addr == Clint::kMtimecmp || addr == Clint::kMtimecmp + 4) {
+      clint_.writeMtimecmp(value, addr == Clint::kMtimecmp + 4);
+      updateTimer();
+      return;
+    }
+    throw Trap(TrapCause::StoreAccessFault, addr, epc,
+               "mtime is read-only");
+  }
   try {
     memory_->write32(addr, value);
   } catch (const rsim::MemoryError &err) {
@@ -221,6 +254,8 @@ void Machine::writeCsr(uint16_t csr, uint32_t value) {
 bool Machine::step() {
   if (halted_)
     return false;
+  if (takeInterrupt())
+    return true; // the instruction at pc did not retire
   try {
     return executeOne();
   } catch (const Trap &trap) {
@@ -228,14 +263,42 @@ bool Machine::step() {
   }
 }
 
+bool Machine::timerInterruptPending() const {
+  return (csr_[kCsrMip] & kMTIP) && (csr_[kCsrMie] & kMTIE) &&
+         (csr_[kCsrMstatus] & kMstatusMIE);
+}
+
+void Machine::updateTimer() {
+  if (clint_.pending())
+    csr_[kCsrMip] |= kMTIP;
+  else
+    csr_[kCsrMip] &= ~kMTIP;
+}
+
+bool Machine::takeInterrupt() {
+  if ((csr_[kCsrMtvec] & ~3u) == 0)
+    return false; // no handler yet
+  if (!timerInterruptPending())
+    return false;
+  return enterTrap(kInterruptBit | 7u, 0, pc);
+}
+
 bool Machine::enterTrap(const Trap &trap) {
-  const uint32_t base = csr_[kCsrMtvec] & ~3u;
+  return enterTrap(static_cast<uint32_t>(trap.cause), trap.tval, trap.epc);
+}
+
+bool Machine::enterTrap(uint32_t cause, uint32_t tval, uint32_t epc) {
+  uint32_t base = csr_[kCsrMtvec] & ~3u;
   if (base == 0)
     throw; // no handler: the host has to see it
 
-  csr_[kCsrMepc] = trap.epc;
-  csr_[kCsrMcause] = static_cast<uint32_t>(trap.cause);
-  csr_[kCsrMtval] = trap.tval;
+  // Vectored mtvec only affects interrupts; synchronous traps use the base.
+  if ((cause & kInterruptBit) && (csr_[kCsrMtvec] & 1u))
+    base += 4u * (cause & 0x7fffffffu);
+
+  csr_[kCsrMepc] = epc;
+  csr_[kCsrMcause] = cause;
+  csr_[kCsrMtval] = tval;
 
   uint32_t ms = csr_[kCsrMstatus];
   ms &= ~(kMstatusMPIE | kMstatusMPP);
@@ -271,6 +334,8 @@ bool Machine::executeOne() {
     throw Trap(TrapCause::IllegalInstruction, word, at,
                "instruction not enabled by the ISA mask");
   ++executed_;
+  clint_.tick();
+  updateTimer();
 
   if (trace_)
     std::fprintf(trace_, "T %08" PRIx32 " %08" PRIx32 " %s\n", at, word,
