@@ -76,9 +76,9 @@ Three related categories are not field reads:
 
 ### Extracting a contract
 
-`llvm/utils/TableGen/dsl-surface.py` implements the extraction for the four
+`llvm/utils/TableGen/dsl-surface.py` implements the extraction for the five
 LLVM target-description backends `-gen-register-info`, `-gen-instr-info`,
-`-gen-asm-writer`, and `-gen-asm-matcher`:
+`-gen-asm-writer`, `-gen-asm-matcher`, and `-gen-dag-isel`:
 
 ```bash
 # Per-backend contract: roots, fields, stages, magic names, derivations.

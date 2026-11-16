@@ -6,7 +6,8 @@
 
 > 不覆盖 `-gen-asm-matcher`（它更大，留作练习）。
 
-本章把这个练习做完。asm matcher 是四个后端里 schema 形态最不同的一个：
+本章把这个练习做完。在加入 dag-isel（第 36 章）之前，asm matcher 是四个
+后端里 schema 形态最不同的一个：
 
 | 后端 | 入口类 | 字段 | 消费 | derive / project / both | schema | magic | derivations |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -30,7 +31,7 @@
 - 契约：15 个记录类入口、166 个字段、142 个被消费、54 行投影矩阵、
   7 条派生改写、2 个硬编码名字；
 - 复用 instr-info 注解，补 62 个 asm-matcher 字段语义；
-- 第 32 章 status 矩阵与第 33 章 `--effect` 自动变成四后端。
+- 第 32 章 status 矩阵与第 33 章 `--effect` 自动扩展为四后端（第 36 章后为五后端）。
 
 非目标：
 
@@ -204,7 +205,7 @@ ASM_MATCHER_ANNOTATIONS.update({
 
 硬编码名字只有两个：`Imm`（内置立即数操作数类）和 `MCK_`（生成枚举前缀）。
 
-### 7. 联动：第 32、33 章自动升级为四后端
+### 7. 联动：第 32、33 章自动升级（第 36 章后为五后端）
 
 `--status-matrix` 与 `--effect` 都遍历 `BACKENDS`。加入 asm-matcher 后：
 
@@ -557,7 +558,7 @@ python3 "$T" --backend asm-matcher --check "$DOC" \
   --usage "$W/llvm/lib/Target/RVMin/RVMin.td" \
           "$W/llvm/lib/Target/RVMin/RVMinRegisterInfo.td"
 
-# 3. 四后端矩阵与字段影响面
+# 3. 跨后端矩阵与字段影响面
 python3 "$T" --status-matrix --usage \
   "$W/llvm/lib/Target/RVMin/RVMinRegisterInfo.td" \
   "$W/llvm/lib/Target/RVMin/RVMin.td"
@@ -614,7 +615,7 @@ ALL GATES PASS (run rvmin-run.sh separately for the QEMU check)
    污染契约，再用 `extra_roots` + `ambient_fields` 恢复。
 2. 给 `AsmParser` 增加一个字段并在 emitter 里读它，确认 `--check` 报
    “missing annotations”而不是静默通过。
-3. 用 `--effect ParserMatchClass` 看四个后端的投影，解释为什么只有
+3. 用 `--effect ParserMatchClass` 看当时四个后端的投影，解释为什么只有
    asm-matcher 是 `project`。
 4. 用 `--effect SuperClasses` 对比 `AltNames`：一个是纯 emitter 字段，
    一个是跨后端字段。

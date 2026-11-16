@@ -168,7 +168,7 @@ ALL GATES PASS (run rvmin-run.sh separately for the QEMU check)
 
 1. 把 `BackGuide.md` 的 “Getting Record Names and Fields” 小节加一条
    指向 `Backend field contracts` 的链接，需要改几处？
-2. 给 `dsl-surface.py` 增加一个 `--list-backends`，让文档不必硬编码四个
+2. 给 `dsl-surface.py` 增加一个 `--list-backends`，让文档不必硬编码五个
    名字；输出应该包含哪些字段？
 3. 用 `--json` 输出生成一份“字段 → reader”索引，比较它和
    `--effect` 的差异。

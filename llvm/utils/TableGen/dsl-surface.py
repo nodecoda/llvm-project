@@ -79,6 +79,7 @@ MAIN_OUTPUTS = {
     "instr-info": "<Target>GenInstrInfo.inc",
     "asm-writer": "<Target>GenAsmWriter.inc",
     "asm-matcher": "<Target>GenAsmMatcher.inc",
+    "dag-isel": "<Target>GenDAGISel.inc",
 }
 
 BACKENDS = {
@@ -251,6 +252,59 @@ BACKENDS = {
         ambient_fields=(
             ("Target", "AssemblyParsers"),
             ("Target", "AssemblyParserVariants"),
+        ),
+    ),
+    "dag-isel": Backend(
+        name="dag-isel",
+        emitter="llvm/utils/TableGen/DAGISelEmitter.cpp",
+        sources=(
+            ("llvm/utils/TableGen/DAGISelEmitter.cpp", "emitter"),
+            ("llvm/utils/TableGen/Common/CodeGenDAGPatterns.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenDAGPatterns.h", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenInstruction.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenInstruction.h", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenRegisters.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenRegisters.h", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenTarget.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenTarget.h", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenHwModes.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenHwModes.h", "shared"),
+            ("llvm/utils/TableGen/Common/InfoByHwMode.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/InfoByHwMode.h", "shared"),
+            ("llvm/utils/TableGen/Common/SubtargetFeatureInfo.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/SubtargetFeatureInfo.h", "shared"),
+            ("llvm/utils/TableGen/Basic/SDNodeProperties.cpp", "shared"),
+            ("llvm/utils/TableGen/Basic/SDNodeProperties.h", "shared"),
+        ),
+        td_files=(
+            "llvm/include/llvm/Target/Target.td",
+            "llvm/include/llvm/Target/TargetSelectionDAG.td",
+            "llvm/include/llvm/Target/TargetSubtarget.td",
+        ),
+        roots_from=(
+            "llvm/utils/TableGen/Common/CodeGenDAGPatterns.cpp",
+            "llvm/utils/TableGen/Common/CodeGenRegisters.cpp",
+        ),
+        extra_roots=(
+            ("Instruction", "llvm/utils/TableGen/Common/CodeGenTarget.cpp",
+             'getAllDerivedDefinitions("Instruction")'),
+            ("Register", "llvm/utils/TableGen/Common/CodeGenRegisters.cpp",
+             'getAllDerivedDefinitions("Register")'),
+            ("RegisterClass", "llvm/utils/TableGen/Common/CodeGenRegisters.cpp",
+             'getAllDerivedDefinitions("RegisterClass")'),
+            ("Operand", "llvm/utils/TableGen/InstrInfoEmitter.cpp",
+             'getAllDerivedDefinitions("Operand")'),
+            ("RegisterOperand", "llvm/utils/TableGen/InstrInfoEmitter.cpp",
+             'getAllDerivedDefinitions("RegisterOperand")'),
+        ),
+        helper_classes=(
+            "HwModeSelect", "RegInfoByHwMode", "RegInfo",
+            "SubRegRangeByHwMode", "SubRegRange", "DwarfRegAlias",
+            "RegClassByHwMode", "DAGOperand", "SDTypeProfile",
+            "SDTypeConstraint", "SDTCisSameAs", "SDTCisVTSmallerThanOp",
+            "SDTCisOpSmallerThanOp", "SDTCisEltOfVec", "SDTCisSubVecOfVec",
+            "SDTCVecEltisVT", "SDTCisSameNumEltsAs", "SDTCisSameSizeAs",
+            "ValueType", "Predicate",
         ),
     ),
 }
@@ -454,6 +508,78 @@ ASM_MATCHER_ANNOTATIONS = {
     if k not in {"Body", "FunctionName", "Instruction"}
 }
 
+DAG_ISEL_ANNOTATIONS = {
+    k: v for k, v in INSTR_INFO_ANNOTATIONS.items()
+    if k not in {"Body", "FunctionName", "Instruction"}
+}
+
+DAG_ISEL_ANNOTATIONS.update({
+    # `SDNode` also declares TSFlags, so the merged note must cover both.
+    "TSFlags": "目标自定义标志位：`Instruction`/`RegisterClass` 写入 MCInstrDesc/寄存器类；`SDNode.TSFlags` 是 DAG 节点标志，参与匹配。",
+    # --- Pattern -----------------------------------------------------------
+    "PatternToMatch": "pattern 的源 dag；`TreePattern` 从它构建匹配树。",
+    "ResultInstrs": "pattern 的结果指令列表；决定选中后生成哪些 MachineInstr。",
+    "GISelShouldIgnore": "为 true 时 GlobalISel 导入忽略该 pattern。",
+    "AddedComplexity": "pattern/指令的优先级加成；越大越先匹配。",
+    "Pattern": "指令上的 pattern 列表；与独立 `Pattern` 记录一起进入匹配器。",
+    # --- PatFrags ----------------------------------------------------------
+    "Operands": "`PatFrags` 的命名嵌套操作数 dag；fragment 里用 `$name` 引用。",
+    "Fragments": "候选 fragment 列表；结构匹配时任一命中即可。",
+    "PredicateCode": "结构匹配后的 C++ 谓词；为空表示只看结构。",
+    "GISelPredicateCode": "GlobalISel 等价谓词；导入 pattern 时使用。",
+    "ImmediateCode": "立即数值检查的 C++ 片段；SDISel 与 GlobalISel 共享。",
+    "MemoryVT": "load/store fragment 的内存值类型。",
+    "ScalarMemoryVT": "向量内存操作实际存储的标量类型。",
+    "AddressSpaces": "可接受的地址空间列表；空表示任意。",
+    "MinAlignment": "内存 fragment 要求的最小对齐。",
+    "OperandTransform": "绑定 `$name` 时套用的 `SDNodeXForm`。",
+    # --- ComplexPattern ----------------------------------------------------
+    "Ty": "`ComplexPattern` 的返回值类型。",
+    "NumOperands": "select 函数返回的操作数个数；`SDTypeProfile` 中则是节点操作数个数。",
+    "SelectFunc": "执行复杂匹配的 C++ 函数名。",
+    "RootNodes": "复杂匹配可接受的根节点列表。",
+    "Properties": "结果节点需具备的 `SDNode` 属性；也用于校验 pattern 与指令一致。",
+    "Complexity": "复杂 pattern 的相对优先级；越大越先匹配。",
+    "WantsRoot": "把匹配根节点作为额外参数传给 select 函数。",
+    "WantsParent": "把父节点作为额外参数传给 select 函数。",
+    # --- SDNode / SDNodeXForm / SDTypeProfile ------------------------------
+    "Opcode": "`SDNode` 的 opcode 字符串（`ISD::XXX`）；`SDNodeXForm` 中则是被变换的节点。",
+    "SDClass": "生成的 C++ SDNode 子类名；决定 cast 的目标类型。",
+    "TypeProfile": "`SDTypeProfile` 引用；给出结果/操作数个数与类型约束。",
+    "IsStrictFP": "严格浮点节点标记；影响匹配与重排。",
+    "NumResults": "`SDTypeProfile` 的结果个数。",
+    "Constraints": "`SDTypeProfile` 的类型约束列表。",
+    "XFormFunction": "`SDNodeXForm` 的 C++ 变换函数体。",
+    "OperandNum": "`SDTypeConstraint` 约束的操作数编号。",
+    "OtherOperandNum": "与 `OperandNum` 比较的另一个操作数编号。",
+    "BigOperandNum": "`SDTCisOpSmallerThanOp` 中较大的操作数编号。",
+    "OtherOpNum": "`SDTCisEltOfVec`/`SDTCisSubVecOfVec` 的另一个操作数编号。",
+    "VT": "约束要求的 `ValueType`。",
+    # --- Instruction / Operand --------------------------------------------
+    "CodeSize": "指令的 code size 成本；DAGISel 用它排序匹配候选。",
+    "Type": "操作数的 `ValueType`；类型推断时使用。",
+    "DefaultOps": "`OperandWithDefaultOps` 的默认操作数 dag。",
+    # --- Predicate ---------------------------------------------------------
+    "CondString": "谓词的 C++ 条件字符串；pattern 把它拼进匹配代码。",
+    "AssemblerMatcherPredicate": "是否作为汇编匹配谓词参与生成。",
+    "AssemblerCondDag": "汇编器谓词的 dag 条件。",
+    "RecomputePerFunction": "是否每个函数重新计算该谓词。",
+    # --- shared register model --------------------------------------------
+    "Aliases": "寄存器别名列表；共享寄存器模型合并别名。",
+    "AsmName": "寄存器主汇编名；共享寄存器模型建立名字表。",
+    "CostPerUse": "每寄存器使用成本序列；共享寄存器模型消费。",
+    "CoveredBySubRegs": "值由子寄存器决定；共享寄存器模型消费。",
+    "isArtificial": "合成寄存器标记；不参与用户可见匹配。",
+    "isConstant": "常量寄存器标记；共享寄存器模型消费。",
+    "SubRegs": "子寄存器列表；共享寄存器模型消费。",
+    "SubRegIndices": "与 `SubRegs` 一一对应的子寄存器索引。",
+    "RegAsmNames": "`RegisterTuples` 展开时覆盖每个合成寄存器的 `AsmName`。",
+    "Classes": "`RegisterCategory` 包含的寄存器类。",
+    "ComposedOf": "复合子寄存器索引的组成列表。",
+    "CoveringSubRegIndices": "覆盖该子寄存器索引的父索引列表。",
+    "SubRegRanges": "按 HwMode 的子寄存器范围。",
+})
+
 ASM_MATCHER_ANNOTATIONS.update({
     # --- AsmOperandClass / AsmParserVariant -------------------------------
     "Name": "操作数类的 `MCK_<Name>` 枚举名与默认方法名前缀；`AsmParserVariant` 中则是变体名，用于过滤 `AsmVariantName`。",
@@ -532,6 +658,7 @@ ANNOTATIONS = {
     "instr-info": INSTR_INFO_ANNOTATIONS,
     "asm-writer": ASM_WRITER_ANNOTATIONS,
     "asm-matcher": ASM_MATCHER_ANNOTATIONS,
+    "dag-isel": DAG_ISEL_ANNOTATIONS,
 }
 
 # Fields that are declared on a consumed class but intentionally not read by
@@ -596,6 +723,30 @@ ASM_WRITER_UNUSED_NOTES.update({
     "UseNamedOperandTable": "命名操作数表开关；`-gen-instr-info` 消费。",
 })
 
+DAG_ISEL_UNUSED_NOTES = dict(INSTR_INFO_UNUSED_NOTES)
+DAG_ISEL_UNUSED_NOTES.update({
+    "HasNoUse": "预置谓词标记；`PredicateExpanderDag` 生成检查，不在本 source set。",
+    "HasOneUse": "预置谓词标记；`PredicateExpanderDag` 生成检查，不在本 source set。",
+    "IsLoad": "预置内存谓词；`PredicateExpanderDag` 生成检查。",
+    "IsStore": "预置内存谓词；`PredicateExpanderDag` 生成检查。",
+    "IsAtomic": "预置内存谓词；`PredicateExpanderDag` 生成检查。",
+    "IsUnindexed": "预置内存谓词；`PredicateExpanderDag` 生成检查。",
+    "IsNonExtLoad": "预置加载谓词；`PredicateExpanderDag` 生成检查。",
+    "IsAnyExtLoad": "预置加载谓词；`PredicateExpanderDag` 生成检查。",
+    "IsSignExtLoad": "预置加载谓词；`PredicateExpanderDag` 生成检查。",
+    "IsZeroExtLoad": "预置加载谓词；`PredicateExpanderDag` 生成检查。",
+    "IsTruncStore": "预置存储谓词；`PredicateExpanderDag` 生成检查。",
+    "IsAtomicOrderingMonotonic": "预置原子序谓词；`PredicateExpanderDag` 生成检查。",
+    "IsAtomicOrderingAcquire": "预置原子序谓词；`PredicateExpanderDag` 生成检查。",
+    "IsAtomicOrderingRelease": "预置原子序谓词；`PredicateExpanderDag` 生成检查。",
+    "IsAtomicOrderingAcquireRelease": "预置原子序谓词；`PredicateExpanderDag` 生成检查。",
+    "IsAtomicOrderingSequentiallyConsistent": "预置原子序谓词；`PredicateExpanderDag` 生成检查。",
+    "IsAtomicOrderingAcquireOrStronger": "预置原子序谓词；`PredicateExpanderDag` 生成检查。",
+    "IsAtomicOrderingReleaseOrStronger": "预置原子序谓词；`PredicateExpanderDag` 生成检查。",
+    "PredicateCodeUsesOperands": "允许 `PredicateCode` 引用 `Operands`；匹配器生成阶段消费。",
+    "PredicateName": "`getSubtargetFeatureName` 生成用；`-gen-subtarget`/asm matcher 消费。",
+})
+
 ASM_MATCHER_UNUSED_NOTES = dict(INSTR_INFO_UNUSED_NOTES)
 ASM_MATCHER_UNUSED_NOTES.update({
     "DwarfNumbers": "DWARF 编号；`-gen-register-info` 消费。",
@@ -612,6 +763,7 @@ UNUSED_NOTES = {
     "instr-info": INSTR_INFO_UNUSED_NOTES,
     "asm-writer": ASM_WRITER_UNUSED_NOTES,
     "asm-matcher": ASM_MATCHER_UNUSED_NOTES,
+    "dag-isel": DAG_ISEL_UNUSED_NOTES,
 }
 
 # Name-level contract: record names and generated identifiers that are not
@@ -672,6 +824,16 @@ MAGIC_NAMES = {
     "instr-info": (),
     "asm-writer": ASM_WRITER_MAGIC_NAMES,
     "asm-matcher": ASM_MATCHER_MAGIC_NAMES,
+    "dag-isel": (
+        ("set", r'"set"', "pattern 结果绑定节点；分隔匹配树与结果树。"),
+        ("node", r'"node"', "未类型化叶子的占位节点。"),
+        ("srcvalue", r'"srcvalue"', "源值叶子；表示已加载的值。"),
+        ("null_frag", r'"null_frag"', "空 fragment；使 pattern 失效。"),
+        ("immAllOnesV / immAllZerosV", r'"immAllOnesV"|"immAllZerosV"',
+         "全 1/全 0 向量立即数；类型推断特殊处理。"),
+        ("INSERT_SUBREG / REG_SEQUENCE", r'"INSERT_SUBREG"|"REG_SEQUENCE"',
+         "结果树里的寄存器合成伪节点；决定操作数映射。"),
+    ),
 }
 
 MATRIX_BEGIN = "<!-- BEGIN: GENERATED PROJECTION MATRIX -->"
@@ -771,6 +933,30 @@ ASM_WRITER_DERIVATIONS = (
      "把 `RegisterOperand` 解析到具体 `RegisterClass`。"),
 )
 
+DAG_ISEL_DERIVATIONS = (
+    ("pattern collection", "Pattern",
+     r'getAllDerivedDefinitions\("Pattern"\)',
+     "收集独立 `Pattern` 并展开成 `TreePattern`。"),
+    ("instruction pattern merge", "Instruction.Pattern",
+     r'getValueAsListInit\("Pattern"\)',
+     "把指令上的 `Pattern` 列表并入匹配器。"),
+    ("fragment flattening", "PatFrags.Fragments",
+     r'getValueAsListInit\("Fragments"\)',
+     "把候选 fragment 展开成可匹配的树。"),
+    ("type inference", "SDNode.TypeProfile",
+     r'TypeInfer::',
+     "按类型约束推断每个节点/操作数的 `ValueType`。"),
+    ("predicate lowering", "Predicate.CondString",
+     r'getValueAsString\("CondString"\)',
+     "把谓词条件拼进匹配树。"),
+    ("node registration", "SDNode",
+     r'getAllDerivedDefinitions\("SDNode"\)',
+     "注册 `SDNode` 的 opcode、属性与类型 profile。"),
+    ("operand type resolution", "Operand.Type",
+     r'getValueAsDef\("Type"\)',
+     "把操作数解析到 `ValueType`。"),
+)
+
 ASM_MATCHER_DERIVATIONS = (
     ("alias construction", "InstAlias",
      r'CodeGenInstAlias::CodeGenInstAlias',
@@ -800,6 +986,7 @@ DERIVATIONS = {
     "instr-info": INSTR_INFO_DERIVATIONS,
     "asm-writer": ASM_WRITER_DERIVATIONS,
     "asm-matcher": ASM_MATCHER_DERIVATIONS,
+    "dag-isel": DAG_ISEL_DERIVATIONS,
 }
 
 
@@ -1211,16 +1398,22 @@ def build_contract(root: Path, backend: Backend):
 
     magic = []
     emitter_text = strip_comments((root / backend.emitter).read_text())
+    # Magic names may be compared in the emitter or in shared C++ that the
+    # backend delegates to, so search the whole source set.
+    source_texts = [(rel, strip_comments((root / rel).read_text()))
+                    for rel, _ in backend.sources]
     for name, pattern, effect in MAGIC_NAMES[backend.name]:
-        lines = [_line_of(emitter_text, m.start())
-                 for m in re.finditer(pattern, emitter_text)]
-        if not lines:
+        sites = []
+        for rel, text in source_texts:
+            for m in re.finditer(pattern, text):
+                site = f"{rel}:{_line_of(text, m.start())}"
+                if site not in sites:
+                    sites.append(site)
+        if not sites:
             raise ContractError(
-                f"magic name '{name}' ({pattern}) no longer appears in "
-                f"{backend.emitter}; update MAGIC_NAMES")
-        magic.append({"name": name,
-                      "sites": [f"{backend.emitter}:{line}" for line in lines],
-                      "effect": effect})
+                f"magic name '{name}' ({pattern}) no longer appears in the "
+                f"sources of {backend.name}; update MAGIC_NAMES")
+        magic.append({"name": name, "sites": sites, "effect": effect})
 
     derivations = collect_derivations(root, backend)
 
