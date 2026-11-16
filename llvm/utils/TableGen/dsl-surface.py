@@ -19,7 +19,9 @@ This script derives that specification from the C++ sources themselves:
   1. root record classes  <- getAllDerivedDefinitions("...") / explicit roots
   2. field contract       <- .td declarations + every getValue*("...") read
   3. name-level contract  <- magic record names compared against literals
-  4. unused fields        <- declared on a root class but never read here
+  4. projection matrix    <- which -gen-* backends read the same field name
+  5. derivation rewrites  <- where shared C++ rewrites the model
+  6. unused fields        <- declared on a root class but never read here
 
 `--update` writes the generated tables into a markdown document, `--check`
 verifies the document is still in sync and that every consumed field has a
@@ -229,6 +231,51 @@ MAGIC_NAMES = (
      "`RegisterByHwMode` def 名派生的 getter。"),
 )
 
+MATRIX_BEGIN = "<!-- BEGIN: GENERATED PROJECTION MATRIX -->"
+MATRIX_END = "<!-- END: GENERATED PROJECTION MATRIX -->"
+DERIV_BEGIN = "<!-- BEGIN: GENERATED DERIVATIONS -->"
+DERIV_END = "<!-- END: GENERATED DERIVATIONS -->"
+
+# Derivation-layer rewrites: places where shared C++ changes what a record
+# means before any backend projects it.  (kind, schema key, regex, effect);
+# collect_derivations() fails the check if a pattern no longer matches.
+DERIVATIONS = (
+    ("SetTheory expander", "RegisterClass.MemberList",
+     r'Sets\.addFieldExpander\("RegisterClass", "MemberList"\)',
+     "把 dag 展开成寄存器集合；决定成员集与默认分配序。"),
+    ("SetTheory expander", "CalleeSavedRegs.SaveList",
+     r'Sets\.addFieldExpander\("CalleeSavedRegs", "SaveList"\)',
+     "把 dag 展开成保存顺序，生成 `<name>_SaveList`。"),
+    ("tuple synthesis", "RegisterTuples",
+     r'Sets\.addExpander\("RegisterTuples"',
+     "在 backend 运行时合成新的 Record（`SynthDefs`），不进入 RecordKeeper。"),
+    ("tuple rewrite", "RegisterTuples.SubRegs",
+     r'if \(Field == "SubRegs"\)',
+     "把原型的 SubRegs 替换成 zip 出来的 tuple。"),
+    ("tuple rewrite", "RegisterTuples.CoveredBySubRegs",
+     r'if \(Field == "CoveredBySubRegs"\)',
+     "合成寄存器强制 `CoveredBySubRegs = true`。"),
+    ("tuple rewrite", "RegisterTuples.DwarfNumbers",
+     r'Field == "DwarfNumbers"',
+     "`DwarfNumbers`/`DwarfAlias`/`Aliases` 重置为 Register 类默认值。"),
+    ("sorting", "Register.PositionOrder",
+     r'llvm::sort\(Regs, LessRecordRegister\(\)\)',
+     "消费端排序；决定寄存器枚举顺序（`LessRecordRegister` 读 `PositionOrder`）。"),
+    ("inference", "RegisterClass",
+     r'computeInferredRegisterClasses',
+     "从显式寄存器类推断出缺失的类；只存在于派生模型。"),
+    ("hw-mode selection", "HwModeSelect.Objects",
+     r'zip_equal\(Modes, Objects\)',
+     "按 ModeId 把 `Objects[i]` 绑定到 `Modes[i]`。"),
+    ("parameterization", "RegInfo",
+     r'RegSize = R->getValueAsInt\("RegSize"\)',
+     "把 `RegInfo` 三元组转成内部 `RegSizeInfo`（按 HwMode 存）。"),
+    ("parameterization", "SubRegRange",
+     r'SubRegRange::SubRegRange',
+     "把 `SubRegIndex.Size/Offset` 或 `SubRegRange` 转成内部 `SubRegRange`。"),
+)
+
+
 READ_RE = re.compile(
     r'\b(getValue[A-Za-z]*|getValueInit)\s*\(\s*"([A-Za-z_][A-Za-z0-9_]*)"')
 ROOT_RE = re.compile(
@@ -412,19 +459,24 @@ def _parse_fields(body: str, first_line: int):
 
 
 def collect_fields(name, classes, seen=None):
-    """Own fields plus inherited ones, first declaration wins."""
+    """Own fields plus inherited ones as (field, declaring_class).
+
+    Keeping the declaring class is what lets the contract separate the
+    register schema from unrelated schemas that happen to use the same field
+    name (Namespace, Size, Objects, ...).
+    """
     if seen is None:
         seen = set()
     if name in seen or name not in classes:
         return []
     seen.add(name)
     cls = classes[name]
-    out = list(cls.fields)
-    known = {f.name for f in out}
+    out = [(f, name) for f in cls.fields]
+    known = {f.name for f in cls.fields}
     for base in cls.bases:
-        for f in collect_fields(base, classes, seen):
+        for f, decl in collect_fields(base, classes, seen):
             if f.name not in known:
-                out.append(f)
+                out.append((f, decl))
                 known.add(f.name)
     return out
 
@@ -432,6 +484,56 @@ def collect_fields(name, classes, seen=None):
 # --------------------------------------------------------------------------
 # Contract
 # --------------------------------------------------------------------------
+GEN_RE = re.compile(r'"(gen-[A-Za-z0-9-]+)"')
+
+
+def _reader_name(rel: str, text: str) -> str:
+    """Map a TableGen source file to the projection that owns it."""
+    if "/Common/" in rel or "/Basic/" in rel:
+        return "shared"
+    regs = sorted(set(GEN_RE.findall(text)))
+    if regs:
+        return ", ".join(r[len("gen-"):] for r in regs)
+    return "helper:" + Path(rel).stem
+
+
+def scan_matrix(root: Path, field_names):
+    """field -> {reader: [file:line]} over every TableGen backend source."""
+    tg = root / "llvm/utils/TableGen"
+    out = {}
+    files = sorted(list(tg.rglob("*.cpp")) + list(tg.rglob("*.h")))
+    for path in files:
+        rel = str(path.relative_to(root))
+        text = strip_comments(path.read_text())
+        reader = _reader_name(rel, text)
+        for m in READ_RE.finditer(text):
+            fld = m.group(2)
+            if fld not in field_names:
+                continue
+            line = text.count("\n", 0, m.start()) + 1
+            out.setdefault(fld, {}).setdefault(reader, []).append(
+                f"{rel}:{line}")
+    return out
+
+
+def collect_derivations(root: Path, backend: Backend):
+    """Check the derivation-layer rewrites listed in DERIVATIONS."""
+    rows = []
+    for kind, key, pattern, effect in DERIVATIONS:
+        sites = []
+        for rel, _ in backend.sources:
+            text = strip_comments((root / rel).read_text())
+            for m in re.finditer(pattern, text):
+                sites.append(f"{rel}:{_line_of(text, m.start())}")
+        if not sites:
+            raise ContractError(
+                f"derivation '{key}' ({pattern}) no longer matches; "
+                f"update DERIVATIONS")
+        rows.append({"kind": kind, "key": key, "sites": sites,
+                     "effect": effect})
+    return rows
+
+
 def build_contract(root: Path, backend: Backend):
     reads, roots, expanders = scan_reads(root, backend)
     classes = parse_td(root, backend)
@@ -441,18 +543,23 @@ def build_contract(root: Path, backend: Backend):
         if name not in root_names:
             root_names.append(name)
 
-    # Fields of every consumed class (roots + helpers + ambient records).
+    # field -> {declaring_class: TdField}.  A field name may be declared by
+    # several independent schemas (Namespace, Size, Objects, ...); keeping the
+    # declaring class is what makes the contract schema-aware.
     field_decls = {}
-    for name in list(root_names) + list(backend.helper_classes):
-        for f in collect_fields(name, classes):
-            field_decls.setdefault(f.name, []).append((name, f))
+    reached_from = {}
+    for rname in list(root_names) + list(backend.helper_classes):
+        for f, decl in collect_fields(rname, classes, set()):
+            field_decls.setdefault(f.name, {})[decl] = f
+            reached_from.setdefault(f.name, set()).add(rname)
     for cls_name, fld in backend.ambient_fields:
         if cls_name not in classes:
             raise ContractError(f"ambient record class '{cls_name}' not found")
         matches = [f for f in classes[cls_name].fields if f.name == fld]
         if not matches:
             raise ContractError(f"ambient field '{cls_name}.{fld}' not found")
-        field_decls.setdefault(fld, []).append((cls_name, matches[0]))
+        field_decls.setdefault(fld, {})[cls_name] = matches[0]
+        reached_from.setdefault(fld, set()).add(cls_name)
 
     if not field_decls:
         raise ContractError("no .td fields found; check the td_files list")
@@ -486,45 +593,65 @@ def build_contract(root: Path, backend: Backend):
                            if name in classes else "<unknown>"),
             "sites": [f"{f}:{l}" for f, l, _ in sites] or reason_sites,
         })
+
     def _def_key(r):
         path, _, line = r["definition"].rpartition(":")
         return (path, int(line) if line.isdigit() else 0)
 
     root_rows.sort(key=_def_key)
 
+    matrix = scan_matrix(root, set(field_decls))
+
+    def _uniq(values):
+        seen, out = set(), []
+        for v in values:
+            if v not in seen:
+                seen.add(v)
+                out.append(v)
+        return out
+
     rows = []
-    for fld, decls in sorted(
-            field_decls.items(),
-            key=lambda kv: (kv[1][0][1].name if False else
-                            min((classes.get(c).file, classes.get(c).line,
-                                 f.line) if c in classes else ("zz", 0, 0)
-                                for c, f in kv[1]))):
+    for fld, decl_map in field_decls.items():
+        decl_items = sorted(
+            decl_map.items(),
+            key=lambda kv: (classes[kv[0]].file, classes[kv[0]].line,
+                            kv[1].line))
         sites = by_field.get(fld, []) + expander_sites.get(fld, [])
         sites.sort(key=ReadSite.sort_key)
-        decls_sorted = sorted(decls, key=lambda cf: (cf[0] not in root_names,
-                                                     cf[0]))
-
-        def _uniq(values):
-            seen, out = set(), []
-            for v in values:
-                if v not in seen:
-                    seen.add(v)
-                    out.append(v)
-            return out
-
+        scopes = {s.scope for s in sites}
+        if not sites:
+            stage = "schema"
+        elif "emitter" in scopes:
+            stage = "project" if scopes == {"emitter"} else "derive+project"
+        else:
+            stage = "derive"
+        readers = matrix.get(fld, {})
+        other = sorted(k for k in readers
+                       if k != "shared" and k != backend.name)
         rows.append({
             "field": fld,
-            "declared_in": [c for c, _ in decls_sorted],
-            "types": _uniq(f.type for _, f in decls_sorted),
+            "declared_in": [c for c, _ in decl_items],
+            "reached_from": sorted(reached_from.get(fld, ())),
+            "types": _uniq(f.type for _, f in decl_items),
             "defaults": _uniq(f.default or "（未设默认值）"
-                              for _, f in decls_sorted),
-            "type": decls_sorted[0][1].type,
-            "default": decls_sorted[0][1].default or "（未设默认值）",
+                              for _, f in decl_items),
+            "stage": stage,
+            "ambiguous": len(decl_items) > 1,
             "sites": [f"{s.file}:{s.line}" for s in sites],
-            "scopes": sorted({s.scope for s in sites}),
+            "site_details": [{"file": s.file, "line": s.line,
+                              "accessor": s.accessor, "scope": s.scope,
+                              "snippet": s.snippet} for s in sites],
+            "shared": "shared" in readers,
+            "projects": [k for k in other if not k.startswith("helper:")],
+            "helpers": [k for k in other if k.startswith("helper:")],
+            "readers": readers,
             "effect": ANNOTATIONS.get(fld),
             "unused_note": UNUSED_NOTES.get(fld),
         })
+
+    rows.sort(key=lambda r: (
+        min((classes[c].file, classes[c].line) for c in r["declared_in"]),
+        r["field"]))
 
     consumed = [r for r in rows if r["sites"]]
     unused = [r for r in rows if not r["sites"]]
@@ -547,12 +674,17 @@ def build_contract(root: Path, backend: Backend):
                       "sites": [f"{backend.emitter}:{line}" for line in lines],
                       "effect": effect})
 
+    derivations = collect_derivations(root, backend)
+
     backend_name = BACKEND_RE.search(emitter_text)
     cli_opts = CLI_OPT_RE.findall(emitter_text)
     outputs = []
     for m in OUTPUT_RE.finditer(emitter_text):
         if m.group(1) not in outputs and m.group(1).endswith(".inc"):
             outputs.append(m.group(1))
+
+    stages = {k: sum(1 for r in rows if r["stage"] == k)
+              for k in ("schema", "derive", "project", "derive+project")}
 
     return {
         "backend": backend.name,
@@ -563,8 +695,10 @@ def build_contract(root: Path, backend: Backend):
         "roots": root_rows,
         "fields": rows,
         "magic": magic,
+        "derivations": derivations,
         "stats": {"roots": len(root_rows), "fields": len(rows),
-                  "consumed": len(consumed), "unused": len(unused)},
+                  "consumed": len(consumed), "unused": len(unused),
+                  "stages": stages},
         "problems": {"missing_annotations": missing, "stale_annotations": stale},
     }
 
@@ -596,8 +730,10 @@ def render_block(contract) -> str:
                    ", ".join(f"`{o}`" for o in contract["outputs"]) +
                    "，主文件为 `<Target>GenRegisterInfo.inc`。")
     s = contract["stats"]
+    st = s["stages"]
     out.append(f"统计：{s['roots']} 个记录类入口 · {s['fields']} 个字段"
-               f"（本后端消费 {s['consumed']}，未消费 {s['unused']}）。")
+               f"（schema {st['schema']} · derive {st['derive']} · "
+               f"project {st['project']} · derive+project {st['derive+project']}）。")
     out.append("")
 
     out.append("**记录类入口**")
@@ -609,20 +745,24 @@ def render_block(contract) -> str:
                    f"{_sites(r['sites'], 3)} |")
     out.append("")
 
-    out.append("**字段契约**（读取点按 `文件:行`；同一字段名可被多个类声明，"
-               "TableGen 是按名字查的）")
+    out.append("**字段契约**（主键是 `(declaring class, field)`；"
+               "`stage` 表示它停在哪一层，`⚠` 表示同名多声明）")
     out.append("")
-    out.append("| 字段 | 声明于 | 类型 | 默认值 | 读取点 | 语义 |")
-    out.append("| --- | --- | --- | --- | --- | --- |")
+    out.append("| 字段 | 声明于 | 类型 | 默认值 | stage | 本后端读取点 | 语义 |")
+    out.append("| --- | --- | --- | --- | --- | --- | --- |")
     for r in contract["fields"]:
         if not r["sites"]:
             continue
         decl = ", ".join(f"`{c}`" for c in r["declared_in"])
         types = " / ".join(f"`{_cell(t)}`" for t in r["types"])
         defaults = " / ".join(f"`{_cell(d)}`" for d in r["defaults"])
+        stage = f"`{r['stage']}`" + (" ⚠" if r["ambiguous"] else "")
         out.append(f"| `{r['field']}` | {decl} | {types} | "
-                   f"{defaults} | {_sites(r['sites'])} | "
+                   f"{defaults} | {stage} | {_sites(r['sites'])} | "
                    f"{_cell(r['effect'] or '**未注解**')} |")
+    out.append("")
+    out.append("`stage`：`schema` 仅声明 · `derive` 只被共享派生层读 · "
+               "`project` 只被本 emitter 读 · `derive+project` 两者都读。")
     out.append("")
 
     out.append("**声明了但本后端不读的字段**")
@@ -650,56 +790,42 @@ def render_block(contract) -> str:
     return "\n".join(out)
 
 
+def render_matrix_block(contract) -> str:
+    s = contract["stats"]
+    rows = [r for r in contract["fields"]
+            if r["projects"] or r["helpers"] or r["ambiguous"]]
+    out = [MATRIX_BEGIN, "",
+           "只列“本后端之外还有读者”或“同名多声明”的字段；"
+           "`shared` 表示共享派生层也读它。", "",
+           "| 字段 | 声明于 | shared | 其它 `-gen-*` | helper | 同名 |",
+           "| --- | --- | --- | --- | --- | --- |"]
+    for r in rows:
+        decl = ", ".join(f"`{c}`" for c in r["declared_in"])
+        projects = ", ".join(f"`{p}`" for p in r["projects"]) or "—"
+        helpers = ", ".join(f"`{h}`" for h in r["helpers"]) or "—"
+        out.append(f"| `{r['field']}` | {decl} | "
+                   f"{'✓' if r['shared'] else '—'} | {projects} | "
+                   f"{helpers} | {'⚠' if r['ambiguous'] else '—'} |")
+    out.extend(["", f"矩阵覆盖 {len(rows)} 个字段（共 {s['fields']} 个）。",
+                MATRIX_END])
+    return "\n".join(out)
+
+
+def render_derivations_block(rows) -> str:
+    out = [DERIV_BEGIN, "",
+           "Record 里只有声明；这些是共享 C++ 在投影之前对语义的改写。", "",
+           "| 改写 | Schema 键 | 证据 | 说明 |",
+           "| --- | --- | --- | --- |"]
+    for r in rows:
+        out.append(f"| `{r['kind']}` | `{r['key']}` | "
+                   f"{_sites(r['sites'], 2)} | {_cell(r['effect'])} |")
+    out.append(DERIV_END)
+    return "\n".join(out)
+
+
 # --------------------------------------------------------------------------
 # Check / update
 # --------------------------------------------------------------------------
-def extract_block(text: str) -> str:
-    start = text.find(BEGIN_MARKER)
-    end = text.find(END_MARKER)
-    if start < 0 or end < 0 or end < start:
-        raise ContractError(f"markers not found ({BEGIN_MARKER} … {END_MARKER})")
-    return text[start:end + len(END_MARKER)]
-
-
-def check_doc(root: Path, backend: Backend, doc: Path, usage_files):
-    contract = build_contract(root, backend)
-    problems = []
-    if contract["problems"]["missing_annotations"]:
-        problems.append("consumed fields without a semantic annotation: " +
-                        ", ".join(contract["problems"]["missing_annotations"]))
-    if contract["problems"]["stale_annotations"]:
-        problems.append("annotations for fields that no longer exist: " +
-                        ", ".join(contract["problems"]["stale_annotations"]))
-    expected = render_block(contract)
-    text = doc.read_text()
-    try:
-        actual = extract_block(text)
-    except ContractError as e:
-        problems.append(str(e))
-    else:
-        if actual != expected:
-            problems.append("generated contract block is out of date; "
-                            "rerun with --update")
-    if usage_files:
-        rows = collect_usage(root, contract, [str(p) for p in usage_files])
-        expected_usage = render_usage_block(rows)
-        start, stop = text.find(USAGE_BEGIN), text.find(USAGE_END)
-        if start < 0 or stop < 0:
-            problems.append("TD usage markers missing")
-        elif text[start:stop + len(USAGE_END)] != expected_usage:
-            problems.append("generated TD usage block is out of date; "
-                            "rerun with --update")
-    if problems:
-        print("dsl-surface: FAILED", file=sys.stderr)
-        for p in problems:
-            print(f"  - {p}", file=sys.stderr)
-        return 1
-    print(f"dsl-surface: OK ({contract['backend']}: "
-          f"{contract['stats']['consumed']}/{contract['stats']['fields']} "
-          f"fields consumed, {len(contract['magic'])} magic names)")
-    return 0
-
-
 LET_RE = re.compile(r"\blet\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\{[^}]*\})?\s*=")
 TD_FIELD_DECL_RE = re.compile(
     r"\bfield\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*<[^;>]*>)?\s+([A-Za-z_][A-Za-z0-9_]*)")
@@ -728,7 +854,7 @@ def collect_usage(root: Path, contract, files):
             if r is None:
                 status = "不在本后端契约（其它后端消费或拼写错误）"
             elif r["sites"]:
-                status = "消费"
+                status = f"消费（{r['stage']}）"
             else:
                 status = r["unused_note"] or "本后端不读"
             rows.append((rel, line, fld, status))
@@ -756,19 +882,67 @@ def _replace_block(text: str, begin: str, end: str, block: str) -> str:
     return text[:start] + block + text[stop + len(end):]
 
 
+def _get_block(text: str, begin: str, end: str) -> str:
+    start, stop = text.find(begin), text.find(end)
+    if start < 0 or stop < 0 or stop < start:
+        raise ContractError(f"markers not found ({begin} … {end})")
+    return text[start:stop + len(end)]
+
+
+def _doc_blocks(root, backend, contract, usage_files):
+    blocks = [
+        (BEGIN_MARKER, END_MARKER, render_block(contract)),
+        (MATRIX_BEGIN, MATRIX_END, render_matrix_block(contract)),
+        (DERIV_BEGIN, DERIV_END,
+         render_derivations_block(contract["derivations"])),
+    ]
+    if usage_files:
+        rows = collect_usage(root, contract, [str(p) for p in usage_files])
+        blocks.append((USAGE_BEGIN, USAGE_END, render_usage_block(rows)))
+    return blocks
+
+
+def check_doc(root: Path, backend: Backend, doc: Path, usage_files):
+    contract = build_contract(root, backend)
+    problems = []
+    if contract["problems"]["missing_annotations"]:
+        problems.append("consumed fields without a semantic annotation: " +
+                        ", ".join(contract["problems"]["missing_annotations"]))
+    if contract["problems"]["stale_annotations"]:
+        problems.append("annotations for fields that no longer exist: " +
+                        ", ".join(contract["problems"]["stale_annotations"]))
+    text = doc.read_text()
+    for begin, end, expected in _doc_blocks(root, backend, contract,
+                                            usage_files):
+        try:
+            actual = _get_block(text, begin, end)
+        except ContractError as e:
+            problems.append(str(e))
+            continue
+        if actual != expected:
+            problems.append(f"{begin} is out of date; rerun with --update")
+    if problems:
+        print("dsl-surface: FAILED", file=sys.stderr)
+        for p in problems:
+            print(f"  - {p}", file=sys.stderr)
+        return 1
+    st = contract["stats"]["stages"]
+    print(f"dsl-surface: OK ({contract['backend']}: "
+          f"{contract['stats']['consumed']}/{contract['stats']['fields']} "
+          f"fields consumed [{st['derive']} derive, {st['project']} project, "
+          f"{st['derive+project']} both], {len(contract['magic'])} magic names, "
+          f"{len(contract['derivations'])} derivations)")
+    return 0
+
+
 def update_doc(root: Path, backend: Backend, doc: Path, usage_files):
     contract = build_contract(root, backend)
     if contract["problems"]["missing_annotations"]:
         raise ContractError("missing annotations: " +
                             ", ".join(contract["problems"]["missing_annotations"]))
     text = doc.read_text()
-    text = _replace_block(text, BEGIN_MARKER, END_MARKER,
-                          render_block(contract))
-    if usage_files:
-        rows = collect_usage(root, contract,
-                             [str(p) for p in usage_files])
-        text = _replace_block(text, USAGE_BEGIN, USAGE_END,
-                              render_usage_block(rows))
+    for begin, end, block in _doc_blocks(root, backend, contract, usage_files):
+        text = _replace_block(text, begin, end, block)
     doc.write_text(text)
     print(f"dsl-surface: updated {doc}")
     return 0
@@ -781,7 +955,9 @@ def main(argv=None):
                         help="LLVM source root")
     parser.add_argument("--json", action="store_true", help="dump the contract")
     parser.add_argument("--print-block", action="store_true",
-                        help="print the generated markdown block")
+                        help="print the generated contract block")
+    parser.add_argument("--matrix", action="store_true",
+                        help="print the cross-backend projection matrix")
     parser.add_argument("--update", type=Path, metavar="DOC")
     parser.add_argument("--check", type=Path, metavar="DOC")
     parser.add_argument("--usage", type=Path, nargs="+", metavar="TD",
@@ -802,6 +978,8 @@ def main(argv=None):
             return 0
         if args.json:
             print(json.dumps(contract, indent=2, ensure_ascii=False))
+        elif args.matrix:
+            print(render_matrix_block(contract))
         elif args.print_block:
             print(render_block(contract))
         else:
