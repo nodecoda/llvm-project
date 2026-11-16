@@ -16,7 +16,7 @@
 | 06 | [06-sv32.md](06-sv32.md) | Sv32 分页 | 恒等/重定位输出一致；`--dump-pagetable`；cause 13 | `c3-ch06` |
 | 07 | [07-user-syscall.md](07-user-syscall.md) | U 态与系统调用 | 第二课 `demo` 作为 U 程序运行；跨页 `write` | `c3-ch07` |
 | 08 | [08-scheduling.md](08-scheduling.md) | 上下文与两进程调度 | 300 A + 200 B 行交错；`timer_ticks >= 4`；退出码 7/0 | `c3-ch08` |
-| 09 | （规划中） | 调试与可观测性 | trace 条数 == `minstret`；页表 dump 正确 | `c3-ch09` |
+| 09 | [09-observability.md](09-observability.md) | 调试与可观测性 | trace == `--stats` == `minstret`；`--dump-csr`；U 态 VA→PA | `c3-ch09` |
 | 10 | （规划中） | 第三课验收 | C3-AC1–9 全绿 | `c3-ch10` |
 
 第 00 章只是骨架，因此没有行为检查；`scripts/course3-verify.sh` 打印

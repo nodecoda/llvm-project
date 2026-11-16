@@ -44,6 +44,12 @@
 #   * --dump-procs reports both EXITED with exit codes 7 and 0;
 #   * the two processes' output is interleaved, not serialized.
 #
+# Chapter 09 checks:
+#   * --trace has one line per retired instruction, equal to --stats and
+#     minstret;
+#   * --dump-csr reports the hand-computed misa/mhartid/satp values;
+#   * a U-mode trace line carries the page-table translation 0x10000->0x80400000.
+#
 set -euo pipefail
 
 BIN=${1:?usage: course3-verify.sh <llvm-bin-dir> <rmach-binary>}
@@ -438,6 +444,45 @@ awk 'BEGIN { firstA = 0; firstB = 0 }
      END { if (firstA == 0 || firstB == 0 || firstA >= 200 || firstB >= 300)
              exit 1 }' "$TMP/proc.out" \
   || fail "process output is not interleaved: $(head -20 "$TMP/proc.out" | tr '\n' ' ')"
+CHECKS=$((CHECKS + 1))
+
+# --- Chapter 09: trace, CSR dump and page-table selection ---------------
+
+# Every retired instruction is one trace line.  The same number must appear in
+# --stats and in minstret; if any of the three drifts, one of them is lying.
+set +e
+"$RMACH" --kernel "$TMP/kernel.elf" --user "$TMP/demo" --trace --stats \
+  --dump-csr > "$TMP/trace.out" 2> "$TMP/trace.err"
+trace_rc=$?
+set -e
+[[ "$trace_rc" -eq 0 ]] || fail "trace run exited $trace_rc, want 0"
+trace_lines=$(grep -c '^T ' "$TMP/trace.err" || true)
+instr=$(sed -n 's/^rmach: stats: instructions=\([0-9][0-9]*\) .*/\1/p' \
+  "$TMP/trace.err")
+minstret_hex=$(sed -n 's/^csr minstret=0x\([0-9a-f]*\)$/\1/p' \
+  "$TMP/trace.out")
+[[ -n "$instr" ]] || fail "no stats line in $(cat "$TMP/trace.err")"
+[[ -n "$minstret_hex" ]] || fail "no minstret line in $(cat "$TMP/trace.out")"
+[[ "$trace_lines" -eq "$instr" ]] \
+  || fail "trace has $trace_lines lines, stats says $instr"
+[[ "$trace_lines" -eq "$((16#$minstret_hex))" ]] \
+  || fail "trace has $trace_lines lines, minstret is 0x$minstret_hex"
+CHECKS=$((CHECKS + 1))
+
+# These are the values the chapter's CSR table promises.  satp has MODE=1 in
+# bit 31, so a simple prefix match is enough.
+grep -q '^csr misa=0x40001100$' "$TMP/trace.out" \
+  || fail "--dump-csr lost misa: $(grep '^csr misa=' "$TMP/trace.out")"
+grep -q '^csr mhartid=0x00000000$' "$TMP/trace.out" \
+  || fail "--dump-csr lost mhartid"
+grep -q '^csr satp=0x800' "$TMP/trace.out" \
+  || fail "--dump-csr did not report Sv32 satp"
+CHECKS=$((CHECKS + 1))
+
+# The first U-mode instruction is the demo's _start at VA 0x10000.  Its fetch
+# PA must be the first physical page of the user arena.
+grep -q '^T 00010000 80400000 U ' "$TMP/trace.err" \
+  || fail "trace does not translate the first U instruction: $(grep '^T .* U ' "$TMP/trace.err" | head -2)"
 CHECKS=$((CHECKS + 1))
 
 echo "$CHECKS checks"

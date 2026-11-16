@@ -28,6 +28,7 @@ void proc_publish(void) {
     out->proc[i].exit_code =
         i < nprocs ? (uint32_t)procs[i].exit_code : 0xffffffffu;
     out->proc[i].pc = i < nprocs ? procs[i].pc : 0;
+    out->proc[i].satp = i < nprocs ? procs[i].satp : 0;
   }
 }
 

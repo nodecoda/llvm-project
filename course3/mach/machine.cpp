@@ -102,6 +102,7 @@ void Machine::reset(const rsim::Image &image, Bus &bus) {
   exit_code_ = 0;
   timer_ticks_ = 0;
   ecall_count_ = 0;
+  last_fetch_pa_ = 0;
   trace_ = nullptr;
   isa_ = kIsaDefault;
   for (uint32_t &word : csr_)
@@ -189,6 +190,7 @@ uint32_t Machine::translate(uint32_t va, AccessType type,
 
 uint32_t Machine::fetchWord(uint32_t va) {
   const uint32_t pa = translate(va, AccessType::Fetch, va);
+  last_fetch_pa_ = pa;
   try {
     return bus_->read32(pa);
   } catch (const rsim::MemoryError &err) {
@@ -410,9 +412,13 @@ bool Machine::executeOne() {
   bus_->clint().tick();
   updateTimer();
 
-  if (trace_)
-    std::fprintf(trace_, "T %08" PRIx32 " %08" PRIx32 " %s\n", at, word,
+  if (trace_) {
+    const char priv = priv_ == Priv::M ? 'M' : 'U';
+    std::fprintf(trace_, "T %08" PRIx32 " %08" PRIx32 " %c %08" PRIx32
+                         " %s\n",
+                 at, last_fetch_pa_, priv, word,
                  formatForTrace(d).c_str());
+  }
 
   uint32_t next = at + 4;
   const uint32_t a = reg(d.rs1);

@@ -53,6 +53,7 @@ struct boot_proc_result {
   uint32_t state; /* 0 runnable, 1 running, 2 exited */
   uint32_t exit_code;
   uint32_t pc;
+  uint32_t satp;
 };
 
 struct boot_result {

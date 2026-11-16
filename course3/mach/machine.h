@@ -101,6 +101,7 @@ private:
   int exit_code_ = 0;
   uint32_t timer_ticks_ = 0;
   uint32_t ecall_count_ = 0;
+  uint32_t last_fetch_pa_ = 0;
   std::FILE *trace_ = nullptr;
   uint32_t isa_ = kIsaDefault;
   uint32_t csr_[4096] = {};

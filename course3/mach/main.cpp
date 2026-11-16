@@ -23,7 +23,7 @@
 
 namespace {
 
-constexpr const char *kVersion = "0.8";
+constexpr const char *kVersion = "0.9";
 constexpr int kExitUsage = 2;
 constexpr int kExitLoadError = 125;
 constexpr int kExitTrap = 126;
@@ -37,9 +37,12 @@ struct Options {
   bool dump_boot = false;
   bool dump_pagetable = false;
   bool dump_procs = false;
+  bool dump_csr = false;
   bool stats = false;
   bool have_pagetable_satp = false;
   uint32_t pagetable_satp = 0;
+  bool have_pagetable_pid = false;
+  uint32_t pagetable_pid = 0;
 };
 
 void usage() {
@@ -48,8 +51,8 @@ void usage() {
                        "       rmach --kernel <elf> [--user <elf>]... [--dump-boot]\n"
                        "       rmach --kernel <elf> [--user <elf>]... [--max-steps <n>]\n"
                        "                    [--trace] [--input <file>]\n"
-                       "                    [--dump-pagetable [<satp>]]\n"
-                       "                    [--dump-procs] [--stats]\n");
+                       "                    [--dump-pagetable [<satp>|pid<N>]]\n"
+                       "                    [--dump-procs] [--stats] [--dump-csr]\n");
 }
 
 bool parse(int argc, char **argv, Options &opt) {
@@ -91,14 +94,23 @@ bool parse(int argc, char **argv, Options &opt) {
       opt.dump_procs = true;
     } else if (arg == "--stats") {
       opt.stats = true;
+    } else if (arg == "--dump-csr") {
+      opt.dump_csr = true;
     } else if (arg == "--dump-pagetable") {
       opt.dump_pagetable = true;
       // An optional satp argument lets the reader dump a table that the
       // program is no longer using; without it we use the final satp.
       if (i + 1 < argc && argv[i + 1][0] != '-') {
-        opt.pagetable_satp =
-            static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0));
-        opt.have_pagetable_satp = true;
+        const std::string value = argv[++i];
+        if (value.rfind("pid", 0) == 0) {
+          opt.pagetable_pid =
+              static_cast<uint32_t>(std::strtoul(value.c_str() + 3, nullptr, 0));
+          opt.have_pagetable_pid = true;
+        } else {
+          opt.pagetable_satp =
+              static_cast<uint32_t>(std::strtoul(value.c_str(), nullptr, 0));
+          opt.have_pagetable_satp = true;
+        }
       }
     } else if (!arg.empty() && arg[0] == '-') {
       return false;
@@ -181,22 +193,55 @@ void dumpProcs(const rsim::Memory &ram) {
   const uint32_t nproc = ram.read32(base + 4);
   std::printf("nproc %" PRIu32 "\n", nproc);
   for (uint32_t i = 0; i < BOOT_MAX_PROCS; ++i) {
-    const uint32_t off = base + 8 + i * 16;
+    const uint32_t off = base + 8 + i * 20;
     const uint32_t pid = ram.read32(off);
     const uint32_t state = ram.read32(off + 4);
     const uint32_t exit_code = ram.read32(off + 8);
     const uint32_t pc = ram.read32(off + 12);
+    const uint32_t satp = ram.read32(off + 16);
     std::printf("proc %" PRIu32 " state=%s exit=%" PRId32
-                " pc=0x%08" PRIx32 "\n",
-                pid, stateName(state), static_cast<int32_t>(exit_code), pc);
+                " pc=0x%08" PRIx32 " satp=0x%08" PRIx32 "\n",
+                pid, stateName(state), static_cast<int32_t>(exit_code), pc,
+                satp);
   }
+}
+
+bool procSatp(const rsim::Memory &ram, uint32_t pid, uint32_t &satp) {
+  const uint32_t base = rmach::Machine::kBootResult;
+  if (pid >= BOOT_MAX_PROCS)
+    return false;
+  if (ram.read32(base) != BOOT_RESULT_MAGIC)
+    return false;
+  if (pid >= ram.read32(base + 4))
+    return false;
+  satp = ram.read32(base + 8 + pid * 20 + 16);
+  return true;
+}
+
+void dumpCsr(const rmach::Machine &machine) {
+  const struct {
+    const char *name;
+    uint16_t number;
+  } names[] = {
+      {"mstatus", rmach::kCsrMstatus},   {"misa", rmach::kCsrMisa},
+      {"mie", rmach::kCsrMie},           {"mtvec", rmach::kCsrMtvec},
+      {"mscratch", rmach::kCsrMscratch}, {"mepc", rmach::kCsrMepc},
+      {"mcause", rmach::kCsrMcause},     {"mtval", rmach::kCsrMtval},
+      {"mip", rmach::kCsrMip},           {"mhartid", rmach::kCsrMhartid},
+      {"mvendorid", rmach::kCsrMvendorid},
+      {"marchid", rmach::kCsrMarchid},   {"mimpid", rmach::kCsrMimpid},
+      {"minstret", rmach::kCsrMinstret}, {"satp", rmach::kCsrSatp},
+  };
+  for (const auto &csr : names)
+    std::printf("csr %s=0x%08" PRIx32 "\n", csr.name,
+                machine.readCsr(csr.number));
 }
 
 } // namespace
 
 int main(int argc, char **argv) {
   if (argc == 2 && std::strcmp(argv[1], "--version") == 0) {
-    std::printf("rmach %s (chapter 08)\n", kVersion);
+    std::printf("rmach %s (chapter 09)\n", kVersion);
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--selftest") == 0)
@@ -281,10 +326,20 @@ int main(int argc, char **argv) {
     }
 
     if (opt.dump_pagetable) {
-      const uint32_t satp = opt.have_pagetable_satp ? opt.pagetable_satp
-                                                    : machine.satp();
+      uint32_t satp = machine.satp();
+      if (opt.have_pagetable_pid) {
+        if (!procSatp(bus.ram(), opt.pagetable_pid, satp)) {
+          std::fprintf(stderr, "rmach: no page table for pid %" PRIu32 "\n",
+                       opt.pagetable_pid);
+          return kExitUsage;
+        }
+      } else if (opt.have_pagetable_satp) {
+        satp = opt.pagetable_satp;
+      }
       dumpPageTable(bus.ram(), satp);
     }
+    if (opt.dump_csr)
+      dumpCsr(machine);
     if (opt.dump_procs)
       dumpProcs(bus.ram());
     if (opt.stats)
