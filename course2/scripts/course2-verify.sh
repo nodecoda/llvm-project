@@ -34,6 +34,13 @@
 #   * exit(2) propagates the guest's status (42);
 #   * an unknown syscall stops with status 127.
 #
+# Chapter 06 checks:
+#   * --disas reproduces llvm-mc's text for .text exactly, and covers exactly
+#     the address/word pairs llvm-objdump -d lists (objdump prints aliases and
+#     hex immediates, so its text is not comparable directly);
+#   * --trace visits only those addresses, its line count equals the executed
+#     instruction count, and each trace line matches --disas at that address.
+#
 set -euo pipefail
 
 BIN=${1:?usage: course2-verify.sh <llvm-bin-dir> <rsim-binary>}
@@ -365,6 +372,96 @@ set -e
 [[ "$rsim_rc" -eq 127 ]] || fail "unknown syscall exited $rsim_rc, want 127"
 grep -q 'unknown ecall a7=999' "$TMP/unknown.err" \
   || fail "unknown syscall left no diagnostic"
+CHECKS=$((CHECKS + 1))
+
+# --- Chapter 06: trace and self-disassembly ----------------------------
+
+"$RSIM" --disas "$TMP/demo" > "$TMP/demo.disas"
+"$BIN/llvm-objcopy" -O binary --only-section=.text "$TMP/demo" "$TMP/demo.text"
+hex_words "$TMP/demo.text" > "$TMP/demo.text.hex"
+"$MC" -triple=rvmin -disassemble "$TMP/demo.text.hex" \
+  | sed 's/^\t//' > "$TMP/demo.ref"
+sed 's/^[0-9a-f]* [0-9a-f]* //' "$TMP/demo.disas" > "$TMP/demo.ours"
+diff -u "$TMP/demo.ref" "$TMP/demo.ours" > "$TMP/demo.diff" \
+  || fail "--disas text differs from llvm-mc (see $TMP/demo.diff)"
+CHECKS=$((CHECKS + 1))
+
+# llvm-objdump prints aliases (mv/li/j/ret) and hex immediates, so compare the
+# address/word pairs instead of the text; the text is already covered above.
+"$BIN/llvm-objdump" -d "$TMP/demo" > "$TMP/demo.objdump"
+python3 - "$TMP/demo.disas" "$TMP/demo.objdump" <<'PY'
+import re
+import sys
+
+disas, objdump = sys.argv[1:3]
+
+ref = {}
+for line in open(objdump):
+    m = re.match(r"\s*([0-9a-f]+):\s+([0-9a-f]+)\s", line)
+    if m:
+        ref[int(m.group(1), 16)] = int(m.group(2), 16)
+
+ours = {}
+for line in open(disas):
+    addr, word, _ = line.split(" ", 2)
+    ours[int(addr, 16)] = int(word, 16)
+
+if ours != ref:
+    only_ours = sorted(set(ours) - set(ref))
+    only_ref = sorted(set(ref) - set(ours))
+    sys.exit("--disas and llvm-objdump disagree: %d only in rsim %s, "
+             "%d only in objdump %s"
+             % (len(only_ours), [hex(a) for a in only_ours[:4]],
+                len(only_ref), [hex(a) for a in only_ref[:4]]))
+PY
+CHECKS=$((CHECKS + 1))
+
+set +e
+"$RSIM" --run "$TMP/demo" --trace --max-steps 10000000 \
+  > /dev/null 2> "$TMP/demo.trace"
+trace_rc=$?
+set -e
+[[ "$trace_rc" -eq 0 ]] || fail "trace run of demo exited $trace_rc"
+
+python3 - "$TMP/demo.trace" "$TMP/demo.disas" <<'PY'
+import re
+import sys
+
+trace, disas = sys.argv[1:3]
+
+text = {}
+for line in open(disas):
+    addr, _, rest = line.split(" ", 2)
+    text[int(addr, 16)] = rest.strip()
+
+visited = []
+wrong = None
+for line in open(trace):
+    if not line.startswith("T "):
+        continue
+    _, addr, word, rest = line.rstrip("\n").split(" ", 3)
+    at = int(addr, 16)
+    visited.append(at)
+    if at not in text:
+        wrong = "trace visited 0x%08x, which --disas does not cover" % at
+        break
+    if text[at] != rest:
+        wrong = "trace text at 0x%08x differs from --disas" % at
+        break
+if wrong:
+    sys.exit(wrong)
+
+if not visited:
+    sys.exit("trace is empty")
+
+summary = [l for l in open(trace) if "instructions (" in l]
+m = re.search(r"after (\d+) instructions", summary[-1] if summary else "")
+if not m:
+    sys.exit("no instruction count in the halt summary")
+if int(m.group(1)) != len(visited):
+    sys.exit("trace has %d lines, the CPU executed %s instructions"
+             % (len(visited), m.group(1)))
+PY
 CHECKS=$((CHECKS + 1))
 
 echo "$CHECKS checks"

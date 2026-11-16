@@ -13,6 +13,7 @@
 #include "trap.h"
 
 #include <cstdint>
+#include <cstdio>
 
 namespace rsim {
 
@@ -46,6 +47,9 @@ public:
   uint64_t executed() const { return executed_; }
   int exitCode() const { return exit_code_; }
 
+  /// Chapter 06: print one line per executed instruction to `file`.
+  void traceTo(std::FILE *file) { trace_ = file; }
+
   /// x0 discards writes, wherever they come from.
   void setReg(unsigned reg, uint32_t value) {
     if (reg != 0)
@@ -76,6 +80,7 @@ private:
   bool halted_ = false;
   uint64_t executed_ = 0;
   int exit_code_ = 0;
+  std::FILE *trace_ = nullptr;
 };
 
 } // namespace rsim

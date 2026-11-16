@@ -1,10 +1,12 @@
-//===-- main.cpp - rsim entry point, chapter 05 -----------------*- C++ -*-===//
+//===-- main.cpp - rsim entry point, chapter 06 -----------------*- C++ -*-===//
 //
-// Chapter 03 adds execution: `--run` drives the step loop, `--decode-hex`
-// decodes the same hex text `llvm-mc -disassemble` reads, and `--selftest`
-// runs the hand-computed instruction vectors.
+// Chapter 06 adds two views of the same decode table: `--disas` walks the
+// executable segments of an image, and `--trace` prints every instruction the
+// CPU actually executes.  Both use format(), so a trace line and a disassembly
+// line for the same address are identical by construction.
 //
-// Exit codes: 0 success, 2 usage, 125 load error, 126 trap.
+// Exit codes: 0 success, 2 usage, 125 load error, 126 trap, otherwise the
+// guest's own exit status.
 //
 //===----------------------------------------------------------------------===//
 
@@ -24,10 +26,21 @@
 
 namespace {
 
-constexpr const char *kVersion = "0.5";
+constexpr const char *kVersion = "0.6";
 constexpr int kExitUsage = 2;
 constexpr int kExitLoadError = 125;
 constexpr int kExitTrap = 126;
+
+enum class Mode { Reset, Run, DumpElf, DumpMem, DecodeHex, Disas, SelfTest };
+
+struct Options {
+  Mode mode = Mode::Reset;
+  std::string path;
+  uint32_t addr = 0;
+  uint64_t len = 0;
+  uint64_t max_steps = 10000000;
+  bool trace = false;
+};
 
 void dumpElf(const rsim::Image &image) {
   std::printf("entry 0x%08" PRIx32 "\n", image.entry);
@@ -45,6 +58,24 @@ void dumpMem(rsim::Memory &memory, uint32_t addr, uint64_t size) {
     std::printf("%02x", bytes[i]);
   }
   std::printf("\n");
+}
+
+/// Disassemble every executable PT_LOAD segment.  Output is
+/// "<addr> <word> <text>", one instruction per line.
+void disas(const rsim::Image &image) {
+  for (const rsim::Segment &seg : image.segments) {
+    constexpr uint32_t kPfX = 1;
+    if (!(seg.flags & kPfX))
+      continue;
+    for (uint32_t off = 0; off + 4 <= seg.filesz; off += 4) {
+      const uint32_t word = static_cast<uint32_t>(seg.data[off]) |
+                            static_cast<uint32_t>(seg.data[off + 1]) << 8 |
+                            static_cast<uint32_t>(seg.data[off + 2]) << 16 |
+                            static_cast<uint32_t>(seg.data[off + 3]) << 24;
+      std::printf("%08" PRIx32 " %08" PRIx32 " %s\n", seg.vaddr + off, word,
+                  rsim::format(rsim::decode(word)).c_str());
+    }
+  }
 }
 
 /// Decode a file of hex bytes, the same text `llvm-mc -disassemble` accepts:
@@ -97,56 +128,113 @@ void usage() {
                        "       rsim --dump-elf <elf>\n"
                        "       rsim --dump-mem <elf> <addr> <len>\n"
                        "       rsim --decode-hex <file>\n"
-                       "       rsim --run <elf> [--max-steps <n>]\n"
+                       "       rsim --disas <elf>\n"
+                       "       rsim --run <elf> [--max-steps <n>] [--trace]\n"
                        "       rsim <elf>\n");
+}
+
+bool parse(int argc, char **argv, Options &opt) {
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg = argv[i];
+    auto next = [&](const char *what) -> const char * {
+      if (i + 1 >= argc) {
+        std::fprintf(stderr, "rsim: %s needs an argument\n", what);
+        return nullptr;
+      }
+      return argv[++i];
+    };
+
+    if (arg == "--run") {
+      opt.mode = Mode::Run;
+      const char *p = next("--run");
+      if (!p)
+        return false;
+      opt.path = p;
+    } else if (arg == "--dump-elf") {
+      opt.mode = Mode::DumpElf;
+      const char *p = next("--dump-elf");
+      if (!p)
+        return false;
+      opt.path = p;
+    } else if (arg == "--disas") {
+      opt.mode = Mode::Disas;
+      const char *p = next("--disas");
+      if (!p)
+        return false;
+      opt.path = p;
+    } else if (arg == "--decode-hex") {
+      opt.mode = Mode::DecodeHex;
+      const char *p = next("--decode-hex");
+      if (!p)
+        return false;
+      opt.path = p;
+    } else if (arg == "--dump-mem") {
+      opt.mode = Mode::DumpMem;
+      const char *p = next("--dump-mem");
+      if (!p)
+        return false;
+      opt.path = p;
+      const char *a = next("--dump-mem <addr>");
+      const char *l = next("--dump-mem <len>");
+      if (!a || !l)
+        return false;
+      opt.addr = static_cast<uint32_t>(std::strtoul(a, nullptr, 0));
+      opt.len = std::strtoull(l, nullptr, 0);
+    } else if (arg == "--max-steps") {
+      const char *v = next("--max-steps");
+      if (!v)
+        return false;
+      opt.max_steps = std::strtoull(v, nullptr, 0);
+    } else if (arg == "--trace") {
+      opt.trace = true;
+    } else if (arg == "--selftest") {
+      opt.mode = Mode::SelfTest;
+    } else if (!arg.empty() && arg[0] == '-') {
+      return false;
+    } else if (opt.path.empty()) {
+      opt.path = arg; // `rsim FILE` keeps the chapter-02 reset dump
+    } else {
+      return false;
+    }
+  }
+  return true;
 }
 
 } // namespace
 
 int main(int argc, char **argv) {
   if (argc == 2 && std::strcmp(argv[1], "--version") == 0) {
-    std::printf("rsim %s (chapter 05)\n", kVersion);
+    std::printf("rsim %s (chapter 06)\n", kVersion);
     return 0;
   }
 
-  if (argc == 2 && std::strcmp(argv[1], "--selftest") == 0)
-    return rsim::runSelfTest() == 0 ? 0 : 1;
-
-  if (argc == 3 && std::strcmp(argv[1], "--decode-hex") == 0)
-    return decodeHex(argv[2]);
-
-  const bool dump_elf = argc == 3 && std::strcmp(argv[1], "--dump-elf") == 0;
-  const bool dump_mem = argc == 5 && std::strcmp(argv[1], "--dump-mem") == 0;
-  const bool run = argc >= 3 && std::strcmp(argv[1], "--run") == 0;
-  const bool plain = argc == 2 && argv[1][0] != '-';
-
-  if (!dump_elf && !dump_mem && !run && !plain) {
+  Options opt;
+  if (!parse(argc, argv, opt)) {
     usage();
     return kExitUsage;
   }
 
-  uint64_t max_steps = 10000000;
-  if (run && argc > 3) {
-    if (argc != 5 || std::strcmp(argv[3], "--max-steps") != 0) {
-      usage();
-      return kExitUsage;
-    }
-    max_steps = std::strtoull(argv[4], nullptr, 0);
-  }
+  if (opt.mode == Mode::SelfTest)
+    return rsim::runSelfTest() == 0 ? 0 : 1;
 
-  const std::string path = argv[run ? 2 : (argc == 2 ? 1 : 2)];
-  uint32_t mem_addr = 0;
-  uint64_t mem_len = 0;
-  if (dump_mem) {
-    mem_addr = static_cast<uint32_t>(std::strtoul(argv[3], nullptr, 0));
-    mem_len = std::strtoull(argv[4], nullptr, 0);
+  if (opt.mode == Mode::DecodeHex)
+    return decodeHex(opt.path.c_str());
+
+  if (opt.path.empty()) {
+    usage();
+    return kExitUsage;
   }
 
   try {
-    const rsim::Image image = rsim::loadElf(path);
+    const rsim::Image image = rsim::loadElf(opt.path);
 
-    if (dump_elf) {
+    if (opt.mode == Mode::DumpElf) {
       dumpElf(image);
+      return 0;
+    }
+
+    if (opt.mode == Mode::Disas) {
+      disas(image);
       return 0;
     }
 
@@ -154,21 +242,24 @@ int main(int argc, char **argv) {
     rsim::Cpu cpu;
     cpu.reset(image, memory);
 
-    if (dump_mem) {
-      dumpMem(memory, mem_addr, mem_len);
+    if (opt.mode == Mode::DumpMem) {
+      dumpMem(memory, opt.addr, opt.len);
       return 0;
     }
 
-    if (!run) {
+    if (opt.mode == Mode::Reset) {
       std::printf("rsim: loaded %s: entry 0x%08" PRIx32 ", sp 0x%08" PRIx32
                   ", %zu segments, %zu pages\n",
-                  path.c_str(), cpu.pc, cpu.sp(), image.segments.size(),
+                  opt.path.c_str(), cpu.pc, cpu.sp(), image.segments.size(),
                   memory.mappedPages());
       return 0;
     }
 
+    if (opt.trace)
+      cpu.traceTo(stderr);
+
     uint64_t steps = 0;
-    while (!cpu.halted() && steps < max_steps) {
+    while (!cpu.halted() && steps < opt.max_steps) {
       cpu.step();
       ++steps;
     }
@@ -177,7 +268,7 @@ int main(int argc, char **argv) {
       std::fprintf(stderr,
                    "rsim: trap: step limit %" PRIu64 " reached at pc 0x%08" PRIx32
                    "\n",
-                   max_steps, cpu.pc);
+                   opt.max_steps, cpu.pc);
       return kExitTrap;
     }
 
@@ -191,7 +282,7 @@ int main(int argc, char **argv) {
                  cpu.pc, cpu.executed(), cpu.exitCode(), cpu.reg(10), cpu.reg(5));
     return cpu.exitCode();
   } catch (const rsim::ElfError &err) {
-    std::fprintf(stderr, "rsim: %s: %s\n", path.c_str(), err.what());
+    std::fprintf(stderr, "rsim: %s: %s\n", opt.path.c_str(), err.what());
     return kExitLoadError;
   } catch (const rsim::MemoryError &err) {
     std::fprintf(stderr, "rsim: trap: %s\n", err.what());

@@ -13,6 +13,7 @@
 #include "cpu.h"
 #include "decode.h"
 
+#include <cinttypes>
 #include <cstdio>
 #include <limits>
 
@@ -112,6 +113,10 @@ bool Cpu::step() {
     throw Trap(TrapCause::IllegalInstruction, word, at,
                "no RV32I/M instruction matches");
   ++executed_;
+
+  if (trace_)
+    std::fprintf(trace_, "T %08" PRIx32 " %08" PRIx32 " %s\n", at, word,
+                 format(d).c_str());
 
   uint32_t next = at + 4;
   const uint32_t a = reg(d.rs1);
