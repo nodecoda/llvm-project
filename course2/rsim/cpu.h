@@ -32,6 +32,12 @@ public:
   void reset(const Image &image, Memory &memory);
   void attach(Memory &memory) { memory_ = &memory; }
 
+  /// Chapter 09: which extensions may execute.  The default is everything
+  /// the emulator implements; the CLI narrows it with --isa.
+  static constexpr uint32_t kIsaAll = 0xffffffffu;
+  void setIsa(uint32_t mask) { isa_ = mask; }
+  uint32_t isa() const { return isa_; }
+
   Memory &memory() {
     if (!memory_)
       throw Trap(TrapCause::InstructionAccessFault, 0, pc,
@@ -97,6 +103,7 @@ private:
   uint32_t mepc_ = 0;
   uint32_t mcause_ = 0;
   uint32_t mtval_ = 0;
+  uint32_t isa_ = kIsaAll;
 };
 
 } // namespace rsim

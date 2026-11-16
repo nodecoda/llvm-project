@@ -57,7 +57,7 @@ rsim 0.0 (chapter 00)
 | 06 | 跟踪与自反汇编 | `rsim-ch06` |
 | 07 | 断点、单步与脚本调试 | `rsim-ch07` |
 | 08 | 陷阱模型与 ebreak | `rsim-ch08` |
-| 09 | M/Zbb/A 可选指令 | `rsim-ch09` |
+| 09 | M/Zbb/Zbs/A 与 `--isa` | `rsim-ch09` |
 | 10 | 指令统计与“性能” | `rsim-ch10` |
 | 11 | 第二课验收 | `rsim-ch11` |
 

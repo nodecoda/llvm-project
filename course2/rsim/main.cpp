@@ -1,7 +1,8 @@
-//===-- main.cpp - rsim entry point, chapter 08 -----------------*- C++ -*-===//
+//===-- main.cpp - rsim entry point, chapter 09 -----------------*- C++ -*-===//
 //
-// Chapter 08 turns traps into data: `--dump-csr` shows mtvec/mepc/mcause/
-// mtval/minstret after a run, including the run that trapped.
+// Chapter 09 adds `--isa`: the same binary can refuse instructions the guest
+// was not built for, which is what turns "implements RV32I" into a testable
+// claim.
 //
 // Exit codes: 0 success, 2 usage, 125 load error, 126 trap, otherwise the
 // guest's own exit status.
@@ -26,7 +27,7 @@
 
 namespace {
 
-constexpr const char *kVersion = "0.8";
+constexpr const char *kVersion = "0.9";
 constexpr int kExitUsage = 2;
 constexpr int kExitLoadError = 125;
 constexpr int kExitTrap = 126;
@@ -42,6 +43,8 @@ struct Options {
   uint64_t max_steps = 10000000;
   bool trace = false;
   bool dump_csr = false;
+  uint32_t isa = static_cast<uint32_t>(rsim::Isa::RV32I) |
+                 static_cast<uint32_t>(rsim::Isa::RV32M);
 };
 
 void dumpElf(const rsim::Image &image) {
@@ -124,6 +127,60 @@ int decodeHex(const char *path) {
   return 0;
 }
 
+/// rv32i, rv32im, rv32im_zbb, rv32im_zbb_zbs_a, ... ; 0 means "not a spec".
+uint32_t parseIsa(const std::string &spec) {
+  if (spec.rfind("rv32", 0) != 0)
+    return 0;
+  const uint32_t bits[] = {0, static_cast<uint32_t>(rsim::Isa::RV32I)};
+  uint32_t mask = 0;
+  bool saw_i = false;
+  size_t pos = 4;
+  for (; pos < spec.size() && spec[pos] != '_'; ++pos) {
+    switch (spec[pos]) {
+    case 'i':
+      saw_i = true;
+      mask |= bits[1];
+      break;
+    case 'm':
+      mask |= static_cast<uint32_t>(rsim::Isa::RV32M);
+      break;
+    case 'a':
+      mask |= static_cast<uint32_t>(rsim::Isa::A);
+      break;
+    case 'g':
+      mask |= bits[1] | static_cast<uint32_t>(rsim::Isa::RV32M) |
+              static_cast<uint32_t>(rsim::Isa::A);
+      saw_i = true;
+      break;
+    default:
+      return 0;
+    }
+  }
+  while (pos < spec.size()) {
+    ++pos; // '_'
+    const size_t end = spec.find('_', pos);
+    const std::string ext = spec.substr(pos, end == std::string::npos
+                                                 ? std::string::npos
+                                                 : end - pos);
+    if (ext == "zbb")
+      mask |= static_cast<uint32_t>(rsim::Isa::Zbb);
+    else if (ext == "zbs")
+      mask |= static_cast<uint32_t>(rsim::Isa::Zbs);
+    else if (ext == "a")
+      mask |= static_cast<uint32_t>(rsim::Isa::A);
+    else if (ext == "m")
+      mask |= static_cast<uint32_t>(rsim::Isa::RV32M);
+    else if (ext == "i")
+      mask |= bits[1];
+    else if (ext != "zicsr") // always on, like the spec's mandatory subset
+      return 0;
+    if (end == std::string::npos)
+      break;
+    pos = end;
+  }
+  return saw_i ? mask : 0;
+}
+
 void dumpCsr(const rsim::Cpu &cpu) {
   std::printf("mtvec    0x%08" PRIx32 "\n", cpu.mtvec());
   std::printf("mepc     0x%08" PRIx32 "\n", cpu.mepc());
@@ -142,6 +199,7 @@ void usage() {
                        "       rsim --run <elf> [--max-steps <n>] [--trace]\n"
                        "       rsim --debug <elf> [--script <file>]\n"
                        "       rsim --run <elf> [--max-steps <n>] [--trace] [--dump-csr]\n"
+                       "                    [--isa[=]<rv32i[m][_zbb][_zbs][_a]>]\n"
                        "       rsim <elf>\n");
 }
 
@@ -212,6 +270,16 @@ bool parse(int argc, char **argv, Options &opt) {
       opt.trace = true;
     } else if (arg == "--dump-csr") {
       opt.dump_csr = true;
+    } else if (arg == "--isa" || arg.rfind("--isa=", 0) == 0) {
+      // Both spellings are accepted: `--isa rv32im` and `--isa=rv32im`.
+      const char *p = arg == "--isa" ? next("--isa") : arg.c_str() + 6;
+      if (!p)
+        return false;
+      opt.isa = parseIsa(p);
+      if (opt.isa == 0) {
+        std::fprintf(stderr, "rsim: bad --isa spec %s\n", p);
+        return false;
+      }
     } else if (arg == "--selftest") {
       opt.mode = Mode::SelfTest;
     } else if (!arg.empty() && arg[0] == '-') {
@@ -229,7 +297,7 @@ bool parse(int argc, char **argv, Options &opt) {
 
 int main(int argc, char **argv) {
   if (argc == 2 && std::strcmp(argv[1], "--version") == 0) {
-    std::printf("rsim %s (chapter 08)\n", kVersion);
+    std::printf("rsim %s (chapter 09)\n", kVersion);
     return 0;
   }
 
@@ -266,6 +334,7 @@ int main(int argc, char **argv) {
     rsim::Memory memory;
     rsim::Cpu cpu;
     cpu.reset(image, memory);
+    cpu.setIsa(opt.isa);
 
     if (opt.mode == Mode::DumpMem) {
       dumpMem(memory, opt.addr, opt.len);

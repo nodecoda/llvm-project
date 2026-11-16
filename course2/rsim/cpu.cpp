@@ -46,6 +46,7 @@ void Cpu::reset(const Image &image, Memory &memory) {
   mepc_ = 0;
   mcause_ = 0;
   mtval_ = 0;
+  isa_ = kIsaAll;
 }
 
 uint8_t Cpu::load8(uint32_t addr, uint32_t epc) {
@@ -170,7 +171,10 @@ bool Cpu::executeOne() {
   const Decoded d = decode(word);
   if (d.id == Insn::ILLEGAL)
     throw Trap(TrapCause::IllegalInstruction, word, at,
-               "no RV32I/M instruction matches");
+               "no implemented instruction matches");
+  if ((isa_ & static_cast<uint32_t>(isaOf(d.id))) == 0)
+    throw Trap(TrapCause::IllegalInstruction, word, at,
+               "instruction not enabled by --isa");
   ++executed_;
 
   if (trace_)
@@ -398,6 +402,150 @@ bool Cpu::executeOne() {
     const uint32_t sa = a;
     const uint32_t sb = b;
     setReg(d.rd, sb == 0 ? sa : sa % sb);
+    break;
+  }
+
+  // --- Zbb ---------------------------------------------------------------
+  case Insn::CLZ:
+    setReg(d.rd, a == 0 ? 32u : static_cast<uint32_t>(__builtin_clz(a)));
+    break;
+  case Insn::CTZ:
+    setReg(d.rd, a == 0 ? 32u : static_cast<uint32_t>(__builtin_ctz(a)));
+    break;
+  case Insn::CPOP:
+    setReg(d.rd, static_cast<uint32_t>(__builtin_popcount(a)));
+    break;
+  case Insn::SEXT_B:
+    setReg(d.rd, sext8(static_cast<uint8_t>(a)));
+    break;
+  case Insn::SEXT_H:
+    setReg(d.rd, sext16(static_cast<uint16_t>(a)));
+    break;
+  case Insn::REV8:
+    setReg(d.rd, __builtin_bswap32(a));
+    break;
+  case Insn::ZEXT_H:
+    setReg(d.rd, a & 0xffffu);
+    break;
+  case Insn::ROL: {
+    const unsigned s = b & 31;
+    setReg(d.rd, s == 0 ? a : (a << s) | (a >> (32 - s)));
+    break;
+  }
+  case Insn::ROR: {
+    const unsigned s = b & 31;
+    setReg(d.rd, s == 0 ? a : (a >> s) | (a << (32 - s)));
+    break;
+  }
+  case Insn::RORI: {
+    const unsigned s = imm & 31;
+    setReg(d.rd, s == 0 ? a : (a >> s) | (a << (32 - s)));
+    break;
+  }
+  case Insn::ANDN:
+    setReg(d.rd, a & ~b);
+    break;
+  case Insn::ORN:
+    setReg(d.rd, a | ~b);
+    break;
+  case Insn::XNOR:
+    setReg(d.rd, ~(a ^ b));
+    break;
+  case Insn::MIN:
+    setReg(d.rd, static_cast<int32_t>(a) < static_cast<int32_t>(b) ? a : b);
+    break;
+  case Insn::MINU:
+    setReg(d.rd, a < b ? a : b);
+    break;
+  case Insn::MAX:
+    setReg(d.rd, static_cast<int32_t>(a) > static_cast<int32_t>(b) ? a : b);
+    break;
+  case Insn::MAXU:
+    setReg(d.rd, a > b ? a : b);
+    break;
+
+  // --- Zbs ---------------------------------------------------------------
+  case Insn::BSET:
+    setReg(d.rd, a | (1u << (b & 31)));
+    break;
+  case Insn::BCLR:
+    setReg(d.rd, a & ~(1u << (b & 31)));
+    break;
+  case Insn::BINV:
+    setReg(d.rd, a ^ (1u << (b & 31)));
+    break;
+  case Insn::BEXT:
+    setReg(d.rd, (a >> (b & 31)) & 1u);
+    break;
+  case Insn::BSETI:
+    setReg(d.rd, a | (1u << (imm & 31)));
+    break;
+  case Insn::BCLRI:
+    setReg(d.rd, a & ~(1u << (imm & 31)));
+    break;
+  case Insn::BINVI:
+    setReg(d.rd, a ^ (1u << (imm & 31)));
+    break;
+  case Insn::BEXTI:
+    setReg(d.rd, (a >> (imm & 31)) & 1u);
+    break;
+
+  // --- A: one hart, so the reservation is trivially still valid ----------
+  case Insn::LR_W:
+    if (addr & 3u)
+      throw Trap(TrapCause::LoadAddressMisaligned, addr, at, "lr.w");
+    setReg(d.rd, load32(addr, at));
+    break;
+  case Insn::SC_W:
+    if (addr & 3u)
+      throw Trap(TrapCause::StoreAddressMisaligned, addr, at, "sc.w");
+    store32(addr, b, at);
+    setReg(d.rd, 0); // success
+    break;
+  case Insn::AMOSWAP_W:
+  case Insn::AMOADD_W:
+  case Insn::AMOXOR_W:
+  case Insn::AMOAND_W:
+  case Insn::AMOOR_W:
+  case Insn::AMOMIN_W:
+  case Insn::AMOMAX_W:
+  case Insn::AMOMINU_W:
+  case Insn::AMOMAXU_W: {
+    if (addr & 3u)
+      throw Trap(TrapCause::LoadAddressMisaligned, addr, at, "amo");
+    const uint32_t old = load32(addr, at);
+    uint32_t updated = 0;
+    switch (d.id) {
+    case Insn::AMOSWAP_W:
+      updated = b;
+      break;
+    case Insn::AMOADD_W:
+      updated = old + b;
+      break;
+    case Insn::AMOXOR_W:
+      updated = old ^ b;
+      break;
+    case Insn::AMOAND_W:
+      updated = old & b;
+      break;
+    case Insn::AMOOR_W:
+      updated = old | b;
+      break;
+    case Insn::AMOMIN_W:
+      updated = static_cast<int32_t>(old) < static_cast<int32_t>(b) ? old : b;
+      break;
+    case Insn::AMOMAX_W:
+      updated = static_cast<int32_t>(old) > static_cast<int32_t>(b) ? old : b;
+      break;
+    case Insn::AMOMINU_W:
+      updated = old < b ? old : b;
+      break;
+    default:
+      updated = old > b ? old : b;
+      break;
+    }
+    store32(addr, updated, at);
+    setReg(d.rd, old);
     break;
   }
 

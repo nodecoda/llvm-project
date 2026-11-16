@@ -56,6 +56,11 @@ uint32_t encU(uint8_t opcode, unsigned rd, uint32_t imm20) {
   return (imm20 & 0xfffff) << 12 | rd << 7 | opcode;
 }
 
+uint32_t encA(uint8_t f5, unsigned rd, unsigned rs1, unsigned rs2) {
+  return static_cast<uint32_t>(f5) << 27 | rs2 << 20 | rs1 << 15 | 0x2 << 12 |
+         rd << 7 | 0x2f;
+}
+
 uint32_t encJ(unsigned rd, int32_t imm) {
   const uint32_t u = static_cast<uint32_t>(imm) & 0x1fffff;
   return ((u >> 20) & 1) << 31 | ((u >> 1) & 0x3ff) << 21 |
@@ -371,6 +376,69 @@ int runSelfTest() {
   }
   trap("unknown CSR", encI(0x73, 0x1, 0, 0, 0xfff), kA, 0,
        TrapCause::IllegalInstruction, 0xfff);
+
+  // Chapter 09: Zbb, Zbs and A, three vectors each, plus the ISA filter.
+  {
+    Fixture f;
+    f.cpu.x[kA] = 0xff00;
+    f.cpu.x[kB] = 0x0f0f;
+    f.exec(encR(0x7, 0x20, kD, kA, kB)); // andn
+    expect("andn", f.cpu.x[kD], 0xf000);
+    f.cpu.x[kA] = 0x0000ffff;
+    f.exec(encI(0x13, 0x1, kD, kA, 0x600)); // clz
+    expect("clz", f.cpu.x[kD], 16);
+    f.cpu.x[kA] = 0;
+    f.exec(encI(0x13, 0x1, kD, kA, 0x600)); // clz of zero is 32, not undefined
+    expect("clz 0", f.cpu.x[kD], 32);
+    f.cpu.x[kA] = 0x80000001u;
+    f.cpu.x[kB] = 1;
+    f.exec(encR(0x1, 0x30, kD, kA, kB)); // rol
+    expect("rol", f.cpu.x[kD], 3);
+  }
+  {
+    Fixture f;
+    f.cpu.x[kA] = 0xff00;
+    f.cpu.x[kB] = 3;
+    f.exec(encR(0x1, 0x14, kD, kA, kB)); // bset
+    expect("bset", f.cpu.x[kD], 0xff08);
+    f.cpu.x[kA] = 0x10;
+    f.exec(encI(0x13, 0x5, kD, kA, 0x484)); // bexti, shamt = 4
+    expect("bexti", f.cpu.x[kD], 1);
+  }
+  {
+    Fixture f;
+    f.mem.write32(kData, 0xdeadbeef);
+    f.cpu.x[kA] = kData;
+    f.exec(encA(0x02, kD, kA, 0)); // lr.w
+    expect("lr.w", f.cpu.x[kD], 0xdeadbeef);
+    f.cpu.x[kB] = 0x11223344;
+    f.exec(encA(0x03, kD, kA, kB)); // sc.w
+    expect("sc.w stores", f.mem.read32(kData), 0x11223344);
+    expect("sc.w succeeds", f.cpu.x[kD], 0);
+    f.mem.write32(kData, 5);
+    f.cpu.x[kB] = 7;
+    f.exec(encA(0x00, kD, kA, kB)); // amoadd.w
+    expect("amoadd.w returns the old value", f.cpu.x[kD], 5);
+    expect("amoadd.w writes the sum", f.mem.read32(kData), 12);
+    f.mem.write32(kData, 5);
+    f.exec(encA(0x1c, kD, kA, kB)); // amomaxu.w
+    expect("amomaxu.w", f.mem.read32(kData), 7);
+  }
+  {
+    Fixture f;
+    f.cpu.setIsa(static_cast<uint32_t>(Isa::RV32I)); // no Zbb
+    f.cpu.x[kA] = 1;
+    try {
+      f.exec(encI(0x13, 0x1, kD, kA, 0x600)); // clz
+      ++g_checks;
+      ++g_failures;
+      std::printf("FAIL %-24s did not trap\n", "isa filter rejects Zbb");
+    } catch (const Trap &t) {
+      expect("isa filter rejects Zbb",
+             static_cast<uint32_t>(t.cause),
+             static_cast<uint32_t>(TrapCause::IllegalInstruction));
+    }
+  }
 
   std::printf("selftest: %d checks, %d failures\n", g_checks, g_failures);
   return g_failures;

@@ -23,6 +23,8 @@ enum class Fmt : uint8_t {
   U,      // lui rd, imm20
   J,      // jal rd, offset
   Jalr,   // jalr rd, imm(rs1)
+  Unary,  // clz rd, rs1
+  Atomic, // lr.w rd, (rs1) / amoadd.w rd, rs2, (rs1)
   Fence,  // fence / fence.i
   System, // ecall / ebreak
   Csr,    // csrrw/csrrs/csrrc + immediate forms, plus mret
@@ -31,11 +33,14 @@ enum class Fmt : uint8_t {
 enum class Isa : uint8_t {
   RV32I = 1 << 0,
   RV32M = 1 << 1,
+  Zbb = 1 << 2,
+  Zbs = 1 << 3,
+  A = 1 << 4,
 };
 
 enum class Insn : uint16_t {
   ILLEGAL,
-#define RSIM_INSN(ID, MNEM, FMT, OPC, F3, F7, IMM, ISA) ID,
+#define RSIM_INSN(ID, MNEM, FMT, OPC, F3, F7, IMM, ISA, F5) ID,
 #include "insn.def"
 #undef RSIM_INSN
 };

@@ -12,14 +12,15 @@ struct Entry {
   uint8_t funct3;
   uint8_t funct7;
   uint16_t match_imm; // 0xff means "don't care"; mret's 0x302 does not fit u8
+  uint8_t match_f5;   // funct5, for the A extension
   Insn id;
 };
 
 constexpr uint8_t kWild = 0xff;
 
 const Entry kTable[] = {
-#define RSIM_INSN(ID, MNEM, FMT, OPC, F3, F7, IMM, ISA) \
-  {OPC, F3, F7, IMM, Insn::ID},
+#define RSIM_INSN(ID, MNEM, FMT, OPC, F3, F7, IMM, ISA, F5) \
+  {OPC, F3, F7, IMM, F5, Insn::ID},
 #include "insn.def"
 #undef RSIM_INSN
 };
@@ -64,6 +65,8 @@ Decoded decode(uint32_t word) {
     if (entry.funct7 != kWild && entry.funct7 != funct7)
       continue;
     if (entry.match_imm != kWild && entry.match_imm != bits(word, 31, 20))
+      continue;
+    if (entry.match_f5 != kWild && entry.match_f5 != bits(word, 31, 27))
       continue;
 
     out.id = entry.id;
@@ -138,6 +141,36 @@ Decoded decode(uint32_t word) {
     out.fmt = Fmt::Csr;
     out.csr = static_cast<uint16_t>(bits(word, 31, 20));
     break;
+  case Insn::CLZ:
+  case Insn::CTZ:
+  case Insn::CPOP:
+  case Insn::SEXT_B:
+  case Insn::SEXT_H:
+  case Insn::REV8:
+  case Insn::ZEXT_H:
+    out.fmt = Fmt::Unary;
+    break;
+  case Insn::RORI:
+  case Insn::BSETI:
+  case Insn::BCLRI:
+  case Insn::BINVI:
+  case Insn::BEXTI:
+    out.fmt = Fmt::Shift;
+    out.imm = static_cast<int32_t>(bits(word, 24, 20));
+    break;
+  case Insn::LR_W:
+  case Insn::SC_W:
+  case Insn::AMOSWAP_W:
+  case Insn::AMOADD_W:
+  case Insn::AMOXOR_W:
+  case Insn::AMOAND_W:
+  case Insn::AMOOR_W:
+  case Insn::AMOMIN_W:
+  case Insn::AMOMAX_W:
+  case Insn::AMOMINU_W:
+  case Insn::AMOMAXU_W:
+    out.fmt = Fmt::Atomic;
+    break;
   case Insn::FENCE:
   case Insn::FENCE_I:
     out.fmt = Fmt::Fence;
@@ -154,8 +187,8 @@ Decoded decode(uint32_t word) {
 }
 
 const char *mnemonic(Insn id) {
-#define RSIM_INSN(ID, MNEM, FMT, OPC, F3, F7, IMM, ISA) \
-  if (id == Insn::ID)                                    \
+#define RSIM_INSN(ID, MNEM, FMT, OPC, F3, F7, IMM, ISA, F5) \
+  if (id == Insn::ID)                                        \
     return MNEM;
 #include "insn.def"
 #undef RSIM_INSN
@@ -163,8 +196,8 @@ const char *mnemonic(Insn id) {
 }
 
 Isa isaOf(Insn id) {
-#define RSIM_INSN(ID, MNEM, FMT, OPC, F3, F7, IMM, ISA) \
-  if (id == Insn::ID)                                    \
+#define RSIM_INSN(ID, MNEM, FMT, OPC, F3, F7, IMM, ISA, F5) \
+  if (id == Insn::ID)                                        \
     return Isa::ISA;
 #include "insn.def"
 #undef RSIM_INSN
@@ -238,6 +271,12 @@ std::string format(const Decoded &d) {
     const std::string src = isImmediateCsr(d.id) ? std::to_string(d.rs1) : rs1;
     return m + " " + rd + ", " + csr + ", " + src;
   }
+  case Fmt::Unary:
+    return m + " " + rd + ", " + rs1;
+  case Fmt::Atomic:
+    if (d.id == Insn::LR_W)
+      return m + " " + rd + ", (" + rs1 + ")";
+    return m + " " + rd + ", " + rs2 + ", (" + rs1 + ")";
   case Fmt::Fence:
   case Fmt::System:
     return m;

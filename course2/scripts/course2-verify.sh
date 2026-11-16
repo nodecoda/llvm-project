@@ -52,6 +52,12 @@
 #   * tests/trap-handler.s installs mtvec, validates mcause/mepc/mtval for
 #     both traps, skips the faulting instruction and returns with mret.
 #
+# Chapter 09 checks:
+#   * the Zbb, Zbs and A corpora decode exactly like llvm-mc (aq/rl folded);
+#   * the same muldiv source runs under --isa=rv32i (libcalls) and under
+#     --isa=rv32im (real M instructions), both matching QEMU;
+#   * --isa=rv32i refuses a +m build, and a malformed spec exits 2.
+#
 set -euo pipefail
 
 BIN=${1:?usage: course2-verify.sh <llvm-bin-dir> <rsim-binary>}
@@ -259,7 +265,7 @@ hex_words() {
 }
 
 decode_corpus() {
-  local name=$1 mattr=${2:-}
+  local name=$1 mattr=${2:-} norm=${3:-}
   local mc_args=(-triple=rvmin)
   [[ -n "$mattr" ]] && mc_args+=(-mattr="$mattr")
 
@@ -272,6 +278,10 @@ decode_corpus() {
     || fail "rsim could not decode $name"
   "$MC" "${mc_args[@]}" -disassemble "$TMP/$name.hex" \
     | sed 's/^\t//' > "$TMP/$name.ref" || fail "llvm-mc could not disassemble $name"
+  if [[ -n "$norm" ]]; then
+    sed -E "$norm" "$TMP/$name.ref" > "$TMP/$name.norm"
+    mv "$TMP/$name.norm" "$TMP/$name.ref"
+  fi
   diff -u "$TMP/$name.ref" "$TMP/$name.ours" > "$TMP/$name.diff" \
     || fail "$name: decode differs from llvm-mc (see $TMP/$name.diff)"
   CHECKS=$((CHECKS + $(wc -l < "$TMP/$name.ours")))
@@ -554,6 +564,57 @@ build_csr_program trap_handler "$COURSE2/tests/trap-handler.s"
   || fail "trap-handler.s failed: $(cat "$TMP/trap_handler.err")"
 grep -q '^mcause   0x00000003$' "$TMP/trap_handler.crs" \
   || fail "trap-handler did not take both traps"
+CHECKS=$((CHECKS + 1))
+
+# --- Chapter 09: optional extensions and --isa --------------------------
+
+# The corpus check from chapter 03 grows three more instruction sets.  The A
+# corpus names aq/rl variants, which the emulator deliberately folds into one
+# mnemonic (a single hart has nothing to order), so its text is normalised.
+decode_corpus rvmin-zbb-encoding-corpus +zbb
+decode_corpus rvmin-zbs-encoding-corpus +zbs
+decode_corpus rvmin-a-encoding-corpus +a 's/\.(aqrl|aq|rl) / /'
+
+# The same source with and without +m: one build needs the M extension, the
+# other goes through the RV32I libcalls in rvmin-rt.S.
+build_program muldiv_i "$RT/muldiv.c" 2
+set +e
+"$RSIM" --run "$TMP/muldiv_i" --isa=rv32i > "$TMP/muldiv_i.out" 2> /dev/null
+muldiv_i_rc=$?
+"$QEMU" "$TMP/muldiv_i" > "$TMP/muldiv_i.qemu" 2> /dev/null
+muldiv_i_qemu_rc=$?
+set -e
+[[ "$muldiv_i_rc" -eq 0 ]] || fail "muldiv without +m exited $muldiv_i_rc under --isa=rv32i"
+cmp -s "$TMP/muldiv_i.out" "$TMP/muldiv_i.qemu" \
+  || fail "muldiv without +m: stdout differs from QEMU"
+[[ "$muldiv_i_rc" -eq "$muldiv_i_qemu_rc" ]] \
+  || fail "muldiv without +m: exit code differs from QEMU"
+CHECKS=$((CHECKS + 1))
+
+"$RSIM" --run "$TMP/muldiv_m" --isa=rv32im > "$TMP/muldiv_m.out" 2> /dev/null \
+  || fail "muldiv with +m failed under --isa=rv32im"
+cmp -s "$TMP/muldiv_m.out" "$TMP/muldiv_m.qemu.out" \
+  || fail "muldiv with +m: stdout differs from QEMU under an explicit --isa"
+CHECKS=$((CHECKS + 1))
+
+# The +m build must be rejected by a strict RV32I guest: that is the point of
+# the filter, not a limitation.
+set +e
+"$RSIM" --run "$TMP/muldiv_m" --isa=rv32i > /dev/null 2> "$TMP/strict.err"
+strict_rc=$?
+set -e
+[[ "$strict_rc" -eq 126 ]] || fail "--isa=rv32i on a +m build exited $strict_rc, want 126"
+grep -q 'not enabled by --isa' "$TMP/strict.err" \
+  || fail "the ISA filter left no diagnostic"
+CHECKS=$((CHECKS + 1))
+
+set +e
+"$RSIM" --run "$TMP/demo" --isa=rv32 > /dev/null 2> "$TMP/badisa.err"
+badisa_rc=$?
+set -e
+[[ "$badisa_rc" -eq 2 ]] || fail "a bad --isa spec exited $badisa_rc, want 2"
+grep -q 'bad --isa spec' "$TMP/badisa.err" \
+  || fail "a bad --isa spec left no diagnostic"
 CHECKS=$((CHECKS + 1))
 
 echo "$CHECKS checks"

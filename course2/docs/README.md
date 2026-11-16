@@ -14,7 +14,7 @@
 | 06 | [06-trace-disasm.md](06-trace-disasm.md) | 跟踪与自反汇编 | trace ⊆ `llvm-objdump -d`；条数 == 执行数 | `rsim-ch06` |
 | 07 | [07-debugger.md](07-debugger.md) | 断点、单步与脚本调试 | transcript 与 golden 逐字节一致 | `rsim-ch07` |
 | 08 | [08-traps.md](08-traps.md) | 陷阱模型与 ebreak | `mcause=2/3`、`mepc` 正确 | `rsim-ch08` |
-| 09 | （规划中） | M/Zbb/A 可选指令 | 与 QEMU 差分一致 | `rsim-ch09` |
+| 09 | [09-extensions.md](09-extensions.md) | M/Zbb/Zbs/A 与 `--isa` | 19+8+20 条语料对拍；严格模式退出 126 | `rsim-ch09` |
 | 10 | （规划中） | 指令统计与“性能” | `jalr` 计数 ≥ 1e6 | `rsim-ch10` |
 | 11 | （规划中） | 第二课验收 | C2-AC1–8 全绿 | `rsim-ch11` |
 
