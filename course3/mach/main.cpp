@@ -23,7 +23,7 @@
 
 namespace {
 
-constexpr const char *kVersion = "0.9";
+constexpr const char *kVersion = "1.0";
 constexpr int kExitUsage = 2;
 constexpr int kExitLoadError = 125;
 constexpr int kExitTrap = 126;
@@ -241,7 +241,7 @@ void dumpCsr(const rmach::Machine &machine) {
 
 int main(int argc, char **argv) {
   if (argc == 2 && std::strcmp(argv[1], "--version") == 0) {
-    std::printf("rmach %s (chapter 09)\n", kVersion);
+    std::printf("rmach %s (chapter 10)\n", kVersion);
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--selftest") == 0)

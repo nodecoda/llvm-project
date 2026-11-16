@@ -50,6 +50,10 @@
 #   * --dump-csr reports the hand-computed misa/mhartid/satp values;
 #   * a U-mode trace line carries the page-table translation 0x10000->0x80400000.
 #
+# Chapter 10 checks:
+#   * all 31 GPRs survive a U ecall -> M handler -> mret round trip;
+#   * the course-2 muldiv_i program (rvmin, no M extension) runs as a U process.
+#
 set -euo pipefail
 
 BIN=${1:?usage: course3-verify.sh <llvm-bin-dir> <rmach-binary>}
@@ -483,6 +487,33 @@ CHECKS=$((CHECKS + 1))
 # PA must be the first physical page of the user arena.
 grep -q '^T 00010000 80400000 U ' "$TMP/trace.err" \
   || fail "trace does not translate the first U instruction: $(grep '^T .* U ' "$TMP/trace.err" | head -2)"
+CHECKS=$((CHECKS + 1))
+
+# --- Chapter 10: acceptance evidence ------------------------------------
+
+# C3-AC2: the trap frame covers all 31 GPRs.  The test snapshots every
+# register before ecall, snapshots again after mret and compares the words.
+build_asm_image trap_allregs "$COURSE3/tests/trap-allregs.S"
+set +e
+"$RMACH" --kernel "$TMP/trap_allregs.elf" > "$TMP/allregs.out" 2> "$TMP/allregs.err"
+allregs_rc=$?
+set -e
+[[ "$allregs_rc" -eq 0 ]] || fail "trap-allregs exited $allregs_rc (a GPR changed)"
+[[ ! -s "$TMP/allregs.out" ]] || fail "trap-allregs produced unexpected stdout"
+CHECKS=$((CHECKS + 1))
+
+# C3-AC8: the second course's muldiv_i is built with rvmin (no +m, so it uses
+# the rvmin-rt libcalls) and runs as a U-mode process under the same kernel.
+build_rvmin_program muldiv_i "$RT/muldiv.c" 2
+printf 'rvmin: ok\n' > "$TMP/muldiv.golden"
+set +e
+"$RMACH" --kernel "$TMP/kernel.elf" --user "$TMP/muldiv_i" \
+  > "$TMP/muldiv.out" 2> "$TMP/muldiv.err"
+muldiv_rc=$?
+set -e
+[[ "$muldiv_rc" -eq 0 ]] || fail "muldiv_i under rmach exited $muldiv_rc, want 0"
+cmp -s "$TMP/muldiv.out" "$TMP/muldiv.golden" \
+  || fail "muldiv_i stdout is $(od -An -tx1c "$TMP/muldiv.out" | tr '\n' ' ')"
 CHECKS=$((CHECKS + 1))
 
 echo "$CHECKS checks"
