@@ -50,6 +50,7 @@ def SImm21Lsb0AsmOperand : RVMinImmAsmOperand<"SImm21Lsb0", "isSImm21Lsb0">;
 def simm12 : Operand<i32>, ImmLeaf<i32, [{ return isInt<12>(Imm); }]> {
   let PrintMethod = "printOperand";
   let ParserMatchClass = SImm12AsmOperand;
+  let DecoderMethod = "decodeSImmOperand<12>";
   let MCOperandPredicate = [{
     int64_t Imm;
     return MCOp.evaluateAsConstantImm(Imm) && isInt<12>(Imm);
@@ -86,6 +87,7 @@ def uimm20 : Operand<i32> {
 def simm13_lsb0 : Operand<OtherVT> {
   let PrintMethod = "printOperand";
   let ParserMatchClass = SImm13Lsb0AsmOperand;
+  let DecoderMethod = "decodeSImmBranchOperand<13>";
   let MCOperandPredicate = [{
     int64_t Imm;
     if (MCOp.evaluateAsConstantImm(Imm))
@@ -98,6 +100,7 @@ def simm13_lsb0 : Operand<OtherVT> {
 def simm21_lsb0 : Operand<OtherVT> {
   let PrintMethod = "printOperand";
   let ParserMatchClass = SImm21Lsb0AsmOperand;
+  let DecoderMethod = "decodeSImmBranchOperand<21>";
   let MCOperandPredicate = [{
     int64_t Imm;
     if (MCOp.evaluateAsConstantImm(Imm))

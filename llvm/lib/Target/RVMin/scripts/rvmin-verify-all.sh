@@ -8,8 +8,9 @@
 #   1. the target is registered;
 #   2. lit: CodeGen + MC tests;
 #   3. encoding gate: byte-exact against the reference RISC-V assembler;
-#   4. e2e: 10 C programs x 4 -O levels x 2 feature sets, round-tripped;
-#   5. every CodeGen test at -O0..-O3 x {rv32i,+m} with -verify-machineinstrs
+#   4. disassembler gate: asm -> obj -> disasm -> asm is byte-identical;
+#   5. e2e: 10 C programs x 4 -O levels x 2 feature sets, round-tripped;
+#   6. every CodeGen test at -O0..-O3 x {rv32i,+m} with -verify-machineinstrs
 #      (tests that expect a diagnostic, i.e. "RUN: not llc", are skipped).
 #
 # The QEMU run gate is separate (rvmin-run.sh) because it needs a linker and an
@@ -30,7 +31,7 @@ fail() {
 
 # 1. Registration.
 "$BIN/llc" --version | grep -qw rvmin || fail "llc --version does not list rvmin"
-echo "PASS 1/5: target registered"
+echo "PASS 1/6: target registered"
 
 # 2. lit.  Capture the log: lit prints one "did not find <tool>" note per
 # missing binary, which is noise on a partial build.
@@ -41,17 +42,21 @@ if ! "$BIN/llvm-lit" -s "$TESTS/CodeGen/RVMin" "$TESTS/MC/RVMin" \
   fail "lit tests"
 fi
 grep -E 'Passed:|Total Discovered' "$LIT_LOG" || true
-echo "PASS 2/5: lit (CodeGen + MC)"
+echo "PASS 2/6: lit (CodeGen + MC)"
 
 # 3. Encoding gate.
 "$HERE/check-rvmin-encodings.sh" "$BIN" || fail "encoding gate"
-echo "PASS 3/5: encodings"
+echo "PASS 3/6: encodings"
 
-# 4. End-to-end corpus.
+# 4. Disassembler round trip (chapter 20).
+"$HERE/check-rvmin-disasm.sh" "$BIN" || fail "disassembler gate"
+echo "PASS 4/6: disassembler"
+
+# 5. End-to-end corpus.
 "$HERE/rvmin-e2e.sh" "$BIN" || fail "e2e corpus"
-echo "PASS 4/5: e2e"
+echo "PASS 5/6: e2e"
 
-# 5. Machine-instruction verification at every optimization level.
+# 6. Machine-instruction verification at every optimization level.
 CASES=0
 for f in "$TESTS"/CodeGen/RVMin/*.ll; do
   # Expected-failure tests are covered by lit; here every input must compile.
@@ -66,6 +71,6 @@ for f in "$TESTS"/CodeGen/RVMin/*.ll; do
     done
   done
 done
-echo "PASS 5/5: $CASES llc runs with -verify-machineinstrs"
+echo "PASS 6/6: $CASES llc runs with -verify-machineinstrs"
 
 echo "ALL GATES PASS (run rvmin-run.sh separately for the QEMU check)"
