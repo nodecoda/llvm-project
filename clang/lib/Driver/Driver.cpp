@@ -876,7 +876,11 @@ static llvm::Triple computeTargetTriple(const Driver &D, StringRef TargetTriple,
   }
 
   // If target is RISC-V adjust the target triple according to
-  // provided architecture name
+  // provided architecture name.
+  //
+  // RVMin deliberately does not satisfy isRISCV(): this rewrite would turn
+  // `--target=rvmin -march=rv32i` into a riscv32 triple and silently select
+  // the RISCV backend.
   if (Target.isRISCV()) {
     if (Args.hasArg(options::OPT_march_EQ) ||
         Args.hasArg(options::OPT_mcpu_EQ)) {
@@ -6433,6 +6437,7 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
       case llvm::Triple::riscv64:
       case llvm::Triple::riscv32be:
       case llvm::Triple::riscv64be:
+      case llvm::Triple::rvmin:
         TC = std::make_unique<toolchains::BareMetal>(*this, Target, Args);
         break;
       case llvm::Triple::ve:

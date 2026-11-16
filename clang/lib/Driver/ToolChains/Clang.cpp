@@ -1645,6 +1645,7 @@ void Clang::RenderTargetOptions(const llvm::Triple &EffectiveTriple,
   case llvm::Triple::riscv64:
   case llvm::Triple::riscv32be:
   case llvm::Triple::riscv64be:
+  case llvm::Triple::rvmin:
     AddRISCVTargetArgs(Args, CmdArgs);
     break;
 
@@ -2090,6 +2091,27 @@ void Clang::AddPPCTargetArgs(const ArgList &Args,
 void Clang::AddRISCVTargetArgs(const ArgList &Args,
                                ArgStringList &CmdArgs) const {
   const llvm::Triple &Triple = getToolChain().getTriple();
+  const Driver &D = getToolChain().getDriver();
+
+  if (Triple.isRVMin()) {
+    if (Args.hasArg(options::OPT_fPIC, options::OPT_fPIE, options::OPT_fpic,
+                    options::OPT_fpie))
+      D.Diag(diag::err_drv_unsupported_opt_for_target)
+          << "-fPIC/-fPIE" << Triple.str();
+    if (Arg *A = Args.getLastArg(options::OPT_mcmodel_EQ)) {
+      StringRef CM = A->getValue();
+      if (CM != "default" && CM != "small")
+        D.Diag(diag::err_drv_unsupported_option_argument_for_target)
+            << A->getSpelling() << CM << Triple.str();
+    }
+    if (Arg *A = Args.getLastArg(options::OPT_mrelax))
+      D.Diag(diag::err_drv_unsupported_option_argument_for_target)
+          << A->getSpelling() << "relax" << Triple.str();
+    if (Arg *A = Args.getLastArg(options::OPT_mrvv_vector_bits_EQ))
+      D.Diag(diag::err_drv_unsupported_option_argument_for_target)
+          << A->getSpelling() << A->getValue() << Triple.str();
+  }
+
   StringRef ABIName = riscv::getRISCVABI(Args, Triple);
 
   CmdArgs.push_back("-target-abi");
@@ -9318,7 +9340,9 @@ void ClangAs::AddRISCVTargetArgs(const ArgList &Args,
   CmdArgs.push_back("-target-abi");
   CmdArgs.push_back(ABIName.data());
 
-  if (Args.hasFlag(options::OPT_mdefault_build_attributes,
+  // The RVMin backend does not implement the RISC-V build-attribute emitter.
+  if (!Triple.isRVMin() &&
+      Args.hasFlag(options::OPT_mdefault_build_attributes,
                    options::OPT_mno_default_build_attributes, true)) {
       CmdArgs.push_back("-mllvm");
       CmdArgs.push_back("-riscv-add-build-attributes");
@@ -9548,6 +9572,7 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
   case llvm::Triple::riscv64:
   case llvm::Triple::riscv32be:
   case llvm::Triple::riscv64be:
+  case llvm::Triple::rvmin:
     AddRISCVTargetArgs(Args, CmdArgs);
     break;
 

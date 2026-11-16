@@ -53,6 +53,22 @@ bool RVMinTargetInfo::setABI(const std::string &Name) {
   return true;
 }
 
+bool RVMinTargetInfo::isValidCPUName(StringRef Name) const {
+  return llvm::is_contained(
+      {"generic-rv32", "generic-rv32-m", "generic-rv32-a", "generic-rv32-zbb",
+       "generic-rv32-zbs"},
+      Name);
+}
+
+void RVMinTargetInfo::fillValidCPUList(
+    SmallVectorImpl<StringRef> &Values) const {
+  Values.push_back("generic-rv32");
+  Values.push_back("generic-rv32-m");
+  Values.push_back("generic-rv32-a");
+  Values.push_back("generic-rv32-zbb");
+  Values.push_back("generic-rv32-zbs");
+}
+
 static bool isRVMinExtension(StringRef Ext) {
   return Ext == "i" || Ext == "m" || Ext == "a" || Ext == "zbb" ||
          Ext == "zbs" ||

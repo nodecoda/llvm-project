@@ -106,6 +106,7 @@ static bool useFramePointerForTargetByDefault(const llvm::opt::ArgList &Args,
   case llvm::Triple::riscv64:
   case llvm::Triple::riscv32be:
   case llvm::Triple::riscv64be:
+  case llvm::Triple::rvmin:
   case llvm::Triple::sparc:
   case llvm::Triple::sparcel:
   case llvm::Triple::sparcv9:
@@ -619,6 +620,7 @@ const char *tools::getLDMOption(const llvm::Triple &T, const ArgList &Args) {
   case llvm::Triple::ppc64le:
     return "elf64lppc";
   case llvm::Triple::riscv32:
+  case llvm::Triple::rvmin:
     return "elf32lriscv";
   case llvm::Triple::riscv64:
     return "elf64lriscv";
@@ -843,6 +845,7 @@ std::string tools::getCPUName(const Driver &D, const ArgList &Args,
   case llvm::Triple::riscv64:
   case llvm::Triple::riscv32be:
   case llvm::Triple::riscv64be:
+  case llvm::Triple::rvmin:
     return riscv::getRISCVTargetCPU(Args, T);
 
   case llvm::Triple::bpfel:
@@ -926,6 +929,7 @@ void tools::getTargetFeatures(const Driver &D, const llvm::Triple &Triple,
   case llvm::Triple::riscv64:
   case llvm::Triple::riscv32be:
   case llvm::Triple::riscv64be:
+  case llvm::Triple::rvmin:
     riscv::getRISCVTargetFeatures(D, Triple, Args, Features);
     break;
   case llvm::Triple::systemz:

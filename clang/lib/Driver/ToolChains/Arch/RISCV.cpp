@@ -71,6 +71,32 @@ void riscv::getRISCVTargetFeatures(const Driver &D, const llvm::Triple &Triple,
                                    std::vector<StringRef> &Features) {
   std::string MArch = getRISCVArch(Args, Triple);
 
+  if (Triple.isRVMin()) {
+    if (Args.hasArg(options::OPT_march_EQ) &&
+        Args.getLastArgValue(options::OPT_march_EQ) == "native") {
+      D.Diag(diag::err_drv_unsupported_option_argument_for_target)
+          << "-march" << "native" << Triple.str();
+      return;
+    }
+    auto ISAInfo = llvm::RISCVISAInfo::parseArchString(
+        MArch, /*EnableExperimentalExtensions=*/true);
+    if (ISAInfo && (*ISAInfo)->getXLen() != 32) {
+      D.Diag(diag::err_drv_unsupported_option_argument_for_target)
+          << "-march" << MArch << Triple.str();
+      return;
+    }
+    if (!getArchFeatures(D, MArch, Features, Args))
+      return;
+    // getArchFeatures emits the full RISC-V extension list (+i and a "-<ext>"
+    // for everything else).  The integrated assembler consumes this vector
+    // directly, without going through RVMinTargetInfo, so keep only the four
+    // extensions the backend implements; "+i" is implied by the target.
+    llvm::erase_if(Features, [](StringRef F) {
+      return F != "+m" && F != "+a" && F != "+zbb" && F != "+zbs";
+    });
+    return;
+  }
+
   if (!getArchFeatures(D, MArch, Features, Args))
     return;
 
@@ -220,7 +246,13 @@ void riscv::getRISCVTargetFeatures(const Driver &D, const llvm::Triple &Triple,
 }
 
 StringRef riscv::getRISCVABI(const ArgList &Args, const llvm::Triple &Triple) {
-  assert(Triple.isRISCV() && "Unexpected triple");
+  assert((Triple.isRISCV() || Triple.isRVMin()) && "Unexpected triple");
+
+  if (Triple.isRVMin()) {
+    if (const Arg *A = Args.getLastArg(options::OPT_mabi_EQ))
+      return A->getValue();
+    return "ilp32";
+  }
 
   // GCC's logic around choosing a default `-mabi=` is complex. If GCC is not
   // configured using `--with-abi=`, then the logic for the default choice is
@@ -304,7 +336,7 @@ static std::string getMArchFromMcpu(StringRef CPU, const llvm::Triple &Triple) {
 
 std::string riscv::getRISCVArch(const llvm::opt::ArgList &Args,
                                 const llvm::Triple &Triple) {
-  assert(Triple.isRISCV() && "Unexpected triple");
+  assert((Triple.isRISCV() || Triple.isRVMin()) && "Unexpected triple");
 
   // GCC's logic around choosing a default `-march=` is complex. If GCC is not
   // configured using `--with-arch=`, then the logic for the default choice is
@@ -360,6 +392,24 @@ std::string riscv::getRISCVArch(const llvm::opt::ArgList &Args,
       if (!MArch.empty())
         return MArch;
     }
+  }
+
+  // RVMin only implements RV32I unless -march/-mcpu explicitly enables more.
+  // Do this before the -mabi default table below: -mabi=ilp32 must not turn
+  // into rv32imafdc for this target.
+  if (Triple.isRVMin()) {
+    if (const Arg *A = Args.getLastArg(options::OPT_mcpu_EQ)) {
+      StringRef CPU = A->getValue();
+      if (CPU == "generic-rv32-m")
+        return "rv32im";
+      if (CPU == "generic-rv32-a")
+        return "rv32ia";
+      if (CPU == "generic-rv32-zbb")
+        return "rv32i_zbb";
+      if (CPU == "generic-rv32-zbs")
+        return "rv32i_zbs";
+    }
+    return "rv32i";
   }
 
   // 3. Choose a default based on `-mabi=`

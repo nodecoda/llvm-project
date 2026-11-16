@@ -41,6 +41,9 @@ public:
 
   bool setABI(const std::string &Name) override;
 
+  bool isValidCPUName(StringRef Name) const override;
+  void fillValidCPUList(SmallVectorImpl<StringRef> &Values) const override;
+
   bool initFeatureMap(llvm::StringMap<bool> &Features, DiagnosticsEngine &Diags,
                       StringRef CPU,
                       const std::vector<std::string> &FeaturesVec) const override;
