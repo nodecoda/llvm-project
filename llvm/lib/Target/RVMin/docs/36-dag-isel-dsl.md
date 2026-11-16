@@ -19,28 +19,28 @@
 | `instr-info` | 6 | 111 | 85 | 74 / 5 / 6 | 26 |
 | `asm-writer` | 8 | 130 | 99 | 84 / 9 / 6 | 31 |
 | `asm-matcher` | 15 | 166 | 142 | 95 / 42 / 5 | 24 |
-| `dag-isel` | **14** | **183** | **134** | **133 / 1 / 0** | **49** |
+| `dag-isel` | **14** | **186** | **136** | **135 / 1 / 0** | **50** |
 
 `dag-isel` 有两个极端：
 
 - `project` 只有 **1**（`CodeSize`）：`DAGISelEmitter.cpp` 只是一层薄壳；
-- `derive` 有 **133**：几乎所有读取都发生在共享分析器
+- `derive` 有 **135**：几乎所有读取都发生在共享分析器
   `CodeGenDAGPatterns.cpp`。
 
 本章产出：
 
 - `dsl-surface.py` 增加 `--backend dag-isel`；
-- 契约：14 个记录类入口、183 个字段、134 个被消费、61 行投影矩阵、
+- 契约：14 个记录类入口、186 个字段、136 个被消费、64 行投影矩阵、
   7 条派生改写、6 个硬编码名字；
-- 注解复用 instr-info，补 54 个 pattern/SDNode 字段；
+- 注解复用 instr-info，补 56 个 pattern/SDNode 字段（含 `ImmLeaf` 的 2 个）；
 - 脚本增强：magic name 从“只扫 emitter”改为“扫整个 source set”；
-- 第 32 章 status 矩阵与第 33 章 `--effect` 自动变成五后端。
+- 第 32 章 status 矩阵与第 33 章 `--effect` 自动变成六后端（第 37 章再加 `fast-isel`）。
 
 非目标：
 
 - 不修改 `DAGISelEmitter` / `CodeGenDAGPatterns` 的行为；
 - 不覆盖 `-gen-fast-isel` / `-gen-disassembler`；
-- 不把 183 个字段逐个讲一遍；正文只讲 pattern schema 的新机制。
+- 不把 186 个字段逐个讲一遍；正文只讲 pattern schema 的新机制。
 
 ## 背景：为什么 dag-isel 是第五个
 
@@ -84,7 +84,7 @@ SDNode.TypeProfile     ─┘
 | `llvm/utils/TableGen/Basic/SDNodeProperties.{h,cpp}` | `SDNode` 属性位 |
 | `llvm/include/llvm/Target/TargetSelectionDAG.td` | `SDNode` / `PatFrags` / `ComplexPattern` / `Pattern` schema |
 | `llvm/include/llvm/Target/Target.td` | `Instruction` / `Operand` / `Register*` schema |
-| `llvm/utils/TableGen/dsl-surface.py` | **本章改造**：第五个 Backend + 54 个注解 |
+| `llvm/utils/TableGen/dsl-surface.py` | **本章改造**：第五个 Backend + 56 个注解 + `ImmLeaf` helper |
 | `llvm/lib/Target/RVMin/docs/36-dag-isel-dsl.md` | 本章；四个生成块由脚本生成 |
 
 ## 关键实现：第五个后端怎么接进来
@@ -155,21 +155,23 @@ helper_classes=(
 `Instruction` 在 `CodeGenDAGPatterns.cpp` 里也会被枚举；`extra_roots` 里的
 同名条目只是保留“schema 枚举点”的证据，二者会去重。
 
-### 4. 注解：54 个新字段
+### 4. 注解：56 个新字段
 
 按声明类分组：
 
 | 声明类 | 新增字段数 | 代表字段 |
 | --- | --- | --- |
 | `PatFrags` | 10 | `Fragments` / `PredicateCode` / `MemoryVT` |
+| `Register` 系（`Register` / `RegisterTuples` / `RegisterCategory`） | 10 | `AsmName` / `CostPerUse` / `RegAsmNames` |
 | `ComplexPattern` | 7 | `SelectFunc` / `RootNodes` / `WantsRoot` |
-| `Register` | 6 | `AsmName` / `CostPerUse` / `isConstant` |
+| `SDNode` 系（`SDNode` / `SDNodeXForm`） | 5 | `Opcode` / `SDClass` / `XFormFunction` |
 | `Predicate` | 4 | `CondString` / `AssemblerCondDag` |
-| `SubRegIndex` | 3 | `SubRegRanges` / `ComposedOf` |
-| `SDNode` | 3 | `Opcode` / `SDClass` / `TypeProfile` |
+| `Instruction` | 3 | `Pattern` / `CodeSize` / `AddedComplexity` |
 | `Pattern` | 3 | `PatternToMatch` / `ResultInstrs` / `GISelShouldIgnore` |
+| `SubRegIndex` | 3 | `SubRegRanges` / `ComposedOf` |
+| `ImmLeaf` | 2 | `IsAPInt` / `IsAPFloat` |
 | `SDTypeConstraint` 系 | 5 | `OperandNum` / `OtherOperandNum` / `VT` |
-| 其它（Instruction/Operand/Profile） | 13 | `Pattern` / `CodeSize` / `NumResults` |
+| 其它（`SDTypeProfile` / `Operand` / `OperandWithDefaultOps`） | 4 | `NumResults` / `Type` / `DefaultOps` |
 
 ### 5. magic name 改为扫描整个 source set
 
@@ -195,13 +197,18 @@ source_texts = [(rel, strip_comments((root / rel).read_text()))
 - `SDNode` 注册（opcode/属性/profile）；
 - `Operand.Type` 解析。
 
-### 7. 投影特征：133 derive / 1 project / 0 both
+### 7. 投影特征：135 derive / 1 project / 0 both
 
 这是本章最值得记住的数字：
 
 - `project` 只有 `CodeSize`：emitter 不直接读 schema；
 - `derive+project` 为 0：没有“共享层和 emitter 同时读”的字段；
-- `derive` 覆盖 pattern、SDNode、类型约束、寄存器模型。
+- `derive` 有 135 个，覆盖 pattern、SDNode、类型约束、寄存器模型。
+
+> `ImmLeaf` 是一个容易漏掉的边界：它的 `IsAPInt` / `IsAPFloat` /
+> `FastIselShouldIgnore` 声明在**派生类**上，而 `collect_fields()` 只沿基类
+> 展开。必须把 `ImmLeaf` 显式列进 `helper_classes`，这三个字段才会进入
+> schema（这也是本章数字从 183 涨到 186 的原因）。
 
 也就是说，**dag-isel 的契约主要是“共享分析器的输入面”**，而不是
 “emitter 的输入面”。这正是第 29 章“derive 层”概念的最大规模样本。
@@ -213,7 +220,7 @@ source_texts = [(rel, strip_comments((root / rel).read_text()))
 <!-- BEGIN: GENERATED DSL CONTRACT -->
 
 后端：`gen-dag-isel` · emitter：`llvm/utils/TableGen/DAGISelEmitter.cpp`
-统计：14 个记录类入口 · 183 个字段（schema 49 · derive 133 · project 1 · derive+project 0）。
+统计：14 个记录类入口 · 186 个字段（schema 50 · derive 135 · project 1 · derive+project 0）。
 
 **记录类入口**
 
@@ -358,6 +365,8 @@ source_texts = [(rel, strip_comments((root / rel).read_text()))
 | `Operands` | `PatFrags` | `dag` | `ops` | `derive` | `llvm/utils/TableGen/Common/CodeGenDAGPatterns.cpp:3484` | `PatFrags` 的命名嵌套操作数 dag；fragment 里用 `$name` 引用。 |
 | `PredicateCode` | `PatFrags` | `code` | `pred` | `derive` | `llvm/utils/TableGen/Common/CodeGenDAGPatterns.cpp:919`, `llvm/utils/TableGen/Common/CodeGenDAGPatterns.cpp:1186` | 结构匹配后的 C++ 谓词；为空表示只看结构。 |
 | `ScalarMemoryVT` | `PatFrags` | `ValueType` | `?` | `derive` | `llvm/utils/TableGen/Common/CodeGenDAGPatterns.cpp:1320` | 向量内存操作实际存储的标量类型。 |
+| `IsAPFloat` | `ImmLeaf` | `bit` | `false` | `derive` | `llvm/utils/TableGen/Common/CodeGenDAGPatterns.cpp:1211` | `ImmLeaf` 的立即数是否按 `APFloat` 处理。 |
+| `IsAPInt` | `ImmLeaf` | `bit` | `false` | `derive` | `llvm/utils/TableGen/Common/CodeGenDAGPatterns.cpp:1205` | `ImmLeaf` 的立即数是否按 `APInt` 处理。 |
 | `GISelShouldIgnore` | `Pattern` | `bit` | `0` | `derive` | `llvm/utils/TableGen/Common/CodeGenDAGPatterns.cpp:4555` | 为 true 时 GlobalISel 导入忽略该 pattern。 |
 | `PatternToMatch` | `Pattern` | `dag` | `patternToMatch` | `derive` | `llvm/utils/TableGen/Common/CodeGenDAGPatterns.cpp:4527` | pattern 的源 dag；`TreePattern` 从它构建匹配树。 |
 | `ResultInstrs` | `Pattern` | `list<dag>` | `resultInstrs` | `derive` | `llvm/utils/TableGen/Common/CodeGenDAGPatterns.cpp:4535` | pattern 的结果指令列表；决定选中后生成哪些 MachineInstr。 |
@@ -427,6 +436,7 @@ source_texts = [(rel, strip_comments((root / rel).read_text()))
 | `IsUnindexed` | `PatFrags` | `bit` | 预置内存谓词；`PredicateExpanderDag` 生成检查。 |
 | `IsZeroExtLoad` | `PatFrags` | `bit` | 预置加载谓词；`PredicateExpanderDag` 生成检查。 |
 | `PredicateCodeUsesOperands` | `PatFrags` | `bit` | 允许 `PredicateCode` 引用 `Operands`；匹配器生成阶段消费。 |
+| `FastIselShouldIgnore` | `ImmLeaf` | `bit` | fast-isel 的过滤开关；dag-isel 不读它。 |
 | `PredicateName` | `Predicate` | `string` | `getSubtargetFeatureName` 生成用；`-gen-subtarget`/asm matcher 消费。 |
 
 **名字即 API**（不经过字段查找的硬编码名字）
@@ -505,12 +515,15 @@ source_texts = [(rel, strip_comments((root / rel).read_text()))
 | `Opcode` | `SDNode`, `SDNodeXForm` | ✓ | `global-isel`, `x86-fold-tables`, `x86-instr-mapping` | — | ⚠ |
 | `GISelPredicateCode` | `PatFrags` | ✓ | `global-isel` | — | — |
 | `ImmediateCode` | `PatFrags` | ✓ | `global-isel` | — | — |
+| `FastIselShouldIgnore` | `ImmLeaf` | — | `fast-isel` | — | — |
+| `IsAPFloat` | `ImmLeaf` | ✓ | `global-isel` | — | — |
+| `IsAPInt` | `ImmLeaf` | ✓ | `global-isel` | — | — |
 | `AssemblerCondDag` | `Predicate` | ✓ | `asm-writer` | — | — |
 | `AssemblerMatcherPredicate` | `Predicate` | ✓ | `asm-writer`, `compress-inst-emitter` | `helper:DecoderEmitter` | — |
 | `CondString` | `Predicate` | ✓ | `global-isel`, `global-isel-combiner`, `x86-instr-mapping` | — | — |
 | `PredicateName` | `Predicate` | — | `asm-matcher` | — | — |
 
-矩阵覆盖 61 个字段（共 183 个）。
+矩阵覆盖 64 个字段（共 186 个）。
 <!-- END: GENERATED PROJECTION MATRIX -->
 
 <!-- BEGIN: GENERATED DERIVATIONS -->
@@ -657,7 +670,7 @@ python3 "$T" --backend dag-isel --check "$DOC" \
   --usage "$W/llvm/lib/Target/RVMin/RVMinInstrInfo.td" \
           "$W/llvm/lib/Target/RVMin/RVMinRegisterInfo.td"
 
-# 3. 五后端矩阵与字段影响面
+# 3. 六后端矩阵与字段影响面
 python3 "$T" --status-matrix --usage \
   "$W/llvm/lib/Target/RVMin/RVMinRegisterInfo.td" \
   "$W/llvm/lib/Target/RVMin/RVMin.td"
@@ -671,16 +684,16 @@ python3 "$T" --effect PatternToMatch
 
 ```text
 $ python3 dsl-surface.py --backend dag-isel
-dag-isel: {'roots': 14, 'fields': 183, 'consumed': 134,
-           'unused': 49, 'stages': {'schema': 49, 'derive': 133,
+dag-isel: {'roots': 14, 'fields': 186, 'consumed': 136,
+           'unused': 50, 'stages': {'schema': 50, 'derive': 135,
            'project': 1, 'derive+project': 0}}
 
 $ python3 dsl-surface.py --backend dag-isel --check doc36.md --usage ...
-dsl-surface: OK (dag-isel: 134/183 fields consumed
-              [133 derive, 1 project, 0 both], 6 magic names, 7 derivations)
+dsl-surface: OK (dag-isel: 136/186 fields consumed
+              [135 derive, 1 project, 0 both], 6 magic names, 7 derivations)
 
 $ python3 dsl-surface.py --status-matrix --usage ...
-dsl-surface: OK (cross-backend status: 13 usages, 5 backends)
+dsl-surface: OK (cross-backend status: 13 usages, 6 backends)
 
 $ scripts/rvmin-verify-all.sh "$B/bin"
 ...
@@ -691,7 +704,7 @@ ALL GATES PASS (run rvmin-run.sh separately for the QEMU check)
 ## 常见坑
 
 1. **emitter 薄不等于契约小。** `DAGISelEmitter.cpp` 只有 1 个读取点，
-   但 source set 里的共享分析器贡献了 133 个 `derive` 字段。
+   但 source set 里的共享分析器贡献了 135 个 `derive` 字段。
 2. **`derive+project` 为 0 是正常的。** 不要以为每个后端都有“两边都读”
    的字段；dag-isel 的 emitter 把工作完全委托给分析器。
 3. **`--usage` 看不到 `def : Pat<...>`。** 它扫描字段赋值，不扫描记录定义；
@@ -702,8 +715,11 @@ ALL GATES PASS (run rvmin-run.sh separately for the QEMU check)
    `Intrinsic` 字段带进来，而 dag-isel 真正关心的是 pattern 树。
 6. **magic name 可能在共享代码。** 第 36 章已把扫描范围扩到整个 source set；
    只扫 emitter 会漏掉 `set` / `node` / `null_frag`。
-7. **183 个字段里 49 个是 schema。** 不是所有 `Instruction` 字段都参与
+7. **186 个字段里 50 个是 schema。** 不是所有 `Instruction` 字段都参与
    dag 选择；schema 是“可读但本后端不读”的完整声明面。
+8. **派生类字段不会自动进入 schema。** `collect_fields()` 只沿基类展开；
+   `ImmLeaf.FastIselShouldIgnore` 这类字段必须把派生类加进
+   `helper_classes`，否则注解和矩阵都会静默漏掉。
 
 ## 练习
 
@@ -712,7 +728,7 @@ ALL GATES PASS (run rvmin-run.sh separately for the QEMU check)
    最终排除。
 3. 给 `--usage` 增加 `def : Pat<...>` 检测：它应该输出 pattern 名、
    `PatternToMatch` 的根节点，还是整棵树？
-4. 用 `--effect PatternToMatch` 看五个后端的投影，解释为什么只有
+4. 用 `--effect PatternToMatch` 看六个后端的投影，解释为什么只有
    dag-isel 消费它。
 5. 用 `--effect TSFlags` 对比第 33 章：新增的 dag-isel 列是 `derive` 还是
    `—`？为什么？
@@ -721,10 +737,10 @@ ALL GATES PASS (run rvmin-run.sh separately for the QEMU check)
 
 | 文件 | 变更 |
 | --- | --- |
-| `llvm/utils/TableGen/dsl-surface.py` | 新增 `dag-isel` Backend；54 个注解；magic 扫描扩到 source set |
+| `llvm/utils/TableGen/dsl-surface.py` | 新增 `dag-isel` Backend；56 个注解；`ImmLeaf` helper；magic 扫描扩到 source set |
 | `llvm/lib/Target/RVMin/docs/36-dag-isel-dsl.md` | 新增：本章（四个生成块） |
-| `llvm/lib/Target/RVMin/docs/32-cross-backend-status.md` | 生成块升级为五后端 |
-| `llvm/lib/Target/RVMin/docs/33-field-effect.md` | 生成块升级为五后端 |
-| `llvm/lib/Target/RVMin/docs/34-asm-matcher-dsl.md` | 联动说明改为五后端 |
-| `llvm/lib/Target/RVMin/docs/README.md` | 新增第 36 章索引行；范围改为 29–36 |
+| `llvm/lib/Target/RVMin/docs/32-cross-backend-status.md` | 生成块升级为六后端 |
+| `llvm/lib/Target/RVMin/docs/33-field-effect.md` | 生成块升级为六后端 |
+| `llvm/lib/Target/RVMin/docs/34-asm-matcher-dsl.md` | 联动说明改为六后端 |
+| `llvm/lib/Target/RVMin/docs/README.md` | 新增第 36 章索引行；范围改为 29–36（第 37 章扩到 29–37） |
 | `llvm/lib/Target/RVMin/scripts/rvmin-verify-all.sh` | 第 7 项增加 dag-isel 校验 |

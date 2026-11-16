@@ -53,7 +53,7 @@ RVMin 是一个从零写的 LLVM 后端，只实现 RISC-V 最小整数集（RV3
 | 27 | [27-clang-run.md](27-clang-run.md) | clang 驱动链接与 QEMU 运行 | `rvmin-clang-run.sh` 6 组程序 | `rvmin-ch27` |
 | 28 | [28-acceptance.md](28-acceptance.md) | 第三篇验收：80 对象矩阵 | `rvmin-clang-matrix.sh` 80/80 | `rvmin-ch28` |
 
-### 实验课：TableGen DSL 语义公开化（29–36）
+### 实验课：TableGen DSL 语义公开化（29–37）
 
 | 章 | 文档 | 主题 | 本章门禁 | tag |
 | --- | --- | --- | --- | --- |
@@ -64,7 +64,8 @@ RVMin 是一个从零写的 LLVM 后端，只实现 RISC-V 最小整数集（RV3
 | 33 | [33-field-effect.md](33-field-effect.md) | 字段影响面：一个字段牵动哪些后端与读取点 | `--effect TSFlags --check` + 门禁 7/7 | `rvmin-ch33` |
 | 34 | [34-asm-matcher-dsl.md](34-asm-matcher-dsl.md) | 第四个后端 `-gen-asm-matcher`：非指令 schema 与 42 个 project 字段 | `--backend asm-matcher --check` + 门禁 7/7 | `rvmin-ch34` |
 | 35 | [35-upstream-contract.md](35-upstream-contract.md) | 契约前移：把方法论写进 `llvm/docs/TableGen/BackEnds.md` | 上游文档锚点/路径检查 + 门禁 7/7 | `rvmin-ch35` |
-| 36 | [36-dag-isel-dsl.md](36-dag-isel-dsl.md) | 第五个后端 `-gen-dag-isel`：pattern schema 与 133 个 derive 字段 | `--backend dag-isel --check` + 门禁 7/7 | `rvmin-ch36` |
+| 36 | [36-dag-isel-dsl.md](36-dag-isel-dsl.md) | 第五个后端 `-gen-dag-isel`：pattern schema 与 135 个 derive 字段 | `--backend dag-isel --check` + 门禁 7/7 | `rvmin-ch36` |
+| 37 | [37-fast-isel-dsl.md](37-fast-isel-dsl.md) | 第六个后端 `-gen-fast-isel`：派生类字段与 2 个 derive+project | `--backend fast-isel --check` + 门禁 7/7 | `rvmin-ch37` |
 
 > 勘误：`rvmin-ch28` 的 AC7 漏掉了“未支持扩展必须报错”，修复与审计记录见
 > [28-acceptance.md 的勘误节](28-acceptance.md#勘误ch28-审计)，tag `rvmin-ch28a`。

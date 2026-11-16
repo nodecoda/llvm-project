@@ -12,9 +12,9 @@
 #   5. e2e: 10 C programs x 4 -O levels x 2 feature sets, round-tripped;
 #   6. every CodeGen test at -O0..-O3 x {rv32i,+m} with -verify-machineinstrs
 #      (tests that expect a diagnostic, i.e. "RUN: not llc", are skipped);
-#   7. the TableGen DSL contracts for four backends, the cross-backend
+#   7. the TableGen DSL contracts for six backends, the cross-backend
 #      status matrix, the TSFlags field-effect report, and the upstream
-#      BackEnds.md section (chapters 29-36).
+#      BackEnds.md section (chapters 29-37).
 #
 # The QEMU run gate is separate (rvmin-run.sh) because it needs a linker and an
 # emulator, which the other checks do not.
@@ -109,6 +109,11 @@ python3 "$W/llvm/utils/TableGen/dsl-surface.py" --backend dag-isel --check \
   --usage "$W/llvm/lib/Target/RVMin/RVMinInstrInfo.td" \
           "$W/llvm/lib/Target/RVMin/RVMinRegisterInfo.td" \
   || fail "TableGen DSL contract (dag-isel)"
+python3 "$W/llvm/utils/TableGen/dsl-surface.py" --backend fast-isel --check \
+  "$W/llvm/lib/Target/RVMin/docs/37-fast-isel-dsl.md" \
+  --usage "$W/llvm/lib/Target/RVMin/RVMinInstrInfo.td" \
+          "$W/llvm/lib/Target/RVMin/RVMinRegisterInfo.td" \
+  || fail "TableGen DSL contract (fast-isel)"
 python3 - "$W" <<'PY' || fail "upstream BackEnds contract section"
 import pathlib
 import sys

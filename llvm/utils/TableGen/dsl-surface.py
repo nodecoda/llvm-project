@@ -80,6 +80,7 @@ MAIN_OUTPUTS = {
     "asm-writer": "<Target>GenAsmWriter.inc",
     "asm-matcher": "<Target>GenAsmMatcher.inc",
     "dag-isel": "<Target>GenDAGISel.inc",
+    "fast-isel": "<Target>GenFastISel.inc",
 }
 
 BACKENDS = {
@@ -304,7 +305,60 @@ BACKENDS = {
             "SDTypeConstraint", "SDTCisSameAs", "SDTCisVTSmallerThanOp",
             "SDTCisOpSmallerThanOp", "SDTCisEltOfVec", "SDTCisSubVecOfVec",
             "SDTCVecEltisVT", "SDTCisSameNumEltsAs", "SDTCisSameSizeAs",
-            "ValueType", "Predicate",
+            "ValueType", "Predicate", "ImmLeaf",
+        ),
+    ),
+    "fast-isel": Backend(
+        name="fast-isel",
+        emitter="llvm/utils/TableGen/FastISelEmitter.cpp",
+        sources=(
+            ("llvm/utils/TableGen/FastISelEmitter.cpp", "emitter"),
+            ("llvm/utils/TableGen/Common/CodeGenDAGPatterns.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenDAGPatterns.h", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenInstruction.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenInstruction.h", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenRegisters.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenRegisters.h", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenTarget.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenTarget.h", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenHwModes.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/CodeGenHwModes.h", "shared"),
+            ("llvm/utils/TableGen/Common/InfoByHwMode.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/InfoByHwMode.h", "shared"),
+            ("llvm/utils/TableGen/Common/SubtargetFeatureInfo.cpp", "shared"),
+            ("llvm/utils/TableGen/Common/SubtargetFeatureInfo.h", "shared"),
+            ("llvm/utils/TableGen/Basic/SDNodeProperties.cpp", "shared"),
+            ("llvm/utils/TableGen/Basic/SDNodeProperties.h", "shared"),
+        ),
+        td_files=(
+            "llvm/include/llvm/Target/Target.td",
+            "llvm/include/llvm/Target/TargetSelectionDAG.td",
+            "llvm/include/llvm/Target/TargetSubtarget.td",
+        ),
+        roots_from=(
+            "llvm/utils/TableGen/Common/CodeGenDAGPatterns.cpp",
+            "llvm/utils/TableGen/Common/CodeGenRegisters.cpp",
+        ),
+        extra_roots=(
+            ("Instruction", "llvm/utils/TableGen/Common/CodeGenTarget.cpp",
+             'getAllDerivedDefinitions("Instruction")'),
+            ("Register", "llvm/utils/TableGen/Common/CodeGenRegisters.cpp",
+             'getAllDerivedDefinitions("Register")'),
+            ("RegisterClass", "llvm/utils/TableGen/Common/CodeGenRegisters.cpp",
+             'getAllDerivedDefinitions("RegisterClass")'),
+            ("Operand", "llvm/utils/TableGen/InstrInfoEmitter.cpp",
+             'getAllDerivedDefinitions("Operand")'),
+            ("RegisterOperand", "llvm/utils/TableGen/InstrInfoEmitter.cpp",
+             'getAllDerivedDefinitions("RegisterOperand")'),
+        ),
+        helper_classes=(
+            "HwModeSelect", "RegInfoByHwMode", "RegInfo",
+            "SubRegRangeByHwMode", "SubRegRange", "DwarfRegAlias",
+            "RegClassByHwMode", "DAGOperand", "SDTypeProfile",
+            "SDTypeConstraint", "SDTCisSameAs", "SDTCisVTSmallerThanOp",
+            "SDTCisOpSmallerThanOp", "SDTCisEltOfVec", "SDTCisSubVecOfVec",
+            "SDTCVecEltisVT", "SDTCisSameNumEltsAs", "SDTCisSameSizeAs",
+            "ValueType", "Predicate", "ImmLeaf",
         ),
     ),
 }
@@ -516,6 +570,8 @@ DAG_ISEL_ANNOTATIONS = {
 DAG_ISEL_ANNOTATIONS.update({
     # `SDNode` also declares TSFlags, so the merged note must cover both.
     "TSFlags": "目标自定义标志位：`Instruction`/`RegisterClass` 写入 MCInstrDesc/寄存器类；`SDNode.TSFlags` 是 DAG 节点标志，参与匹配。",
+    "IsAPInt": "`ImmLeaf` 的立即数是否按 `APInt` 处理。",
+    "IsAPFloat": "`ImmLeaf` 的立即数是否按 `APFloat` 处理。",
     # --- Pattern -----------------------------------------------------------
     "PatternToMatch": "pattern 的源 dag；`TreePattern` 从它构建匹配树。",
     "ResultInstrs": "pattern 的结果指令列表；决定选中后生成哪些 MachineInstr。",
@@ -653,12 +709,18 @@ ASM_MATCHER_ANNOTATIONS.update({
     "AssemblyParserVariants": "汇编变体记录列表；决定 `Variant` 匹配循环。",
 })
 
+FAST_ISEL_ANNOTATIONS = dict(DAG_ISEL_ANNOTATIONS)
+FAST_ISEL_ANNOTATIONS.update({
+    "FastIselShouldIgnore": "为 true 时 fast-isel 跳过该立即数谓词的 pattern，不进入 lookup 表。",
+})
+
 ANNOTATIONS = {
     "register-info": REGISTER_INFO_ANNOTATIONS,
     "instr-info": INSTR_INFO_ANNOTATIONS,
     "asm-writer": ASM_WRITER_ANNOTATIONS,
     "asm-matcher": ASM_MATCHER_ANNOTATIONS,
     "dag-isel": DAG_ISEL_ANNOTATIONS,
+    "fast-isel": FAST_ISEL_ANNOTATIONS,
 }
 
 # Fields that are declared on a consumed class but intentionally not read by
@@ -745,6 +807,7 @@ DAG_ISEL_UNUSED_NOTES.update({
     "IsAtomicOrderingReleaseOrStronger": "预置原子序谓词；`PredicateExpanderDag` 生成检查。",
     "PredicateCodeUsesOperands": "允许 `PredicateCode` 引用 `Operands`；匹配器生成阶段消费。",
     "PredicateName": "`getSubtargetFeatureName` 生成用；`-gen-subtarget`/asm matcher 消费。",
+    "FastIselShouldIgnore": "fast-isel 的过滤开关；dag-isel 不读它。",
 })
 
 ASM_MATCHER_UNUSED_NOTES = dict(INSTR_INFO_UNUSED_NOTES)
@@ -764,6 +827,7 @@ UNUSED_NOTES = {
     "asm-writer": ASM_WRITER_UNUSED_NOTES,
     "asm-matcher": ASM_MATCHER_UNUSED_NOTES,
     "dag-isel": DAG_ISEL_UNUSED_NOTES,
+    "fast-isel": dict(DAG_ISEL_UNUSED_NOTES),
 }
 
 # Name-level contract: record names and generated identifiers that are not
@@ -824,6 +888,7 @@ MAGIC_NAMES = {
     "instr-info": (),
     "asm-writer": ASM_WRITER_MAGIC_NAMES,
     "asm-matcher": ASM_MATCHER_MAGIC_NAMES,
+    "fast-isel": (),
     "dag-isel": (
         ("set", r'"set"', "pattern 结果绑定节点；分隔匹配树与结果树。"),
         ("node", r'"node"', "未类型化叶子的占位节点。"),
@@ -987,6 +1052,20 @@ DERIVATIONS = {
     "asm-writer": ASM_WRITER_DERIVATIONS,
     "asm-matcher": ASM_MATCHER_DERIVATIONS,
     "dag-isel": DAG_ISEL_DERIVATIONS,
+    "fast-isel": (
+        ("pattern filtering", "ImmLeaf.FastIselShouldIgnore",
+         r'getValueAsBit\("FastIselShouldIgnore"\)',
+         "跳过显式标记的立即数谓词 fragment，只把简单 pattern 收进 lookup 表。"),
+        ("pattern collection", "Pattern",
+         r'getAllDerivedDefinitions\("Pattern"\)',
+         "与 dag-isel 共用同一套 `TreePattern` 构建。"),
+        ("type inference", "SDNode.TypeProfile",
+         r'TypeInfer::',
+         "按类型约束推断节点/操作数的 `ValueType`。"),
+        ("operand type resolution", "Operand.RegClass",
+         r'getValueAsDef\("RegClass"\)',
+         "把操作数解析到具体 `RegisterClass`。"),
+    ),
 }
 
 
