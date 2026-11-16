@@ -1,0 +1,191 @@
+OVERVIEW: llvm system compiler
+
+USAGE: llc [options] <input bitcode>
+
+OPTIONS:
+  -I <string>                                                           - include search path
+  -M <string>                                                           - InstPrinter options
+  -O <char>                                                             - Optimization level. [-O0, -O1, -O2, or -O3] (default = '-O2')
+  --addrsig                                                             - Emit an address-significance table
+  --align-loops=<uint>                                                  - Default alignment for loops
+  --allow-ginsert-as-artifact                                           - Allow G_INSERT to be considered an artifact. Hack around AMDGPU test infinite loops.
+  --arc-contract-use-objc-claim-rv                                      - Enable generation of calls to objc_claimAutoreleasedReturnValue
+  --asm-verbose                                                         - Add comments to directives.
+  --basic-block-address-map                                             - Emit the basic block address map section
+  --basic-block-sections=<all | <function list (file)> | labels | none> - Emit basic blocks into separate sections
+  --call-graph-section                                                  - Emit a call graph section
+  --code-model=<value>                                                  - Choose code model
+    =tiny                                                               -   Tiny code model
+    =small                                                              -   Small code model
+    =kernel                                                             -   Kernel code model
+    =medium                                                             -   Medium code model
+    =large                                                              -   Large code model
+  --color                                                               - Use colors in output (default=autodetect)
+  --ctx-prof-include-empty                                              - Also write profiles with all-zero counters. Intended for testing/debugging.
+  --data-sections                                                       - Emit data into separate sections
+  --debug-entry-values                                                  - Enable debug info for the debug entry values.
+  --debugger-tune=<value>                                               - Tune debug info for a particular debugger
+    =gdb                                                                -   gdb
+    =lldb                                                               -   lldb
+    =dbx                                                                -   dbx
+    =sce                                                                -   SCE targets (e.g. PS4)
+  --debugify-atoms                                                      - 
+  --debugify-func-limit=<ulong>                                         - Set max number of processed functions per pass.
+  --debugify-level=<value>                                              - Kind of debug info to add
+    =locations                                                          -   Locations only
+    =location+variables                                                 -   Locations and Variables
+  --debugify-quiet                                                      - Suppress verbose debugify output
+  --denormal-fp-math=<value>                                            - Select which denormal numbers the code is permitted to require
+    =ieee                                                               -   IEEE 754 denormal numbers
+    =preserve-sign                                                      -   the sign of a  flushed-to-zero number is preserved in the sign of 0
+    =positive-zero                                                      -   denormals are flushed to positive zero
+    =dynamic                                                            -   denormals have unknown treatment
+  --denormal-fp-math-f32=<value>                                        - Select which denormal numbers the code is permitted to require for float
+    =ieee                                                               -   IEEE 754 denormal numbers
+    =preserve-sign                                                      -   the sign of a  flushed-to-zero number is preserved in the sign of 0
+    =positive-zero                                                      -   denormals are flushed to positive zero
+    =dynamic                                                            -   denormals have unknown treatment
+  --disable-simplify-libcalls                                           - Disable simplify-libcalls
+  --disable-tail-calls                                                  - Never emit tail calls
+  --emit-bb-hash                                                        - Emit the hash of basic block in the SHT_LLVM_BB_ADDR_MAP section.
+  --emit-call-site-info                                                 - Emit call site debug information, if debug information is enabled.
+  --emulated-tls                                                        - Use emulated TLS model
+  --enable-cse-in-ir-translator                                         - Should enable CSE in ir-translator
+  --enable-cse-in-legalizer                                             - Should enable CSE in Legalizer
+  --enable-jmc-instrument                                               - Instrument functions with a call to __CheckForDebuggerJustMyCode
+  --enable-name-compression                                             - Enable name/filename string compression
+  --enable-new-pm                                                       - Enable the new pass manager
+  --enable-profcheck-in-pipeline                                        - Adds profile verification to the pipeline, erroring if profile information is dropped.
+  --enable-split-loopiv-heuristic                                       - Enable loop iv regalloc heuristic
+  --enable-tlsdesc                                                      - Enable the use of TLS Descriptors
+  --enable-vtable-profile-use                                           - If ThinLTO and WPD is enabled and this option is true, vtable profiles will be used by ICP pass for more efficient indirect call sequence. If false, type profiles won't be used.
+  --enable-vtable-value-profiling                                       - If true, the virtual table address will be instrumented to know the types of a C++ pointer. The information is used in indirect call promotion to do selective vtable-based comparison.
+  --exception-model=<value>                                             - exception model
+    =default                                                            -   default exception handling model
+    =none                                                               -   no exception handling
+    =dwarf                                                              -   DWARF-like CFI based exception handling
+    =sjlj                                                               -   SjLj exception handling
+    =arm                                                                -   ARM EHABI exceptions
+    =wineh                                                              -   Windows exception model
+    =wasm                                                               -   WebAssembly exception handling
+    =emscripten                                                         -   Emscripten JavaScript-based exception handling
+  --experimental-debug-variable-locations                               - Use experimental new value-tracking variable locations
+  --filetype=<value>                                                    - Choose a file type (not all types are supported by all targets):
+    =asm                                                                -   Emit an assembly ('.s') file
+    =obj                                                                -   Emit a native object ('.o') file
+    =null                                                               -   Emit nothing, for performance testing
+  --float-abi=<value>                                                   - Choose float ABI type
+    =default                                                            -   Target default float ABI type
+    =soft                                                               -   Soft float ABI (implied by -soft-float)
+    =hard                                                               -   Hard float ABI (uses FP registers)
+  --force-dwarf-frame-section                                           - Always emit a debug frame section.
+  --frame-pointer=<value>                                               - Specify frame pointer elimination optimization
+    =all                                                                -   Disable frame pointer elimination
+    =non-leaf                                                           -   Disable frame pointer elimination for non-leaf frame but reserve the register in leaf functions
+    =non-leaf-no-reserve                                                -   Disable frame pointer elimination for non-leaf frame
+    =reserved                                                           -   Enable frame pointer elimination, but reserve the frame pointer register
+    =none                                                               -   Enable frame pointer elimination
+  --fs-profile-debug-bw-threshold=<uint>                                - Only show debug message if the source branch weight is greater  than this value.
+  --fs-profile-debug-prob-diff-threshold=<uint>                         - Only show debug message if the branch probability is greater than this value (in percentage).
+  --function-sections                                                   - Emit functions into separate sections
+  --generate-merged-base-profiles                                       - When generating nested context-sensitive profiles, always generate extra base profile for function with all its context profiles merged into it.
+  --help                                                                - Display available options (--help-hidden for more)
+  --ignore-xcoff-visibility                                             - Not emit the visibility attribute for asm in AIX OS or give all symbols 'unspecified' visibility in XCOFF object file
+  --instrumentor-read-config-files=<string>                             - Read the instrumentor configuration from the specified JSON files (comma separated)
+  --internalize-public-api-file=<filename>                              - A file containing list of symbol names to preserve
+  --internalize-public-api-list=<list>                                  - A list of symbol names to preserve
+  --large-data-threshold=<ulong>                                        - Choose large data threshold for x86_64 medium code model
+  --load-pass-plugin=<string>                                           - Load plugin library
+  --march=<string>                                                      - Architecture to generate code for (see --version)
+  --mattr=<a1,+a2,-a3,...>                                              - Target specific attributes (-mattr=help for details)
+  --mcpu=<cpu-name>                                                     - Target a specific cpu type (-mcpu=help for details)
+  --mir-strip-debugify-only                                             - Should mir-strip-debug only strip debug info from debugified modules by default
+  --mir2vec-common-operand-weight=<number>                              - Weight for common operand embeddings
+  --mir2vec-kind=<value>                                                - MIR2Vec embedding kind
+    =symbolic                                                           -   Generate symbolic embeddings for MIR
+  --mir2vec-opc-weight=<number>                                         - Weight for machine opcode embeddings
+  --mir2vec-print-all-vocab-entries                                     - Print all vocabulary entries including zero embeddings
+  --mir2vec-reg-operand-weight=<number>                                 - Weight for register operand embeddings
+  --mir2vec-vocab-path=<string>                                         - Path to the vocabulary file for MIR2Vec
+  --misexpect-tolerance=<uint>                                          - Prevents emitting diagnostics when profile counts are within N% of the threshold..
+  --mlgo-model=<value>                                                  - Select the MLGO model to execute:
+    =default                                                            -   Use standard heuristic
+    =_test_inc                                                          -   Use the _test_inc MLGO model
+  --ms-secure-hotpatch-functions-file=<filename>                        - A file containing list of mangled function names to mark for Windows Secure Hot-Patching
+  --ms-secure-hotpatch-functions-list=<list>                            - A list of mangled function names to mark for Windows Secure Hot-Patching
+  --mtriple=<string>                                                    - Override target triple for module
+  --mtune=<tune-cpu-name>                                               - Tune for a specific CPU microarchitecture (-mtune=help for details)
+  --mxcoff-roptr                                                        - When set to true, const objects with relocatable address values are put into the RO data section.
+  --no-discriminators                                                   - Disable generation of discriminator information.
+  --nozero-initialized-in-bss                                           - Don't place zero-initialized symbols into bss section
+  -o <filename>                                                         - Output filename
+  --object-size-offset-visitor-max-visit-instructions=<uint>            - Maximum number of instructions for ObjectSizeOffsetVisitor to look at
+  --output-asm-variant=<uint>                                           - Syntax variant to use for output printing
+  --partition-static-data-sections                                      - Partition data sections using profile information.
+  --pass-remarks-filter=<regex>                                         - Only record optimization remarks from passes whose names match the given regular expression
+  --pass-remarks-format=<format>                                        - The format used for serializing remarks (default: YAML)
+  --pass-remarks-output=<filename>                                      - Output filename for pass remarks
+  --passes=<string>                                                     - A textual description of the pass pipeline. To have analysis passes available before a certain pass, add 'require<foo-analysis>'.
+  --plugin-arg=<plugin>,<arg>                                           - Pass <arg> to the pass plugin named <plugin>
+  --profcheck-annotate-select                                           - Also inject (if missing) and verify MD_prof for `select` instructions
+  --profcheck-default-function-entry-count=<long>                       - 
+  --profcheck-default-select-false-weight=<uint>                        - When annotating `select` instructions, this value will be used for the second ('false') case.
+  --profcheck-default-select-true-weight=<uint>                         - When annotating `select` instructions, this value will be used for the first ('true') case.
+  --profcheck-weights-for-test                                          - Generate weights with small values for tests.
+  --regalloc-mlgo-model=<value>                                         - Select the MLGO model to execute for register allocation:
+    =default                                                            -   Use standard heuristic
+    =_test_inc                                                          -   Use the _test_inc MLGO model
+  --relocation-model=<value>                                            - Choose relocation model
+    =static                                                             -   Non-relocatable code
+    =pic                                                                -   Fully relocatable, position independent code
+    =dynamic-no-pic                                                     -   Relocatable external references, non-relocatable code
+    =ropi                                                               -   Code and read-only data relocatable, accessed PC-relative
+    =rwpi                                                               -   Read-write data relocatable, accessed relative to static base
+    =ropi-rwpi                                                          -   Combination of ropi and rwpi
+  --run-pass=<pass-name>                                                - Run compiler only for specified passes (comma separated list)
+  --sample-profile-check-record-coverage=<N>                            - Emit a warning if less than N% of records in the input profile are matched to the IR.
+  --sample-profile-check-sample-coverage=<N>                            - Emit a warning if less than N% of samples in the input profile are matched to the IR.
+  --sample-profile-max-propagate-iterations=<uint>                      - Maximum number of iterations to go through when propagating sample block/edge weights through the CFG.
+  --save-stats                                                          - Save LLVM statistics to a file in the current directory(`-save-stats`/`-save-stats=cwd`) or the directory of the outputfile (`-save-stats=obj`). (default: cwd)
+  --save-stats=<value>                                                  - Save LLVM statistics to a file in the current directory(`-save-stats`/`-save-stats=cwd`) or the directory of the outputfile (`-save-stats=obj`). (default: cwd)
+    =cwd                                                                -   Save to the current working directory
+    =obj                                                                -   Save to the output file directory
+  --separate-named-sections                                             - Use separate unique sections for named sections
+  --split-dwarf-file=<string>                                           - Specify the name of the .dwo file to encode in the DWARF output
+  --split-dwarf-output=<filename>                                       - .dwo output filename
+  --stack-size-section                                                  - Emit a section containing stack size metadata
+  --stack-symbol-ordering                                               - Order local stack symbols.
+  --stackrealign                                                        - Force align the stack to the minimum alignment
+  --strict-dwarf                                                        - use strict dwarf
+  --sve-tail-folding=<string>                                           - Control the use of vectorisation using tail-folding for SVE where the option is specified in the form (Initial)[+(Flag1|Flag2|...)]:
+                                                                          disabled      (Initial) No loop types will vectorize using tail-folding
+                                                                          default       (Initial) Uses the default tail-folding settings for the target CPU
+                                                                          all           (Initial) All legal loop types will vectorize using tail-folding
+                                                                          simple        (Initial) Use tail-folding for simple loops (not reductions or recurrences)
+                                                                          reductions    Use tail-folding for loops containing reductions
+                                                                          noreductions  Inverse of above
+                                                                          recurrences   Use tail-folding for loops containing fixed order recurrences
+                                                                          norecurrences Inverse of above
+                                                                          reverse       Use tail-folding for loops requiring reversed predicates
+                                                                          noreverse     Inverse of above
+  --swift-async-fp=<value>                                              - Determine when the Swift async frame pointer should be set
+    =auto                                                               -   Determine based on deployment target
+    =always                                                             -   Always set the bit
+    =never                                                              -   Never set the bit
+  --tailcallopt                                                         - Turn fastcc calls into tail calls by (potentially) changing ABI.
+  --time-trace                                                          - Record time trace
+  --time-trace-file=<filename>                                          - Specify time trace file destination
+  --tls-size=<uint>                                                     - Bit size of immediate TLS offsets
+  --unique-basic-block-section-names                                    - Give unique names to every basic block section
+  --unique-section-names                                                - Give unique names to every section
+  --use-ctors                                                           - Use .ctors instead of .init_array.
+  --verify-each                                                         - Verify after each transform
+  --verify-legalizer-debug-locs=<value>                                 - Verify that debug locations are handled
+    =none                                                               -   No verification
+    =legalizations                                                      -   Verify legalizations
+    =legalizations+artifactcombiners                                    -   Verify legalizations and artifact combines
+  --verify-region-info                                                  - Verify region info (time consuming)
+  --version                                                             - Display the version of this program
+  -x <string>                                                           - Input language ('ir' or 'mir')
+  --xcoff-traceback-table                                               - Emit the XCOFF traceback table
+  --xray-function-index                                                 - Emit xray_fn_idx section
