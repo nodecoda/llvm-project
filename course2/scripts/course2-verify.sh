@@ -41,6 +41,11 @@
 #   * --trace visits only those addresses, its line count equals the executed
 #     instruction count, and each trace line matches --disas at that address.
 #
+# Chapter 07 checks:
+#   * a scripted session's transcript is byte-identical to the golden file;
+#   * b resolves through .symtab, a breakpoint on the current pc stops before
+#     the instruction runs, and `s 2` advances exactly two instructions.
+#
 set -euo pipefail
 
 BIN=${1:?usage: course2-verify.sh <llvm-bin-dir> <rsim-binary>}
@@ -462,6 +467,28 @@ if int(m.group(1)) != len(visited):
     sys.exit("trace has %d lines, the CPU executed %s instructions"
              % (len(visited), m.group(1)))
 PY
+CHECKS=$((CHECKS + 1))
+
+# --- Chapter 07: breakpoints, stepping and scripted debugging -----------
+
+"$RSIM" --debug "$TMP/demo" --script "$COURSE2/tests/debug-session.txt" \
+  > "$TMP/debug.transcript" 2> "$TMP/debug.err" \
+  || fail "debug session failed: $(cat "$TMP/debug.err")"
+cmp -s "$TMP/debug.transcript" "$COURSE2/tests/debug-session.golden" \
+  || fail "debug transcript differs from tests/debug-session.golden"
+CHECKS=$((CHECKS + 1))
+
+# A breakpoint set on the current pc must fire before the instruction runs;
+# resuming from a reported stop must step over it exactly once.
+printf 'b _start\nc\ns 2\nq\n' > "$TMP/debug2.txt"
+"$RSIM" --debug "$TMP/demo" --script "$TMP/debug2.txt" \
+  > "$TMP/debug2.out" 2> /dev/null || fail "second debug session failed"
+grep -q '^breakpoint 0: 0x00010000 <_start>$' "$TMP/debug2.out" \
+  || fail "b _start did not resolve through .symtab"
+grep -q '^stopped at 0x00010000 <_start>$' "$TMP/debug2.out" \
+  || fail "c did not stop on a breakpoint set at the current pc"
+grep -q '^stopped at 0x00010008 <_start+8>$' "$TMP/debug2.out" \
+  || fail "s 2 did not advance exactly two instructions"
 CHECKS=$((CHECKS + 1))
 
 echo "$CHECKS checks"

@@ -12,7 +12,7 @@
 | 04 | [04-control-flow.md](04-control-flow.md) | 控制流与精确异常 | `jalr` LSB 清零、`epc` 与 `llvm-objdump` 对齐 | `rsim-ch04` |
 | 05 | [05-syscalls.md](05-syscalls.md) | 系统调用与运行时 | 5 个程序与 QEMU 的 stdout/退出码全等 | `rsim-ch05` |
 | 06 | [06-trace-disasm.md](06-trace-disasm.md) | 跟踪与自反汇编 | trace ⊆ `llvm-objdump -d`；条数 == 执行数 | `rsim-ch06` |
-| 07 | （规划中） | 断点、单步与脚本调试 | 脚本 transcript 与 golden 一致 | `rsim-ch07` |
+| 07 | [07-debugger.md](07-debugger.md) | 断点、单步与脚本调试 | transcript 与 golden 逐字节一致 | `rsim-ch07` |
 | 08 | （规划中） | 陷阱模型与 ebreak | `mcause=2`、`mepc` 正确 | `rsim-ch08` |
 | 09 | （规划中） | M/Zbb/A 可选指令 | 与 QEMU 差分一致 | `rsim-ch09` |
 | 10 | （规划中） | 指令统计与“性能” | `jalr` 计数 ≥ 1e6 | `rsim-ch10` |

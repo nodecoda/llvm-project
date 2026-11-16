@@ -1,9 +1,7 @@
-//===-- main.cpp - rsim entry point, chapter 06 -----------------*- C++ -*-===//
+//===-- main.cpp - rsim entry point, chapter 07 -----------------*- C++ -*-===//
 //
-// Chapter 06 adds two views of the same decode table: `--disas` walks the
-// executable segments of an image, and `--trace` prints every instruction the
-// CPU actually executes.  Both use format(), so a trace line and a disassembly
-// line for the same address are identical by construction.
+// Chapter 07 adds `--debug`: a small scriptable debugger.  `--trace` and
+// `--disas` are still the batch views of the same information.
 //
 // Exit codes: 0 success, 2 usage, 125 load error, 126 trap, otherwise the
 // guest's own exit status.
@@ -11,6 +9,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "cpu.h"
+#include "debugger.h"
 #include "decode.h"
 #include "elf.h"
 #include "memory.h"
@@ -21,21 +20,23 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <vector>
 
 namespace {
 
-constexpr const char *kVersion = "0.6";
+constexpr const char *kVersion = "0.7";
 constexpr int kExitUsage = 2;
 constexpr int kExitLoadError = 125;
 constexpr int kExitTrap = 126;
 
-enum class Mode { Reset, Run, DumpElf, DumpMem, DecodeHex, Disas, SelfTest };
+enum class Mode { Reset, Run, Debug, DumpElf, DumpMem, DecodeHex, Disas, SelfTest };
 
 struct Options {
   Mode mode = Mode::Reset;
   std::string path;
+  std::string script;
   uint32_t addr = 0;
   uint64_t len = 0;
   uint64_t max_steps = 10000000;
@@ -130,6 +131,7 @@ void usage() {
                        "       rsim --decode-hex <file>\n"
                        "       rsim --disas <elf>\n"
                        "       rsim --run <elf> [--max-steps <n>] [--trace]\n"
+                       "       rsim --debug <elf> [--script <file>]\n"
                        "       rsim <elf>\n");
 }
 
@@ -150,6 +152,17 @@ bool parse(int argc, char **argv, Options &opt) {
       if (!p)
         return false;
       opt.path = p;
+    } else if (arg == "--debug") {
+      opt.mode = Mode::Debug;
+      const char *p = next("--debug");
+      if (!p)
+        return false;
+      opt.path = p;
+    } else if (arg == "--script") {
+      const char *p = next("--script");
+      if (!p)
+        return false;
+      opt.script = p;
     } else if (arg == "--dump-elf") {
       opt.mode = Mode::DumpElf;
       const char *p = next("--dump-elf");
@@ -204,7 +217,7 @@ bool parse(int argc, char **argv, Options &opt) {
 
 int main(int argc, char **argv) {
   if (argc == 2 && std::strcmp(argv[1], "--version") == 0) {
-    std::printf("rsim %s (chapter 06)\n", kVersion);
+    std::printf("rsim %s (chapter 07)\n", kVersion);
     return 0;
   }
 
@@ -253,6 +266,22 @@ int main(int argc, char **argv) {
                   opt.path.c_str(), cpu.pc, cpu.sp(), image.segments.size(),
                   memory.mappedPages());
       return 0;
+    }
+
+    if (opt.mode == Mode::Debug) {
+      std::ifstream script;
+      std::istream *input = &std::cin;
+      if (!opt.script.empty()) {
+        script.open(opt.script);
+        if (!script) {
+          std::fprintf(stderr, "rsim: %s: cannot open script\n",
+                       opt.script.c_str());
+          return kExitUsage;
+        }
+        input = &script;
+      }
+      rsim::Debugger debugger(cpu, memory, image, opt.max_steps);
+      return debugger.run(*input, !opt.script.empty());
     }
 
     if (opt.trace)

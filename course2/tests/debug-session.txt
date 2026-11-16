@@ -1,0 +1,6 @@
+b main
+c
+s
+r
+x/4xw 0x7ffff000
+q

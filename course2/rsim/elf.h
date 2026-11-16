@@ -29,9 +29,17 @@ struct Segment {
   std::vector<uint8_t> data; // exactly filesz bytes
 };
 
+struct Symbol {
+  std::string name;
+  uint32_t value = 0;
+  uint32_t size = 0;
+  uint8_t type = 0; // STT_FUNC = 2, STT_OBJECT = 1
+};
+
 struct Image {
   uint32_t entry = 0;
   std::vector<Segment> segments;
+  std::vector<Symbol> symbols; // from .symtab, chapter 07
 };
 
 /// Parse `path`, or throw ElfError with a human-readable reason.
