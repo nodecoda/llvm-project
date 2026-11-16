@@ -27,7 +27,7 @@
 
 namespace {
 
-constexpr const char *kVersion = "0.10";
+constexpr const char *kVersion = "0.11";
 constexpr int kExitUsage = 2;
 constexpr int kExitLoadError = 125;
 constexpr int kExitTrap = 126;
@@ -300,7 +300,7 @@ bool parse(int argc, char **argv, Options &opt) {
 
 int main(int argc, char **argv) {
   if (argc == 2 && std::strcmp(argv[1], "--version") == 0) {
-    std::printf("rsim %s (chapter 10)\n", kVersion);
+    std::printf("rsim %s (chapter 11)\n", kVersion);
     return 0;
   }
 

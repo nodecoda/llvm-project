@@ -166,10 +166,32 @@ compare() {
 build_program demo "$RT/demo.c" 2
 build_program muldiv_m "$RT/muldiv.c" 2 +m
 build_program large_frame "$RT/large-frame.c" 2
+build_program large_frame_o0 "$RT/large-frame.c" 0
 build_program tail "$RT/tail.c" 2
 build_program switch "$RT/switch.c" 2
 
-for name in demo muldiv_m large_frame tail switch; do
+# The A-extension program needs -march=rv32ia at the clang front end and
+# -mattr=+a everywhere else; build_program hard-codes rv32i.
+build_atomics() {
+  local name=atomics
+  "$CC" --target="$TRIPLE" -march=rv32ia -mabi=ilp32 -O2 -ffreestanding \
+    -fno-builtin -S -emit-llvm "$RT/atomics.c" -o "$TMP/$name.ll" \
+    || fail "clang could not compile atomics.c"
+  "$LLC" -march=rvmin -mtriple="$TRIPLE" -mattr=+a -O2 "$TMP/$name.ll" \
+    -o "$TMP/$name.s" || fail "llc could not select atomics.c"
+  "$MC" -triple=rvmin -mattr=+a -filetype=obj "$TMP/$name.s" -o "$TMP/$name.o" \
+    || fail "llvm-mc rejected atomics.c"
+  "$MC" -triple=rvmin -mattr=+a -filetype=obj "$RT/rvmin-rt.S" \
+    -o "$TMP/rt-$name.o" || fail "llvm-mc rejected rvmin-rt.S for atomics"
+  "$MC" -triple=rvmin -mattr=+a -filetype=obj "$RT/start.S" \
+    -o "$TMP/start-$name.o" || fail "llvm-mc rejected start.S for atomics"
+  "$LD" -m elf32lriscv -T "$RT/link.ld" -o "$TMP/$name" \
+    "$TMP/start-$name.o" "$TMP/$name.o" "$TMP/rt-$name.o" \
+    || fail "ld.lld could not link atomics"
+}
+build_atomics
+
+for name in demo muldiv_m large_frame large_frame_o0 tail switch atomics; do
   compare "$TMP/$name"
 done
 
@@ -297,11 +319,13 @@ CORPUS="$COURSE2/../llvm/lib/Target/RVMin/scripts"
 decode_corpus rvmin-encoding-corpus
 decode_corpus rvmin-m-encoding-corpus +m
 
-for name in demo muldiv_m large_frame switch tail; do
+for name in demo muldiv_m large_frame large_frame_o0 switch tail atomics; do
   max_steps=10000000
   [[ "$name" == tail ]] && max_steps=50000000
-  "$RSIM" --run "$TMP/$name" --max-steps "$max_steps" > "$TMP/$name.run" 2>&1 \
-    || fail "$name did not halt under rsim"
+  spec=rv32im
+  [[ "$name" == atomics ]] && spec=rv32i_a
+  "$RSIM" --run "$TMP/$name" --max-steps "$max_steps" --isa="$spec" \
+    > "$TMP/$name.run" 2>&1 || fail "$name did not halt under rsim"
   grep -q 't0=0x00000000' "$TMP/$name.run" \
     || fail "$name: main() did not return 0 in t0 ($(cat "$TMP/$name.run"))"
   CHECKS=$((CHECKS + 1))
@@ -361,9 +385,11 @@ QEMU=${QEMU:-qemu-riscv32-static}
 command -v "$QEMU" > /dev/null \
   || fail "chapter 05 needs QEMU ($QEMU) for the differential test"
 
-for name in demo muldiv_m large_frame switch tail; do
+for name in demo muldiv_m large_frame large_frame_o0 switch tail atomics; do
+  spec=rv32im
+  [[ "$name" == atomics ]] && spec=rv32i_a
   set +e
-  "$RSIM" --run "$TMP/$name" --max-steps 50000000 \
+  "$RSIM" --run "$TMP/$name" --max-steps 50000000 --isa="$spec" \
     > "$TMP/$name.rsim.out" 2> "$TMP/$name.rsim.err"
   rsim_rc=$?
   "$QEMU" "$TMP/$name" > "$TMP/$name.qemu.out" 2> /dev/null
