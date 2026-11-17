@@ -1,8 +1,9 @@
 # RVMin: a from-scratch RV32I backend
 
 RVMin 是一个教学用的 LLVM 后端：不写前端、不复用 `llvm/lib/Target/RISCV` 的代码，
-以 RISC-V 最小指令集（RV32I）为基线，逐章加入 M/A/Zbb/Zbs 整数扩展与 F/D
-浮点扩展。前端使用 clang 产出 LLVM IR，后端通过 `llc -march=rvmin` 选择。
+以 RISC-V 最小指令集（RV32I）为基线，逐章加入 M/A/Zbb/Zbs 整数扩展、F/D
+浮点、C 压缩、Zicsr/Zifencei，以及第 47 章起的 Zve32x 向量子集。前端使用
+clang 产出 LLVM IR，后端通过 `llc -march=rvmin` 选择。
 
 ## 快速开始
 
@@ -114,6 +115,7 @@ git checkout rvmin-ch16     # 第 16 章（大栈帧）结束
 | 章 | 主题 | 状态 |
 | --- | --- | --- |
 | 46 | [Zicsr 与 Zifencei](docs/46-zicsr-zifencei.md) | 完成 |
+| 47 | [V 的 MC 层（Zve32x 子集）](docs/47-v-extension-mc.md) | 完成 |
 
 ## 当前限制（上篇结束时，第 14 章）
 

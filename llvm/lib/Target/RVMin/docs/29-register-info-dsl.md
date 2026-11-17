@@ -324,8 +324,9 @@ SetTheory，`RegisterTuples` 会合成全新 Record，`RegisterClass` 可能由�
 
 ### RVMin 的真实用法对照
 
-RVMin 是最小实例：32 个寄存器、一个 `GPR`、一个 `CalleeSavedRegs`。
-它的 `.td` 只用到 7 个 `let`/`field`。脚本把它们逐个映射到契约：
+RVMin 是一个小但完整的实例：32 个整数寄存器（`GPR`）、32 个浮点寄存器
+（`FPR32`/`FPR64`）、第 47 章新增的 32 个向量寄存器（`VR`），以及压缩指令
+用的 `GPRC`/`SP` 子集类。脚本把 `.td` 里的每个 `let`/`field` 逐个映射到契约：
 
 <!-- BEGIN: GENERATED TD USAGE -->
 
@@ -336,21 +337,25 @@ RVMin 是最小实例：32 个寄存器、一个 `GPR`、一个 `CalleeSavedRegs
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:18` | `HWEncoding` | 消费（project） |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:19` | `AltNames` | asm writer / asm matcher |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:20` | `DwarfNumbers` | 消费（project） |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:25` | `RegAltNameIndices` | asm writer / asm matcher |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:79` | `DecoderMethod` | decoder |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:107` | `Namespace` | 消费（derive+project） |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:108` | `HWEncoding` | 消费（project） |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:109` | `AltNames` | asm writer / asm matcher |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:110` | `DwarfNumbers` | 消费（project） |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:113` | `RegAltNameIndices` | asm writer / asm matcher |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:168` | `DecoderMethod` | decoder |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:179` | `DecoderMethod` | decoder |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:186` | `DecoderMethod` | decoder |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:191` | `DecoderMethod` | decoder |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:29` | `Namespace` | 消费（derive+project） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:30` | `HWEncoding` | 消费（project） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:35` | `RegAltNameIndices` | asm writer / asm matcher |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:115` | `DecoderMethod` | decoder |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:135` | `DecoderMethod` | decoder |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:163` | `Namespace` | 消费（derive+project） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:164` | `HWEncoding` | 消费（project） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:165` | `AltNames` | asm writer / asm matcher |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:166` | `DwarfNumbers` | 消费（project） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:169` | `RegAltNameIndices` | asm writer / asm matcher |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:224` | `DecoderMethod` | decoder |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:235` | `DecoderMethod` | decoder |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:242` | `DecoderMethod` | decoder |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:247` | `DecoderMethod` | decoder |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:16` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:106` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:28` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:162` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
 
-共 18 处使用；契约外 0 处。
+共 22 处使用；契约外 0 处。
 <!-- END: GENERATED TD USAGE -->
 
 这张表就是本章最直接的结论：

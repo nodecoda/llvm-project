@@ -20,6 +20,16 @@ class RVMinReg<bits<5> num, string n, list<string> alt = []> : Register<n> {
   let DwarfNumbers = [num];
 }
 
+// Chapter 47: the vector register file.  Zve32x has 32 vector registers and
+// a fixed VLEN of 128 bits in this course, so one register holds a <4 x i32>.
+// The registers are not part of the scalar ABI; code generation initially
+// rejects vector arguments and returns (chapter 48).
+class RVMinVReg<bits<5> num, string n> : Register<n> {
+  field bits<5> Num = num;
+  let Namespace = "RVMin";
+  let HWEncoding{4-0} = num;
+}
+
 // RegAltNameIndices maps every register's AltNames list onto the index above.
 // RVMin only exposes one alternate name per register: its ABI name.
 let RegAltNameIndices = [ABIRegAltName] in {
@@ -58,6 +68,52 @@ def X30 : RVMinReg<30, "x30", ["t5"]>;
 def X31 : RVMinReg<31, "x31", ["t6"]>;
 
 } // RegAltNameIndices = [ABIRegAltName]
+
+// Chapter 47: v0-v31.  v0 is reserved as the mask register in the full V
+// extension; this subset never emits a mask, so all 32 registers are usable
+// as ordinary vector values.
+def V0  : RVMinVReg<0,  "v0">;
+def V1  : RVMinVReg<1,  "v1">;
+def V2  : RVMinVReg<2,  "v2">;
+def V3  : RVMinVReg<3,  "v3">;
+def V4  : RVMinVReg<4,  "v4">;
+def V5  : RVMinVReg<5,  "v5">;
+def V6  : RVMinVReg<6,  "v6">;
+def V7  : RVMinVReg<7,  "v7">;
+def V8  : RVMinVReg<8,  "v8">;
+def V9  : RVMinVReg<9,  "v9">;
+def V10 : RVMinVReg<10, "v10">;
+def V11 : RVMinVReg<11, "v11">;
+def V12 : RVMinVReg<12, "v12">;
+def V13 : RVMinVReg<13, "v13">;
+def V14 : RVMinVReg<14, "v14">;
+def V15 : RVMinVReg<15, "v15">;
+def V16 : RVMinVReg<16, "v16">;
+def V17 : RVMinVReg<17, "v17">;
+def V18 : RVMinVReg<18, "v18">;
+def V19 : RVMinVReg<19, "v19">;
+def V20 : RVMinVReg<20, "v20">;
+def V21 : RVMinVReg<21, "v21">;
+def V22 : RVMinVReg<22, "v22">;
+def V23 : RVMinVReg<23, "v23">;
+def V24 : RVMinVReg<24, "v24">;
+def V25 : RVMinVReg<25, "v25">;
+def V26 : RVMinVReg<26, "v26">;
+def V27 : RVMinVReg<27, "v27">;
+def V28 : RVMinVReg<28, "v28">;
+def V29 : RVMinVReg<29, "v29">;
+def V30 : RVMinVReg<30, "v30">;
+def V31 : RVMinVReg<31, "v31">;
+
+// Chapter 47: the vector register class.  VLEN is fixed at 128 bits, so the
+// class type is v4i32.  Allocation starts at v8 and wraps back to v0-v7, which
+// keeps v0 (the mask register in full RVV) out of the common path and matches
+// the upstream RISC-V allocation order.
+def VR : RegisterClass<"RVMin", [v4i32], 128,
+  (add (sequence "V%u", 8, 31),
+       (sequence "V%u", 0, 7))> {
+  let DecoderMethod = "DecodeVRRegisterClass";
+}
 
 // Allocation order follows the ILP32 ABI: caller-saved argument/temporary
 // registers first, callee-saved registers next, and the special registers

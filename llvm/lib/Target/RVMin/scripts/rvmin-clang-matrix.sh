@@ -7,10 +7,10 @@
 # It runs the whole e2e corpus through `clang --target=rvmin` in every cell of
 #
 #     {rv32i, rv32im, rv32if, rv32id, rv32ic, rv32imafdc,
-#      rv32g, rv32gc}
+#      rv32g, rv32gc, rv32imafdv}
 #         x {-O0, -O1, -O2, -O3} x scripts/e2e/*.c
 #
-# (12 programs, 384 objects) and checks three independent things per cell:
+# (12 programs, 432 objects) and checks three independent things per cell:
 #
 #   1. Driver: `clang --target=rvmin -c` exits 0, prints nothing on stderr and
 #      produces a 32-bit RISC-V ELF object.
@@ -65,7 +65,8 @@ dump_text() {
 PARITY_FLAGS=(-ffreestanding -fno-builtin -fno-slp-vectorize -fno-vectorize)
 
 OBJECTS=0
-for march in rv32i rv32im rv32if rv32id rv32ic rv32imafdc rv32g rv32gc; do
+for march in rv32i rv32im rv32if rv32id rv32ic rv32imafdc rv32g rv32gc \
+             rv32imafdv; do
   case "$march" in
     rv32i)  MATTR="";   MABI=ilp32 ;;
     rv32im) MATTR="+m"; MABI=ilp32 ;;
@@ -82,6 +83,10 @@ for march in rv32i rv32im rv32if rv32id rv32ic rv32imafdc rv32g rv32gc; do
     # driver rejection is gone.
     rv32g)  MATTR="+m,+a,+f,+d,+zicsr,+zifencei"; MABI=ilp32d ;;
     rv32gc) MATTR="+m,+a,+f,+d,+c,+zicsr,+zifencei"; MABI=ilp32d ;;
+    # Chapter 47: V is the Zve32x teaching subset.  The MC layer is complete,
+    # but code generation is still scalar until chapter 48, so this cell proves
+    # the driver/TargetInfo round trip without expecting vector instructions.
+    rv32imafdv) MATTR="+m,+f,+d,+v"; MABI=ilp32d ;;
     *) fail "unexpected -march=$march" ;;
   esac
 
@@ -94,11 +99,11 @@ for march in rv32i rv32im rv32if rv32id rv32ic rv32imafdc rv32g rv32gc; do
   if grep -Eq '^[[:space:]]+[0-9a-f]+:[[:space:]]+[0-9a-f]+[[:space:]]+mul[[:space:]]' \
        "$TMP/isa-$march.dis"; then
     [[ "$march" == rv32im || "$march" == rv32imafdc || "$march" == rv32g ||
-       "$march" == rv32gc ]] \
+       "$march" == rv32gc || "$march" == rv32imafdv ]] \
       || fail "$march object contains a mul instruction"
   else
     [[ "$march" != rv32im && "$march" != rv32imafdc && "$march" != rv32g &&
-       "$march" != rv32gc ]] \
+       "$march" != rv32gc && "$march" != rv32imafdv ]] \
       || fail "$march object does not contain a mul instruction"
   fi
 
@@ -122,7 +127,8 @@ for march in rv32i rv32im rv32if rv32id rv32ic rv32imafdc rv32g rv32gc; do
   if grep -Eq '^[[:space:]]+[0-9a-f]+:[[:space:]]+[0-9a-f]+[[:space:]]+fadd\.s' \
        "$TMP/fp-$march.dis"; then
     [[ "$march" == rv32if || "$march" == rv32id || "$march" == rv32imafdc ||
-       "$march" == rv32g || "$march" == rv32gc ]] \
+       "$march" == rv32g || "$march" == rv32gc ||
+       "$march" == rv32imafdv ]] \
       || fail "$march fp.c object contains fadd.s"
   else
     [[ "$march" == rv32i || "$march" == rv32im || "$march" == rv32ic ]] \
@@ -135,11 +141,11 @@ for march in rv32i rv32im rv32if rv32id rv32ic rv32imafdc rv32g rv32gc; do
   if grep -Eq '^[[:space:]]+[0-9a-f]+:[[:space:]]+[0-9a-f]+[[:space:]]+fadd\.d' \
        "$TMP/fpd-$march.dis"; then
     [[ "$march" == rv32id || "$march" == rv32imafdc || "$march" == rv32g ||
-       "$march" == rv32gc ]] \
+       "$march" == rv32gc || "$march" == rv32imafdv ]] \
       || fail "$march fp-double.c object contains fadd.d"
   else
     [[ "$march" != rv32id && "$march" != rv32imafdc && "$march" != rv32g &&
-       "$march" != rv32gc ]] \
+       "$march" != rv32gc && "$march" != rv32imafdv ]] \
       || fail "$march fp-double.c object lacks fadd.d"
   fi
 

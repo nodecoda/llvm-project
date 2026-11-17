@@ -191,6 +191,9 @@ roundtrip d 28 "$HERE/rvmin-d-encoding-corpus.s" --mattr=+f,+d
 # Chapter 46: Zicsr + Zifencei.  Aliases print back as aliases, so this also
 # proves the InstAlias table is symmetric with the asm matcher.
 roundtrip zicsr 24 "$HERE/rvmin-zicsr-encoding-corpus.s" --mattr=+zicsr,+zifencei,+f
+# Chapter 47: V (Zve32x subset).  All instructions are 32-bit; this also proves
+# that `printVTypeI` spells the token group back and that v0-v31 print as vN.
+roundtrip v 19 "$HERE/rvmin-v-encoding-corpus.s" --mattr=+v
 # Chapter 43: C.  The corpus is 35 explicit compressed instructions (integer,
 # F and D variants); the second run is a 16/32-bit mixed stream.
 roundtrip_c c 35 "$HERE/rvmin-c-encoding-corpus.s" --mattr=+c,+f,+d
@@ -213,4 +216,4 @@ fwd:
 ASM
 roundtrip labels 6 "$TMP/labels.s"
 
-echo "PASS: 172 encoding-corpus instructions + 35 compressed + 6 mixed + 24 zicsr/zifencei + 6 label-resolved branches/jumps"
+echo "PASS: 191 encoding-corpus instructions + 35 compressed + 6 mixed + 24 zicsr/zifencei + 6 label-resolved branches/jumps"

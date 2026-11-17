@@ -99,6 +99,19 @@ def HasStdExtZifencei : Predicate<"Subtarget->hasStdExtZifencei()">,
                         AssemblerPredicate<(all_of FeatureStdExtZifencei),
                                            "'Zifencei' (Instruction-Fetch Fence)">;
 
+// Chapter 47: V is implemented as the Zve32x teaching subset: SEW=32, LMUL=1,
+// VLEN=128, integer only, no masks and no vector floating point.  Upstream V
+// implies Zve64d and Zvl128b; spelling those out would claim features this
+// backend does not have, so V implies only Zicsr (the vector CSRs and the
+// vset instructions live there) and the 128-bit VLEN is a documented invariant.
+def FeatureStdExtV : SubtargetFeature<"v", "HasStdExtV", "true",
+                                      "Vector extension (Zve32x subset)",
+                                      [FeatureStdExtZicsr]>;
+
+def HasStdExtV : Predicate<"Subtarget->hasStdExtV()">,
+                 AssemblerPredicate<(all_of FeatureStdExtV),
+                                    "'V' (Vector Extension)">;
+
 //===----------------------------------------------------------------------===//
 // Processors
 //===----------------------------------------------------------------------===//
@@ -116,6 +129,7 @@ def : RVMinProc<"generic-rv32-d", [FeatureStdExtD]>;
 def : RVMinProc<"generic-rv32-c", [FeatureStdExtC]>;
 def : RVMinProc<"generic-rv32-zicsr", [FeatureStdExtZicsr]>;
 def : RVMinProc<"generic-rv32-zifencei", [FeatureStdExtZifencei]>;
+def : RVMinProc<"generic-rv32-v", [FeatureStdExtV]>;
 
 //===----------------------------------------------------------------------===//
 // Register File
@@ -129,6 +143,7 @@ include "RVMinRegisterInfo.td"
 
 include "RVMinInstrInfo.td"
 include "RVMinInstrInfoC.td"
+include "RVMinInstrInfoV.td"
 
 include "RVMinCallingConv.td"
 

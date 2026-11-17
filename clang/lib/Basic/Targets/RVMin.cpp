@@ -60,7 +60,8 @@ bool RVMinTargetInfo::isValidCPUName(StringRef Name) const {
   return llvm::is_contained(
       {"generic-rv32", "generic-rv32-m", "generic-rv32-a", "generic-rv32-f",
        "generic-rv32-d", "generic-rv32-zbb", "generic-rv32-zbs",
-       "generic-rv32-c", "generic-rv32-zicsr", "generic-rv32-zifencei"},
+       "generic-rv32-c", "generic-rv32-zicsr", "generic-rv32-zifencei",
+       "generic-rv32-v"},
       Name);
 }
 
@@ -76,6 +77,7 @@ void RVMinTargetInfo::fillValidCPUList(
   Values.push_back("generic-rv32-c");
   Values.push_back("generic-rv32-zicsr");
   Values.push_back("generic-rv32-zifencei");
+  Values.push_back("generic-rv32-v");
 }
 
 static bool isRVMinExtension(StringRef Ext) {
@@ -88,7 +90,16 @@ static bool isRVMinExtension(StringRef Ext) {
          // C is expanded by RISCVISAInfo into its Zca/Zcf/Zcd constituents.
          Ext == "zca" || Ext == "zcf" || Ext == "zcd" ||
          Ext == "zicsr" ||
-         Ext == "zifencei";
+         Ext == "zifencei" ||
+         // Chapter 47: V is implemented as the Zve32x teaching subset.  The
+         // frontend still expands `v` into its implied Zve/Zvl constituents
+         // (RISCVISAInfo does that before we see them).  Accept exactly that
+         // closure, not every Zv* extension, so an explicit `_zvbb` is still
+         // rejected instead of silently dropped.  The backend only receives
+         // +v and implements the subset documented in RVMinInstrInfoV.td.
+         Ext == "v" || Ext == "zve32x" || Ext == "zve32f" ||
+         Ext == "zve64x" || Ext == "zve64f" || Ext == "zve64d" ||
+         Ext == "zvl32b" || Ext == "zvl64b" || Ext == "zvl128b";
 }
 
 bool RVMinTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
@@ -143,7 +154,7 @@ bool RVMinTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
       return true;
     return Name != "m" && Name != "a" && Name != "f" && Name != "d" &&
            Name != "c" && Name != "zbb" && Name != "zbs" &&
-           Name != "zicsr" && Name != "zifencei";
+           Name != "zicsr" && Name != "zifencei" && Name != "v";
   });
   return true;
 }

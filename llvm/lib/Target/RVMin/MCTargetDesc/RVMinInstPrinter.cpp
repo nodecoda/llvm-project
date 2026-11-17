@@ -83,6 +83,37 @@ void RVMinInstPrinter::printCSRSystemRegister(const MCInst *MI, unsigned OpNo,
   MAI.printExpr(O, *MO.getExpr());
 }
 
+void RVMinInstPrinter::printVTypeI(const MCInst *MI, unsigned OpNo,
+                                   const MCSubtargetInfo &STI,
+                                   raw_ostream &O) {
+  const MCOperand &MO = MI->getOperand(OpNo);
+  if (!MO.isImm()) {
+    printOperand(MI, OpNo, STI, O);
+    return;
+  }
+
+  unsigned VT = static_cast<unsigned>(MO.getImm());
+  unsigned VLMUL = VT & 0x7;
+  unsigned VSEW = (VT >> 3) & 0x7;
+  unsigned VTA = (VT >> 6) & 1;
+  unsigned VMA = (VT >> 7) & 1;
+
+  static const char *const SEWNames[] = {"e8", "e16", "e32", "e64"};
+  static const char *const LMULNames[] = {"m1", "m2", "m4", "m8",
+                                          nullptr, "mf8", "mf4", "mf2"};
+
+  // Bits 10:8 are reserved (vill lives in bit 31 on the register form and is
+  // never set here), and LMUL=4 is the reserved encoding.  Anything outside
+  // the table is printed numerically so the output still re-assembles.
+  if ((VT & ~0x7FFu) == 0 && VSEW < 4 && LMULNames[VLMUL]) {
+    O << SEWNames[VSEW] << ", " << LMULNames[VLMUL] << ", "
+      << (VTA ? "ta" : "tu") << ", " << (VMA ? "ma" : "mu");
+    return;
+  }
+
+  O << VT;
+}
+
 void RVMinInstPrinter::printUImm20Operand(const MCInst *MI, unsigned OpNo,
                                           const MCSubtargetInfo &STI,
                                           raw_ostream &O) {

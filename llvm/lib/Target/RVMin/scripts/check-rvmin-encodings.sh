@@ -247,9 +247,30 @@ fi
 grep -q "'Zifencei' (Instruction-Fetch Fence)" "$TMP/no-zifencei.err" \
   || fail "missing Zifencei diagnostic without +zifencei"
 
+# 2l. V extension (chapter 47).  The Zve32x subset is all 32-bit, so this is
+# the same shape as the F/D corpora: byte-for-byte encoding equality with the
+# reference assembler, then a negative check that +v is required.  The V
+# feature implies Zicsr, so the corpus is assembled with +v alone.
+VC="$HERE/rvmin-v-encoding-corpus.s"
+"$BIN/llvm-mc" -triple=rvmin -mattr=+v -show-encoding "$VC" > "$TMP/rvmin-v.txt"
+"$BIN/llvm-mc" -triple=riscv32 -mattr=+v -show-encoding "$VC" > "$TMP/ref-v.txt"
+extract "$TMP/rvmin-v.txt" > "$TMP/rvmin-v.enc"
+extract "$TMP/ref-v.txt" > "$TMP/ref-v.enc"
+NV=$(wc -l < "$TMP/rvmin-v.enc")
+[[ "$NV" -eq 19 ]] || fail "V corpus produced $NV encodings, want 19"
+diff -u "$TMP/ref-v.enc" "$TMP/rvmin-v.enc" > "$TMP/diff-v.txt" \
+  || { head -20 "$TMP/diff-v.txt" >&2; fail "V encoding mismatch between rvmin and riscv32"; }
+
+if "$BIN/llvm-mc" -triple=rvmin -filetype=obj "$VC" -o "$TMP/no-v.o" \
+     > /dev/null 2> "$TMP/no-v.err"; then
+  fail "llvm-mc -triple=rvmin accepted V instructions without +v"
+fi
+grep -q "'V' (Vector Extension)" "$TMP/no-v.err" \
+  || fail "missing V diagnostic without +v"
+
 # 3. ELF identification.
 MACHINE=$("$BIN/llvm-readelf" -h "$TMP/rvmin.o" | awk -F: '/Machine:/ {gsub(/^ +| +$/, "", $2); print $2}')
 [[ "$MACHINE" == "RISC-V" ]] || fail "ELF machine is '$MACHINE', want RISC-V"
 
-echo "PASS: $N RV32I + $NM M + $NZB Zbb + $NZS Zbs + $NA A + $NF F + $ND D + $NC C + $NZC Zicsr/Zifencei instructions, .text identical"
+echo "PASS: $N RV32I + $NM M + $NZB Zbb + $NZS Zbs + $NA A + $NF F + $ND D + $NC C + $NZC Zicsr/Zifencei + $NV V instructions, .text identical"
 echo "      (incl. label fixups and %hi/%lo), ELF machine RISC-V, missing-feature diagnostic OK"

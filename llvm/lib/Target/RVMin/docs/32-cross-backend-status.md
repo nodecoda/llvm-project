@@ -139,27 +139,31 @@ python3 dsl-surface.py --status-matrix --update DOC --usage a.td b.td
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:18` | `HWEncoding` | `Register` | `project` | — | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:19` | `AltNames` | `Register` | 未消费 | — | `project` | `project` | 未消费 | 未消费 | 未消费 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:20` | `DwarfNumbers` | `Register` | `project` | — | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:25` | `RegAltNameIndices` | `Register` | 未消费 | — | `project` | `project` | 未消费 | 未消费 | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:79` | `DecoderMethod` | `DAGOperand`, `InstructionEncoding` | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:107` | `Namespace` | `Instruction`, `RegAltNameIndex`, `Register`, `RegisterClass`, `SubRegIndex` | `derive+project` | `derive` | `derive+project` | `derive+project` | `derive` | `derive+project` | `derive` |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:108` | `HWEncoding` | `Register` | `project` | — | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:109` | `AltNames` | `Register` | 未消费 | — | `project` | `project` | 未消费 | 未消费 | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:110` | `DwarfNumbers` | `Register` | `project` | — | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:113` | `RegAltNameIndices` | `Register` | 未消费 | — | `project` | `project` | 未消费 | 未消费 | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:168` | `DecoderMethod` | `DAGOperand`, `InstructionEncoding` | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:179` | `DecoderMethod` | `DAGOperand`, `InstructionEncoding` | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:186` | `DecoderMethod` | `DAGOperand`, `InstructionEncoding` | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:191` | `DecoderMethod` | `DAGOperand`, `InstructionEncoding` | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:29` | `Namespace` | `Instruction`, `RegAltNameIndex`, `Register`, `RegisterClass`, `SubRegIndex` | `derive+project` | `derive` | `derive+project` | `derive+project` | `derive` | `derive+project` | `derive` |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:30` | `HWEncoding` | `Register` | `project` | — | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:35` | `RegAltNameIndices` | `Register` | 未消费 | — | `project` | `project` | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:115` | `DecoderMethod` | `DAGOperand`, `InstructionEncoding` | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:135` | `DecoderMethod` | `DAGOperand`, `InstructionEncoding` | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:163` | `Namespace` | `Instruction`, `RegAltNameIndex`, `Register`, `RegisterClass`, `SubRegIndex` | `derive+project` | `derive` | `derive+project` | `derive+project` | `derive` | `derive+project` | `derive` |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:164` | `HWEncoding` | `Register` | `project` | — | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:165` | `AltNames` | `Register` | 未消费 | — | `project` | `project` | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:166` | `DwarfNumbers` | `Register` | `project` | — | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:169` | `RegAltNameIndices` | `Register` | 未消费 | — | `project` | `project` | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:224` | `DecoderMethod` | `DAGOperand`, `InstructionEncoding` | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:235` | `DecoderMethod` | `DAGOperand`, `InstructionEncoding` | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:242` | `DecoderMethod` | `DAGOperand`, `InstructionEncoding` | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:247` | `DecoderMethod` | `DAGOperand`, `InstructionEncoding` | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:16` | `Num` | — | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:106` | `Num` | — | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 |
-| `llvm/lib/Target/RVMin/RVMin.td:148` | `AsmWriterClassName` | `AsmWriter` | — | — | `project` | — | — | — | — |
-| `llvm/lib/Target/RVMin/RVMin.td:155` | `ShouldEmitMatchRegisterAltName` | `AsmParser` | — | — | — | `project` | — | — | — |
-| `llvm/lib/Target/RVMin/RVMin.td:156` | `AllowDuplicateRegisterNames` | `AsmParser` | — | — | — | `project` | — | — | — |
-| `llvm/lib/Target/RVMin/RVMin.td:164` | `InstructionSet` | — | — | — | — | — | — | — | — |
-| `llvm/lib/Target/RVMin/RVMin.td:165` | `AssemblyParsers` | `Target` | — | — | — | `derive` | — | — | — |
-| `llvm/lib/Target/RVMin/RVMin.td:166` | `AssemblyWriters` | `Target` | — | — | `derive` | — | — | — | — |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:28` | `Num` | — | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:162` | `Num` | — | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 |
+| `llvm/lib/Target/RVMin/RVMin.td:163` | `AsmWriterClassName` | `AsmWriter` | — | — | `project` | — | — | — | — |
+| `llvm/lib/Target/RVMin/RVMin.td:170` | `ShouldEmitMatchRegisterAltName` | `AsmParser` | — | — | — | `project` | — | — | — |
+| `llvm/lib/Target/RVMin/RVMin.td:171` | `AllowDuplicateRegisterNames` | `AsmParser` | — | — | — | `project` | — | — | — |
+| `llvm/lib/Target/RVMin/RVMin.td:179` | `InstructionSet` | — | — | — | — | — | — | — | — |
+| `llvm/lib/Target/RVMin/RVMin.td:180` | `AssemblyParsers` | `Target` | — | — | — | `derive` | — | — | — |
+| `llvm/lib/Target/RVMin/RVMin.td:181` | `AssemblyWriters` | `Target` | — | — | `derive` | — | — | — | — |
 
-共 24 处使用；7 个后端都消费 2 处，至少一个消费 16 处，自定义字段 2 处。
+共 28 处使用；7 个后端都消费 3 处，至少一个消费 18 处，自定义字段 3 处。
 <!-- END: GENERATED CROSS-BACKEND STATUS -->
 
 ## 深读：这张表告诉了我们什么

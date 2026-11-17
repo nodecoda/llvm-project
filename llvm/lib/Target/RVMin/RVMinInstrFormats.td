@@ -64,6 +64,10 @@ def FmtCS     : RVMinInstFormat<13>;
 def FmtCB     : RVMinInstFormat<14>;
 def FmtCJ     : RVMinInstFormat<15>;
 def FmtCA     : RVMinInstFormat<16>;
+// Chapter 47: vector instructions.  The MC code emitter does not need to know
+// the sub-format (OPIVV/OPMVV/OPIVX/...); the funct3 field is already part of
+// Inst.  The marker exists so every instruction has a distinct TSFlags value.
+def FmtV      : RVMinInstFormat<17>;
 
 // Opcodes from the RISC-V base opcode map.  Only the ones RV32I needs.
 class RVMinOpcode<bits<7> val> {
@@ -90,6 +94,11 @@ def OPC_MSUB    : RVMinOpcode<0b1000111>;
 def OPC_NMSUB   : RVMinOpcode<0b1001011>;
 def OPC_NMADD   : RVMinOpcode<0b1001111>;
 def OPC_OP_FP   : RVMinOpcode<0b1010011>;
+// Chapter 47: vector opcodes.  Vector loads and stores use their own opcodes,
+// not the scalar LOAD/STORE ones.
+def OPC_OP_V    : RVMinOpcode<0b1010111>;
+def OPC_VLOAD   : RVMinOpcode<0b0000111>;
+def OPC_VSTORE  : RVMinOpcode<0b0100111>;
 
 class RVMinInst<dag outs, dag ins, string asmstr, list<dag> pattern>
     : Instruction {

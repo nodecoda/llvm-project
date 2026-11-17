@@ -102,7 +102,13 @@ void riscv::getRISCVTargetFeatures(const Driver &D, const llvm::Triple &Triple,
           Ext == "d" || Ext == "c" || Ext == "zbb" || Ext == "zbs" ||
           Ext == "zaamo" || Ext == "zalrsc" || Ext == "zmmul" ||
           Ext == "zca" || Ext == "zcf" || Ext == "zcd" ||
-          Ext == "zicsr" || Ext == "zifencei" || Ext == "relax")
+          Ext == "zicsr" || Ext == "zifencei" || Ext == "relax" ||
+          // Chapter 47: V expands into its Zve/Zvl constituents; the backend
+          // only implements the Zve32x subset and receives +v alone.  Accept
+          // exactly the implication closure, not arbitrary Zv* extensions.
+          Ext == "v" || Ext == "zve32x" || Ext == "zve32f" ||
+          Ext == "zve64x" || Ext == "zve64f" || Ext == "zve64d" ||
+          Ext == "zvl32b" || Ext == "zvl64b" || Ext == "zvl128b")
         continue;
       D.Diag(diag::err_drv_unsupported_option_argument_for_target)
           << "-march" << MArch << Triple.str();
@@ -115,7 +121,7 @@ void riscv::getRISCVTargetFeatures(const Driver &D, const llvm::Triple &Triple,
     llvm::erase_if(Features, [](StringRef F) {
       return F != "+m" && F != "+a" && F != "+f" && F != "+d" &&
              F != "+c" && F != "+zbb" && F != "+zbs" && F != "+zicsr" &&
-             F != "+zifencei";
+             F != "+zifencei" && F != "+v";
     });
     return;
   }

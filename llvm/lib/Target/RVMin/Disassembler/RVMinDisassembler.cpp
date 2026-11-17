@@ -121,6 +121,24 @@ static DecodeStatus DecodeSPRegisterClass(MCInst &Inst,
   return MCDisassembler::Success;
 }
 
+// Chapter 47: the vector register file is contiguous as well (V0..V31).
+static const unsigned VRDecoderTable[] = {
+    RVMin::V0,  RVMin::V1,  RVMin::V2,  RVMin::V3,  RVMin::V4,  RVMin::V5,
+    RVMin::V6,  RVMin::V7,  RVMin::V8,  RVMin::V9,  RVMin::V10, RVMin::V11,
+    RVMin::V12, RVMin::V13, RVMin::V14, RVMin::V15, RVMin::V16, RVMin::V17,
+    RVMin::V18, RVMin::V19, RVMin::V20, RVMin::V21, RVMin::V22, RVMin::V23,
+    RVMin::V24, RVMin::V25, RVMin::V26, RVMin::V27, RVMin::V28, RVMin::V29,
+    RVMin::V30, RVMin::V31};
+
+static DecodeStatus DecodeVRRegisterClass(MCInst &Inst, uint64_t RegNo,
+                                          uint64_t Address,
+                                          const MCDisassembler *Decoder) {
+  if (RegNo >= std::size(VRDecoderTable))
+    return MCDisassembler::Fail;
+  Inst.addOperand(MCOperand::createReg(VRDecoderTable[RegNo]));
+  return MCDisassembler::Success;
+}
+
 // Chapter 40: the floating-point file has the same contiguous layout.  The
 // single- and double-precision views (chapter 41) share these registers, so
 // one table serves both decoder hooks.

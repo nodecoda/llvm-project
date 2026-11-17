@@ -50,6 +50,8 @@ class RVMinSubtarget : public RVMinGenSubtargetInfo {
   // implies both, so they are what make rv32g/rv32gc legal.
   bool HasStdExtZicsr = false;
   bool HasStdExtZifencei = false;
+  // Chapter 47: the Zve32x teaching subset.  VLEN is fixed at 128 bits.
+  bool HasStdExtV = false;
 
   RVMinInstrInfo InstrInfo;
   RVMinTargetLowering TLInfo;
@@ -73,6 +75,7 @@ public:
   bool hasStdExtC() const { return HasStdExtC; }
   bool hasStdExtZicsr() const { return HasStdExtZicsr; }
   bool hasStdExtZifencei() const { return HasStdExtZifencei; }
+  bool hasStdExtV() const { return HasStdExtV; }
 
   void ParseSubtargetFeatures(StringRef CPU, StringRef TuneCPU, StringRef FS);
 
