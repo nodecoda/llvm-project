@@ -61,6 +61,10 @@ unsigned getLoadOpcode(const LoadSDNode *LD) {
   if (LD->getMemoryVT() == MVT::f32 &&
       LD->getExtensionType() == ISD::NON_EXTLOAD)
     return RVMin::FLW;
+  // Chapter 41: a full-width double load.
+  if (LD->getMemoryVT() == MVT::f64 &&
+      LD->getExtensionType() == ISD::NON_EXTLOAD)
+    return RVMin::FLD;
   switch (LD->getMemoryVT().getSimpleVT().SimpleTy) {
   case MVT::i8:
     return LD->getExtensionType() == ISD::ZEXTLOAD ? RVMin::LBU : RVMin::LB;
@@ -77,6 +81,8 @@ unsigned getLoadOpcode(const LoadSDNode *LD) {
 unsigned getStoreOpcode(const StoreSDNode *ST) {
   if (ST->getMemoryVT() == MVT::f32 && !ST->isTruncatingStore())
     return RVMin::FSW;
+  if (ST->getMemoryVT() == MVT::f64 && !ST->isTruncatingStore())
+    return RVMin::FSD;
   switch (ST->getMemoryVT().getSimpleVT().SimpleTy) {
   case MVT::i8:
     return RVMin::SB;
@@ -92,20 +98,31 @@ unsigned getStoreOpcode(const StoreSDNode *ST) {
 /// Recognize a stack address: either a bare `frameindex` or
 /// `frameindex + constant`.  GEPs with constant indices are folded this way,
 /// so `alloca [4 x i32]` + index 2 reaches us as FI + 8.
+///
+/// DAGCombine rewrites `FI + C` into `FI | C` whenever C's bits are known to
+/// be clear in FI (frame alignment gives it that knowledge), which is how a
+/// chapter 41 double constant reaches the selector as `or FI, 4`.  For
+/// disjoint bits the two forms are the same address, so both are accepted and
+/// folded into the load/store immediate.
 bool matchFrameAddr(SDValue Addr, SDValue &FI, int64_t &Offset) {
   if (isa<FrameIndexSDNode>(Addr)) {
     FI = Addr;
     Offset = 0;
     return true;
   }
-  if (Addr.getOpcode() == ISD::ADD &&
-      isa<ConstantSDNode>(Addr.getOperand(1)) &&
-      isa<FrameIndexSDNode>(Addr.getOperand(0))) {
-    FI = Addr.getOperand(0);
-    Offset = cast<ConstantSDNode>(Addr.getOperand(1))->getSExtValue();
-    return true;
-  }
-  return false;
+  if (Addr.getOpcode() != ISD::ADD && Addr.getOpcode() != ISD::OR)
+    return false;
+
+  SDValue Base = Addr.getOperand(0);
+  SDValue Off = Addr.getOperand(1);
+  if (!isa<ConstantSDNode>(Off) && isa<ConstantSDNode>(Base))
+    std::swap(Base, Off);
+  if (!isa<ConstantSDNode>(Off) || !isa<FrameIndexSDNode>(Base))
+    return false;
+
+  FI = Base;
+  Offset = cast<ConstantSDNode>(Off)->getSExtValue();
+  return true;
 }
 
 } // end anonymous namespace

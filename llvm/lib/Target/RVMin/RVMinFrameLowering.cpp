@@ -256,12 +256,18 @@ bool RVMinFrameLowering::spillCalleeSavedRegisters(
       *static_cast<const RVMinInstrInfo *>(MBB.getParent()->getSubtarget()
                                                .getInstrInfo());
 
+  // Chapter 40/41: fs0-fs11 live in the floating-point file.  With D the
+  // register is 64 bits wide and spills with `fsd`; with F alone it spills
+  // with `fsw`.  Everything else is an integer register and uses `sw`.
+  const RVMinSubtarget &STI =
+      MBB.getParent()->getSubtarget<RVMinSubtarget>();
+
   for (const CalleeSavedInfo &CS : CSI) {
-    // Chapter 40: fs0-fs11 live in the floating-point file and need `fsw`,
-    // everything else is an integer register and uses `sw`.
-    const TargetRegisterClass *RC =
-        RVMin::FPR32RegClass.contains(CS.getReg()) ? &RVMin::FPR32RegClass
-                                                   : &RVMin::GPRRegClass;
+    const TargetRegisterClass *RC = &RVMin::GPRRegClass;
+    if (STI.hasStdExtD() && RVMin::FPR64RegClass.contains(CS.getReg()))
+      RC = &RVMin::FPR64RegClass;
+    else if (RVMin::FPR32RegClass.contains(CS.getReg()))
+      RC = &RVMin::FPR32RegClass;
     TII.storeRegToStackSlot(MBB, MI, CS.getReg(), /*isKill=*/true,
                             CS.getFrameIdx(), RC, Register(),
                             MachineInstr::FrameSetup);
@@ -277,10 +283,15 @@ bool RVMinFrameLowering::restoreCalleeSavedRegisters(
       *static_cast<const RVMinInstrInfo *>(MBB.getParent()->getSubtarget()
                                                .getInstrInfo());
 
+  const RVMinSubtarget &STI =
+      MBB.getParent()->getSubtarget<RVMinSubtarget>();
+
   for (const CalleeSavedInfo &CS : CSI) {
-    const TargetRegisterClass *RC =
-        RVMin::FPR32RegClass.contains(CS.getReg()) ? &RVMin::FPR32RegClass
-                                                   : &RVMin::GPRRegClass;
+    const TargetRegisterClass *RC = &RVMin::GPRRegClass;
+    if (STI.hasStdExtD() && RVMin::FPR64RegClass.contains(CS.getReg()))
+      RC = &RVMin::FPR64RegClass;
+    else if (RVMin::FPR32RegClass.contains(CS.getReg()))
+      RC = &RVMin::FPR32RegClass;
     TII.loadRegFromStackSlot(MBB, MI, CS.getReg(), CS.getFrameIdx(), RC,
                              Register(), /*SubReg=*/0,
                              MachineInstr::FrameDestroy);

@@ -26,15 +26,19 @@ def CC_RVMin : CallingConv<[
   // are never reached: the type legalizer has already softened f32 to i32
   // before the calling-convention analysis runs.
   CCIfType<[f32], CCAssignToReg<[F10, F11, F12, F13, F14, F15, F16, F17]>>,
+  // Chapter 41: under ILP32D a double argument uses the same fa0-fa7 window.
+  CCIfType<[f64], CCAssignToReg<[F10, F11, F12, F13, F14, F15, F16, F17]>>,
 
   // Everything else goes on the stack, 4-byte aligned.
   CCIfType<[i32], CCAssignToStack<4, 4>>,
-  CCIfType<[f32], CCAssignToStack<4, 4>>
+  CCIfType<[f32], CCAssignToStack<4, 4>>,
+  CCIfType<[f64], CCAssignToStack<8, 8>>
 ]>;
 
 def RetCC_RVMin : CallingConv<[
   CCIfType<[i32], CCAssignToReg<[X10, X11]>>,
-  CCIfType<[f32], CCAssignToReg<[F10, F11]>>
+  CCIfType<[f32], CCAssignToReg<[F10, F11]>>,
+  CCIfType<[f64], CCAssignToReg<[F10, F11]>>
 ]>;
 
 // Callee-saved registers: the return address and s0-s11.  The same list feeds

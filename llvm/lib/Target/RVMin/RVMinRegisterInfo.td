@@ -126,6 +126,27 @@ def F31: RVMinFPR<31,63,"f31", ["ft11"]>;
 
 } // RegAltNameIndices = [ABIRegAltName]
 
+// Chapter 41: the double-precision view of the same 32 architectural
+// registers.  FLEN is 64 under D, so f32 values are NaN-boxed when they share
+// a register with an f64 value; RVMin never reinterprets one as the other, and
+// the two classes only differ in the instruction selected for a copy/spill.
+// The allocation order deliberately matches FPR32 so register allocation looks
+// the same in both views.
+//
+// This class is declared before FPR32 on purpose.  TableGen's generated
+// getMinimalPhysRegClass() keeps the first class that contains a register when
+// the classes are unrelated, and PEI uses that class to size callee-saved
+// spill slots.  The 64-bit view gives every FP callee-saved register an 8-byte
+// slot in both modes; a 4-byte slot under D would be overflowed by `fsd`.
+def FPR64 : RegisterClass<"RVMin", [f64], 64,
+  (add (sequence "F%u", 10, 17),
+       (sequence "F%u", 0, 7),
+       (sequence "F%u", 28, 31),
+       F8, F9,
+       (sequence "F%u", 18, 27))> {
+  let DecoderMethod = "DecodeFPR64RegisterClass";
+}
+
 // Allocation order: caller-saved argument registers first (fa0-fa7), then the
 // temporaries, then the callee-saved fs0-fs11 last.
 def FPR32 : RegisterClass<"RVMin", [f32], 32,
@@ -136,3 +157,4 @@ def FPR32 : RegisterClass<"RVMin", [f32], 32,
        (sequence "F%u", 18, 27))> {
   let DecoderMethod = "DecodeFPR32RegisterClass";
 }
+

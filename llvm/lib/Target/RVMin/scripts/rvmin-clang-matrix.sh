@@ -6,9 +6,9 @@
 #
 # It runs the whole e2e corpus through `clang --target=rvmin` in every cell of
 #
-#     {rv32i, rv32im, rv32if} x {-O0, -O1, -O2, -O3} x scripts/e2e/*.c
+#     {rv32i, rv32im, rv32if, rv32id} x {-O0, -O1, -O2, -O3} x scripts/e2e/*.c
 #
-# (11 programs, 132 objects) and checks three independent things per cell:
+# (12 programs, 192 objects) and checks three independent things per cell:
 #
 #   1. Driver: `clang --target=rvmin -c` exits 0, prints nothing on stderr and
 #      produces a 32-bit RISC-V ELF object.
@@ -63,13 +63,15 @@ dump_text() {
 PARITY_FLAGS=(-ffreestanding -fno-builtin -fno-slp-vectorize -fno-vectorize)
 
 OBJECTS=0
-for march in rv32i rv32im rv32if; do
+for march in rv32i rv32im rv32if rv32id; do
   case "$march" in
     rv32i)  MATTR="";   MABI=ilp32 ;;
     rv32im) MATTR="+m"; MABI=ilp32 ;;
     # Chapter 40: the driver derives ilp32f from rv32if; spelling it out keeps
     # the intent obvious and matches what the backend expects.
-    rv32if) MATTR="+f"; MABI=ilp32f ;;
+    rv32if) MATTR="+f";    MABI=ilp32f ;;
+    # Chapter 41: D implies F; the driver derives ilp32d from rv32id.
+    rv32id) MATTR="+f,+d"; MABI=ilp32d ;;
     *) fail "unexpected -march=$march" ;;
   esac
 
@@ -78,12 +80,35 @@ for march in rv32i rv32im rv32if; do
     -ffreestanding -fno-builtin -c "$E2E/arith.c" -o "$TMP/isa-$march.o"
   # RVMin emits no .riscv.attributes, so the disassembler has to be told about
   # the extensions it should decode.
-  "$OBJDUMP" -d --mattr=+m "$TMP/isa-$march.o" > "$TMP/isa-$march.dis"
+  "$OBJDUMP" -d --mattr=+m,+f,+d "$TMP/isa-$march.o" > "$TMP/isa-$march.dis"
   if grep -Eq '^[[:space:]]+[0-9a-f]+:[[:space:]]+[0-9a-f]+[[:space:]]+mul[[:space:]]' \
        "$TMP/isa-$march.dis"; then
     [[ "$march" == rv32im ]] || fail "$march object contains a mul instruction"
   else
     [[ "$march" != rv32im ]] || fail "RV32IM object does not contain a mul instruction"
+  fi
+
+  # The FP features must be visible exactly where the ISA string says so.
+  "$CC" --target=rvmin-unknown-elf -march="$march" -mabi="$MABI" -O2 \
+    -ffreestanding -fno-builtin -c "$E2E/fp.c" -o "$TMP/fp-$march.o"
+  "$OBJDUMP" -d --mattr=+f,+d "$TMP/fp-$march.o" > "$TMP/fp-$march.dis"
+  if grep -Eq '^[[:space:]]+[0-9a-f]+:[[:space:]]+[0-9a-f]+[[:space:]]+fadd\.s' \
+       "$TMP/fp-$march.dis"; then
+    [[ "$march" == rv32if || "$march" == rv32id ]] \
+      || fail "$march fp.c object contains fadd.s"
+  else
+    [[ "$march" == rv32i || "$march" == rv32im ]] \
+      || fail "$march fp.c object lacks fadd.s"
+  fi
+
+  "$CC" --target=rvmin-unknown-elf -march="$march" -mabi="$MABI" -O2 \
+    -ffreestanding -fno-builtin -c "$E2E/fp-double.c" -o "$TMP/fpd-$march.o"
+  "$OBJDUMP" -d --mattr=+f,+d "$TMP/fpd-$march.o" > "$TMP/fpd-$march.dis"
+  if grep -Eq '^[[:space:]]+[0-9a-f]+:[[:space:]]+[0-9a-f]+[[:space:]]+fadd\.d' \
+       "$TMP/fpd-$march.dis"; then
+    [[ "$march" == rv32id ]] || fail "$march fp-double.c object contains fadd.d"
+  else
+    [[ "$march" != rv32id ]] || fail "rv32id fp-double.c object lacks fadd.d"
   fi
 
   for opt in O0 O1 O2 O3; do

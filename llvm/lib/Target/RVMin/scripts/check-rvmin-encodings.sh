@@ -175,9 +175,29 @@ fi
 grep -q "'F' (Single-Precision Floating-Point)" "$TMP/no-f.err" \
   || fail "missing F diagnostic without +f"
 
+# 2i. D extension (chapter 41).  D implies F, so the corpus is assembled with
+# both features; the diagnostic check uses +f alone to prove the missing-D
+# message is what rejects it.
+DC="$HERE/rvmin-d-encoding-corpus.s"
+"$BIN/llvm-mc" -triple=rvmin -mattr=+f,+d -show-encoding "$DC" > "$TMP/rvmin-d.txt"
+"$BIN/llvm-mc" -triple=riscv32 -mattr=+f,+d -show-encoding "$DC" > "$TMP/ref-d.txt"
+extract "$TMP/rvmin-d.txt" > "$TMP/rvmin-d.enc"
+extract "$TMP/ref-d.txt" > "$TMP/ref-d.enc"
+ND=$(wc -l < "$TMP/rvmin-d.enc")
+[[ "$ND" -eq 28 ]] || fail "D corpus produced $ND encodings, want 28"
+diff -u "$TMP/ref-d.enc" "$TMP/rvmin-d.enc" > "$TMP/diff-d.txt" \
+  || { head -20 "$TMP/diff-d.txt" >&2; fail "D encoding mismatch between rvmin and riscv32"; }
+
+if "$BIN/llvm-mc" -triple=rvmin -mattr=+f -filetype=obj "$DC" -o "$TMP/no-d.o" \
+     > /dev/null 2> "$TMP/no-d.err"; then
+  fail "llvm-mc -triple=rvmin accepted D instructions without +d"
+fi
+grep -q "'D' (Double-Precision Floating-Point)" "$TMP/no-d.err" \
+  || fail "missing D diagnostic without +d"
+
 # 3. ELF identification.
 MACHINE=$("$BIN/llvm-readelf" -h "$TMP/rvmin.o" | awk -F: '/Machine:/ {gsub(/^ +| +$/, "", $2); print $2}')
 [[ "$MACHINE" == "RISC-V" ]] || fail "ELF machine is '$MACHINE', want RISC-V"
 
-echo "PASS: $N RV32I + $NM M + $NZB Zbb + $NZS Zbs + $NA A + $NF F instructions, .text identical"
+echo "PASS: $N RV32I + $NM M + $NZB Zbb + $NZS Zbs + $NA A + $NF F + $ND D instructions, .text identical"
 echo "      (incl. label fixups and %hi/%lo), ELF machine RISC-V, missing-feature diagnostic OK"

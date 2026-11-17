@@ -342,11 +342,12 @@ RVMin 是最小实例：32 个寄存器、一个 `GPR`、一个 `CalleeSavedRegs
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:88` | `AltNames` | asm writer / asm matcher |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:89` | `DwarfNumbers` | 消费（project） |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:92` | `RegAltNameIndices` | asm writer / asm matcher |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:137` | `DecoderMethod` | decoder |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:147` | `DecoderMethod` | decoder |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:158` | `DecoderMethod` | decoder |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:16` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:85` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
 
-共 14 处使用；契约外 0 处。
+共 15 处使用；契约外 0 处。
 <!-- END: GENERATED TD USAGE -->
 
 这张表就是本章最直接的结论：

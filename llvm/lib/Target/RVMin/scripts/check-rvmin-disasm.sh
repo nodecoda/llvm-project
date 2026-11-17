@@ -96,6 +96,9 @@ roundtrip a 20 "$HERE/rvmin-a-encoding-corpus.s" --mattr=+a
 # Chapter 40: F.  This also covers the explicit `rtz` spelling: the printer
 # must reproduce it so the output can be assembled again into the same bytes.
 roundtrip f 28 "$HERE/rvmin-f-encoding-corpus.s" --mattr=+f
+# Chapter 41: D.  Same `rtz` symmetry; the double registers use the FPR64
+# decoder hook but the same architectural table.
+roundtrip d 28 "$HERE/rvmin-d-encoding-corpus.s" --mattr=+f,+d
 
 # Label-resolved branches: the assembler has already turned the labels into
 # byte offsets, so the disassembler sees the same simm13/simm21 fields as for
@@ -114,4 +117,4 @@ fwd:
 ASM
 roundtrip labels 6 "$TMP/labels.s"
 
-echo "PASS: 145 encoding-corpus instructions + 6 label-resolved branches/jumps"
+echo "PASS: 173 encoding-corpus instructions + 6 label-resolved branches/jumps"

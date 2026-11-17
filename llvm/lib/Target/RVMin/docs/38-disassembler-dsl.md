@@ -500,6 +500,17 @@ class EncodingByHwMode<list<HwMode> Ms = [], list<InstructionEncoding> Ts = []>
 | `llvm/lib/Target/RVMin/RVMinInstrInfo.td:984` | `isCommutable` | 消费（derive） |
 | `llvm/lib/Target/RVMin/RVMinInstrInfo.td:991` | `isCommutable` | 消费（derive） |
 | `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1060` | `Predicates` | 消费（derive+project） |
+| `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1118` | `Predicates` | 消费（derive+project） |
+| `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1120` | `hasSideEffects` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1123` | `mayLoad` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1128` | `hasSideEffects` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1137` | `isCommutable` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1145` | `isCommutable` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1158` | `isCommutable` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1171` | `isCommutable` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1176` | `isCommutable` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1183` | `isCommutable` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1254` | `Predicates` | 消费（derive+project） |
 | `llvm/lib/Target/RVMin/RVMinInstrFormats.td:86` | `Namespace` | 消费（derive） |
 | `llvm/lib/Target/RVMin/RVMinInstrFormats.td:87` | `OutOperandList` | 消费（derive） |
 | `llvm/lib/Target/RVMin/RVMinInstrFormats.td:88` | `InOperandList` | 消费（derive） |
@@ -584,11 +595,12 @@ class EncodingByHwMode<list<HwMode> Ms = [], list<InstructionEncoding> Ts = []>
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:88` | `AltNames` | 本后端不读 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:89` | `DwarfNumbers` | DWARF 编号；`-gen-register-info` 消费。 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:92` | `RegAltNameIndices` | 本后端不读 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:137` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:147` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:158` | `DecoderMethod` | decoder 自定义方法。 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:16` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:85` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
 
-共 187 处使用；契约外 81 处。
+共 199 处使用；契约外 81 处。
 <!-- END: GENERATED TD USAGE -->
 
 `Inst` 是本章的核心输入，但它声明在 RVMin 自己的 `RVMinInst` 上，不在

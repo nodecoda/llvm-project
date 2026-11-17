@@ -97,7 +97,7 @@ void riscv::getRISCVTargetFeatures(const Driver &D, const llvm::Triple &Triple,
       if (!Ext.consume_front("+"))
         continue;
       if (Ext == "i" || Ext == "m" || Ext == "a" || Ext == "f" ||
-          Ext == "zbb" || Ext == "zbs" || Ext == "zaamo" ||
+          Ext == "d" || Ext == "zbb" || Ext == "zbs" || Ext == "zaamo" ||
           Ext == "zalrsc" || Ext == "zmmul" || Ext == "zicsr" ||
           Ext == "zifencei" || Ext == "relax")
         continue;
@@ -109,8 +109,8 @@ void riscv::getRISCVTargetFeatures(const Driver &D, const llvm::Triple &Triple,
     // through RVMinTargetInfo, so keep only the four extensions the backend
     // implements; "+i" is implied by the target.
     llvm::erase_if(Features, [](StringRef F) {
-      return F != "+m" && F != "+a" && F != "+f" && F != "+zbb" &&
-             F != "+zbs";
+      return F != "+m" && F != "+a" && F != "+f" && F != "+d" &&
+             F != "+zbb" && F != "+zbs";
     });
     return;
   }
@@ -429,6 +429,10 @@ std::string riscv::getRISCVArch(const llvm::opt::ArgList &Args,
         return "rv32im";
       if (CPU == "generic-rv32-a")
         return "rv32ia";
+      if (CPU == "generic-rv32-f")
+        return "rv32if";
+      if (CPU == "generic-rv32-d")
+        return "rv32id";
       if (CPU == "generic-rv32-zbb")
         return "rv32i_zbb";
       if (CPU == "generic-rv32-zbs")

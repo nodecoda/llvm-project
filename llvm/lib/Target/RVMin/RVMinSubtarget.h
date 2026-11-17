@@ -42,6 +42,8 @@ class RVMinSubtarget : public RVMinGenSubtargetInfo {
   bool HasStdExtA = false;
   // Chapter 40: F adds the FPR32 register file and single-precision codegen.
   bool HasStdExtF = false;
+  // Chapter 41: D implies F and adds the FPR64 view of the same registers.
+  bool HasStdExtD = false;
 
   RVMinInstrInfo InstrInfo;
   RVMinTargetLowering TLInfo;
@@ -61,6 +63,7 @@ public:
   bool hasStdExtZbs() const { return HasStdExtZbs; }
   bool hasStdExtA() const { return HasStdExtA; }
   bool hasStdExtF() const { return HasStdExtF; }
+  bool hasStdExtD() const { return HasStdExtD; }
 
   void ParseSubtargetFeatures(StringRef CPU, StringRef TuneCPU, StringRef FS);
 

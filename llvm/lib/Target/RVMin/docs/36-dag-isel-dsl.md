@@ -645,6 +645,17 @@ Record 里只有声明；这些是共享 C++ 在投影之前对语义的改写�
 | `llvm/lib/Target/RVMin/RVMinInstrInfo.td:984` | `isCommutable` | 消费（derive） |
 | `llvm/lib/Target/RVMin/RVMinInstrInfo.td:991` | `isCommutable` | 消费（derive） |
 | `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1060` | `Predicates` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1118` | `Predicates` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1120` | `hasSideEffects` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1123` | `mayLoad` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1128` | `hasSideEffects` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1137` | `isCommutable` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1145` | `isCommutable` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1158` | `isCommutable` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1171` | `isCommutable` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1176` | `isCommutable` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1183` | `isCommutable` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1254` | `Predicates` | 消费（derive） |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:12` | `FallbackRegAltNameIndex` | 不在本后端契约（其它后端消费或拼写错误） |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:17` | `Namespace` | 消费（derive） |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:18` | `HWEncoding` | 本后端不读 |
@@ -656,11 +667,12 @@ Record 里只有声明；这些是共享 C++ 在投影之前对语义的改写�
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:88` | `AltNames` | 本后端不读 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:89` | `DwarfNumbers` | 本后端不读 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:92` | `RegAltNameIndices` | 本后端不读 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:137` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:147` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:158` | `DecoderMethod` | decoder 自定义方法。 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:16` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:85` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
 
-共 114 处使用；契约外 28 处。
+共 126 处使用；契约外 28 处。
 <!-- END: GENERATED TD USAGE -->
 
 RVMin 的 pattern 都写在 `RVMinInstrInfo.td`（`def : Pat<...>`），而

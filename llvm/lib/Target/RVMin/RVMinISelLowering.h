@@ -114,6 +114,11 @@ public:
 private:
   SDValue lowerSELECT(SDValue Op, SelectionDAG &DAG) const;
 
+  /// Chapter 41: f64 constants have no `fmv.d.x` on RV32, and i64 is not a
+  /// legal type here.  Materialize the bit pattern through a private 8-byte
+  /// stack slot: two i32 stores followed by one `fld`.
+  SDValue lowerConstantFP(SDValue Op, SelectionDAG &DAG) const;
+
   /// Resolve the ABI for a function: -target-abi / the "target-abi" module
   /// flag win, otherwise it is derived from the enabled extensions.
   RVMinABI getABI(const MachineFunction &MF) const;

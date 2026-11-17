@@ -59,7 +59,7 @@ bool RVMinTargetInfo::setABI(const std::string &Name) {
 bool RVMinTargetInfo::isValidCPUName(StringRef Name) const {
   return llvm::is_contained(
       {"generic-rv32", "generic-rv32-m", "generic-rv32-a", "generic-rv32-f",
-       "generic-rv32-zbb", "generic-rv32-zbs"},
+       "generic-rv32-d", "generic-rv32-zbb", "generic-rv32-zbs"},
       Name);
 }
 
@@ -69,13 +69,14 @@ void RVMinTargetInfo::fillValidCPUList(
   Values.push_back("generic-rv32-m");
   Values.push_back("generic-rv32-a");
   Values.push_back("generic-rv32-f");
+  Values.push_back("generic-rv32-d");
   Values.push_back("generic-rv32-zbb");
   Values.push_back("generic-rv32-zbs");
 }
 
 static bool isRVMinExtension(StringRef Ext) {
   return Ext == "i" || Ext == "m" || Ext == "a" || Ext == "f" ||
-         Ext == "zbb" || Ext == "zbs" ||
+         Ext == "d" || Ext == "zbb" || Ext == "zbs" ||
          // Implied by "a" (zalrsc/zaamo) or "m" (zmmul).  The backend has
          // patterns for the operations these unlock, so they are allowed even
          // though they are not spelled out in RVMin.td.
@@ -113,6 +114,12 @@ bool RVMinTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
         << "the " + ABIName + " ABI requires the F extension";
     return false;
   }
+  if (ABIName == "ilp32f" && ISAInfo->hasExtension("d")) {
+    Diags.Report(diag::err_invalid_feature_combination)
+        << "the ilp32f ABI with the D extension is not implemented; use "
+           "-mabi=ilp32d or disable D";
+    return false;
+  }
   if (ABIName == "ilp32d" && !ISAInfo->hasExtension("d")) {
     Diags.Report(diag::err_invalid_feature_combination)
         << "the ilp32d ABI requires the D extension";
@@ -128,8 +135,8 @@ bool RVMinTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
     StringRef Name = F;
     if (!Name.consume_front("+"))
       return true;
-    return Name != "m" && Name != "a" && Name != "f" && Name != "zbb" &&
-           Name != "zbs";
+    return Name != "m" && Name != "a" && Name != "f" && Name != "d" &&
+           Name != "zbb" && Name != "zbs";
   });
   return true;
 }

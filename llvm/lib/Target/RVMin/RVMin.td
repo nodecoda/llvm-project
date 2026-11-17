@@ -62,6 +62,16 @@ def HasStdExtF : Predicate<"Subtarget->hasStdExtF()">,
                  AssemblerPredicate<(all_of FeatureStdExtF),
                                     "'F' (Single-Precision Floating-Point)">;
 
+// Chapter 41: D implies F.  FLEN grows to 64 bits; the same f0-f31 registers
+// are viewed as 64-bit by the FPR64 register class.
+def FeatureStdExtD : SubtargetFeature<"d", "HasStdExtD", "true",
+                                      "Double-precision floating point",
+                                      [FeatureStdExtF]>;
+
+def HasStdExtD : Predicate<"Subtarget->hasStdExtD()">,
+                 AssemblerPredicate<(all_of FeatureStdExtD),
+                                    "'D' (Double-Precision Floating-Point)">;
+
 //===----------------------------------------------------------------------===//
 // Processors
 //===----------------------------------------------------------------------===//
@@ -75,6 +85,7 @@ def : RVMinProc<"generic-rv32-zbb", [FeatureStdExtZbb]>;
 def : RVMinProc<"generic-rv32-zbs", [FeatureStdExtZbs]>;
 def : RVMinProc<"generic-rv32-a", [FeatureStdExtA]>;
 def : RVMinProc<"generic-rv32-f", [FeatureStdExtF]>;
+def : RVMinProc<"generic-rv32-d", [FeatureStdExtD]>;
 
 //===----------------------------------------------------------------------===//
 // Register File

@@ -98,6 +98,7 @@ git checkout rvmin-ch16     # 第 16 章（大栈帧）结束
 | 章 | 主题 | 状态 |
 | --- | --- | --- |
 | 40 | [F 扩展与 ILP32F 调用约定](docs/40-f-extension.md) | 完成 |
+| 41 | [D 扩展与 ILP32D 调用约定](docs/41-d-extension.md) | 完成 |
 
 ## 当前限制（上篇结束时，第 14 章）
 

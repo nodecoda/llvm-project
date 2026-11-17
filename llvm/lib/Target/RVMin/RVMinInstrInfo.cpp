@@ -52,6 +52,20 @@ void RVMinInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
     return;
   }
 
+  // Chapter 41: FPR32 and FPR64 contain the same physical registers, so the
+  // feature decides which view a copy uses.  `fsgnj.d` copies all 64 bits,
+  // which is also right for an f32 value: RV32D keeps floats NaN-boxed.
+  // Query the function's subtarget here: the InstrInfo object is created
+  // before ParseSubtargetFeatures runs, so a cached flag would be wrong.
+  const bool HasD =
+      MBB.getParent()->getSubtarget<RVMinSubtarget>().hasStdExtD();
+  if (HasD && RVMin::FPR64RegClass.contains(DestReg, SrcReg)) {
+    BuildMI(MBB, MI, DL, get(RVMin::FSGNJ_D), DestReg)
+        .addReg(SrcReg, getKillRegState(KillSrc))
+        .addReg(SrcReg, getKillRegState(KillSrc));
+    return;
+  }
+
   if (RVMin::FPR32RegClass.contains(DestReg, SrcReg)) {
     BuildMI(MBB, MI, DL, get(RVMin::FSGNJ_S), DestReg)
         .addReg(SrcReg, getKillRegState(KillSrc))
@@ -246,12 +260,17 @@ void RVMinInstrInfo::storeRegToStackSlot(
     MachineBasicBlock &MBB, MachineBasicBlock::iterator MI, Register SrcReg,
     bool IsKill, int FrameIndex, const TargetRegisterClass *RC, Register VReg,
     MachineInstr::MIFlag Flags) const {
-  const bool IsFPR = RC == &RVMin::FPR32RegClass;
-  assert((IsFPR || RC == &RVMin::GPRRegClass) &&
-         "RVMin: unexpected register class in spill");
+  // Chapter 41: doubles spill with fsd, floats with fsw, integers with sw.
+  unsigned Opc = RVMin::SW;
+  if (RC == &RVMin::FPR64RegClass)
+    Opc = RVMin::FSD;
+  else if (RC == &RVMin::FPR32RegClass)
+    Opc = RVMin::FSW;
+  else
+    assert(RC == &RVMin::GPRRegClass &&
+           "RVMin: unexpected register class in spill");
   DebugLoc DL = MI != MBB.end() ? MI->getDebugLoc() : DebugLoc();
-  MachineInstr *New = BuildMI(MBB, MI, DL,
-                              get(IsFPR ? RVMin::FSW : RVMin::SW))
+  MachineInstr *New = BuildMI(MBB, MI, DL, get(Opc))
                           .addReg(SrcReg, getKillRegState(IsKill))
                           .addFrameIndex(FrameIndex)
                           .addImm(0);
@@ -265,13 +284,17 @@ void RVMinInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
                                           const TargetRegisterClass *RC,
                                           Register VReg, unsigned SubReg,
                                           MachineInstr::MIFlag Flags) const {
-  const bool IsFPR = RC == &RVMin::FPR32RegClass;
-  assert((IsFPR || RC == &RVMin::GPRRegClass) &&
-         "RVMin: unexpected register class in reload");
+  unsigned Opc = RVMin::LW;
+  if (RC == &RVMin::FPR64RegClass)
+    Opc = RVMin::FLD;
+  else if (RC == &RVMin::FPR32RegClass)
+    Opc = RVMin::FLW;
+  else
+    assert(RC == &RVMin::GPRRegClass &&
+           "RVMin: unexpected register class in reload");
   assert(SubReg == 0 && "RVMin has no sub-register reloads");
   DebugLoc DL = MI != MBB.end() ? MI->getDebugLoc() : DebugLoc();
-  MachineInstr *New = BuildMI(MBB, MI, DL,
-                              get(IsFPR ? RVMin::FLW : RVMin::LW), DestReg)
+  MachineInstr *New = BuildMI(MBB, MI, DL, get(Opc), DestReg)
                           .addFrameIndex(FrameIndex)
                           .addImm(0);
   if (Flags != MachineInstr::NoFlags)

@@ -111,6 +111,14 @@ static DecodeStatus DecodeFPR32RegisterClass(MCInst &Inst, uint64_t RegNo,
   return MCDisassembler::Success;
 }
 
+// Chapter 41: the double-precision view uses the same architectural registers.
+// The hook exists separately because the register class in the .td names it.
+static DecodeStatus DecodeFPR64RegisterClass(MCInst &Inst, uint64_t RegNo,
+                                             uint64_t Address,
+                                             const MCDisassembler *Decoder) {
+  return DecodeFPR32RegisterClass(Inst, RegNo, Address, Decoder);
+}
+
 // Plain sign extension: I-type, S-type and JALR's 12-bit immediate.
 template <unsigned N>
 static DecodeStatus decodeSImmOperand(MCInst &Inst, uint64_t Imm,

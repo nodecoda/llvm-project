@@ -7,6 +7,8 @@
 # and round-trip when multiply/divide/remainder become single instructions.
 # Chapter 40 adds `-mattr=+f`; that cell compiles its IR with -march=rv32if so
 # the module's ABI flag (ilp32f) agrees with the backend's feature set.
+# Chapter 41 adds `-mattr=+f,+d` (rv32id/ilp32d), which must keep the same
+# source-level results while selecting double-precision instructions.
 #
 # Usage: rvmin-e2e.sh <llvm-bin-dir>
 #
@@ -39,7 +41,7 @@ fail() {
 
 TRIPLE=riscv32-unknown-elf
 OPTS="0 1 2 3"
-MATTRS=("" "+m" "+f")
+MATTRS=("" "+m" "+f" "+f,+d")
 PROGRAMS=0
 CASES=0
 TOTAL_TEXT=0
@@ -57,12 +59,13 @@ for c in "$SRC"/*.c; do
       # The feature set decides both the backend flags and the frontend's
       # ABI: an F-enabled object must carry "ilp32f" in its IR, otherwise the
       # backend's consistency check is supposed to reject it.
-      CARCH=rv32i
-      CABI=ilp32
-      if [[ "$MATTR" == "+f" ]]; then
-        CARCH=rv32if
-        CABI=ilp32f
-      fi
+      case "$MATTR" in
+      "")      CARCH=rv32i;  CABI=ilp32 ;;
+      "+m")    CARCH=rv32i;  CABI=ilp32 ;;   # M does not change the ABI
+      "+f")    CARCH=rv32if; CABI=ilp32f ;;
+      "+f,+d") CARCH=rv32id; CABI=ilp32d ;;
+      *) fail "unexpected feature set '$MATTR'" ;;
+      esac
       "$CC" --target="$TRIPLE" -march="$CARCH" -mabi="$CABI" -O"$O" \
         -S -emit-llvm "$c" -o "$base.ll" \
         || fail "$tag: clang failed"

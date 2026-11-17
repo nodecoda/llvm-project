@@ -37,6 +37,14 @@
 
 using namespace llvm;
 
+// F and D have ordered EQ/LT/LE only.  Every other condition is expanded into
+// one of those plus an XOR or an operand swap, so `x != y` and friends still
+// work without extra instructions.  Shared by the f32 and f64 blocks below.
+static const ISD::CondCode FPCCToExpand[] = {
+    ISD::SETOGT, ISD::SETOGE, ISD::SETONE, ISD::SETUEQ, ISD::SETUGT,
+    ISD::SETUGE, ISD::SETULT, ISD::SETULE, ISD::SETUNE, ISD::SETGT,
+    ISD::SETGE,  ISD::SETNE,  ISD::SETO,   ISD::SETUO};
+
 #define GET_CALLING_CONV_IMPL
 #include "RVMinGenCallingConv.inc"
 
@@ -50,6 +58,10 @@ RVMinTargetLowering::RVMinTargetLowering(const TargetMachine &TM,
   // of register classes.
   if (STI.hasStdExtF())
     addRegisterClass(MVT::f32, &RVMin::FPR32RegClass);
+  // Chapter 41: with D, f64 is legal and lives in the 64-bit view of the same
+  // register file.  D implies F, so both classes are registered together.
+  if (STI.hasStdExtD())
+    addRegisterClass(MVT::f64, &RVMin::FPR64RegClass);
   computeRegisterProperties(STI.getRegisterInfo());
 
   // Chapter 22: with A, the RV32A instructions (lr.w/sc.w/amo*.w) are exactly
@@ -174,13 +186,6 @@ RVMinTargetLowering::RVMinTargetLowering(const TargetMachine &TM,
     setOperationAction({ISD::FMINNUM, ISD::FMAXNUM}, MVT::f32, Legal);
     setOperationAction(ISD::FREM, MVT::f32, LibCall);
 
-    // F has ordered EQ/LT/LE.  Every other condition is expanded into one of
-    // those plus an XOR or an operand swap, so `x != y` and friends still
-    // work without extra instructions.
-    static const ISD::CondCode FPCCToExpand[] = {
-        ISD::SETOGT, ISD::SETOGE, ISD::SETONE, ISD::SETUEQ, ISD::SETUGT,
-        ISD::SETUGE, ISD::SETULT, ISD::SETULE, ISD::SETUNE, ISD::SETGT,
-        ISD::SETGE,  ISD::SETNE,  ISD::SETO,   ISD::SETUO};
     setCondCodeAction(FPCCToExpand, MVT::f32, Expand);
 
     // A value select on f32 has no instruction.  It is lowered by
@@ -198,6 +203,48 @@ RVMinTargetLowering::RVMinTargetLowering(const TargetMachine &TM,
                        MVT::f32, Expand);
     setOperationAction({ISD::FSIN, ISD::FCOS, ISD::FSINCOS, ISD::FPOW},
                        MVT::f32, Expand);
+  }
+
+  // Chapter 41: the double-precision half.  Same shape as F; the differences
+  // are the 64-bit calls, the float<->double conversions, and the fact that a
+  // double cannot be moved through the integer register file on RV32.
+  if (STI.hasStdExtD()) {
+    setOperationAction({ISD::FMINNUM, ISD::FMAXNUM}, MVT::f64, Legal);
+    setOperationAction(ISD::FREM, MVT::f64, LibCall);
+
+    setCondCodeAction(FPCCToExpand, MVT::f64, Expand);
+
+    setOperationAction(ISD::SELECT, MVT::f64, Custom);
+    setOperationAction(ISD::SELECT_CC, MVT::f64, Expand);
+    setOperationAction(ISD::BR_CC, MVT::f64, Expand);
+
+    setOperationAction({ISD::FCEIL, ISD::FFLOOR, ISD::FTRUNC, ISD::FRINT,
+                        ISD::FROUND, ISD::FROUNDEVEN},
+                       MVT::f64, Expand);
+    setOperationAction({ISD::FSIN, ISD::FCOS, ISD::FSINCOS, ISD::FPOW},
+                       MVT::f64, Expand);
+
+    // fcvt.d.s / fcvt.s.d are single instructions.  Without these the
+    // legalizer would call __extendsfdf2/__truncdfsf2 and the codegen test
+    // would never see FCVT_D_S/FCVT_S_D.
+    setOperationAction(ISD::FP_EXTEND, MVT::f64, Legal);
+    setOperationAction(ISD::FP_ROUND, MVT::f32, Legal);
+
+    // `float x = (float)d;` reaches the DAG as a truncating store: the
+    // combiner folds FP_ROUND into the store because the generic legality
+    // rules say f64->f32 truncation is fine.  RVMin has no truncstore
+    // pattern (only plain 4- and 8-byte stores), so expand it back into
+    // FP_ROUND + FSW, which the selector does know.
+    setTruncStoreAction(MVT::f64, MVT::f32, Expand);
+
+    // The mirror image: `(double)f` loads an f32 slot with an extending
+    // load once the combiner folds FP_EXTEND into it.  Expand to FLW +
+    // FCVT_D_S, again the two instructions the selector knows.
+    setLoadExtAction(ISD::EXTLOAD, MVT::f64, MVT::f32, Expand);
+
+    // No register-pair move exists, so the immediate is lowered by
+    // lowerConstantFP through a stack slot.
+    setOperationAction(ISD::ConstantFP, MVT::f64, Custom);
   }
 
   // Chapter 11 built `switch` as a comparison chain because RVMin had no
@@ -253,6 +300,8 @@ RVMinABI RVMinTargetLowering::getABI(const MachineFunction &MF) const {
 
   if (Name.empty()) {
     const RVMinSubtarget &STI = MF.getSubtarget<RVMinSubtarget>();
+    if (STI.hasStdExtD())
+      return RVMinABI::ILP32D;
     if (STI.hasStdExtF())
       return RVMinABI::ILP32F;
     return RVMinABI::ILP32;
@@ -289,12 +338,21 @@ void RVMinTargetLowering::checkABICompatibility(
     if (!STI.hasStdExtF())
       report_fatal_error(
           "RVMin: the ilp32f ABI requires the F extension", false);
+    // With D, f64 becomes legal and would cross calls in fa0-fa7, which is
+    // the ilp32d convention.  Mixing the two silently would miscompile, so
+    // this combination is rejected until it is implemented on purpose.
+    if (STI.hasStdExtD())
+      report_fatal_error(
+          "RVMin: the ilp32f ABI with the D extension is not implemented; "
+          "use -mabi=ilp32d or disable D with -mattr=-d",
+          /*gen_crash_diag=*/false);
     break;
   case RVMinABI::ILP32D:
-    report_fatal_error(
-        "RVMin: the ilp32d ABI requires the D extension, which arrives in "
-        "chapter 41",
-        /*gen_crash_diag=*/false);
+    if (!STI.hasStdExtD())
+      report_fatal_error(
+          "RVMin: the ilp32d ABI requires the D extension",
+          /*gen_crash_diag=*/false);
+    break;
   }
 }
 
@@ -313,6 +371,8 @@ SDValue RVMinTargetLowering::LowerOperation(SDValue Op,
     return lowerBR_CC(Op, DAG);
   case ISD::BR_JT:
     return lowerBR_JT(Op, DAG);
+  case ISD::ConstantFP:
+    return lowerConstantFP(Op, DAG);
   }
 }
 
@@ -575,10 +635,71 @@ SDValue RVMinTargetLowering::lowerSELECT(SDValue Op,
   SDValue FalseV = Op.getOperand(2);
   SDLoc DL(Op);
 
+  // Chapter 41: a double cannot be bitcast to a legal integer type (i64 is
+  // expanded and there is no fmv.x.d on RV32D).  Select the address of the
+  // arm instead: store both to private slots and reload through the winner.
+  if (Op.getValueType() == MVT::f64) {
+    MachineFunction &MF = DAG.getMachineFunction();
+    MachineFrameInfo &MFI = MF.getFrameInfo();
+    EVT PtrVT = getPointerTy(DAG.getDataLayout());
+
+    int TrueFI = MFI.CreateStackObject(8, Align(8), /*isSpillSlot=*/false);
+    int FalseFI = MFI.CreateStackObject(8, Align(8), /*isSpillSlot=*/false);
+    SDValue TrueAddr = DAG.getFrameIndex(TrueFI, PtrVT);
+    SDValue FalseAddr = DAG.getFrameIndex(FalseFI, PtrVT);
+
+    SDValue Chain = DAG.getEntryNode();
+    Chain = DAG.getStore(Chain, DL, TrueV, TrueAddr,
+                         MachinePointerInfo::getFixedStack(MF, TrueFI),
+                         Align(8));
+    Chain = DAG.getStore(Chain, DL, FalseV, FalseAddr,
+                         MachinePointerInfo::getFixedStack(MF, FalseFI),
+                         Align(8));
+
+    // i32 select: the legalizer expands it into the branchless mask sequence
+    // from chapter 4 (SELECT_CC), which is why SELECT must stay Custom.
+    SDValue Addr =
+        DAG.getNode(ISD::SELECT, DL, PtrVT, Cond, TrueAddr, FalseAddr);
+    return DAG.getLoad(MVT::f64, DL, Chain, Addr, MachinePointerInfo(),
+                       Align(8));
+  }
+
   SDValue TrueInt = DAG.getBitcast(MVT::i32, TrueV);
   SDValue FalseInt = DAG.getBitcast(MVT::i32, FalseV);
   SDValue Sel = DAG.getNode(ISD::SELECT, DL, MVT::i32, Cond, TrueInt, FalseInt);
   return DAG.getBitcast(MVT::f32, Sel);
+}
+
+// Chapter 41: f64 immediate.  Sequenced before the first use through its own
+// chain; the slot is private, so it needs no ordering against other memory
+// operations.  A constant pool would need PC-relative addressing that RVMin
+// does not have, and i64 is not a legal type to bitcast through.
+SDValue RVMinTargetLowering::lowerConstantFP(SDValue Op,
+                                             SelectionDAG &DAG) const {
+  assert(Op.getValueType() == MVT::f64 && "only double immediates are custom");
+  APInt Bits =
+      cast<ConstantFPSDNode>(Op)->getValueAPF().bitcastToAPInt();
+
+  MachineFunction &MF = DAG.getMachineFunction();
+  int FI = MF.getFrameInfo().CreateStackObject(8, Align(8),
+                                               /*isSpillSlot=*/false);
+  SDLoc DL(Op);
+  EVT PtrVT = getPointerTy(DAG.getDataLayout());
+  SDValue FIN = DAG.getFrameIndex(FI, PtrVT);
+  MachinePointerInfo MPI = MachinePointerInfo::getFixedStack(MF, FI);
+
+  SDValue Chain = DAG.getEntryNode();
+  Chain = DAG.getStore(Chain, DL,
+                       DAG.getConstant(Bits.trunc(32).getZExtValue(), DL,
+                                       MVT::i32),
+                       FIN, MPI, Align(4));
+  Chain = DAG.getStore(Chain, DL,
+                       DAG.getConstant(Bits.lshr(32).getZExtValue(), DL,
+                                       MVT::i32),
+                       DAG.getMemBasePlusOffset(FIN, TypeSize::getFixed(4), DL),
+                       MPI.getWithOffset(4), Align(4));
+
+  return DAG.getLoad(MVT::f64, DL, Chain, FIN, MPI, Align(8));
 }
 
 SDValue RVMinTargetLowering::lowerSELECT_CC(SDValue Op,
