@@ -5,8 +5,9 @@ M/A/Zbb/Zbs 整数扩展、F/D 浮点、C 压缩、Zicsr/Zifencei（第 46 章�
 进入向量子集（第 47–50 章）。本目录是配套教程：每章一个提交，每章都能独立
 构建、测试、复现。
 
-V 只覆盖 **Zve32x 教学子集**：SEW=32、LMUL=1、VLEN=128、无 mask、无向量 FP、
-无向量 ABI。它不是完整 RVV，也不声称 `rv32gcv` 全量支持。
+V 覆盖 **Zve32x/Zve32f 教学子集**：SEW=32、VLEN=128、LMUL=1/2、常量 mask、
+向量浮点（`v4f32`）与 LMUL=1 的 `v4i32` ABI。它不是完整 RVV，也不声称
+`rv32gcv` 全量支持。
 
 - 总览与快速开始：[`../README.md`](../README.md)
 - 完整实现：`llvm/lib/Target/RVMin/`
@@ -112,6 +113,7 @@ V 只覆盖 **Zve32x 教学子集**：SEW=32、LMUL=1、VLEN=128、无 mask、�
 | 53 | [53-lmul2.md](53-lmul2.md) | LMUL=2：寄存器对、`v8i32`、m2 load/store/add、32 字节 spill、`vmv2r.v` | `v-lmul2.ll`；lit 38/38；V 语料 36；228 llc / 432 / 288 不变；门禁 8/8 | `rvmin-ch53` |
 | 54 | [54-zve32f.md](54-zve32f.md) | Zve32f：`v4f32`、`vfadd/vfsub/vfmul`、`vfmv.v.f`/`vfmv.f.s`；只有 `+v,+f` 生成 | `v-fp.s` + `v-fp.ll`；V 语料 41；lit 40/40；240 llc / 432 / 288；门禁 8/8 | `rvmin-ch54` |
 | 55 | [55-vector-abi.md](55-vector-abi.md) | 向量 ABI：v8–v23 传参/返回、第 17 个参数进栈、16 字节对齐；v1–v7/v24–v31 callee-saved；`+v,+f` 双 CSR | `v-abi.ll`、`v-abi-m2.ll`；lit 42/42；276 llc / 432 / 288；门禁 8/8 | `rvmin-ch55` |
+| 56 | [56-vector-phase-acceptance.md](56-vector-phase-acceptance.md) | 第七篇验收：52–55 的 AC 总表、计数锁定、教学子集边界、QEMU V 环境缺口 | `rvmin-verify-all.sh` 8/8；lit 42/42；276 llc / 432 / 288；`rvmin-run-v.sh` 在 QEMU 6.2 返回 2 | `rvmin-ch56` |
 
 每个章末都有对应 tag：`git checkout rvmin-ch16` 即可看到该章结束时的完整代码。
 
