@@ -340,22 +340,23 @@ RVMin 是一个小但完整的实例：32 个整数寄存器（`GPR`）、32 个
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:29` | `Namespace` | 消费（derive+project） |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:30` | `HWEncoding` | 消费（project） |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:35` | `RegAltNameIndices` | asm writer / asm matcher |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:115` | `DecoderMethod` | decoder |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:135` | `DecoderMethod` | decoder |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:163` | `Namespace` | 消费（derive+project） |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:164` | `HWEncoding` | 消费（project） |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:165` | `AltNames` | asm writer / asm matcher |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:166` | `DwarfNumbers` | 消费（project） |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:169` | `RegAltNameIndices` | asm writer / asm matcher |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:224` | `DecoderMethod` | decoder |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:235` | `DecoderMethod` | decoder |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:242` | `DecoderMethod` | decoder |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:247` | `DecoderMethod` | decoder |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:120` | `DecoderMethod` | decoder |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:128` | `DecoderMethod` | decoder |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:148` | `DecoderMethod` | decoder |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:176` | `Namespace` | 消费（derive+project） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:177` | `HWEncoding` | 消费（project） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:178` | `AltNames` | asm writer / asm matcher |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:179` | `DwarfNumbers` | 消费（project） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:182` | `RegAltNameIndices` | asm writer / asm matcher |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:237` | `DecoderMethod` | decoder |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:248` | `DecoderMethod` | decoder |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:255` | `DecoderMethod` | decoder |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:260` | `DecoderMethod` | decoder |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:16` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:28` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:162` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:175` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
 
-共 22 处使用；契约外 0 处。
+共 23 处使用；契约外 0 处。
 <!-- END: GENERATED TD USAGE -->
 
 这张表就是本章最直接的结论：

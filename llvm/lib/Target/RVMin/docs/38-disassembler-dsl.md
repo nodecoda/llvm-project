@@ -618,22 +618,23 @@ class EncodingByHwMode<list<HwMode> Ms = [], list<InstructionEncoding> Ts = []>
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:29` | `Namespace` | 消费（derive） |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:30` | `HWEncoding` | 寄存器编码；`-gen-register-info` 消费。 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:35` | `RegAltNameIndices` | 本后端不读 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:115` | `DecoderMethod` | decoder 自定义方法。 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:135` | `DecoderMethod` | decoder 自定义方法。 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:163` | `Namespace` | 消费（derive） |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:164` | `HWEncoding` | 寄存器编码；`-gen-register-info` 消费。 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:165` | `AltNames` | 本后端不读 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:166` | `DwarfNumbers` | DWARF 编号；`-gen-register-info` 消费。 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:169` | `RegAltNameIndices` | 本后端不读 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:224` | `DecoderMethod` | decoder 自定义方法。 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:235` | `DecoderMethod` | decoder 自定义方法。 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:242` | `DecoderMethod` | decoder 自定义方法。 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:247` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:120` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:128` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:148` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:176` | `Namespace` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:177` | `HWEncoding` | 寄存器编码；`-gen-register-info` 消费。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:178` | `AltNames` | 本后端不读 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:179` | `DwarfNumbers` | DWARF 编号；`-gen-register-info` 消费。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:182` | `RegAltNameIndices` | 本后端不读 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:237` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:248` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:255` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:260` | `DecoderMethod` | decoder 自定义方法。 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:16` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:28` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:162` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:175` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
 
-共 232 处使用；契约外 93 处。
+共 233 处使用；契约外 93 处。
 <!-- END: GENERATED TD USAGE -->
 
 `Inst` 是本章的核心输入，但它声明在 RVMin 自己的 `RVMinInst` 上，不在

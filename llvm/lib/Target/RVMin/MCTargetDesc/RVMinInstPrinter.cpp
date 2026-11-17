@@ -114,6 +114,17 @@ void RVMinInstPrinter::printVTypeI(const MCInst *MI, unsigned OpNo,
   O << VT;
 }
 
+void RVMinInstPrinter::printV0MaskReg(const MCInst *MI, unsigned OpNo,
+                                      const MCSubtargetInfo &STI,
+                                      raw_ostream &O) {
+  const MCOperand &MO = MI->getOperand(OpNo);
+  assert(MO.isReg() && "mask operands are registers");
+  if (MO.getReg() == RVMin::NoRegister)
+    return;
+  printRegName(O, MO.getReg());
+  O << ".t";
+}
+
 void RVMinInstPrinter::printUImm20Operand(const MCInst *MI, unsigned OpNo,
                                           const MCSubtargetInfo &STI,
                                           raw_ostream &O) {

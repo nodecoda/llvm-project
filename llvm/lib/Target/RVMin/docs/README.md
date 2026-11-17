@@ -104,6 +104,12 @@ V 只覆盖 **Zve32x 教学子集**：SEW=32、LMUL=1、VLEN=128、无 mask、�
 | 50 | [50-v-acceptance.md](50-v-acceptance.md) | 第六篇验收：V 子集全链路、AC 表、计数口径、QEMU 8.2 运行与环境缺口 | `rvmin-verify-all.sh` 8/8（第 5 项含 V 静态 e2e）；`rvmin-e2e-v.sh` 4 对象；`rvmin-run-v.sh` | `rvmin-ch50` |
 | 51 | [51-strict-abi.md](51-strict-abi.md) | 严格 ABI：`ilp32` + 硬件 F/D 的调用边界（f32 单 GPR、f64 偶数对/8 字节栈） | `abi-soft-float.ll`；`abi-soft.c` 运行；lit 36/36；门禁 8/8；216 llc / 432 / 288 不变 | `rvmin-ch51` |
 
+### 第七篇：向量进阶（52–56）
+
+| 章 | 文档 | 主题 | 本章门禁 | tag |
+| --- | --- | --- | --- | --- |
+| 52 | [52-vector-mask.md](52-vector-mask.md) | 向量 mask：`vm` 位、架构 v0、6 条 masked ALU 与 `vmerge.vvm`；`select <4 x i1>` 代码生成 | `v-extension.s` 9 正例 + 6 负例；V 语料 34；`v-ext-mask.ll`；lit 37/37；216 llc / 432 / 288 不变 | `rvmin-ch52` |
+
 每个章末都有对应 tag：`git checkout rvmin-ch16` 即可看到该章结束时的完整代码。
 
 ## 每章固定包含什么

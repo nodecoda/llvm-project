@@ -120,6 +120,10 @@ private:
   /// 5-bit immediate range becomes VMV_V_I; everything else goes through a
   /// private 16-byte stack slot and VLE32_V (or a scalar LW for extract).
   SDValue lowerBUILD_VECTOR(SDValue Op, SelectionDAG &DAG) const;
+  /// Chapter 52: a constant <4 x i1> mask becomes a 4-bit integer in a GPR,
+  /// broadcast into the vector register with vmv.v.x.  The mask register only
+  /// consumes bits 0-3, so the low half of the broadcast is the mask image.
+  SDValue lowerMaskBUILD_VECTOR(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerSPLAT_VECTOR(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerEXTRACT_VECTOR_ELT(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerVECREDUCE_ADD(SDValue Op, SelectionDAG &DAG) const;

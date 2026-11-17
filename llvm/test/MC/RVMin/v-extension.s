@@ -8,13 +8,21 @@
 # RUN: not llvm-mc -triple=rvmin -mattr=+v -filetype=obj %t/range.s -o /dev/null 2>&1 | FileCheck %s --check-prefix=RANGE
 # RUN: not llvm-mc -triple=rvmin -mattr=+v -filetype=obj %t/range10.s -o /dev/null 2>&1 | FileCheck %s --check-prefix=RANGE10
 # RUN: not llvm-mc -triple=rvmin -mattr=+v -filetype=obj %t/rangei.s -o /dev/null 2>&1 | FileCheck %s --check-prefix=RANGEI
+# RUN: not llvm-mc -triple=rvmin -mattr=+v -filetype=obj %t/badmask.s -o /dev/null 2>&1 | FileCheck %s --check-prefix=BADMASK
+# RUN: not llvm-mc -triple=rvmin -mattr=+v -filetype=obj %t/badmaskt.s -o /dev/null 2>&1 | FileCheck %s --check-prefix=BADMASKT
+# RUN: not llvm-mc -triple=rvmin -mattr=+v -filetype=obj %t/badmerge.s -o /dev/null 2>&1 | FileCheck %s --check-prefix=BADMERGE
+# RUN: not llvm-mc -triple=rvmin -mattr=+v -filetype=obj %t/badmerget.s -o /dev/null 2>&1 | FileCheck %s --check-prefix=BADMERGET
+# RUN: not llvm-mc -triple=rvmin -mattr=+v -filetype=obj %t/badvd.s -o /dev/null 2>&1 | FileCheck %s --check-prefix=BADVD
+# RUN: not llvm-mc -triple=rvmin -mattr=+v -filetype=obj %t/badvmerge.s -o /dev/null 2>&1 | FileCheck %s --check-prefix=BADVMERGE
 #
 # Chapter 47: the V-extension MC layer (Zve32x teaching subset).
+# Chapter 52 adds the mask forms: vmerge.vvm and masked integer ALU.
 #
-# The twenty-seven instructions below cover configuration, unit-stride 32-bit
+# The thirty-four instructions below cover configuration, unit-stride 32-bit
 # load/store, the vmv moves (including the scalar broadcast), integer
 # add/sub/multiply with their .vx/.vi forms, the bitwise operations with their
-# scalar forms, and the vredsum.vs reduction.  Every encoding is checked byte for byte against
+# scalar forms, the vredsum.vs reduction, and the chapter-52 mask forms.
+# Every encoding is checked byte for byte against
 # `llvm-mc -triple=riscv32 -mattr=+v`; the corpus gate repeats that comparison
 # over the whole file.
 #
@@ -85,6 +93,28 @@ vsetivli zero, 4, 0xd0
 vadd.vv v0, v31, v1
 # CHECK: vadd.vv v0, v31, v1 # encoding: [0x57,0x80,0xf0,0x03]
 
+# Chapter 52: masks.  vmerge spells the mask as plain v0, the masked ALU
+# forms spell it as v0.t.  The mask value is bit i of element i of v0.
+vmerge.vvm v8, v9, v10, v0
+# CHECK: vmerge.vvm v8, v9, v10, v0 # encoding: [0x57,0x04,0x95,0x5c]
+vadd.vv v8, v9, v10, v0.t
+# CHECK: vadd.vv v8, v9, v10, v0.t # encoding: [0x57,0x04,0x95,0x00]
+vsub.vv v8, v9, v10, v0.t
+# CHECK: vsub.vv v8, v9, v10, v0.t # encoding: [0x57,0x04,0x95,0x08]
+vmul.vv v8, v9, v10, v0.t
+# CHECK: vmul.vv v8, v9, v10, v0.t # encoding: [0x57,0x24,0x95,0x94]
+vand.vv v8, v9, v10, v0.t
+# CHECK: vand.vv v8, v9, v10, v0.t # encoding: [0x57,0x04,0x95,0x24]
+vor.vv v8, v9, v10, v0.t
+# CHECK: vor.vv v8, v9, v10, v0.t # encoding: [0x57,0x04,0x95,0x28]
+vxor.vv v8, v9, v10, v0.t
+# CHECK: vxor.vv v8, v9, v10, v0.t # encoding: [0x57,0x04,0x95,0x2c]
+# The mask register may be a source, just not the destination.
+vadd.vv v8, v0, v10, v0.t
+# CHECK: vadd.vv v8, v0, v10, v0.t # encoding: [0x57,0x04,0x05,0x00]
+vadd.vv v8, v9, v0, v0.t
+# CHECK: vadd.vv v8, v9, v0, v0.t # encoding: [0x57,0x04,0x90,0x00]
+
 #--- badtype.s
 vsetivli zero, 4, e33, m1, ta, ma
 
@@ -96,6 +126,24 @@ vsetivli zero, 4, 1024
 
 #--- rangei.s
 vadd.vi v8, v9, 16
+
+#--- badmask.s
+vadd.vv v8, v9, v10, v1.t
+
+#--- badmaskt.s
+vadd.vv v8, v9, v10, v0
+
+#--- badmerge.s
+vmerge.vvm v8, v9, v10, v1
+
+#--- badmerget.s
+vmerge.vvm v8, v9, v10, v0.t
+
+#--- badvd.s
+vadd.vv v0, v31, v1, v0.t
+
+#--- badvmerge.s
+vmerge.vvm v0, v1, v2, v0
 
 # CPU: vsetivli zero, 4, e32, m1, ta, ma # encoding: [0x57,0x70,0x02,0xcd]
 # DIS: vsetivli{{[[:space:]]+}}zero, 4, e32, m1, ta, ma
@@ -120,6 +168,19 @@ vadd.vi v8, v9, 16
 # DIS: vxor.vx{{[[:space:]]+}}v8, v9, a0
 # DIS: vxor.vi{{[[:space:]]+}}v8, v9, 5
 # DIS: vredsum.vs{{[[:space:]]+}}v8, v9, v10
+# DIS: vmerge.vvm{{[[:space:]]+}}v8, v9, v10, v0
+# DIS: vadd.vv{{[[:space:]]+}}v8, v9, v10, v0.t
+# DIS: vsub.vv{{[[:space:]]+}}v8, v9, v10, v0.t
+# DIS: vmul.vv{{[[:space:]]+}}v8, v9, v10, v0.t
+# DIS: vand.vv{{[[:space:]]+}}v8, v9, v10, v0.t
+# DIS: vor.vv{{[[:space:]]+}}v8, v9, v10, v0.t
+# DIS: vxor.vv{{[[:space:]]+}}v8, v9, v10, v0.t
+# BADMASK: error: operand must be v0.t
+# BADMASKT: error: operand must be v0.t
+# BADMERGE: error: operand must be v0
+# BADMERGET: error: operand must be v0
+# BADVD: error: the destination vector register group cannot overlap the mask register
+# BADVMERGE: error: the destination vector register group cannot be V0
 # MISSING: error: instruction requires the following: 'V' (Vector Extension)
 # BADTYPE: error: unknown vtype SEW 'e33'
 # RANGE: error: vtype must be an integer in the range 0..2047

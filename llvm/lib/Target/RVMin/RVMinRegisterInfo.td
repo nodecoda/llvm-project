@@ -109,9 +109,22 @@ def V31 : RVMinVReg<31, "v31">;
 // class type is v4i32.  Allocation starts at v8 and wraps back to v0-v7, which
 // keeps v0 (the mask register in full RVV) out of the common path and matches
 // the upstream RISC-V allocation order.
-def VR : RegisterClass<"RVMin", [v4i32], 128,
+//
+// Chapter 52: v4i1 is the mask value type.  It lives in the same 128-bit
+// registers as v4i32 (the mask register only uses the low four bits), which
+// keeps the type legal and lets SelectionDAG build it without promoting each
+// mask element through the integer legalizer.
+def VR : RegisterClass<"RVMin", [v4i32, v4i1], 128,
   (add (sequence "V%u", 8, 31),
        (sequence "V%u", 0, 7))> {
+  let DecoderMethod = "DecodeVRRegisterClass";
+}
+
+// Chapter 52: the architectural mask register.  This class contains only v0
+// and exists to constrain the mask operand of vmerge; masks produced by
+// ordinary vector code still live in VR, so the register allocator inserts a
+// copy into v0 when the instruction needs it.
+def VMV0 : RegisterClass<"RVMin", [v4i1], 128, (add V0)> {
   let DecoderMethod = "DecodeVRRegisterClass";
 }
 

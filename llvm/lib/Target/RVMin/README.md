@@ -124,6 +124,12 @@ git checkout rvmin-ch16     # 第 16 章（大栈帧）结束
 | 50 | [第六篇验收（V 子集）](docs/50-v-acceptance.md) | 完成 |
 | 51 | [严格 ABI（`ilp32` + 硬件 F/D）](docs/51-strict-abi.md) | 完成 |
 
+### 第七篇：向量进阶（52–56）
+
+| 章 | 主题 | 状态 |
+| --- | --- | --- |
+| 52 | [向量 mask（`vm`、v0、`vmerge.vvm`）](docs/52-vector-mask.md) | 完成 |
+
 ## 当前限制（上篇结束时，第 14 章）
 
 - i32 的算术/逻辑/移位/比较、分支、栈对象、load/store、全局数据与字符串、

@@ -1,8 +1,10 @@
 # Chapter 47: V-extension encoding corpus (Zve32x teaching subset).
 #
-# Twenty-seven instructions: three vset forms, unit-stride 32-bit load/store,
+# Thirty-four instructions: three vset forms, unit-stride 32-bit load/store,
 # five moves, three vadd forms, two vsub forms, two vmul forms, three bitwise
-# operations with their scalar immediate/register forms, and vredsum.vs.  check-rvmin-encodings.sh compares every encoding with
+# operations with their scalar immediate/register forms, vredsum.vs, and the
+# chapter-52 mask forms (vmerge.vvm plus six masked ALU .vv instructions).
+# check-rvmin-encodings.sh compares every encoding with
 # `llvm-mc -triple=riscv32 -mattr=+v` and requires byte equality.
 vsetivli zero, 4, e32, m1, ta, ma
 vsetvli a0, a1, e32, m1, ta, ma
@@ -31,3 +33,10 @@ vxor.vv v8, v9, v10
 vxor.vx v8, v9, a0
 vxor.vi v8, v9, 5
 vredsum.vs v8, v9, v10
+vadd.vv v8, v9, v10, v0.t
+vsub.vv v8, v9, v10, v0.t
+vmul.vv v8, v9, v10, v0.t
+vand.vv v8, v9, v10, v0.t
+vor.vv v8, v9, v10, v0.t
+vxor.vv v8, v9, v10, v0.t
+vmerge.vvm v8, v9, v10, v0

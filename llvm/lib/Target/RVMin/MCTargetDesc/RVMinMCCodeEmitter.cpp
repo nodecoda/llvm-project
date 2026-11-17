@@ -44,6 +44,11 @@ public:
                          SmallVectorImpl<MCFixup> &Fixups,
                          const MCSubtargetInfo &STI) const override;
 
+  /// Chapter 52: v0 is encoded as vm = 0; the absence of a mask is vm = 1.
+  unsigned getV0MaskReg(const MCInst &MI, unsigned OpNo,
+                        SmallVectorImpl<MCFixup> &Fixups,
+                        const MCSubtargetInfo &STI) const;
+
   uint64_t getBinaryCodeForInstr(const MCInst &MI,
                                  SmallVectorImpl<MCFixup> &Fixups,
                                  const MCSubtargetInfo &STI) const;
@@ -154,6 +159,18 @@ void RVMinMCCodeEmitter::encodeInstruction(const MCInst &MI,
 MCCodeEmitter *llvm::createRVMinMCCodeEmitter(MCContext &Ctx,
                                               const MCInstrInfo &MII) {
   return new RVMinMCCodeEmitter(Ctx, MII);
+}
+
+unsigned RVMinMCCodeEmitter::getV0MaskReg(
+    const MCInst &MI, unsigned OpNo, SmallVectorImpl<MCFixup> &Fixups,
+    const MCSubtargetInfo &STI) const {
+  MCOperand MO = MI.getOperand(OpNo);
+  assert(MO.isReg() && "mask operands are registers");
+  if (MO.getReg() == RVMin::V0)
+    return 0;
+  if (MO.getReg() == RVMin::NoRegister)
+    return 1;
+  llvm_unreachable("RVMin: only v0 may be used as a mask register");
 }
 
 #include "RVMinGenMCCodeEmitter.inc"

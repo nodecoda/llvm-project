@@ -72,6 +72,7 @@ class RVMinAsmParser : public MCTargetAsmParser {
   ParseStatus parseSpecifierOperand(OperandVector &Operands);
   ParseStatus parseCSRSystemRegister(OperandVector &Operands);
   ParseStatus parseVType(OperandVector &Operands);
+  ParseStatus parseV0MaskReg(OperandVector &Operands);
   ParseStatus parseMemOpBaseReg(OperandVector &Operands);
 
   /// @name Auto-generated Matcher Functions
@@ -114,6 +115,10 @@ class RVMinOperand : public MCParsedAsmOperand {
     const MCExpr *Imm;
     unsigned SysReg;
   };
+  /// Chapter 52: true when the operand came from parseV0MaskReg, i.e. the
+  /// source wrote the `.t` suffix.  The masked ALU forms require it;
+  /// vmerge's explicit-mask operand does not.
+  bool IsMaskToken = false;
 
 public:
   RVMinOperand(KindTy Kind) : MCParsedAsmOperand(), Kind(Kind) {}
@@ -171,6 +176,10 @@ public:
   // Chapter 46: a CSR operand parsed by parseCSRSystemRegister below.  The
   // generated matcher validates the class with this predicate.
   bool isCSRSystemRegister() const { return Kind == SystemReg; }
+
+  // Chapter 52: the generated matcher validates the mask operand class.
+  bool isV0Reg() const { return Kind == Register && Reg == RVMin::V0; }
+  bool isV0TReg() const { return IsMaskToken && isV0Reg(); }
 
   // Chapter 47: vsetivli encodes 10 vtype bits and vsetvli 11.  parseVType
   // folds both the token spelling and a raw number into an immediate; these
@@ -313,6 +322,16 @@ public:
     Op->EndLoc = Loc;
     return Op;
   }
+  static std::unique_ptr<RVMinOperand> createMaskReg(MCRegister Reg, SMLoc S,
+                                                     SMLoc E) {
+    auto Op = std::make_unique<RVMinOperand>(Register);
+    Op->Reg = Reg;
+    Op->StartLoc = S;
+    Op->EndLoc = E;
+    Op->IsMaskToken = true;
+    return Op;
+  }
+
   static std::unique_ptr<RVMinOperand> createReg(MCRegister Reg, SMLoc Start,
                                                  SMLoc End) {
     auto Op = std::make_unique<RVMinOperand>(Register);
@@ -428,6 +447,27 @@ ParseStatus RVMinAsmParser::parseSpecifierOperand(OperandVector &Operands) {
     if (parseMemOpBaseReg(Operands).isFailure())
       return Error(getLoc(), "expected memory base register");
   }
+  return ParseStatus::Success;
+}
+
+// Chapter 52: `v0.t` is one identifier token.  Strip the suffix, resolve the
+// register, and leave the predicate (isV0Reg) to reject anything but v0.
+ParseStatus RVMinAsmParser::parseV0MaskReg(OperandVector &Operands) {
+  if (getLexer().isNot(AsmToken::Identifier))
+    return ParseStatus::NoMatch;
+
+  const AsmToken &Tok = getLexer().getTok();
+  StringRef Name = Tok.getIdentifier();
+  if (!Name.consume_back(".t"))
+    return ParseStatus::NoMatch;
+
+  MCRegister Reg = matchRegister(Name);
+  if (Reg == RVMin::NoRegister)
+    return ParseStatus::Failure;
+
+  Operands.push_back(
+      RVMinOperand::createMaskReg(Reg, Tok.getLoc(), Tok.getEndLoc()));
+  Lex();
   return ParseStatus::Success;
 }
 
@@ -710,6 +750,18 @@ bool RVMinAsmParser::matchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
 
   switch (MatchResult) {
   case Match_Success:
+    // Chapter 52: the mask lives in v0, so a masked instruction must not
+    // write it.  vmerge always consumes v0; the masked ALU forms put the
+    // mask operand last (operand 3).  Sources may be v0, the destination
+    // may not, matching the upstream assembler.
+    if (Inst.getNumOperands() == 4 && Inst.getOperand(3).isReg() &&
+        Inst.getOperand(3).getReg() == RVMin::V0 &&
+        Inst.getOperand(0).isReg() && Inst.getOperand(0).getReg() == RVMin::V0) {
+      if (Inst.getOpcode() == RVMin::VMERGE_VVM)
+        return Error(IDLoc, "the destination vector register group cannot be V0");
+      return Error(IDLoc, "the destination vector register group cannot "
+                          "overlap the mask register");
+    }
     Inst.setLoc(IDLoc);
     Out.emitInstruction(Inst, *STI);
     return false;
@@ -749,6 +801,15 @@ bool RVMinAsmParser::matchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
         Loc = IDLoc;
     }
     return Error(Loc, "invalid operand for instruction");
+  }
+  case Match_InvalidVMaskRegister:
+  case Match_InvalidVMergeMaskRegister: {
+    SMLoc Loc = IDLoc;
+    if (ErrorInfo != ~0U && ErrorInfo < Operands.size())
+      Loc = Operands[ErrorInfo]->getStartLoc();
+    return Error(Loc, MatchResult == Match_InvalidVMaskRegister
+                          ? "operand must be v0.t"
+                          : "operand must be v0");
   }
   default:
     return true;

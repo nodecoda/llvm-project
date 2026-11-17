@@ -122,6 +122,17 @@ static DecodeStatus DecodeSPRegisterClass(MCInst &Inst,
 }
 
 // Chapter 47: the vector register file is contiguous as well (V0..V31).
+// Chapter 52: the vm bit decodes back to the architectural mask register.
+static DecodeStatus DecodeV0MaskReg(MCInst &Inst, unsigned RegNo,
+                                   uint64_t Address,
+                                   const MCDisassembler *Decoder) {
+  if (RegNo > 1)
+    return MCDisassembler::Fail;
+  Inst.addOperand(MCOperand::createReg(RegNo == 0 ? RVMin::V0
+                                                  : RVMin::NoRegister));
+  return MCDisassembler::Success;
+}
+
 static const unsigned VRDecoderTable[] = {
     RVMin::V0,  RVMin::V1,  RVMin::V2,  RVMin::V3,  RVMin::V4,  RVMin::V5,
     RVMin::V6,  RVMin::V7,  RVMin::V8,  RVMin::V9,  RVMin::V10, RVMin::V11,

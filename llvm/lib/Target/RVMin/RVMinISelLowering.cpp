@@ -133,8 +133,11 @@ RVMinTargetLowering::RVMinTargetLowering(const TargetMachine &TM,
   // Chapter 48: with V, a fixed <4 x i32> (128 bits) is the native vector
   // value and lives in one VR.  This must also happen before
   // computeRegisterProperties() so the type action is Legal, not Expand.
-  if (STI.hasStdExtV())
+  if (STI.hasStdExtV()) {
     addRegisterClass(MVT::v4i32, &RVMin::VRRegClass);
+    // Chapter 52: mask values are legal too; v4i1 lives in the same VR file.
+    addRegisterClass(MVT::v4i1, &RVMin::VRRegClass);
+  }
   computeRegisterProperties(STI.getRegisterInfo());
 
   if (STI.hasStdExtV()) {
@@ -154,6 +157,11 @@ RVMinTargetLowering::RVMinTargetLowering(const TargetMachine &TM,
     setOperationAction(ISD::EXTRACT_VECTOR_ELT, MVT::v4i32, Custom);
     // Chapter 49: `llvm.vector.reduce.add` has a direct vredsum.vs sequence.
     setOperationAction(ISD::VECREDUCE_ADD, MVT::v4i32, Custom);
+    // Chapter 52: vselect -> vmerge.vvm with the mask copied into v0.  The
+    // mask type v4i1 is legal (it lives in VR), so the type legalizer leaves
+    // the node alone instead of expanding it through scalar selects.
+    setOperationAction(ISD::VSELECT, MVT::v4i32, Legal);
+    setOperationAction(ISD::BUILD_VECTOR, MVT::v4i1, Custom);
   }
 
   // Chapter 22: with A, the RV32A instructions (lr.w/sc.w/amo*.w) are exactly
@@ -462,6 +470,8 @@ SDValue RVMinTargetLowering::LowerOperation(SDValue Op,
   case ISD::ConstantFP:
     return lowerConstantFP(Op, DAG);
   case ISD::BUILD_VECTOR:
+    if (Op.getValueType() == MVT::v4i1)
+      return lowerMaskBUILD_VECTOR(Op, DAG);
     return lowerBUILD_VECTOR(Op, DAG);
   case ISD::SPLAT_VECTOR:
     return lowerSPLAT_VECTOR(Op, DAG);
@@ -470,6 +480,29 @@ SDValue RVMinTargetLowering::LowerOperation(SDValue Op,
   case ISD::VECREDUCE_ADD:
     return lowerVECREDUCE_ADD(Op, DAG);
   }
+}
+
+// Chapter 52: a <4 x i1> constant is a 4-bit mask.  RVV reads element i's
+// mask bit from bit i of v0, so broadcasting the integer with vmv.v.x gives
+// the right image.  Non-constant masks are intentionally not handled yet:
+// vector compares arrive with the SETCC chapter, and a scalar i1 splat would
+// need a different materialization.
+SDValue
+RVMinTargetLowering::lowerMaskBUILD_VECTOR(SDValue Op,
+                                           SelectionDAG &DAG) const {
+  SDLoc DL(Op);
+  uint32_t Bits = 0;
+  for (unsigned I = 0; I != 4; ++I) {
+    auto *C = dyn_cast<ConstantSDNode>(Op.getOperand(I));
+    if (!C)
+      report_fatal_error(
+          "RVMin: non-constant vector masks are not supported yet", false);
+    if (C->getZExtValue() & 1)
+      Bits |= 1u << I;
+  }
+  SDValue Mask = DAG.getConstant(Bits, DL, MVT::i32);
+  return SDValue(
+      DAG.getMachineNode(RVMin::VMV_V_X, DL, MVT::v4i1, Mask), 0);
 }
 
 // Chapter 48: materialize four i32 elements through a private 16-byte stack

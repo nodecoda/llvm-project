@@ -690,22 +690,23 @@ Record 里只有声明；这些是共享 C++ 在投影之前对语义的改写�
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:29` | `Namespace` | 消费（derive） |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:30` | `HWEncoding` | 本后端不读 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:35` | `RegAltNameIndices` | 本后端不读 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:115` | `DecoderMethod` | decoder 自定义方法。 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:135` | `DecoderMethod` | decoder 自定义方法。 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:163` | `Namespace` | 消费（derive） |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:164` | `HWEncoding` | 本后端不读 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:165` | `AltNames` | 本后端不读 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:166` | `DwarfNumbers` | 本后端不读 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:169` | `RegAltNameIndices` | 本后端不读 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:224` | `DecoderMethod` | decoder 自定义方法。 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:235` | `DecoderMethod` | decoder 自定义方法。 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:242` | `DecoderMethod` | decoder 自定义方法。 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:247` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:120` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:128` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:148` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:176` | `Namespace` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:177` | `HWEncoding` | 本后端不读 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:178` | `AltNames` | 本后端不读 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:179` | `DwarfNumbers` | 本后端不读 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:182` | `RegAltNameIndices` | 本后端不读 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:237` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:248` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:255` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:260` | `DecoderMethod` | decoder 自定义方法。 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:16` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:28` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:162` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:175` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
 
-共 159 处使用；契约外 40 处。
+共 160 处使用；契约外 40 处。
 <!-- END: GENERATED TD USAGE -->
 
 RVMin 的 pattern 都写在 `RVMinInstrInfo.td`（`def : Pat<...>`），而

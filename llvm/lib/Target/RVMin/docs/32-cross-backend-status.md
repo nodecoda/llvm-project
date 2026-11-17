@@ -142,20 +142,21 @@ python3 dsl-surface.py --status-matrix --update DOC --usage a.td b.td
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:29` | `Namespace` | `Instruction`, `RegAltNameIndex`, `Register`, `RegisterClass`, `SubRegIndex` | `derive+project` | `derive` | `derive+project` | `derive+project` | `derive` | `derive+project` | `derive` |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:30` | `HWEncoding` | `Register` | `project` | — | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:35` | `RegAltNameIndices` | `Register` | 未消费 | — | `project` | `project` | 未消费 | 未消费 | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:115` | `DecoderMethod` | `DAGOperand`, `InstructionEncoding` | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:135` | `DecoderMethod` | `DAGOperand`, `InstructionEncoding` | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:163` | `Namespace` | `Instruction`, `RegAltNameIndex`, `Register`, `RegisterClass`, `SubRegIndex` | `derive+project` | `derive` | `derive+project` | `derive+project` | `derive` | `derive+project` | `derive` |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:164` | `HWEncoding` | `Register` | `project` | — | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:165` | `AltNames` | `Register` | 未消费 | — | `project` | `project` | 未消费 | 未消费 | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:166` | `DwarfNumbers` | `Register` | `project` | — | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:169` | `RegAltNameIndices` | `Register` | 未消费 | — | `project` | `project` | 未消费 | 未消费 | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:224` | `DecoderMethod` | `DAGOperand`, `InstructionEncoding` | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:235` | `DecoderMethod` | `DAGOperand`, `InstructionEncoding` | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:242` | `DecoderMethod` | `DAGOperand`, `InstructionEncoding` | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:247` | `DecoderMethod` | `DAGOperand`, `InstructionEncoding` | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:120` | `DecoderMethod` | `DAGOperand`, `InstructionEncoding` | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:128` | `DecoderMethod` | `DAGOperand`, `InstructionEncoding` | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:148` | `DecoderMethod` | `DAGOperand`, `InstructionEncoding` | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:176` | `Namespace` | `Instruction`, `RegAltNameIndex`, `Register`, `RegisterClass`, `SubRegIndex` | `derive+project` | `derive` | `derive+project` | `derive+project` | `derive` | `derive+project` | `derive` |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:177` | `HWEncoding` | `Register` | `project` | — | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:178` | `AltNames` | `Register` | 未消费 | — | `project` | `project` | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:179` | `DwarfNumbers` | `Register` | `project` | — | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:182` | `RegAltNameIndices` | `Register` | 未消费 | — | `project` | `project` | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:237` | `DecoderMethod` | `DAGOperand`, `InstructionEncoding` | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:248` | `DecoderMethod` | `DAGOperand`, `InstructionEncoding` | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:255` | `DecoderMethod` | `DAGOperand`, `InstructionEncoding` | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:260` | `DecoderMethod` | `DAGOperand`, `InstructionEncoding` | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:16` | `Num` | — | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:28` | `Num` | — | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:162` | `Num` | — | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:175` | `Num` | — | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 |
 | `llvm/lib/Target/RVMin/RVMin.td:163` | `AsmWriterClassName` | `AsmWriter` | — | — | `project` | — | — | — | — |
 | `llvm/lib/Target/RVMin/RVMin.td:170` | `ShouldEmitMatchRegisterAltName` | `AsmParser` | — | — | — | `project` | — | — | — |
 | `llvm/lib/Target/RVMin/RVMin.td:171` | `AllowDuplicateRegisterNames` | `AsmParser` | — | — | — | `project` | — | — | — |
@@ -163,7 +164,7 @@ python3 dsl-surface.py --status-matrix --update DOC --usage a.td b.td
 | `llvm/lib/Target/RVMin/RVMin.td:180` | `AssemblyParsers` | `Target` | — | — | — | `derive` | — | — | — |
 | `llvm/lib/Target/RVMin/RVMin.td:181` | `AssemblyWriters` | `Target` | — | — | `derive` | — | — | — | — |
 
-共 28 处使用；7 个后端都消费 3 处，至少一个消费 18 处，自定义字段 3 处。
+共 29 处使用；7 个后端都消费 3 处，至少一个消费 18 处，自定义字段 3 处。
 <!-- END: GENERATED CROSS-BACKEND STATUS -->
 
 ## 深读：这张表告诉了我们什么
