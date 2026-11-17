@@ -87,8 +87,7 @@ RVMin 是一个从零写的 LLVM 后端：以 RV32I 为基线，按章节逐步�
 | --- | --- | --- | --- | --- |
 | 43 | [43-c-extension-mc.md](43-c-extension-mc.md) | RV32C 的 MC 层：9 种 16 位格式、35 条指令、RVC fixup 与 16 位解码 | `c-extension.s`；编码 35 条 + 反汇编/混排往返；门禁 8/8 | `rvmin-ch43` |
 | 44 | [44-c-compression.md](44-c-compression.md) | 压缩代码生成：`-gen-compress-inst-emitter`、`CompressPat`、AsmPrinter 投影 | `c-ext.ll`；288 对象矩阵；QEMU demo `.text` 784→592 | `rvmin-ch44` |
-
-> 45（第五篇验收）在后续章节加入本表。
+| 45 | [45-c-acceptance.md](45-c-acceptance.md) | 第五篇验收：C 全链路、288 对象矩阵、`.text` 收缩与运行一致性 | `rvmin-verify-all.sh` 8/8 + `rvmin-clang-matrix.sh` | `rvmin-ch45` |
 
 每个章末都有对应 tag：`git checkout rvmin-ch16` 即可看到该章结束时的完整代码。
 
@@ -127,7 +126,7 @@ RVMin 是一个从零写的 LLVM 后端：以 RV32I 为基线，按章节逐步�
 | 43 | `## 背景：16 位指令为什么是另一套格式` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
 | 44 | `## 背景：压缩是投影，不是另一套代码生成` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
 
-> 第 14、23、28、39、42 章是验收章，本身即证据表，不套用八要素模板。
+> 第 14、23、28、39、42、45 章是验收章，本身即证据表，不套用八要素模板。
 
 ## 验收标准（计划 §6）
 
