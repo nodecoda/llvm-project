@@ -267,6 +267,24 @@ class RVMinVVInst<bits<6> funct6, bits<3> funct3, string mnemonic>
   let TSFlags{4-0} = FmtV.Value;
 }
 
+// Chapter 54: OPFVF forms take a scalar floating-point source in rs1.
+class RVMinVFInst<bits<6> funct6, bits<3> funct3, string mnemonic>
+    : RVMinInst<(outs VR:$vd), (ins FPR32:$rs1),
+                mnemonic # " $vd, $rs1", []> {
+  bits<5> vd;
+  bits<5> rs1;
+
+  let Inst{6-0}   = OPC_OP_V.Value;
+  let Inst{11-7}  = vd;
+  let Inst{14-12} = funct3;
+  let Inst{19-15} = rs1;
+  let Inst{24-20} = 0b00000;
+  let Inst{25}    = 1;
+  let Inst{31-26} = funct6;
+
+  let TSFlags{4-0} = FmtV.Value;
+}
+
 // Chapter 53: the LMUL=2 .vv forms.  Same funct6/funct3 as m1, so they are
 // pseudos expanding to the shared MC opcode; only the register class and the
 // preceding vsetivli differ.
@@ -436,6 +454,14 @@ def VXOR_VV_M : RVMinVVInstMasked<0b001011, 0b000, "vxor.vv">;
 // with funct6 000000, like vadd but in the multiply/other space.
 def VREDSUM_VS : RVMinVVInst<0b000000, 0b010, "vredsum.vs">;
 
+// Chapter 54: Zve32f.  The three arithmetic forms live in OPFVV (funct3 001);
+// the vfmv pair crosses the scalar FPR/vector boundary.
+let Predicates = [HasStdExtV, HasStdExtF] in {
+def VFADD_VV : RVMinVVInst<0b000000, 0b001, "vfadd.vv">;
+def VFSUB_VV : RVMinVVInst<0b000010, 0b001, "vfsub.vv">;
+def VFMUL_VV : RVMinVVInst<0b100100, 0b001, "vfmul.vv">;
+}
+
 //===----------------------------------------------------------------------===//
 // Moves
 //===----------------------------------------------------------------------===//
@@ -543,6 +569,29 @@ def VMV_V_I : RVMinVMVVIiInst;
 def VMV_X_S : RVMinVMVXSInst;
 def VMV_S_X : RVMinVMVSXInst;
 
+// Chapter 54: scalar/vector float moves.  vfmv.v.f is OPFVF with vs2 fixed to
+// zero; vfmv.f.s is OPFVV with rs1 fixed to zero.
+class RVMinVFMVFSInst : RVMinInst<(outs FPR32:$rd), (ins VR:$vs2),
+                                  "vfmv.f.s $rd, $vs2", []> {
+  bits<5> rd;
+  bits<5> vs2;
+
+  let Inst{6-0}   = OPC_OP_V.Value;
+  let Inst{11-7}  = rd;
+  let Inst{14-12} = 0b001;
+  let Inst{19-15} = 0b00000;
+  let Inst{24-20} = vs2;
+  let Inst{25}    = 1;
+  let Inst{31-26} = 0b010000;
+
+  let TSFlags{4-0} = FmtV.Value;
+}
+
+let Predicates = [HasStdExtV, HasStdExtF] in {
+def VFMV_V_F : RVMinVFInst<0b010111, 0b101, "vfmv.v.f">;
+def VFMV_F_S : RVMinVFMVFSInst;
+}
+
 // Chapter 52: the mask-consuming select.  Its explicit v0 operand makes the
 // instruction usable as-is by both the assembler and the code generator.
 def VMERGE_VVM : RVMinVMergeInst;
@@ -558,6 +607,13 @@ def : Pat<(v4i32 (mul VR:$vs2, VR:$vs1)), (VMUL_VV VR:$vs2, VR:$vs1)>;
 def : Pat<(v4i32 (and VR:$vs2, VR:$vs1)), (VAND_VV VR:$vs2, VR:$vs1)>;
 def : Pat<(v4i32 (or  VR:$vs2, VR:$vs1)), (VOR_VV  VR:$vs2, VR:$vs1)>;
 def : Pat<(v4i32 (xor VR:$vs2, VR:$vs1)), (VXOR_VV VR:$vs2, VR:$vs1)>;
+
+// Chapter 54: vector float arithmetic on <4 x float>.
+let Predicates = [HasStdExtV, HasStdExtF] in {
+def : Pat<(v4f32 (fadd VR:$vs2, VR:$vs1)), (VFADD_VV VR:$vs2, VR:$vs1)>;
+def : Pat<(v4f32 (fsub VR:$vs2, VR:$vs1)), (VFSUB_VV VR:$vs2, VR:$vs1)>;
+def : Pat<(v4f32 (fmul VR:$vs2, VR:$vs1)), (VFMUL_VV VR:$vs2, VR:$vs1)>;
+}
 
 // Chapter 52: a mask select becomes vmerge.vvm.  The mask value lives in VR
 // like any other vector, so COPY_TO_REGCLASS moves it into the architectural

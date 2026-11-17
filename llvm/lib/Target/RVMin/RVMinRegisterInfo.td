@@ -135,7 +135,9 @@ foreach Index = !range(0, 32, 2) in {
 // registers as v4i32 (the mask register only uses the low four bits), which
 // keeps the type legal and lets SelectionDAG build it without promoting each
 // mask element through the integer legalizer.
-def VR : RegisterClass<"RVMin", [v4i32, v4i1], 128,
+// Chapter 54: v4f32 is the same 128-bit view for vector float; it is only
+// registered with the type legalizer when both V and F are enabled.
+def VR : RegisterClass<"RVMin", [v4i32, v4i1, v4f32], 128,
   (add (sequence "V%u", 8, 31),
        (sequence "V%u", 0, 7))> {
   let DecoderMethod = "DecodeVRRegisterClass";

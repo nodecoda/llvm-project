@@ -139,6 +139,9 @@ RVMinTargetLowering::RVMinTargetLowering(const TargetMachine &TM,
     addRegisterClass(MVT::v4i1, &RVMin::VRRegClass);
     // Chapter 53: LMUL=2 gives <8 x i32> a 256-bit register pair.
     addRegisterClass(MVT::v8i32, &RVMin::VRM2RegClass);
+    // Chapter 54: with F as well, <4 x float> shares the 128-bit VR file.
+    if (STI.hasStdExtF())
+      addRegisterClass(MVT::v4f32, &RVMin::VRRegClass);
   }
   computeRegisterProperties(STI.getRegisterInfo());
 
@@ -173,6 +176,20 @@ RVMinTargetLowering::RVMinTargetLowering(const TargetMachine &TM,
     setOperationAction(ISD::ADD, MVT::v8i32, Legal);
     setOperationAction(ISD::LOAD, MVT::v8i32, Legal);
     setOperationAction(ISD::STORE, MVT::v8i32, Legal);
+
+    // Chapter 54: vector float.  Only add/sub/mul and memory are selected;
+    // splat/extract use VFMV_V_F/VFMV_F_S, everything else expands.
+    if (STI.hasStdExtF()) {
+      for (unsigned Op = 0; Op < ISD::BUILTIN_OP_END; ++Op)
+        setOperationAction(Op, MVT::v4f32, Expand);
+      setOperationAction({ISD::FADD, ISD::FSUB, ISD::FMUL}, MVT::v4f32,
+                         Legal);
+      setOperationAction(ISD::LOAD, MVT::v4f32, Legal);
+      setOperationAction(ISD::STORE, MVT::v4f32, Legal);
+      setOperationAction(ISD::BUILD_VECTOR, MVT::v4f32, Custom);
+      setOperationAction(ISD::SPLAT_VECTOR, MVT::v4f32, Custom);
+      setOperationAction(ISD::EXTRACT_VECTOR_ELT, MVT::v4f32, Custom);
+    }
   }
 
   // Chapter 22: with A, the RV32A instructions (lr.w/sc.w/amo*.w) are exactly
@@ -521,8 +538,9 @@ RVMinTargetLowering::lowerMaskBUILD_VECTOR(SDValue Op,
 // RVMinDAGToDAGISel as VLE32_V.  The slot never escapes, so the stores and
 // load form their own chain and cannot alias a user pointer.
 SDValue RVMinTargetLowering::lowerVectorThroughStack(
-    ArrayRef<SDValue> Elems, const SDLoc &DL, SelectionDAG &DAG) const {
-  assert(Elems.size() == 4 && "RVMin vectors are exactly <4 x i32>");
+    ArrayRef<SDValue> Elems, const SDLoc &DL, SelectionDAG &DAG,
+    MVT VecVT) const {
+  assert(Elems.size() == 4 && "RVMin vectors are exactly four elements");
   MachineFunction &MF = DAG.getMachineFunction();
   MachineFrameInfo &MFI = MF.getFrameInfo();
   int FI = MFI.CreateStackObject(16, Align(16), /*isSpillSlot=*/false);
@@ -541,14 +559,32 @@ SDValue RVMinTargetLowering::lowerVectorThroughStack(
         Chain, DL, Elems[I], Addr,
         MachinePointerInfo::getFixedStack(MF, FI, I * 4), Align(4));
   }
-  return DAG.getLoad(MVT::v4i32, DL, Chain, FIN,
+  return DAG.getLoad(VecVT, DL, Chain, FIN,
                      MachinePointerInfo::getFixedStack(MF, FI), Align(16));
 }
 
 SDValue RVMinTargetLowering::lowerBUILD_VECTOR(SDValue Op,
                                                SelectionDAG &DAG) const {
   SDLoc DL(Op);
-  assert(Op.getNumOperands() == 4 && "RVMin vectors are exactly <4 x i32>");
+  assert(Op.getNumOperands() == 4 && "RVMin vectors are exactly four elements");
+
+  // Chapter 54: a <4 x float> splat goes straight to vfmv.v.f.  Four
+  // identical operands are the common shape produced for a scalar broadcast;
+  // other shapes go through the same private stack slot as the integer path.
+  if (Op.getValueType() == MVT::v4f32) {
+    bool AllIdentical = true;
+    for (unsigned I = 1; I != 4; ++I)
+      if (Op.getOperand(I) != Op.getOperand(0)) {
+        AllIdentical = false;
+        break;
+      }
+    if (AllIdentical)
+      return SDValue(DAG.getMachineNode(RVMin::VFMV_V_F, DL, MVT::v4f32,
+                                        Op.getOperand(0)),
+                     0);
+    SmallVector<SDValue, 4> Elems(Op->op_begin(), Op->op_end());
+    return lowerVectorThroughStack(Elems, DL, DAG, MVT::v4f32);
+  }
 
   // A build_vector whose four elements are the same constant is the natural
   // spelling of a splat.  VMV_V_I covers the 5-bit signed immediate range;
@@ -585,13 +621,16 @@ SDValue RVMinTargetLowering::lowerBUILD_VECTOR(SDValue Op,
         0);
 
   SmallVector<SDValue, 4> Elems(Op->op_begin(), Op->op_end());
-  return lowerVectorThroughStack(Elems, DL, DAG);
+  return lowerVectorThroughStack(Elems, DL, DAG, MVT::v4i32);
 }
 
 SDValue RVMinTargetLowering::lowerSPLAT_VECTOR(SDValue Op,
                                                SelectionDAG &DAG) const {
   SDLoc DL(Op);
   SDValue Val = Op.getOperand(0);
+  if (Op.getValueType() == MVT::v4f32)
+    return SDValue(
+        DAG.getMachineNode(RVMin::VFMV_V_F, DL, MVT::v4f32, Val), 0);
   if (auto *C = dyn_cast<ConstantSDNode>(Val)) {
     int64_t Value = C->getSExtValue();
     if (isInt<5>(Value))
@@ -617,11 +656,18 @@ SDValue RVMinTargetLowering::lowerEXTRACT_VECTOR_ELT(SDValue Op,
   if (Index < 0 || Index >= 4)
     report_fatal_error("RVMin: vector extract index out of range", false);
 
-  // Element 0 has a direct vector-to-GPR move.  The other constant indices
-  // spill the vector once and load the requested i32, which is also a useful
-  // exercise of the vector store path.
-  if (Index == 0)
-    return SDValue(DAG.getMachineNode(RVMin::VMV_X_S, DL, MVT::i32, Vec), 0);
+  // Chapter 54: f32 extraction uses the FP scalar move; the stack fallback
+  // loads an f32 instead of an i32.
+  bool IsF32 = Vec.getValueType() == MVT::v4f32;
+  MVT ElemVT = IsF32 ? MVT::f32 : MVT::i32;
+
+  // Element 0 has a direct vector-to-scalar move.  The other constant indices
+  // spill the vector once and load the requested element, which is also a
+  // useful exercise of the vector store path.
+  if (Index == 0) {
+    unsigned Opc = IsF32 ? RVMin::VFMV_F_S : RVMin::VMV_X_S;
+    return SDValue(DAG.getMachineNode(Opc, DL, ElemVT, Vec), 0);
+  }
 
   MachineFunction &MF = DAG.getMachineFunction();
   MachineFrameInfo &MFI = MF.getFrameInfo();
@@ -635,7 +681,7 @@ SDValue RVMinTargetLowering::lowerEXTRACT_VECTOR_ELT(SDValue Op,
       MachinePointerInfo::getFixedStack(MF, FI, 0), Align(16));
   SDValue Addr = DAG.getNode(ISD::ADD, DL, PtrVT, FIN,
                              DAG.getConstant(Index * 4, DL, PtrVT));
-  return DAG.getLoad(MVT::i32, DL, Chain, Addr,
+  return DAG.getLoad(ElemVT, DL, Chain, Addr,
                      MachinePointerInfo::getFixedStack(MF, FI, Index * 4),
                      Align(4));
 }

@@ -247,17 +247,16 @@ fi
 grep -q "'Zifencei' (Instruction-Fetch Fence)" "$TMP/no-zifencei.err" \
   || fail "missing Zifencei diagnostic without +zifencei"
 
-# 2l. V extension (chapter 47).  The Zve32x subset is all 32-bit, so this is
-# the same shape as the F/D corpora: byte-for-byte encoding equality with the
-# reference assembler, then a negative check that +v is required.  The V
-# feature implies Zicsr, so the corpus is assembled with +v alone.
+# 2l. V extension (chapters 47/54).  The corpus covers Zve32x plus the Zve32f
+# forms, so it is assembled with +v,+f.  The first instruction still proves
+# that +v is required; the reference assembler gets the same feature string.
 VC="$HERE/rvmin-v-encoding-corpus.s"
-"$BIN/llvm-mc" -triple=rvmin -mattr=+v -show-encoding "$VC" > "$TMP/rvmin-v.txt"
-"$BIN/llvm-mc" -triple=riscv32 -mattr=+v -show-encoding "$VC" > "$TMP/ref-v.txt"
+"$BIN/llvm-mc" -triple=rvmin -mattr=+v,+f -show-encoding "$VC" > "$TMP/rvmin-v.txt"
+"$BIN/llvm-mc" -triple=riscv32 -mattr=+v,+f -show-encoding "$VC" > "$TMP/ref-v.txt"
 extract "$TMP/rvmin-v.txt" > "$TMP/rvmin-v.enc"
 extract "$TMP/ref-v.txt" > "$TMP/ref-v.enc"
 NV=$(wc -l < "$TMP/rvmin-v.enc")
-[[ "$NV" -eq 36 ]] || fail "V corpus produced $NV encodings, want 36"
+[[ "$NV" -eq 41 ]] || fail "V corpus produced $NV encodings, want 41"
 diff -u "$TMP/ref-v.enc" "$TMP/rvmin-v.enc" > "$TMP/diff-v.txt" \
   || { head -20 "$TMP/diff-v.txt" >&2; fail "V encoding mismatch between rvmin and riscv32"; }
 

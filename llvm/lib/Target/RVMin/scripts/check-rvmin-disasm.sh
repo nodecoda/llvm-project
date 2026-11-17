@@ -193,7 +193,7 @@ roundtrip d 28 "$HERE/rvmin-d-encoding-corpus.s" --mattr=+f,+d
 roundtrip zicsr 24 "$HERE/rvmin-zicsr-encoding-corpus.s" --mattr=+zicsr,+zifencei,+f
 # Chapter 47: V (Zve32x subset).  All instructions are 32-bit; this also proves
 # that `printVTypeI` spells the token group back and that v0-v31 print as vN.
-roundtrip v 36 "$HERE/rvmin-v-encoding-corpus.s" --mattr=+v
+roundtrip v 41 "$HERE/rvmin-v-encoding-corpus.s" --mattr=+v,+f
 # Chapter 43: C.  The corpus is 35 explicit compressed instructions (integer,
 # F and D variants); the second run is a 16/32-bit mixed stream.
 roundtrip_c c 35 "$HERE/rvmin-c-encoding-corpus.s" --mattr=+c,+f,+d

@@ -128,7 +128,7 @@ private:
   SDValue lowerEXTRACT_VECTOR_ELT(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerVECREDUCE_ADD(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerVectorThroughStack(ArrayRef<SDValue> Elems, const SDLoc &DL,
-                                  SelectionDAG &DAG) const;
+                                  SelectionDAG &DAG, MVT VecVT) const;
 
   /// Chapter 41: f64 constants have no `fmv.d.x` on RV32, and i64 is not a
   /// legal type here.  Materialize the bit pattern through a private 8-byte

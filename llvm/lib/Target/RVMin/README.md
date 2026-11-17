@@ -130,6 +130,7 @@ git checkout rvmin-ch16     # 第 16 章（大栈帧）结束
 | --- | --- | --- |
 | 52 | [向量 mask（`vm`、v0、`vmerge.vvm`）](docs/52-vector-mask.md) | 完成 |
 | 53 | [LMUL=2（寄存器对、`v8i32`、`vmv2r.v`）](docs/53-lmul2.md) | 完成 |
+| 54 | [Zve32f（`v4f32`、`vfadd/vfsub/vfmul`、`vfmv`）](docs/54-zve32f.md) | 完成 |
 
 ## 当前限制（上篇结束时，第 14 章）
 

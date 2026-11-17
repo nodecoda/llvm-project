@@ -259,7 +259,7 @@ void RVMinDAGToDAGISel::Select(SDNode *N) {
     LoadSDNode *LD = cast<LoadSDNode>(N);
     MVT VT = LD->getValueType(0).getSimpleVT();
     unsigned Opc = 0;
-    if (VT == MVT::v4i32)
+    if (VT == MVT::v4i32 || VT == MVT::v4f32) // Chapter 54: v4f32.
       Opc = RVMin::VLE32_V;
     else if (VT == MVT::v8i32) // Chapter 53: LMUL=2.
       Opc = RVMin::VLE32_V_M2;
@@ -287,7 +287,7 @@ void RVMinDAGToDAGISel::Select(SDNode *N) {
     StoreSDNode *ST = cast<StoreSDNode>(N);
     MVT VT = ST->getValue().getValueType().getSimpleVT();
     unsigned Opc = 0;
-    if (VT == MVT::v4i32)
+    if (VT == MVT::v4i32 || VT == MVT::v4f32) // Chapter 54: v4f32.
       Opc = RVMin::VSE32_V;
     else if (VT == MVT::v8i32) // Chapter 53: LMUL=2.
       Opc = RVMin::VSE32_V_M2;
