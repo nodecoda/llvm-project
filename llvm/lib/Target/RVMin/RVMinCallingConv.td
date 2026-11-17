@@ -17,7 +17,37 @@
 //
 //===----------------------------------------------------------------------===//
 
+// Chapter 51: the soft-float ABI (`ilp32` with hardware F/D) passes floating
+// values as their integer bit patterns:
+//
+//   f32 -> one i32 (a0-a7, then a 4-byte stack slot)
+//   f64 -> two i32 locations (an even-aligned aN/aN+1 pair, or an 8-byte
+//          stack slot).  RV32D has no fmv.x.d, so the backend splits/joins
+//          the halves through a private 8-byte stack object.
+//
+// The calling convention is selected at run time (RVMinIsSoftFloatABI) because
+// the CC table itself is static while the ABI is a module property.  The
+// CCBitConvertToType rule only changes LocVT/LocInfo; the lowering code does
+// the actual bitcast.
+def CC_RVMin_SoftFloat : CallingConv<[
+  CCIfType<[f32], CCBitConvertToType<i32>>,
+  CCIfType<[f64], CCCustom<"RVMinCC_AssignF64AsTwoI32">>,
+  CCIfType<[i32], CCAssignToReg<[X10, X11, X12, X13, X14, X15, X16, X17]>>,
+  CCIfType<[i32], CCAssignToStack<4, 4>>
+]>;
+
+def RetCC_RVMin_SoftFloat : CallingConv<[
+  CCIfType<[f32], CCBitConvertToType<i32>>,
+  CCIfType<[f64], CCCustom<"RVMinCC_AssignF64Return">>,
+  CCIfType<[i32], CCAssignToReg<[X10, X11]>>
+]>;
+
 def CC_RVMin : CallingConv<[
+  // Chapter 51: an `ilp32` module with hardware F/D uses the integer
+  // convention for floating values.  All other ABIs fall through to the
+  // hard-float rules below.
+  CCIf<"RVMinIsSoftFloatABI(State)", CCDelegateTo<CC_RVMin_SoftFloat>>,
+
   // Integer arguments are passed in a0-a7.
   CCIfType<[i32], CCAssignToReg<[X10, X11, X12, X13, X14, X15, X16, X17]>>,
 
@@ -36,6 +66,7 @@ def CC_RVMin : CallingConv<[
 ]>;
 
 def RetCC_RVMin : CallingConv<[
+  CCIf<"RVMinIsSoftFloatABI(State)", CCDelegateTo<RetCC_RVMin_SoftFloat>>,
   CCIfType<[i32], CCAssignToReg<[X10, X11]>>,
   CCIfType<[f32], CCAssignToReg<[F10, F11]>>,
   CCIfType<[f64], CCAssignToReg<[F10, F11]>>

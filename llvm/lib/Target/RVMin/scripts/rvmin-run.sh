@@ -381,5 +381,55 @@ for SYM in __adddf3 __muldf3 __eqdf2 __ltdf2 __fixdfsi __floatsidf \
   [[ "$RELOCS" != *"$SYM"* ]] || fail "the D build still calls $SYM"
 done
 
+# Chapter 51 gate: the same programs under `ilp32`, i.e. a soft-float ABI
+# with hardware F/D.  Values must cross calls in a0-a7/stack as bit patterns
+# while the arithmetic still uses fadd.s/fadd.d.  The 9-argument helpers make
+# the stack half of the convention observable.
+#
+# float.c alone cannot prove the FPR->GPR return direction: clang folds its
+# constant add9f call away and i2f returns a volatile global loaded from
+# memory, so the only conversion left is f2i's fcvt.w.s.  The dedicated
+# abi-soft program below keeps real calls on both sides of the boundary.
+STATUS=0
+run_fp float f32-soft rv32if ilp32 +f || STATUS=$?
+[[ "$STATUS" -eq 0 ]] || fail "float program (rv32if/ilp32) exited with $STATUS"
+grep -q 'fmv.w.x' "$TMP/f32-soft.s"   || fail "the soft-float F build never moved a GPR into an FPR"
+grep -q 'fcvt.w.s' "$TMP/f32-soft.s"  || fail "the soft-float F build never moved an FPR into a GPR"
+grep -q 'fadd.s' "$TMP/f32-soft.s"   || fail "the soft-float F build lost fadd.s"
+RELOCS=$("$READELF" -r "$TMP/f32-soft.o")
+for SYM in __addsf3 __mulsf3 __eqsf2 __ltsf2; do
+  [[ "$RELOCS" != *"$SYM"* ]] || fail "the soft-float F build still calls $SYM"
+done
+
+STATUS=0
+run_fp double f64-soft rv32id ilp32 +f,+d || STATUS=$?
+[[ "$STATUS" -eq 0 ]] || fail "double program (rv32id/ilp32) exited with $STATUS"
+grep -q 'fadd.d' "$TMP/f64-soft.s"   || fail "the soft-float D build lost fadd.d"
+grep -q 'lw a0' "$TMP/f64-soft.s"   || fail "the soft-float D build never returned a low half in a0"
+grep -q 'lw a1' "$TMP/f64-soft.s"   || fail "the soft-float D build never returned a high half in a1"
+grep -q 'sw a0' "$TMP/f64-soft.s"   || fail "the soft-float D build never passed a low half through a0"
+RELOCS=$("$READELF" -r "$TMP/f64-soft.o")
+for SYM in __adddf3 __muldf3 __eqdf2 __ltdf2; do
+  [[ "$RELOCS" != *"$SYM"* ]] || fail "the soft-float D build still calls $SYM"
+done
+
+# The dedicated smoke program: every helper takes volatile input, so the call
+# survives -O2 and both conversion directions are emitted.  fpass returns f32
+# through a0 via fmv.x.w, dpass crosses f64 in a0/a1 and returns the two halves
+# with lw, which is exactly the boundary float.c folds away.
+STATUS=0
+run_fp abi-soft abi-soft rv32id ilp32 +f,+d || STATUS=$?
+[[ "$STATUS" -eq 0 ]] || fail "ABI smoke program (rv32id/ilp32) exited with $STATUS"
+grep -q 'fmv.w.x' "$TMP/abi-soft.s"   || fail "the soft ABI never moved a GPR into an FPR"
+grep -q 'fmv.x.w' "$TMP/abi-soft.s"   || fail "the soft ABI never moved an FPR into a GPR"
+grep -q 'lw a0'   "$TMP/abi-soft.s"   || fail "the soft ABI never returned an f64 low half in a0"
+grep -q 'lw a1'   "$TMP/abi-soft.s"   || fail "the soft ABI never returned an f64 high half in a1"
+grep -q 'sw a0'   "$TMP/abi-soft.s"   || fail "the soft ABI never passed an f64 low half through a0"
+RELOCS=$("$READELF" -r "$TMP/abi-soft.o")
+for SYM in __addsf3 __adddf3 __fixsfsi __floatsisf; do
+  [[ "$RELOCS" != *"$SYM"* ]] || fail "the soft ABI smoke still calls $SYM"
+done
+
 echo "PASS: F/D programs ran under $QEMU (rv32if + rv32id; 9-arg calls,"
 echo "      f64 stack constants/select, and no soft-float libcalls)"
+echo "PASS: ilp32 + hardware F/D crossed calls as integer bit patterns"

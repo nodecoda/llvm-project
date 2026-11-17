@@ -5,9 +5,6 @@
 ; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O0 -mattr=+f < %s -o /dev/null
 ; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O1 -mattr=+f < %s -o - \
 ; RUN:   | llvm-mc -triple=riscv32 -mattr=+f -filetype=obj -o /dev/null
-; RUN: not llc -march=rvmin -mtriple=riscv32-unknown-elf -O1 -mattr=+f \
-; RUN:   -target-abi=ilp32 < %s -o /dev/null 2>&1 \
-; RUN:   | FileCheck %s --check-prefix=BADABI
 ; RUN: not llc -march=rvmin -mtriple=riscv32-unknown-elf -O1 \
 ; RUN:   -target-abi=ilp32f < %s -o /dev/null 2>&1 \
 ; RUN:   | FileCheck %s --check-prefix=NOF
@@ -17,9 +14,9 @@
 ; through the soft-float libcalls of chapter 10, byte for byte.
 ;
 ; ABI (decision 1, B-lite): the ABI is derived from the ISA when nothing else
-; says otherwise, so `-mattr=+f` alone means ilp32f.  The one combination
-; this chapter does not implement yet - a soft-float ABI with hardware FP -
-; is rejected instead of being silently miscompiled.
+; says otherwise, so `-mattr=+f` alone means ilp32f.  Chapter 51 implements
+; the remaining combination, a soft-float ABI with hardware FP; see
+; abi-soft-float.ll for the boundary conversion.
 
 declare float @llvm.fabs.f32(float)
 declare float @llvm.minnum.f32(float, float)
@@ -193,5 +190,4 @@ define float @ninea(float %a, float %b, float %c, float %d, float %e,
 ; F-LABEL: ninea:
 ; F:         flw fa1, 0(sp)
 
-; BADABI: the ilp32 ABI with the F extension is not implemented yet
 ; NOF: the ilp32f ABI requires the F extension

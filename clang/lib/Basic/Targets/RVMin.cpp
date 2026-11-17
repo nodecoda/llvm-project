@@ -118,13 +118,11 @@ bool RVMinTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
   // Chapter 40: diagnose ABI/ISA mismatches here so clang users get an
   // ordinary error instead of a backend failure.  The backend repeats these
   // checks for llc and hand-written IR (RVMinISelLowering.cpp).
+  //
+  // Chapter 51: `ilp32` with hardware F/D is legal RISC-V -- the values cross
+  // calls as integer bit patterns while the function body uses fadd.s/fadd.d --
+  // so there is no ilp32/F rejection here any more.
   StringRef ABIName = getABI();
-  if (ABIName == "ilp32" && ISAInfo->hasExtension("f")) {
-    Diags.Report(diag::err_invalid_feature_combination)
-        << "the ilp32 ABI with the F extension is not implemented yet; use "
-           "-mabi=ilp32f or disable F";
-    return false;
-  }
   if ((ABIName == "ilp32f" || ABIName == "ilp32d") &&
       !ISAInfo->hasExtension("f")) {
     Diags.Report(diag::err_invalid_feature_combination)

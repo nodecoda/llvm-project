@@ -93,7 +93,7 @@ V 只覆盖 **Zve32x 教学子集**：SEW=32、LMUL=1、VLEN=128、无 mask、�
 | 44 | [44-c-compression.md](44-c-compression.md) | 压缩代码生成：`-gen-compress-inst-emitter`、`CompressPat`、AsmPrinter 投影 | `c-ext.ll`；288 对象矩阵；QEMU demo `.text` 784→592 | `rvmin-ch44` |
 | 45 | [45-c-acceptance.md](45-c-acceptance.md) | 第五篇验收：C 全链路、288 对象矩阵、`.text` 收缩与运行一致性 | `rvmin-verify-all.sh` 8/8 + `rvmin-clang-matrix.sh` | `rvmin-ch45` |
 
-### 第六篇：CSR 与向量（46–50）
+### 第六篇：CSR、向量与 ABI（46–51）
 
 | 章 | 文档 | 主题 | 本章门禁 | tag |
 | --- | --- | --- | --- | --- |
@@ -102,6 +102,7 @@ V 只覆盖 **Zve32x 教学子集**：SEW=32、LMUL=1、VLEN=128、无 mask、�
 | 48 | [48-v-codegen-1.md](48-v-codegen-1.md) | V 代码生成（一）：`v4i32` 合法化、load/store、6 条 `.vv` 算术、splat/extract、16 字节 spill、保守 `vsetivli`、向量 ABI 拒绝 | `v-ext.ll`；216 次 llc；编码/反汇编/288/432 计数不变；门禁 8/8 | `rvmin-ch48` |
 | 49 | [49-v-codegen-2.md](49-v-codegen-2.md) | V 代码生成（二）：块内 VL/VTYPE 去重、`.vi/.vx` 常量折叠、`vmv.v.x` 广播、`vredsum.vs` 归约、QEMU 8.2 运行 | `v-ext.ll`；V 编码/反汇编 27 条；216 次 llc；288/432 不变；门禁 8/8 | `rvmin-ch49` |
 | 50 | [50-v-acceptance.md](50-v-acceptance.md) | 第六篇验收：V 子集全链路、AC 表、计数口径、QEMU 8.2 运行与环境缺口 | `rvmin-verify-all.sh` 8/8（第 5 项含 V 静态 e2e）；`rvmin-e2e-v.sh` 4 对象；`rvmin-run-v.sh` | `rvmin-ch50` |
+| 51 | [51-strict-abi.md](51-strict-abi.md) | 严格 ABI：`ilp32` + 硬件 F/D 的调用边界（f32 单 GPR、f64 偶数对/8 字节栈） | `abi-soft-float.ll`；`abi-soft.c` 运行；lit 36/36；门禁 8/8；216 llc / 432 / 288 不变 | `rvmin-ch51` |
 
 每个章末都有对应 tag：`git checkout rvmin-ch16` 即可看到该章结束时的完整代码。
 

@@ -113,7 +113,7 @@ git checkout rvmin-ch16     # 第 16 章（大栈帧）结束
 | 44 | [压缩代码生成](docs/44-c-compression.md) | 完成 |
 | 45 | [第五篇验收：C 全链路](docs/45-c-acceptance.md) | 完成 |
 
-### 第六篇：CSR 与向量（46–50）
+### 第六篇：CSR、向量与 ABI（46–51）
 
 | 章 | 主题 | 状态 |
 | --- | --- | --- |
@@ -122,6 +122,7 @@ git checkout rvmin-ch16     # 第 16 章（大栈帧）结束
 | 48 | [V 代码生成（一）](docs/48-v-codegen-1.md) | 完成 |
 | 49 | [V 代码生成（二）](docs/49-v-codegen-2.md) | 完成 |
 | 50 | [第六篇验收（V 子集）](docs/50-v-acceptance.md) | 完成 |
+| 51 | [严格 ABI（`ilp32` + 硬件 F/D）](docs/51-strict-abi.md) | 完成 |
 
 ## 当前限制（上篇结束时，第 14 章）
 

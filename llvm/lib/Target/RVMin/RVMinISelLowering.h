@@ -12,6 +12,8 @@
 #include "RVMinSelectionDAGInfo.h"
 #include "llvm/CodeGen/TargetLowering.h"
 
+#include <utility>
+
 namespace llvm {
 
 class RVMinSubtarget;
@@ -128,6 +130,14 @@ private:
   /// legal type here.  Materialize the bit pattern through a private 8-byte
   /// stack slot: two i32 stores followed by one `fld`.
   SDValue lowerConstantFP(SDValue Op, SelectionDAG &DAG) const;
+
+  /// Chapter 51: soft-float ABI helpers.  RV32D has no `fmv.x.d`/`fmv.d.x`,
+  /// so an f64 crossing the call boundary as two i32 values is split/joined
+  /// through a private 8-byte stack object.
+  std::pair<SDValue, SDValue> splitF64ToI32Pair(SDValue V, const SDLoc &DL,
+                                                SelectionDAG &DAG) const;
+  SDValue joinI32PairToF64(SDValue Lo, SDValue Hi, const SDLoc &DL,
+                           SelectionDAG &DAG) const;
 
   /// Resolve the ABI for a function: -target-abi / the "target-abi" module
   /// flag win, otherwise it is derived from the enabled extensions.

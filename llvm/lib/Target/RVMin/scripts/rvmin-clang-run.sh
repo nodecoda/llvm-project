@@ -85,4 +85,15 @@ build_and_run atomics rv32ia O2 "$TMP/atomics.out" || STATUS=$?
 [[ "$STATUS" -eq 0 ]] || fail "atomics program exited with $STATUS"
 echo "PASS: A-extension atomics ran under $QEMU"
 
+# Chapter 51: the driver must accept `ilp32` together with hardware F/D.  The
+# shared float/double corpora plus the dedicated ABI smoke program all run
+# through the single clang command used by this script.
+for spec in "float rv32if" "double rv32id" "abi-soft rv32id"; do
+  set -- $spec
+  STATUS=0
+  build_and_run "$1" "$2" O2 "$TMP/$1-$2.out" || STATUS=$?
+  [[ "$STATUS" -eq 0 ]] || fail "$1 ($2, ilp32) exited with $STATUS"
+done
+echo "PASS: ilp32 + hardware F/D ran through the clang driver"
+
 echo "ALL CLANG-DRIVER RUNS PASS"

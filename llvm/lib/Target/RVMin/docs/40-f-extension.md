@@ -30,7 +30,7 @@ RISC-V 把“有哪些指令”和“值怎么跨函数传递”分开描述：
 
 真实工具链允许四种组合，例如 `-march=rv32if -mabi=ilp32` 表示“内部用硬浮点
 指令，跨函数仍按软浮点 ABI 传 i32 位模式”。这种组合需要在调用边界做
-`fmv.w.x`/`fmv.x.w` 转换，是第 51 章的练习。
+`fmv.w.x`/`fmv.x.w` 转换，第 51 章已经实现。
 
 本章采用 **B-lite**：
 
@@ -326,9 +326,9 @@ ALL CLANG MATRIX PASS: 132 objects, ELF32 EM_RISCV, -S/-c agree,
 
 ## 练习
 
-1. 实现 `ilp32 + F`（第 51 章预告）：在 CC 表里对 f32 做
+1. 复现 `ilp32 + F`（第 51 章已实现）：在 CC 表里对 f32 做
    `CCBitConvertToType<i32>`，并在形参/调用/返回三处插 `BITCAST`。先只做 f32，
-   再考虑 f64 的 i32 对。
+   再考虑 f64 的 i32 对；完整实现与运行证据见第 51 章。
 2. 给 `fclass.s` 加一条 intrinsic（`llvm.riscv.fclass` 风格）和 pattern，写一个
    测试覆盖 NaN/Inf/±0/次正规数。
 3. 把舍入模式做成真正的操作数：`fcvt.w.s a0, fa0, rne/rtz/rdn/rup/rmm/dyn`，

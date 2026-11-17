@@ -13,11 +13,20 @@
 // RUN: %clang --target=rvmin-unknown-elf -march=rv32im -mabi=ilp32 -### -c %s 2>&1 | FileCheck %s --check-prefix=M
 // M: "-target-feature" "+m"
 
-// Extensions implied by i/m/a are accepted and then stripped from the backend
-// feature string instead of being rejected.
+// Extensions implied by i/m/a are accepted.  Zicsr became a real feature in
+// chapter 46, so it now survives into the backend feature string.
 // RUN: %clang --target=rvmin-unknown-elf -march=rv32i_zicsr -mabi=ilp32 -### -c %s 2>&1 | FileCheck %s --check-prefix=IMPLIED
 // IMPLIED: "-cc1"
-// IMPLIED-NOT: "-target-feature" "+zicsr"
+// IMPLIED: "-target-feature" "+zicsr"
+
+// Chapter 51: `ilp32` with hardware F/D is legal; the ABI stays ilp32 and the
+// backend converts the values at the call boundary.
+// RUN: %clang --target=rvmin-unknown-elf -march=rv32if -mabi=ilp32 -### -c %s 2>&1 | FileCheck %s --check-prefix=SOFTF
+// SOFTF-DAG: "-target-abi" "ilp32"
+// SOFTF-DAG: "-target-feature" "+f"
+// RUN: %clang --target=rvmin-unknown-elf -march=rv32id -mabi=ilp32 -### -c %s 2>&1 | FileCheck %s --check-prefix=SOFTD
+// SOFTD-DAG: "-target-abi" "ilp32"
+// SOFTD-DAG: "-target-feature" "+d"
 
 // Chapter 28: the RISC-V ABI makes plain `char` unsigned.  RVMin has to say so
 // explicitly: without it, char promotions lower to `lb`/sext instead of

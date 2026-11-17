@@ -45,6 +45,74 @@ static const ISD::CondCode FPCCToExpand[] = {
     ISD::SETUGE, ISD::SETULT, ISD::SETULE, ISD::SETUNE, ISD::SETGT,
     ISD::SETGE,  ISD::SETNE,  ISD::SETO,   ISD::SETUO};
 
+// Chapter 51: the calling-convention table is static, but the ABI is a module
+// property.  A module compiled for `ilp32` passes floating values as their
+// integer bit patterns even when the instructions are hardware F/D.
+static bool RVMinIsSoftFloatABI(const CCState &State) {
+  const MachineFunction &MF = State.getMachineFunction();
+  const Module *M = MF.getFunction().getParent();
+  StringRef ABI = MF.getTarget().getTargetABIName(*M);
+  if (!ABI.empty())
+    return ABI == "ilp32";
+
+  // No module flag: getABI() derives ilp32f/ilp32d from the ISA, so only the
+  // no-F case is soft.
+  const RVMinSubtarget &STI = MF.getSubtarget<RVMinSubtarget>();
+  return !STI.hasStdExtF() && !STI.hasStdExtD();
+}
+
+// Chapter 51: an f64 in the soft-float ABI occupies two i32 locations.  The
+// pair must start at an even register (a0/a1, a2/a3, ...), matching the RISC-V
+// ILP32 convention; if no pair is free, the whole double goes to an 8-byte
+// stack slot.  The lowering code splits the value through a private stack
+// object because RV32D has no fmv.x.d.
+static bool RVMinCC_AssignF64AsTwoI32(unsigned &ValNo, MVT &ValVT,
+                                      MVT &LocVT,
+                                      CCValAssign::LocInfo &LocInfo,
+                                      ISD::ArgFlagsTy &ArgFlags,
+                                      CCState &State) {
+  static const MCPhysReg Pairs[][2] = {
+      {RVMin::X10, RVMin::X11}, {RVMin::X12, RVMin::X13},
+      {RVMin::X14, RVMin::X15}, {RVMin::X16, RVMin::X17}};
+
+  for (const auto &Pair : Pairs) {
+    if (State.isAllocated(Pair[0]) || State.isAllocated(Pair[1]))
+      continue;
+    MCRegister Lo = State.AllocateReg(Pair[0]);
+    MCRegister Hi = State.AllocateReg(Pair[1]);
+    assert(Lo && Hi && "pair was free a moment ago");
+    State.addLoc(CCValAssign::getCustomReg(ValNo, ValVT, Lo, MVT::i32,
+                                           CCValAssign::BCvt));
+    State.addLoc(CCValAssign::getCustomReg(ValNo, ValVT, Hi, MVT::i32,
+                                           CCValAssign::BCvt));
+    return true;
+  }
+
+  int64_t Offset = State.AllocateStack(8, Align(8));
+  State.addLoc(CCValAssign::getCustomMem(ValNo, ValVT, Offset, MVT::f64,
+                                         CCValAssign::Full));
+  return true;
+}
+
+// Chapter 51: a double return always uses a0/a1 in ILP32.  There is only one
+// return value, so failing to get both registers means the convention cannot
+// lower the value; return false and let CheckReturn reject it.
+static bool RVMinCC_AssignF64Return(unsigned &ValNo, MVT &ValVT, MVT &LocVT,
+                                    CCValAssign::LocInfo &LocInfo,
+                                    ISD::ArgFlagsTy &ArgFlags, CCState &State) {
+  if (State.isAllocated(RVMin::X10) || State.isAllocated(RVMin::X11))
+    return false;
+  MCRegister Lo = State.AllocateReg(RVMin::X10);
+  MCRegister Hi = State.AllocateReg(RVMin::X11);
+  if (!Lo || !Hi)
+    return false;
+  State.addLoc(CCValAssign::getCustomReg(ValNo, ValVT, Lo, MVT::i32,
+                                         CCValAssign::BCvt));
+  State.addLoc(CCValAssign::getCustomReg(ValNo, ValVT, Hi, MVT::i32,
+                                         CCValAssign::BCvt));
+  return true;
+}
+
 #define GET_CALLING_CONV_IMPL
 #include "RVMinGenCallingConv.inc"
 
@@ -348,15 +416,11 @@ void RVMinTargetLowering::checkABICompatibility(
 
   switch (getABI(MF)) {
   case RVMinABI::ILP32:
-    // A soft-float ABI with hardware floating point is legal RISC-V: values
-    // cross calls in a0-a7 as bit patterns while arithmetic uses the F
-    // instructions.  That boundary conversion is chapter 43; generating
-    // either convention silently would be a miscompile, so reject it.
-    if (STI.hasStdExtF())
-      report_fatal_error(
-          "RVMin: the ilp32 ABI with the F extension is not implemented yet; "
-          "use -mabi=ilp32f (or disable F with -mattr=-f)",
-          /*gen_crash_diag=*/false);
+    // Chapter 51: a soft-float ABI with hardware F/D is legal RISC-V.  Values
+    // cross calls as integer bit patterns (f32 in one GPR, f64 in an even
+    // GPR pair or an 8-byte stack slot) while arithmetic uses the F/D
+    // instructions.  The conversion is implemented in LowerCall,
+    // LowerFormalArguments and LowerReturn.
     break;
   case RVMinABI::ILP32F:
     if (!STI.hasStdExtF())
@@ -874,6 +938,48 @@ SDValue RVMinTargetLowering::lowerConstantFP(SDValue Op,
   return DAG.getLoad(MVT::f64, DL, Chain, FIN, MPI, Align(8));
 }
 
+// Chapter 51: split an f64 into two i32 halves through a private 8-byte slot.
+// The slot never escapes, so the chain starts at the entry node (see
+// lowerVectorThroughStack for why using the current root can create a cycle).
+std::pair<SDValue, SDValue>
+RVMinTargetLowering::splitF64ToI32Pair(SDValue V, const SDLoc &DL,
+                                      SelectionDAG &DAG) const {
+  MachineFunction &MF = DAG.getMachineFunction();
+  MachineFrameInfo &MFI = MF.getFrameInfo();
+  int FI = MFI.CreateStackObject(8, Align(8), /*isSpillSlot=*/false);
+  EVT PtrVT = getPointerTy(DAG.getDataLayout());
+  SDValue FIN = DAG.getFrameIndex(FI, PtrVT);
+  MachinePointerInfo MPI = MachinePointerInfo::getFixedStack(MF, FI);
+
+  SDValue Chain = DAG.getStore(DAG.getEntryNode(), DL, V, FIN, MPI, Align(8));
+  SDValue Lo = DAG.getLoad(MVT::i32, DL, Chain, FIN, MPI, Align(4));
+  SDValue HiAddr =
+      DAG.getMemBasePlusOffset(FIN, TypeSize::getFixed(4), DL);
+  SDValue Hi = DAG.getLoad(MVT::i32, DL, Chain, HiAddr, MPI.getWithOffset(4),
+                           Align(4));
+  return {Lo, Hi};
+}
+
+// Chapter 51: the reverse direction.  Store the two halves and reload the
+// double; this is the same trick lowerConstantFP uses for f64 constants.
+SDValue RVMinTargetLowering::joinI32PairToF64(SDValue Lo, SDValue Hi,
+                                              const SDLoc &DL,
+                                              SelectionDAG &DAG) const {
+  MachineFunction &MF = DAG.getMachineFunction();
+  MachineFrameInfo &MFI = MF.getFrameInfo();
+  int FI = MFI.CreateStackObject(8, Align(8), /*isSpillSlot=*/false);
+  EVT PtrVT = getPointerTy(DAG.getDataLayout());
+  SDValue FIN = DAG.getFrameIndex(FI, PtrVT);
+  MachinePointerInfo MPI = MachinePointerInfo::getFixedStack(MF, FI);
+
+  SDValue Chain = DAG.getEntryNode();
+  Chain = DAG.getStore(Chain, DL, Lo, FIN, MPI, Align(4));
+  SDValue HiAddr =
+      DAG.getMemBasePlusOffset(FIN, TypeSize::getFixed(4), DL);
+  Chain = DAG.getStore(Chain, DL, Hi, HiAddr, MPI.getWithOffset(4), Align(4));
+  return DAG.getLoad(MVT::f64, DL, Chain, FIN, MPI, Align(8));
+}
+
 SDValue RVMinTargetLowering::lowerSELECT_CC(SDValue Op,
                                             SelectionDAG &DAG) const {
   SDLoc DL(Op);
@@ -940,8 +1046,13 @@ SDValue RVMinTargetLowering::LowerFormalArguments(
 
   MachineFrameInfo &MFI = MF.getFrameInfo();
 
-  for (unsigned I = 0, E = Ins.size(); I != E; ++I) {
-    CCValAssign &VA = ArgLocs[I];
+  // Chapter 51: one value may occupy several locations (an f64 in the
+  // soft-float ABI is two i32 locations), so group by the value number
+  // instead of assuming ArgLocs[I] belongs to Ins[I].
+  SmallVector<SmallVector<SDValue, 2>, 8> Pieces(Ins.size());
+  for (CCValAssign &VA : ArgLocs) {
+    unsigned ValNo = VA.getValNo();
+    assert(ValNo < Ins.size() && "argument location without a value");
     MVT LocVT = VA.getLocVT();
 
     if (VA.isRegLoc()) {
@@ -950,7 +1061,7 @@ SDValue RVMinTargetLowering::LowerFormalArguments(
       // class follows from it: i32 -> GPR, f32 -> FPR32.
       Register VReg = RegInfo.createVirtualRegister(getRegClassFor(LocVT));
       RegInfo.addLiveIn(VA.getLocReg(), VReg);
-      InVals.push_back(DAG.getCopyFromReg(Chain, DL, VReg, LocVT));
+      Pieces[ValNo].push_back(DAG.getCopyFromReg(Chain, DL, VReg, LocVT));
       continue;
     }
 
@@ -963,8 +1074,27 @@ SDValue RVMinTargetLowering::LowerFormalArguments(
     int FI = MFI.CreateFixedObject(Size, VA.getLocMemOffset(),
                                    /*IsImmutable=*/true);
     SDValue FIN = DAG.getFrameIndex(FI, getPointerTy(DAG.getDataLayout()));
-    InVals.push_back(DAG.getLoad(LocVT, DL, Chain, FIN,
-                                 MachinePointerInfo::getFixedStack(MF, FI)));
+    Pieces[ValNo].push_back(
+        DAG.getLoad(LocVT, DL, Chain, FIN,
+                    MachinePointerInfo::getFixedStack(MF, FI)));
+  }
+
+  for (unsigned I = 0, E = Ins.size(); I != E; ++I) {
+    MVT ArgVT = Ins[I].VT;
+    auto &P = Pieces[I];
+    if (P.size() == 2 && ArgVT == MVT::f64) {
+      // Soft-float f64: two i32 halves arrive in a register pair.
+      InVals.push_back(joinI32PairToF64(P[0], P[1], DL, DAG));
+      continue;
+    }
+    if (P.size() != 1)
+      report_fatal_error("RVMin: unsupported multi-location argument",
+                         /*gen_crash_diag=*/false);
+
+    SDValue V = P[0];
+    if (ArgVT == MVT::f32 && V.getValueType() != MVT::f32)
+      V = DAG.getBitcast(MVT::f32, V);
+    InVals.push_back(V);
   }
 
   return Chain;
@@ -1055,9 +1185,27 @@ SDValue RVMinTargetLowering::LowerCall(CallLoweringInfo &CLI,
   SmallVector<SDValue, 8> MemOpChains;
   SDValue StackPtr;
 
-  for (unsigned I = 0, E = ArgLocs.size(); I != E; ++I) {
-    CCValAssign &VA = ArgLocs[I];
-    SDValue ArgValue = OutVals[I];
+  // Chapter 51: an f64 in the soft-float ABI is one value at two locations.
+  // Split it once (through a private stack slot), then hand each location its
+  // half.  Hard-float f64 stays a single f64 location.
+  SmallVector<std::pair<SDValue, SDValue>, 4> SplitF64(OutVals.size());
+  SmallVector<unsigned, 4> NextHalf(OutVals.size(), 0);
+
+  for (CCValAssign &VA : ArgLocs) {
+    unsigned ValNo = VA.getValNo();
+    assert(ValNo < OutVals.size() && "argument location without a value");
+    SDValue ArgValue = OutVals[ValNo];
+
+    if (VA.getLocInfo() == CCValAssign::BCvt) {
+      if (ArgValue.getValueType() == MVT::f32) {
+        ArgValue = DAG.getBitcast(MVT::i32, ArgValue);
+      } else {
+        if (!SplitF64[ValNo].first.getNode())
+          SplitF64[ValNo] = splitF64ToI32Pair(ArgValue, DL, DAG);
+        unsigned Half = NextHalf[ValNo]++;
+        ArgValue = Half == 0 ? SplitF64[ValNo].first : SplitF64[ValNo].second;
+      }
+    }
 
     if (VA.isRegLoc()) {
       RegsToPass.push_back(std::make_pair(VA.getLocReg(), ArgValue));
@@ -1130,18 +1278,37 @@ SDValue RVMinTargetLowering::LowerCall(CallLoweringInfo &CLI,
   Chain = DAG.getCALLSEQ_END(Chain, NumBytes, 0, Glue, DL);
   Glue = Chain.getValue(1);
 
-  // Copy the results out of a0/a1.
+  // Copy the results out of a0/a1.  Chapter 51: a soft-float f64 result is
+  // two i32 locations and is joined through a private stack slot.
   SmallVector<CCValAssign, 4> RVLocs;
   CCState RetCCInfo(CallConv, IsVarArg, MF, RVLocs, *DAG.getContext());
   RetCCInfo.AnalyzeCallResult(Ins, RetCC_RVMin);
 
+  SmallVector<SmallVector<SDValue, 2>, 4> Pieces(Ins.size());
   for (CCValAssign &VA : RVLocs) {
     assert(VA.isRegLoc() && "only register results are supported");
     SDValue Copy =
         DAG.getCopyFromReg(Chain, DL, VA.getLocReg(), VA.getLocVT(), Glue);
-    InVals.push_back(Copy.getValue(0));
     Chain = Copy.getValue(1);
     Glue = Copy.getValue(2);
+    Pieces[VA.getValNo()].push_back(Copy.getValue(0));
+  }
+
+  for (unsigned I = 0, E = Ins.size(); I != E; ++I) {
+    MVT RetVT = Ins[I].VT;
+    auto &P = Pieces[I];
+    if (P.size() == 2 && RetVT == MVT::f64) {
+      InVals.push_back(joinI32PairToF64(P[0], P[1], DL, DAG));
+      continue;
+    }
+    if (P.size() != 1)
+      report_fatal_error("RVMin: unsupported multi-location return value",
+                         /*gen_crash_diag=*/false);
+
+    SDValue V = P[0];
+    if (RetVT == MVT::f32 && V.getValueType() != MVT::f32)
+      V = DAG.getBitcast(MVT::f32, V);
+    InVals.push_back(V);
   }
 
   return Chain;
@@ -1187,12 +1354,30 @@ SDValue RVMinTargetLowering::LowerReturn(
 
   // Move the return values into their ABI registers and terminate with
   // RET_FLAG, which TableGen maps to PseudoRET / `jalr zero, 0(ra)`.
+  // Chapter 51: a soft-float f64 return is two i32 locations, so split it
+  // once and copy each half to a0/a1.
+  SmallVector<std::pair<SDValue, SDValue>, 4> SplitF64(OutVals.size());
+  SmallVector<unsigned, 4> NextHalf(OutVals.size(), 0);
+
   SmallVector<SDValue, 4> RetOps(1, Chain);
   SDValue Glue;
-  for (unsigned I = 0, E = RVLocs.size(); I != E; ++I) {
-    CCValAssign &VA = RVLocs[I];
+  for (CCValAssign &VA : RVLocs) {
     assert(VA.isRegLoc() && "can only return in registers");
-    Chain = DAG.getCopyToReg(Chain, DL, VA.getLocReg(), OutVals[I], Glue);
+    unsigned ValNo = VA.getValNo();
+    SDValue Val = OutVals[ValNo];
+
+    if (VA.getLocInfo() == CCValAssign::BCvt) {
+      if (Val.getValueType() == MVT::f32) {
+        Val = DAG.getBitcast(MVT::i32, Val);
+      } else {
+        if (!SplitF64[ValNo].first.getNode())
+          SplitF64[ValNo] = splitF64ToI32Pair(Val, DL, DAG);
+        unsigned Half = NextHalf[ValNo]++;
+        Val = Half == 0 ? SplitF64[ValNo].first : SplitF64[ValNo].second;
+      }
+    }
+
+    Chain = DAG.getCopyToReg(Chain, DL, VA.getLocReg(), Val, Glue);
     Glue = Chain.getValue(1);
     RetOps.push_back(DAG.getRegister(VA.getLocReg(), VA.getLocVT()));
   }
