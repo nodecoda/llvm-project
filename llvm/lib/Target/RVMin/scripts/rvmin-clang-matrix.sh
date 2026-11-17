@@ -163,9 +163,13 @@ for march in rv32i rv32im rv32if rv32id rv32ic rv32imafdc rv32g rv32gc \
         cat "$stem.log" >&2
         fail "clang printed diagnostics for $name ($march, -$opt)"
       fi
-      "$READELF" -h "$stem.o" | grep -q 'Class:.*ELF32' \
+      # Capture the header instead of piping into `grep -q`: with
+      # `set -o pipefail`, grep can exit after the match and readelf can die
+      # with SIGPIPE, which reports a spurious "not EM_RISCV" failure.
+      "$READELF" -h "$stem.o" > "$stem.hdr"
+      grep -q 'Class:.*ELF32' "$stem.hdr" \
         || fail "$name ($march, -$opt) is not ELF32"
-      "$READELF" -h "$stem.o" | grep -q 'Machine:.*RISC-V' \
+      grep -q 'Machine:.*RISC-V' "$stem.hdr" \
         || fail "$name ($march, -$opt) is not EM_RISCV"
 
       # 2. -S then assemble must reproduce the -c object.

@@ -14,11 +14,14 @@
 # RUN: not llvm-mc -triple=rvmin -mattr=+v -filetype=obj %t/badmerget.s -o /dev/null 2>&1 | FileCheck %s --check-prefix=BADMERGET
 # RUN: not llvm-mc -triple=rvmin -mattr=+v -filetype=obj %t/badvd.s -o /dev/null 2>&1 | FileCheck %s --check-prefix=BADVD
 # RUN: not llvm-mc -triple=rvmin -mattr=+v -filetype=obj %t/badvmerge.s -o /dev/null 2>&1 | FileCheck %s --check-prefix=BADVMERGE
+# RUN: not llvm-mc -triple=rvmin -mattr=+v -filetype=obj %t/badeven.s -o /dev/null 2>&1 | FileCheck %s --check-prefix=BADEVEN
+# RUN: not llvm-mc -triple=rvmin -mattr=+v -filetype=obj %t/badeven2.s -o /dev/null 2>&1 | FileCheck %s --check-prefix=BADEVEN2
 #
 # Chapter 47: the V-extension MC layer (Zve32x teaching subset).
 # Chapter 52 adds the mask forms: vmerge.vvm and masked integer ALU.
+# Chapter 53 adds LMUL=2: the m2 vsetivli and the vmv2r.v whole-pair move.
 #
-# The thirty-four instructions below cover configuration, unit-stride 32-bit
+# The thirty-six instructions below cover configuration, unit-stride 32-bit
 # load/store, the vmv moves (including the scalar broadcast), integer
 # add/sub/multiply with their .vx/.vi forms, the bitwise operations with their
 # scalar forms, the vredsum.vs reduction, and the chapter-52 mask forms.
@@ -115,6 +118,13 @@ vadd.vv v8, v0, v10, v0.t
 vadd.vv v8, v9, v0, v0.t
 # CHECK: vadd.vv v8, v9, v0, v0.t # encoding: [0x57,0x04,0x90,0x00]
 
+# Chapter 53: LMUL=2.  vadd.vv keeps the same 32-bit encoding; the m2 comes
+# from the vtype.  vmv2r.v moves a whole 256-bit pair and ignores VL/VTYPE.
+vsetivli zero, 8, e32, m2, ta, ma
+# CHECK: vsetivli zero, 8, e32, m2, ta, ma # encoding: [0x57,0x70,0x14,0xcd]
+vmv2r.v v8, v10
+# CHECK: vmv2r.v v8, v10 # encoding: [0x57,0xb4,0xa0,0x9e]
+
 #--- badtype.s
 vsetivli zero, 4, e33, m1, ta, ma
 
@@ -144,6 +154,12 @@ vadd.vv v0, v31, v1, v0.t
 
 #--- badvmerge.s
 vmerge.vvm v0, v1, v2, v0
+
+#--- badeven.s
+vmv2r.v v8, v11
+
+#--- badeven2.s
+vmv2r.v v9, v10
 
 # CPU: vsetivli zero, 4, e32, m1, ta, ma # encoding: [0x57,0x70,0x02,0xcd]
 # DIS: vsetivli{{[[:space:]]+}}zero, 4, e32, m1, ta, ma
@@ -175,12 +191,16 @@ vmerge.vvm v0, v1, v2, v0
 # DIS: vand.vv{{[[:space:]]+}}v8, v9, v10, v0.t
 # DIS: vor.vv{{[[:space:]]+}}v8, v9, v10, v0.t
 # DIS: vxor.vv{{[[:space:]]+}}v8, v9, v10, v0.t
+# DIS: vsetivli{{[[:space:]]+}}zero, 8, e32, m2, ta, ma
+# DIS: vmv2r.v{{[[:space:]]+}}v8, v10
 # BADMASK: error: operand must be v0.t
 # BADMASKT: error: operand must be v0.t
 # BADMERGE: error: operand must be v0
 # BADMERGET: error: operand must be v0
 # BADVD: error: the destination vector register group cannot overlap the mask register
 # BADVMERGE: error: the destination vector register group cannot be V0
+# BADEVEN: error: vmv2r.v requires an even register (LMUL=2)
+# BADEVEN2: error: vmv2r.v requires an even register (LMUL=2)
 # MISSING: error: instruction requires the following: 'V' (Vector Extension)
 # BADTYPE: error: unknown vtype SEW 'e33'
 # RANGE: error: vtype must be an integer in the range 0..2047

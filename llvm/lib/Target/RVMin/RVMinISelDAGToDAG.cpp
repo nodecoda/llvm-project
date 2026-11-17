@@ -257,8 +257,13 @@ void RVMinDAGToDAGISel::Select(SDNode *N) {
   // whose getLoadOpcode/getStoreOpcode return 0 for v4i32.
   if (N->getOpcode() == ISD::LOAD) {
     LoadSDNode *LD = cast<LoadSDNode>(N);
-    if (LD->getValueType(0) == MVT::v4i32 &&
-        LD->getMemoryVT() == MVT::v4i32 &&
+    MVT VT = LD->getValueType(0).getSimpleVT();
+    unsigned Opc = 0;
+    if (VT == MVT::v4i32)
+      Opc = RVMin::VLE32_V;
+    else if (VT == MVT::v8i32) // Chapter 53: LMUL=2.
+      Opc = RVMin::VLE32_V_M2;
+    if (Opc && LD->getMemoryVT() == VT &&
         LD->getExtensionType() == ISD::NON_EXTLOAD && !LD->isIndexed()) {
       SDValue FI;
       SDValue Base;
@@ -270,8 +275,8 @@ void RVMinDAGToDAGISel::Select(SDNode *N) {
         Base = materializeGPRAddress(Base, Off);
       }
       SDValue Ops[] = {Base, LD->getChain()};
-      MachineSDNode *MN = CurDAG->getMachineNode(
-          RVMin::VLE32_V, DL, MVT::v4i32, MVT::Other, Ops);
+      MachineSDNode *MN =
+          CurDAG->getMachineNode(Opc, DL, VT, MVT::Other, Ops);
       CurDAG->setNodeMemRefs(MN, {LD->getMemOperand()});
       ReplaceNode(N, MN);
       return;
@@ -280,8 +285,13 @@ void RVMinDAGToDAGISel::Select(SDNode *N) {
 
   if (N->getOpcode() == ISD::STORE) {
     StoreSDNode *ST = cast<StoreSDNode>(N);
-    if (ST->getValue().getValueType() == MVT::v4i32 &&
-        ST->getMemoryVT() == MVT::v4i32 && !ST->isTruncatingStore()) {
+    MVT VT = ST->getValue().getValueType().getSimpleVT();
+    unsigned Opc = 0;
+    if (VT == MVT::v4i32)
+      Opc = RVMin::VSE32_V;
+    else if (VT == MVT::v8i32) // Chapter 53: LMUL=2.
+      Opc = RVMin::VSE32_V_M2;
+    if (Opc && ST->getMemoryVT() == VT && !ST->isTruncatingStore()) {
       SDValue FI;
       SDValue Base;
       int64_t Off = 0;
@@ -292,8 +302,8 @@ void RVMinDAGToDAGISel::Select(SDNode *N) {
         Base = materializeGPRAddress(Base, Off);
       }
       SDValue Ops[] = {ST->getValue(), Base, ST->getChain()};
-      MachineSDNode *MN = CurDAG->getMachineNode(RVMin::VSE32_V, DL,
-                                                 MVT::Other, Ops);
+      MachineSDNode *MN =
+          CurDAG->getMachineNode(Opc, DL, MVT::Other, Ops);
       CurDAG->setNodeMemRefs(MN, {ST->getMemOperand()});
       ReplaceNode(N, MN);
       return;

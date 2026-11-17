@@ -76,6 +76,14 @@ void RVMinInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
     return;
   }
 
+  // Chapter 53: an LMUL=2 pair copies with the whole-register move.  It does
+  // not read VL/VTYPE, so the AsmPrinter does not put a vset in front of it.
+  if (RVMin::VRM2RegClass.contains(DestReg, SrcReg)) {
+    BuildMI(MBB, MI, DL, get(RVMin::VMV2R_V_M2), DestReg)
+        .addReg(SrcReg, getKillRegState(KillSrc));
+    return;
+  }
+
   // Chapter 41: FPR32 and FPR64 contain the same physical registers, so the
   // feature decides which view a copy uses.  `fsgnj.d` copies all 64 bits,
   // which is also right for an f32 value: RV32D keeps floats NaN-boxed.
@@ -293,6 +301,9 @@ void RVMinInstrInfo::storeRegToStackSlot(
   if (RC == &RVMin::VRRegClass) {
     Opc = RVMin::VSE32_V;
     IsVector = true;
+  } else if (RC == &RVMin::VRM2RegClass) {
+    Opc = RVMin::VSE32_V_M2;
+    IsVector = true;
   } else if (RC == &RVMin::FPR64RegClass)
     Opc = RVMin::FSD;
   else if (RC == &RVMin::FPR32RegClass)
@@ -320,6 +331,9 @@ void RVMinInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
   bool IsVector = false;
   if (RC == &RVMin::VRRegClass) {
     Opc = RVMin::VLE32_V;
+    IsVector = true;
+  } else if (RC == &RVMin::VRM2RegClass) {
+    Opc = RVMin::VLE32_V_M2;
     IsVector = true;
   } else if (RC == &RVMin::FPR64RegClass)
     Opc = RVMin::FLD;

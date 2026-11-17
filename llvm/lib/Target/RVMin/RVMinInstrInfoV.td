@@ -267,6 +267,32 @@ class RVMinVVInst<bits<6> funct6, bits<3> funct3, string mnemonic>
   let TSFlags{4-0} = FmtV.Value;
 }
 
+// Chapter 53: the LMUL=2 .vv forms.  Same funct6/funct3 as m1, so they are
+// pseudos expanding to the shared MC opcode; only the register class and the
+// preceding vsetivli differ.
+
+// Chapter 53: whole-register copy for an LMUL=2 pair.  The assembler-visible
+// instruction uses the base VR operand class, because the pair's name is the
+// first half's name (`v8`); the encoder only needs HWEncoding, and the pair is
+// checked to be even in the parser.  Codegen uses the VMV2R_V_M2 pseudo below
+// so the register allocator sees 256-bit operands.
+class RVMinVMV2RInst : RVMinInst<(outs VR:$vd), (ins VR:$vs2),
+                                 "vmv2r.v $vd, $vs2", []> {
+  bits<5> vd;
+  bits<5> vs2;
+
+  let Inst{6-0}   = OPC_OP_V.Value;
+  let Inst{11-7}  = vd;
+  let Inst{14-12} = 0b011;
+  // vmv<n>r.v encodes the register count in rs1: vmv2r.v has rs1 = 1.
+  let Inst{19-15} = 0b00001;
+  let Inst{24-20} = vs2;
+  let Inst{25}    = 1;
+  let Inst{31-26} = 0b100111;
+
+  let TSFlags{4-0} = FmtV.Value;
+}
+
 class RVMinVXInst<bits<6> funct6, bits<3> funct3, string mnemonic>
     : RVMinInst<(outs VR:$vd), (ins VR:$vs2, GPR:$rs1),
                 mnemonic # " $vd, $vs2, $rs1", []> {
@@ -354,7 +380,28 @@ def VSETVL   : RVMinVSetvlInst;
 def VLE32_V : RVMinVLoadInst;
 def VSE32_V : RVMinVStoreInst;
 
+// Chapter 53: LMUL=2 memory forms.  The encoding is identical to the m1
+// form, so these are pseudos: the MC opcode is shared and the LMUL comes from
+// the vsetivli in front of it.  A second real opcode would make the
+// disassembler ambiguous (the two encode to the same 32 bits).
+// The AsmPrinter expands these by copying the register operands onto the
+// shared MC opcode (see RVMinAsmPrinter::emitM2Pseudo).
+def VLE32_V_M2 : RVMinPseudo<(outs VRM2:$vd), (ins GPR:$rs1), "", []> {
+  let Size = 4;
+  let mayLoad = 1;
+  let mayStore = 0;
+}
+def VSE32_V_M2 : RVMinPseudo<(outs), (ins VRM2:$vs3, GPR:$rs1), "", []> {
+  let Size = 4;
+  let mayLoad = 0;
+  let mayStore = 1;
+}
+
 def VADD_VV : RVMinVVInst<0b000000, 0b000, "vadd.vv">;
+def VADD_VV_M2 : RVMinPseudo<(outs VRM2:$vd), (ins VRM2:$vs2, VRM2:$vs1),
+                              "", []> {
+  let Size = 4;
+}
 def VADD_VX : RVMinVXInst<0b000000, 0b100, "vadd.vx">;
 def VADD_VI : RVMinVIInst<0b000000, 0b011, "vadd.vi">;
 
@@ -484,6 +531,13 @@ class RVMinVMVSXInst : RVMinInst<(outs VR:$vd), (ins GPR:$rs1),
 }
 
 def VMV_V_V : RVMinVMVVIInst;
+def VMV2R_V : RVMinVMV2RInst;
+
+// Codegen-only pair move.  The AsmPrinter copies its operands onto VMV2R_V;
+// the vmv2r.v encoding is independent of VL/VTYPE, so no vset is emitted.
+def VMV2R_V_M2 : RVMinPseudo<(outs VRM2:$vd), (ins VRM2:$vs2), "", []> {
+  let Size = 4;
+}
 def VMV_V_X : RVMinVMVVXInst;
 def VMV_V_I : RVMinVMVVIiInst;
 def VMV_X_S : RVMinVMVXSInst;
@@ -497,6 +551,8 @@ def VMERGE_VVM : RVMinVMergeInst;
 // selected for now; .vx/.vi are left for the next chapter's constant and
 // scalar-broadcast optimizations.
 def : Pat<(v4i32 (add VR:$vs2, VR:$vs1)), (VADD_VV VR:$vs2, VR:$vs1)>;
+def : Pat<(v8i32 (add VRM2:$vs2, VRM2:$vs1)),
+          (VADD_VV_M2 VRM2:$vs2, VRM2:$vs1)>;
 def : Pat<(v4i32 (sub VR:$vs2, VR:$vs1)), (VSUB_VV VR:$vs2, VR:$vs1)>;
 def : Pat<(v4i32 (mul VR:$vs2, VR:$vs1)), (VMUL_VV VR:$vs2, VR:$vs1)>;
 def : Pat<(v4i32 (and VR:$vs2, VR:$vs1)), (VAND_VV VR:$vs2, VR:$vs1)>;

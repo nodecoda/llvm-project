@@ -754,6 +754,17 @@ bool RVMinAsmParser::matchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
     // write it.  vmerge always consumes v0; the masked ALU forms put the
     // mask operand last (operand 3).  Sources may be v0, the destination
     // may not, matching the upstream assembler.
+    // Chapter 53: vmv2r.v operates on an even-aligned pair.  The MC operands
+    // use the base VR class (the pair's name is `v8`), so the evenness is
+    // checked here rather than by the operand class.
+    if (Inst.getOpcode() == RVMin::VMV2R_V) {
+      for (unsigned OpNo : {0u, 1u}) {
+        MCRegister Reg = Inst.getOperand(OpNo).getReg();
+        unsigned HW = getContext().getRegisterInfo()->getEncodingValue(Reg);
+        if (HW & 1)
+          return Error(IDLoc, "vmv2r.v requires an even register (LMUL=2)");
+      }
+    }
     if (Inst.getNumOperands() == 4 && Inst.getOperand(3).isReg() &&
         Inst.getOperand(3).getReg() == RVMin::V0 &&
         Inst.getOperand(0).isReg() && Inst.getOperand(0).getReg() == RVMin::V0) {

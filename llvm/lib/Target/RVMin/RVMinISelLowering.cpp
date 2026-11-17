@@ -137,6 +137,8 @@ RVMinTargetLowering::RVMinTargetLowering(const TargetMachine &TM,
     addRegisterClass(MVT::v4i32, &RVMin::VRRegClass);
     // Chapter 52: mask values are legal too; v4i1 lives in the same VR file.
     addRegisterClass(MVT::v4i1, &RVMin::VRRegClass);
+    // Chapter 53: LMUL=2 gives <8 x i32> a 256-bit register pair.
+    addRegisterClass(MVT::v8i32, &RVMin::VRM2RegClass);
   }
   computeRegisterProperties(STI.getRegisterInfo());
 
@@ -162,6 +164,15 @@ RVMinTargetLowering::RVMinTargetLowering(const TargetMachine &TM,
     // the node alone instead of expanding it through scalar selects.
     setOperationAction(ISD::VSELECT, MVT::v4i32, Legal);
     setOperationAction(ISD::BUILD_VECTOR, MVT::v4i1, Custom);
+
+    // Chapter 53: the same clean slate for the LMUL=2 type.  Only add and
+    // memory are selected directly; everything else expands instead of
+    // reaching instruction selection without a pattern.
+    for (unsigned Op = 0; Op < ISD::BUILTIN_OP_END; ++Op)
+      setOperationAction(Op, MVT::v8i32, Expand);
+    setOperationAction(ISD::ADD, MVT::v8i32, Legal);
+    setOperationAction(ISD::LOAD, MVT::v8i32, Legal);
+    setOperationAction(ISD::STORE, MVT::v8i32, Legal);
   }
 
   // Chapter 22: with A, the RV32A instructions (lr.w/sc.w/amo*.w) are exactly

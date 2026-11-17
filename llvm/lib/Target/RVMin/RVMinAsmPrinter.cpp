@@ -101,6 +101,9 @@ public:
     if (Opc == RVMin::VSETIVLI || Opc == RVMin::VSETVLI ||
         Opc == RVMin::VSETVL)
       return false;
+    // Chapter 53: whole-register moves ignore VL/VTYPE.
+    if (Opc == RVMin::VMV2R_V)
+      return false;
     const MCInstrDesc &Desc = TM.getMCInstrInfo()->get(Opc);
     return (Desc.TSFlags & 0x1f) == 17; // FmtV
   }
@@ -108,12 +111,12 @@ public:
   /// Emit the configuration for the <4 x i32>, e32/m1, ta/ma subset.  Chapter
   /// 48 emitted it before every data instruction; chapter 49 caches it and
   /// re-emits only at block boundaries, calls and explicit vset instructions.
-  void emitVSETIVLI() {
+  void emitVSETIVLI(unsigned VL, unsigned VT) {
     MCInst VSet;
     VSet.setOpcode(RVMin::VSETIVLI);
     VSet.addOperand(MCOperand::createReg(RVMin::X0));
-    VSet.addOperand(MCOperand::createImm(4));   // VL = 4
-    VSet.addOperand(MCOperand::createImm(0xD0)); // e32, m1, ta, ma
+    VSet.addOperand(MCOperand::createImm(VL));
+    VSet.addOperand(MCOperand::createImm(VT));
     OutStreamer->emitInstruction(VSet, getSubtargetInfo());
   }
 
@@ -130,9 +133,20 @@ public:
         // instruction must re-establish the subset's VL/VTYPE.
         VStateValid = false;
       } else if (isVectorDataInstr(Opc)) {
-        if (!VStateValid) {
-          emitVSETIVLI();
+        // Chapter 53: LMUL=1 uses VL=4/e32,m1 (0xD0); LMUL=2 uses
+        // VL=8/e32,m2 (0xD1).  A block can mix the two, so cache both.
+        unsigned VL = 4, VT = 0xD0;
+        for (const MCOperand &MO : Inst)
+          if (MO.isReg() && RVMin::VRM2RegClass.contains(MO.getReg())) {
+            VL = 8;
+            VT = 0xD1;
+            break;
+          }
+        if (!VStateValid || VStateVL != VL || VStateVT != VT) {
+          emitVSETIVLI(VL, VT);
           VStateValid = true;
+          VStateVL = VL;
+          VStateVT = VT;
         }
       }
       // Calls and returns can clobber VL/VTYPE.  JAL/JALR are also the last
@@ -149,7 +163,39 @@ public:
       OutStreamer->emitInstruction(Inst, getSubtargetInfo());
   }
 
+  /// Chapter 53: LMUL=2 pseudos share their 32-bit encoding with the m1
+  /// instruction, so they cannot be separate MC opcodes.  Copy the register
+  /// operands onto the real opcode; emitMCInst then sees the 256-bit pair and
+  /// emits the m2 vsetivli.  This is the teaching-backend alternative to
+  /// upstream's table-driven pseudo lowering, which only supports operands
+  /// whose register classes match exactly.
+  void emitM2Pseudo(const MachineInstr &MI, unsigned RealOpc) {
+    MCInst Inst;
+    Inst.setOpcode(RealOpc);
+    for (const MachineOperand &MO : MI.operands())
+      if (MO.isReg())
+        Inst.addOperand(MCOperand::createReg(MO.getReg()));
+    emitMCInst(Inst);
+  }
+
   void emitInstruction(const MachineInstr *MI) override {
+    switch (MI->getOpcode()) {
+    case RVMin::VLE32_V_M2:
+      emitM2Pseudo(*MI, RVMin::VLE32_V);
+      return;
+    case RVMin::VSE32_V_M2:
+      emitM2Pseudo(*MI, RVMin::VSE32_V);
+      return;
+    case RVMin::VADD_VV_M2:
+      emitM2Pseudo(*MI, RVMin::VADD_VV);
+      return;
+    case RVMin::VMV2R_V_M2:
+      emitM2Pseudo(*MI, RVMin::VMV2R_V);
+      return;
+    default:
+      break;
+    }
+
     if (MI->getOpcode() == RVMin::PseudoCALL ||
         MI->getOpcode() == RVMin::PseudoTAIL) {
       emitPseudoCall(*MI, /*IsTail=*/MI->getOpcode() == RVMin::PseudoTAIL);
@@ -247,6 +293,8 @@ public:
   /// This is assembly-printer state only; the machine-level verifier cannot
   /// see the MC instruction inserted in emitMCInst.
   bool VStateValid = false;
+  unsigned VStateVL = 0;
+  unsigned VStateVT = 0;
 
   static char ID;
 };

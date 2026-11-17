@@ -105,6 +105,27 @@ def V29 : RVMinVReg<29, "v29">;
 def V30 : RVMinVReg<30, "v30">;
 def V31 : RVMinVReg<31, "v31">;
 
+// Chapter 53: LMUL=2.  A v8i32 value occupies a pair of 128-bit registers.
+// The sub-register indices describe the two halves of the 256-bit group; the
+// super-register's HWEncoding is the first half's number, which is what the
+// instruction encoding uses (vadd.vv v8, ... with vtype m2).
+def sub_vrm1_0 : SubRegIndex<128>;
+def sub_vrm1_1 : SubRegIndex<128, 128>;
+
+class RVMinVM2Reg<bits<5> num, string n, Register lo, Register hi>
+    : RegisterWithSubRegs<n, [lo, hi]> {
+  field bits<5> Num = num;
+  let Namespace = "RVMin";
+  let HWEncoding{4-0} = num;
+  let SubRegIndices = [sub_vrm1_0, sub_vrm1_1];
+  let CoveredBySubRegs = 1;
+}
+
+foreach Index = !range(0, 32, 2) in {
+  def V#Index#M2 : RVMinVM2Reg<Index, "v"#Index,
+      !cast<Register>("V"#Index), !cast<Register>("V"#!add(Index, 1))>;
+}
+
 // Chapter 47: the vector register class.  VLEN is fixed at 128 bits, so the
 // class type is v4i32.  Allocation starts at v8 and wraps back to v0-v7, which
 // keeps v0 (the mask register in full RVV) out of the common path and matches
@@ -126,6 +147,17 @@ def VR : RegisterClass<"RVMin", [v4i32, v4i1], 128,
 // copy into v0 when the instruction needs it.
 def VMV0 : RegisterClass<"RVMin", [v4i1], 128, (add V0)> {
   let DecoderMethod = "DecodeVRRegisterClass";
+}
+
+// Chapter 53: the LMUL=2 class.  A register is 256 bits (two 128-bit vector
+// registers), but the spill slot only needs 16-byte alignment: the unit-stride
+// load/store is element-aligned, and keeping the frame at 16 bytes matches the
+// stack alignment RVMin already guarantees.  Allocation order mirrors VR.
+def VRM2 : RegisterClass<"RVMin", [v8i32], 128,
+  (add (sequence "V%uM2", 8, 31, 2),
+       (sequence "V%uM2", 0, 6, 2))> {
+  let Size = 256;
+  let DecoderMethod = "DecodeVRM2RegisterClass";
 }
 
 // Allocation order follows the ILP32 ABI: caller-saved argument/temporary

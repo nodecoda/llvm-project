@@ -133,6 +133,23 @@ static DecodeStatus DecodeV0MaskReg(MCInst &Inst, unsigned RegNo,
   return MCDisassembler::Success;
 }
 
+// Chapter 53: LMUL=2 registers are numbered by their first half, and only
+// even numbers are valid (v0/v1, v2/v3, ..., v30/v31).
+static const unsigned VRM2DecoderTable[] = {
+    RVMin::V0M2,  RVMin::V2M2,  RVMin::V4M2,  RVMin::V6M2,  RVMin::V8M2,
+    RVMin::V10M2, RVMin::V12M2, RVMin::V14M2, RVMin::V16M2, RVMin::V18M2,
+    RVMin::V20M2, RVMin::V22M2, RVMin::V24M2, RVMin::V26M2, RVMin::V28M2,
+    RVMin::V30M2};
+
+static DecodeStatus DecodeVRM2RegisterClass(MCInst &Inst, unsigned RegNo,
+                                            uint64_t Address,
+                                            const MCDisassembler *Decoder) {
+  if (RegNo > 31 || (RegNo & 1))
+    return MCDisassembler::Fail;
+  Inst.addOperand(MCOperand::createReg(VRM2DecoderTable[RegNo / 2]));
+  return MCDisassembler::Success;
+}
+
 static const unsigned VRDecoderTable[] = {
     RVMin::V0,  RVMin::V1,  RVMin::V2,  RVMin::V3,  RVMin::V4,  RVMin::V5,
     RVMin::V6,  RVMin::V7,  RVMin::V8,  RVMin::V9,  RVMin::V10, RVMin::V11,

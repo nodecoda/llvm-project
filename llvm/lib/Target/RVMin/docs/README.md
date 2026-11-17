@@ -109,6 +109,7 @@ V 只覆盖 **Zve32x 教学子集**：SEW=32、LMUL=1、VLEN=128、无 mask、�
 | 章 | 文档 | 主题 | 本章门禁 | tag |
 | --- | --- | --- | --- | --- |
 | 52 | [52-vector-mask.md](52-vector-mask.md) | 向量 mask：`vm` 位、架构 v0、6 条 masked ALU 与 `vmerge.vvm`；`select <4 x i1>` 代码生成 | `v-extension.s` 9 正例 + 6 负例；V 语料 34；`v-ext-mask.ll`；lit 37/37；216 llc / 432 / 288 不变 | `rvmin-ch52` |
+| 53 | [53-lmul2.md](53-lmul2.md) | LMUL=2：寄存器对、`v8i32`、m2 load/store/add、32 字节 spill、`vmv2r.v` | `v-lmul2.ll`；lit 38/38；V 语料 36；228 llc / 432 / 288 不变；门禁 8/8 | `rvmin-ch53` |
 
 每个章末都有对应 tag：`git checkout rvmin-ch16` 即可看到该章结束时的完整代码。
 
