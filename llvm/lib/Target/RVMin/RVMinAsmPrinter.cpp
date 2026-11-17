@@ -81,8 +81,17 @@ public:
 
   bool runOnMachineFunction(MachineFunction &MF) override {
     SetupMachineFunction(MF);
+    VStateValid = false;
     emitFunctionBody();
     return false;
+  }
+
+  /// Chapter 49: VL/VTYPE are architectural state.  A new basic block can be
+  /// reached from an arbitrary predecessor (or a call), so forget the cached
+  /// configuration at every block boundary.  No cross-block analysis.
+  void emitBasicBlockStart(const MachineBasicBlock &MBB) override {
+    VStateValid = false;
+    AsmPrinter::emitBasicBlockStart(MBB);
   }
 
   /// Chapter 48: true for the data-processing vector instructions that depend
@@ -96,9 +105,9 @@ public:
     return (Desc.TSFlags & 0x1f) == 17; // FmtV
   }
 
-  /// Emit the conservative configuration for the <4 x i32>, e32/m1, ta/ma
-  /// subset.  Every data vector instruction is preceded by this sequence;
-  /// chapter 49 removes redundant configurations.
+  /// Emit the configuration for the <4 x i32>, e32/m1, ta/ma subset.  Chapter
+  /// 48 emitted it before every data instruction; chapter 49 caches it and
+  /// re-emits only at block boundaries, calls and explicit vset instructions.
   void emitVSETIVLI() {
     MCInst VSet;
     VSet.setOpcode(RVMin::VSETIVLI);
@@ -113,9 +122,25 @@ public:
   /// call lowering, real instructions) funnels through here so the .text
   /// layout and the compressor can never disagree.
   void emitMCInst(const MCInst &Inst) {
-    if (getSubtargetInfo().hasFeature(RVMin::FeatureStdExtV) &&
-        isVectorDataInstr(Inst.getOpcode()))
-      emitVSETIVLI();
+    if (getSubtargetInfo().hasFeature(RVMin::FeatureStdExtV)) {
+      unsigned Opc = Inst.getOpcode();
+      if (Opc == RVMin::VSETIVLI || Opc == RVMin::VSETVLI ||
+          Opc == RVMin::VSETVL) {
+        // An explicit configuration invalidates our cache; the next vector
+        // instruction must re-establish the subset's VL/VTYPE.
+        VStateValid = false;
+      } else if (isVectorDataInstr(Opc)) {
+        if (!VStateValid) {
+          emitVSETIVLI();
+          VStateValid = true;
+        }
+      }
+      // Calls and returns can clobber VL/VTYPE.  JAL/JALR are also the last
+      // instruction of a block; resetting here is cheaper than inspecting
+      // every pseudo call.
+      if (Opc == RVMin::JAL || Opc == RVMin::JALR)
+        VStateValid = false;
+    }
 
     MCInst CInst;
     if (compressInst(CInst, Inst, getSubtargetInfo()))
@@ -217,6 +242,11 @@ public:
       llvm_unreachable("RVMin: unsupported pseudo-instruction operand");
     }
   }
+
+  /// True when the current basic block already has a valid configuration.
+  /// This is assembly-printer state only; the machine-level verifier cannot
+  /// see the MC instruction inserted in emitMCInst.
+  bool VStateValid = false;
 
   static char ID;
 };

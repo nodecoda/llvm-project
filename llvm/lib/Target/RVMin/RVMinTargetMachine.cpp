@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "RVMinTargetMachine.h"
+#include "RVMinTargetTransformInfo.h"
 #include "RVMinCodeGenPassBuilder.h"
 #include "TargetInfo/RVMinTargetInfo.h"
 #include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
@@ -47,4 +48,9 @@ Error RVMinTargetMachine::buildCodeGenPipeline(
     PassInstrumentationCallbacks *PIC) {
   return buildRVMinCodeGenPipeline(*this, MPM, MAM, Out, DwoOut, FileType, Opt,
                                    Ctx, PIC);
+}
+
+TargetTransformInfo
+RVMinTargetMachine::getTargetTransformInfo(const Function &F) const {
+  return TargetTransformInfo(std::make_unique<RVMinTTIImpl>(this, F));
 }

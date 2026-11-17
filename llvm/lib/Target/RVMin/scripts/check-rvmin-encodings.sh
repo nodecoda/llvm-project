@@ -257,7 +257,7 @@ VC="$HERE/rvmin-v-encoding-corpus.s"
 extract "$TMP/rvmin-v.txt" > "$TMP/rvmin-v.enc"
 extract "$TMP/ref-v.txt" > "$TMP/ref-v.enc"
 NV=$(wc -l < "$TMP/rvmin-v.enc")
-[[ "$NV" -eq 19 ]] || fail "V corpus produced $NV encodings, want 19"
+[[ "$NV" -eq 27 ]] || fail "V corpus produced $NV encodings, want 27"
 diff -u "$TMP/ref-v.enc" "$TMP/rvmin-v.enc" > "$TMP/diff-v.txt" \
   || { head -20 "$TMP/diff-v.txt" >&2; fail "V encoding mismatch between rvmin and riscv32"; }
 

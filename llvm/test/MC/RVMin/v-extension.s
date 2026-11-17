@@ -11,9 +11,10 @@
 #
 # Chapter 47: the V-extension MC layer (Zve32x teaching subset).
 #
-# The nineteen instructions below cover configuration, unit-stride 32-bit
-# load/store, the vmv moves, integer add/sub/multiply and the three bitwise
-# operations.  Every encoding is checked byte for byte against
+# The twenty-seven instructions below cover configuration, unit-stride 32-bit
+# load/store, the vmv moves (including the scalar broadcast), integer
+# add/sub/multiply with their .vx/.vi forms, the bitwise operations with their
+# scalar forms, and the vredsum.vs reduction.  Every encoding is checked byte for byte against
 # `llvm-mc -triple=riscv32 -mattr=+v`; the corpus gate repeats that comparison
 # over the whole file.
 #
@@ -35,6 +36,8 @@ vse32.v v8, (a0)
 # CHECK: vse32.v v8, (a0) # encoding: [0x27,0x64,0x05,0x02]
 vmv.v.i v8, 5
 # CHECK: vmv.v.i v8, 5 # encoding: [0x57,0xb4,0x02,0x5e]
+vmv.v.x v8, a0
+# CHECK: vmv.v.x v8, a0 # encoding: [0x57,0x44,0x05,0x5e]
 vmv.v.v v8, v9
 # CHECK: vmv.v.v v8, v9 # encoding: [0x57,0x84,0x04,0x5e]
 vmv.x.s a0, v8
@@ -57,10 +60,24 @@ vmul.vx v8, v9, a0
 # CHECK: vmul.vx v8, v9, a0 # encoding: [0x57,0x64,0x95,0x96]
 vand.vv v8, v9, v10
 # CHECK: vand.vv v8, v9, v10 # encoding: [0x57,0x04,0x95,0x26]
+vand.vx v8, v9, a0
+# CHECK: vand.vx v8, v9, a0 # encoding: [0x57,0x44,0x95,0x26]
+vand.vi v8, v9, 5
+# CHECK: vand.vi v8, v9, 5 # encoding: [0x57,0xb4,0x92,0x26]
 vor.vv v8, v9, v10
 # CHECK: vor.vv v8, v9, v10 # encoding: [0x57,0x04,0x95,0x2a]
+vor.vx v8, v9, a0
+# CHECK: vor.vx v8, v9, a0 # encoding: [0x57,0x44,0x95,0x2a]
+vor.vi v8, v9, 5
+# CHECK: vor.vi v8, v9, 5 # encoding: [0x57,0xb4,0x92,0x2a]
 vxor.vv v8, v9, v10
 # CHECK: vxor.vv v8, v9, v10 # encoding: [0x57,0x04,0x95,0x2e]
+vxor.vx v8, v9, a0
+# CHECK: vxor.vx v8, v9, a0 # encoding: [0x57,0x44,0x95,0x2e]
+vxor.vi v8, v9, 5
+# CHECK: vxor.vi v8, v9, 5 # encoding: [0x57,0xb4,0x92,0x2e]
+vredsum.vs v8, v9, v10
+# CHECK: vredsum.vs v8, v9, v10 # encoding: [0x57,0x24,0x95,0x02]
 # A numeric vtype must encode exactly like the token group.
 vsetivli zero, 4, 0xd0
 # CHECK: vsetivli zero, 4, e32, m1, ta, ma # encoding: [0x57,0x70,0x02,0xcd]
@@ -87,12 +104,22 @@ vadd.vi v8, v9, 16
 # DIS: vle32.v{{[[:space:]]+}}v8, (a0)
 # DIS: vse32.v{{[[:space:]]+}}v8, (a0)
 # DIS: vmv.v.i{{[[:space:]]+}}v8, 5
+# DIS: vmv.v.x{{[[:space:]]+}}v8, a0
 # DIS: vmv.v.v{{[[:space:]]+}}v8, v9
 # DIS: vmv.x.s{{[[:space:]]+}}a0, v8
 # DIS: vmv.s.x{{[[:space:]]+}}v8, a0
 # DIS: vadd.vv{{[[:space:]]+}}v8, v9, v10
+# DIS: vadd.vx{{[[:space:]]+}}v8, v9, a0
+# DIS: vadd.vi{{[[:space:]]+}}v8, v9, 5
 # DIS: vmul.vv{{[[:space:]]+}}v8, v9, v10
+# DIS: vand.vx{{[[:space:]]+}}v8, v9, a0
+# DIS: vand.vi{{[[:space:]]+}}v8, v9, 5
+# DIS: vor.vx{{[[:space:]]+}}v8, v9, a0
+# DIS: vor.vi{{[[:space:]]+}}v8, v9, 5
 # DIS: vxor.vv{{[[:space:]]+}}v8, v9, v10
+# DIS: vxor.vx{{[[:space:]]+}}v8, v9, a0
+# DIS: vxor.vi{{[[:space:]]+}}v8, v9, 5
+# DIS: vredsum.vs{{[[:space:]]+}}v8, v9, v10
 # MISSING: error: instruction requires the following: 'V' (Vector Extension)
 # BADTYPE: error: unknown vtype SEW 'e33'
 # RANGE: error: vtype must be an integer in the range 0..2047

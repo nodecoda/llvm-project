@@ -277,8 +277,19 @@ def VMUL_VV : RVMinVVInst<0b100101, 0b010, "vmul.vv">;
 def VMUL_VX : RVMinVXInst<0b100101, 0b110, "vmul.vx">;
 
 def VAND_VV : RVMinVVInst<0b001001, 0b000, "vand.vv">;
+def VAND_VX : RVMinVXInst<0b001001, 0b100, "vand.vx">;
+def VAND_VI : RVMinVIInst<0b001001, 0b011, "vand.vi">;
 def VOR_VV  : RVMinVVInst<0b001010, 0b000, "vor.vv">;
+def VOR_VX  : RVMinVXInst<0b001010, 0b100, "vor.vx">;
+def VOR_VI  : RVMinVIInst<0b001010, 0b011, "vor.vi">;
 def VXOR_VV : RVMinVVInst<0b001011, 0b000, "vxor.vv">;
+def VXOR_VX : RVMinVXInst<0b001011, 0b100, "vxor.vx">;
+def VXOR_VI : RVMinVIInst<0b001011, 0b011, "vxor.vi">;
+
+// Chapter 49: vredsum.vs vd, vs2, vs1 sums the elements of vs2 and adds
+// vs1[0], writing the scalar result to vd[0].  It lives in OPMVV (funct3 010)
+// with funct6 000000, like vadd but in the multiply/other space.
+def VREDSUM_VS : RVMinVVInst<0b000000, 0b010, "vredsum.vs">;
 
 //===----------------------------------------------------------------------===//
 // Moves
@@ -323,6 +334,25 @@ class RVMinVMVVIiInst : RVMinInst<(outs VR:$vd), (ins simm5:$imm),
   let TSFlags{4-0} = FmtV.Value;
 }
 
+// vmv.v.x broadcasts an integer register into every active element.  It is
+// OPIVX (funct3 100): the vs2 field is fixed to zero and rs1 carries the
+// source, unlike vmv.s.x which uses OPMVX (funct3 110).
+class RVMinVMVVXInst : RVMinInst<(outs VR:$vd), (ins GPR:$rs1),
+                                 "vmv.v.x $vd, $rs1", []> {
+  bits<5> vd;
+  bits<5> rs1;
+
+  let Inst{6-0}   = OPC_OP_V.Value;
+  let Inst{11-7}  = vd;
+  let Inst{14-12} = 0b100;
+  let Inst{19-15} = rs1;
+  let Inst{24-20} = 0b00000;
+  let Inst{25}    = 1;
+  let Inst{31-26} = 0b010111;
+
+  let TSFlags{4-0} = FmtV.Value;
+}
+
 class RVMinVMVXSInst : RVMinInst<(outs GPR:$rd), (ins VR:$vs2),
                                  "vmv.x.s $rd, $vs2", []> {
   bits<5> rd;
@@ -356,6 +386,7 @@ class RVMinVMVSXInst : RVMinInst<(outs VR:$vd), (ins GPR:$rs1),
 }
 
 def VMV_V_V : RVMinVMVVIInst;
+def VMV_V_X : RVMinVMVVXInst;
 def VMV_V_I : RVMinVMVVIiInst;
 def VMV_X_S : RVMinVMVXSInst;
 def VMV_S_X : RVMinVMVSXInst;

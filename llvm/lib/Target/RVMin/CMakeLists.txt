@@ -29,8 +29,10 @@ add_llvm_target(RVMinCodeGen
   RVMinSelectionDAGInfo.cpp
   RVMinSubtarget.cpp
   RVMinTargetMachine.cpp
+  RVMinTargetTransformInfo.cpp
 
   LINK_COMPONENTS
+  Analysis
   AsmPrinter
   CodeGen
   CodeGenTypes
@@ -43,6 +45,7 @@ add_llvm_target(RVMinCodeGen
   Support
   Target
   TargetParser
+  TransformUtils
 
   ADD_TO_COMPONENT
   RVMin

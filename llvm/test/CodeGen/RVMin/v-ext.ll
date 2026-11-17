@@ -26,12 +26,10 @@ define void @add4(ptr %out, ptr %a, ptr %b) {
 ; V-LABEL: add4:
 ; V:         vsetivli zero, 4, e32, m1, ta, ma
 ; V-NEXT:    vle32.v
-; V:         vsetivli zero, 4, e32, m1, ta, ma
-; V-NEXT:    vle32.v
-; V:         vsetivli zero, 4, e32, m1, ta, ma
-; V-NEXT:    vadd.vv
-; V:         vsetivli zero, 4, e32, m1, ta, ma
-; V-NEXT:    vse32.v
+; V-NOT:     vsetivli
+; V:         vadd.vv
+; V-NOT:     vsetivli
+; V:         vse32.v
 
 define void @ops(ptr %out, ptr %a, ptr %b) {
   %va = load <4 x i32>, ptr %a, align 16
@@ -58,8 +56,8 @@ define void @splat5(ptr %out, ptr %a) {
   ret void
 }
 ; V-LABEL: splat5:
-; V:         vmv.v.i {{v[0-9]+}}, 5
-; V:         vadd.vv
+; V-NOT:     vmv.v.i
+; V:         vadd.vi {{v[0-9]+}}, {{v[0-9]+}}, 5
 
 ; The 5-bit signed immediate cannot encode 100, so the constant goes through a
 ; private 16-byte stack object and is read back with vle32.v.
@@ -70,9 +68,8 @@ define void @splat100(ptr %out, ptr %a) {
   ret void
 }
 ; V-LABEL: splat100:
-; V:         addi a2, zero, 100
-; V:         sw a2
-; V:         vle32.v
+; V:         addi {{a[0-9]+}}, zero, 100
+; V:         vadd.vx {{v[0-9]+}}, {{v[0-9]+}}, {{a[0-9]+}}
 
 define i32 @extract0(ptr %a) {
   %va = load <4 x i32>, ptr %a, align 16
@@ -93,6 +90,64 @@ define i32 @extract1(ptr %a) {
 ; V:         addi a0, sp, 0
 ; V:         vse32.v {{v[0-9]+}}, (a0)
 ; V:         lw a0, 4(sp)
+
+; A variable splat is vmv.v.x; the following add folds it into vadd.vx.
+define void @varbroadcast(ptr %out, ptr %a, i32 %x) {
+  %s = insertelement <4 x i32> poison, i32 %x, i32 0
+  %b = shufflevector <4 x i32> %s, <4 x i32> poison, <4 x i32> zeroinitializer
+  %va = load <4 x i32>, ptr %a, align 16
+  %v = add <4 x i32> %va, %b
+  store <4 x i32> %v, ptr %out, align 16
+  ret void
+}
+; V-LABEL: varbroadcast:
+; V:         vadd.vx {{v[0-9]+}}, {{v[0-9]+}}, a2
+
+; Chapter 49: reduction to a scalar.
+declare i32 @llvm.vector.reduce.add.v4i32(<4 x i32>)
+
+define i32 @reduce(ptr %a) {
+  %va = load <4 x i32>, ptr %a, align 16
+  %s = call i32 @llvm.vector.reduce.add.v4i32(<4 x i32> %va)
+  ret i32 %s
+}
+; V-LABEL: reduce:
+; V:         vmv.v.i {{v[0-9]+}}, 0
+; V:         vredsum.vs
+; V:         vmv.x.s a0
+
+; Every block is a possible branch target, so the configuration is re-emitted.
+define void @branch(ptr %out, ptr %a, i1 %c) {
+  br i1 %c, label %t, label %f
+t:
+  %va = load <4 x i32>, ptr %a, align 16
+  %v = add <4 x i32> %va, <i32 1, i32 1, i32 1, i32 1>
+  store <4 x i32> %v, ptr %out, align 16
+  ret void
+f:
+  %vb = load <4 x i32>, ptr %a, align 16
+  %w = add <4 x i32> %vb, <i32 2, i32 2, i32 2, i32 2>
+  store <4 x i32> %w, ptr %out, align 16
+  ret void
+}
+; V-LABEL: branch:
+; V:         vsetivli
+; V:         vsetivli
+
+; A call may clobber VL/VTYPE; the next vector instruction must reconfigure.
+declare void @foo()
+define void @aftercall(ptr %out, ptr %a) {
+  %va = load <4 x i32>, ptr %a, align 16
+  call void @foo()
+  %v = add <4 x i32> %va, <i32 3, i32 3, i32 3, i32 3>
+  store <4 x i32> %v, ptr %out, align 16
+  ret void
+}
+; V-LABEL: aftercall:
+; V:         vsetivli
+; V:         jalr ra, 0(t0)
+; V:         vsetivli
+; V:         vle32.v
 
 ; Register pressure: 40 simultaneously live vectors exceed the 32 architectural
 ; vector registers, so the source scheduler forces vse32.v/vle32.v reloads.

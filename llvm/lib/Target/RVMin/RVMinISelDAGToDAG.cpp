@@ -391,6 +391,92 @@ void RVMinDAGToDAGISel::Select(SDNode *N) {
     return;
   }
 
+  // Chapter 49: fold a splat operand into the scalar forms.  Operands are
+  // selected before their users, so a constant splat has already become
+  // VMV_V_I and a variable splat VMV_V_X.  Recognizing those machine nodes
+  // here avoids materializing a full vector only to use one lane.
+  if (N->getValueType(0) == MVT::v4i32 &&
+      (N->getOpcode() == ISD::ADD || N->getOpcode() == ISD::SUB ||
+       N->getOpcode() == ISD::MUL || N->getOpcode() == ISD::AND ||
+       N->getOpcode() == ISD::OR || N->getOpcode() == ISD::XOR)) {
+    auto getSplatImm = [](SDValue V, int64_t &Imm) {
+      if (!V->isMachineOpcode() || V->getMachineOpcode() != RVMin::VMV_V_I)
+        return false;
+      auto *C = dyn_cast<ConstantSDNode>(V.getOperand(0));
+      if (!C)
+        return false;
+      Imm = C->getSExtValue();
+      return isInt<5>(Imm);
+    };
+    auto getSplatReg = [](SDValue V, SDValue &Reg) {
+      if (!V->isMachineOpcode() || V->getMachineOpcode() != RVMin::VMV_V_X)
+        return false;
+      Reg = V.getOperand(0);
+      return true;
+    };
+
+    unsigned VIOpc = 0;
+    unsigned VXOpc = 0;
+    bool Commutative = false;
+    switch (N->getOpcode()) {
+    case ISD::ADD:
+      VIOpc = RVMin::VADD_VI;
+      VXOpc = RVMin::VADD_VX;
+      Commutative = true;
+      break;
+    case ISD::SUB:
+      VXOpc = RVMin::VSUB_VX;
+      break;
+    case ISD::MUL:
+      VXOpc = RVMin::VMUL_VX;
+      Commutative = true;
+      break;
+    case ISD::AND:
+      VIOpc = RVMin::VAND_VI;
+      VXOpc = RVMin::VAND_VX;
+      Commutative = true;
+      break;
+    case ISD::OR:
+      VIOpc = RVMin::VOR_VI;
+      VXOpc = RVMin::VOR_VX;
+      Commutative = true;
+      break;
+    default:
+      VIOpc = RVMin::VXOR_VI;
+      VXOpc = RVMin::VXOR_VX;
+      Commutative = true;
+      break;
+    }
+
+    auto selectSplat = [&](SDValue Vec, SDValue Splat) {
+      int64_t Imm = 0;
+      if (VIOpc && getSplatImm(Splat, Imm)) {
+        SDValue Ops[] = {Vec, CurDAG->getTargetConstant(Imm, DL, MVT::i32)};
+        ReplaceNode(N, CurDAG->getMachineNode(VIOpc, DL, MVT::v4i32, Ops));
+        return true;
+      }
+
+      SDValue Reg;
+      if (!getSplatReg(Splat, Reg)) {
+        if (!getSplatImm(Splat, Imm))
+          return false;
+        // No .vi form (subtract and multiply): materialize the 5-bit
+        // immediate into a GPR and use the .vx form.
+        Reg = materializeInt(Imm);
+      }
+      SDValue Ops[] = {Vec, Reg};
+      ReplaceNode(N, CurDAG->getMachineNode(VXOpc, DL, MVT::v4i32, Ops));
+      return true;
+    };
+
+    SDValue L = N->getOperand(0);
+    SDValue R = N->getOperand(1);
+    if (selectSplat(L, R))
+      return;
+    if (Commutative && selectSplat(R, L))
+      return;
+  }
+
   SelectCode(N);
 }
 

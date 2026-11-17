@@ -84,6 +84,8 @@ RVMinTargetLowering::RVMinTargetLowering(const TargetMachine &TM,
     setOperationAction(ISD::BUILD_VECTOR, MVT::v4i32, Custom);
     setOperationAction(ISD::SPLAT_VECTOR, MVT::v4i32, Custom);
     setOperationAction(ISD::EXTRACT_VECTOR_ELT, MVT::v4i32, Custom);
+    // Chapter 49: `llvm.vector.reduce.add` has a direct vredsum.vs sequence.
+    setOperationAction(ISD::VECREDUCE_ADD, MVT::v4i32, Custom);
   }
 
   // Chapter 22: with A, the RV32A instructions (lr.w/sc.w/amo*.w) are exactly
@@ -401,6 +403,8 @@ SDValue RVMinTargetLowering::LowerOperation(SDValue Op,
     return lowerSPLAT_VECTOR(Op, DAG);
   case ISD::EXTRACT_VECTOR_ELT:
     return lowerEXTRACT_VECTOR_ELT(Op, DAG);
+  case ISD::VECREDUCE_ADD:
+    return lowerVECREDUCE_ADD(Op, DAG);
   }
 }
 
@@ -459,6 +463,19 @@ SDValue RVMinTargetLowering::lowerBUILD_VECTOR(SDValue Op,
           0);
   }
 
+  // Four identical non-constant elements are a splat too; broadcast the
+  // scalar with vmv.v.x instead of materializing it through the stack.
+  bool AllIdentical = true;
+  for (unsigned I = 1; I != 4; ++I)
+    if (Op.getOperand(I) != Op.getOperand(0)) {
+      AllIdentical = false;
+      break;
+    }
+  if (AllIdentical)
+    return SDValue(
+        DAG.getMachineNode(RVMin::VMV_V_X, DL, MVT::v4i32, Op.getOperand(0)),
+        0);
+
   SmallVector<SDValue, 4> Elems(Op->op_begin(), Op->op_end());
   return lowerVectorThroughStack(Elems, DL, DAG);
 }
@@ -475,8 +492,9 @@ SDValue RVMinTargetLowering::lowerSPLAT_VECTOR(SDValue Op,
                              DAG.getTargetConstant(Value, DL, MVT::i32)),
           0);
   }
-  SmallVector<SDValue, 4> Elems(4, Val);
-  return lowerVectorThroughStack(Elems, DL, DAG);
+  // Chapter 49: a variable splat is `vmv.v.x`, not four stores and a vector
+  // reload.  Only the constant immediate case keeps vmv.v.i.
+  return SDValue(DAG.getMachineNode(RVMin::VMV_V_X, DL, MVT::v4i32, Val), 0);
 }
 
 SDValue RVMinTargetLowering::lowerEXTRACT_VECTOR_ELT(SDValue Op,
@@ -512,6 +530,22 @@ SDValue RVMinTargetLowering::lowerEXTRACT_VECTOR_ELT(SDValue Op,
   return DAG.getLoad(MVT::i32, DL, Chain, Addr,
                      MachinePointerInfo::getFixedStack(MF, FI, Index * 4),
                      Align(4));
+}
+
+// Chapter 49: reduce <4 x i32> to i32.  vredsum.vs adds the four elements of
+// vs2 to element 0 of vs1, so seed vs1 with zero and move the result out of
+// the vector register.  The three instructions are all in the Zve32x subset
+// already used by chapters 47/48.
+SDValue RVMinTargetLowering::lowerVECREDUCE_ADD(SDValue Op,
+                                                SelectionDAG &DAG) const {
+  SDLoc DL(Op);
+  SDValue Vec = Op.getOperand(0);
+  SDValue Zero = DAG.getTargetConstant(0, DL, MVT::i32);
+  SDValue Seed = SDValue(
+      DAG.getMachineNode(RVMin::VMV_V_I, DL, MVT::v4i32, Zero), 0);
+  SDValue Sum = SDValue(
+      DAG.getMachineNode(RVMin::VREDSUM_VS, DL, MVT::v4i32, Vec, Seed), 0);
+  return SDValue(DAG.getMachineNode(RVMin::VMV_X_S, DL, MVT::i32, Sum), 0);
 }
 
 // Chapter 19: rewrite `x * C` into shifts and adds for the constants that
