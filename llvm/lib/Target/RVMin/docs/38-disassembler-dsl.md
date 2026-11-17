@@ -591,17 +591,17 @@ class EncodingByHwMode<list<HwMode> Ms = [], list<InstructionEncoding> Ts = []>
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:20` | `DwarfNumbers` | DWARF 编号；`-gen-register-info` 消费。 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:25` | `RegAltNameIndices` | 本后端不读 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:79` | `DecoderMethod` | decoder 自定义方法。 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:100` | `Namespace` | 消费（derive） |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:101` | `HWEncoding` | 寄存器编码；`-gen-register-info` 消费。 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:102` | `AltNames` | 本后端不读 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:103` | `DwarfNumbers` | DWARF 编号；`-gen-register-info` 消费。 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:106` | `RegAltNameIndices` | 本后端不读 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:161` | `DecoderMethod` | decoder 自定义方法。 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:172` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:107` | `Namespace` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:108` | `HWEncoding` | 寄存器编码；`-gen-register-info` 消费。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:109` | `AltNames` | 本后端不读 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:110` | `DwarfNumbers` | DWARF 编号；`-gen-register-info` 消费。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:113` | `RegAltNameIndices` | 本后端不读 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:168` | `DecoderMethod` | decoder 自定义方法。 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:179` | `DecoderMethod` | decoder 自定义方法。 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:184` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:186` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:191` | `DecoderMethod` | decoder 自定义方法。 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:16` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:99` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:106` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
 
 共 202 处使用；契约外 81 处。
 <!-- END: GENERATED TD USAGE -->

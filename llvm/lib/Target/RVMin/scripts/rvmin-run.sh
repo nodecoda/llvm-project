@@ -33,6 +33,7 @@ CC="$BIN/clang"
 LLC="$BIN/llc"
 MC="$BIN/llvm-mc"
 READELF="$BIN/llvm-readelf"
+OBJCOPY="$BIN/llvm-objcopy"
 TRIPLE=riscv32-unknown-elf
 
 fail() {
@@ -43,7 +44,7 @@ fail() {
 # Build demo.c for one feature set and run it under QEMU.  Prints the
 # program's stdout; the return value is the program's exit status.
 run_variant() {
-  local suffix=$1 mattr=$2
+  local suffix=$1 mattr=$2 carch=${3:-rv32i} cabi=${4:-ilp32}
   local LLC_ARGS=(-march=rvmin -mtriple="$TRIPLE" -O2)
   local MC_ARGS=(-triple=rvmin)
   if [[ -n "$mattr" ]]; then
@@ -52,9 +53,9 @@ run_variant() {
   fi
 
   # 1. C -> LLVM IR (clang, RV32I target) -> assembly (llc).
-  "$CC" --target="$TRIPLE" -march=rv32i -mabi=ilp32 -O2 -ffreestanding \
+  "$CC" --target="$TRIPLE" -march="$carch" -mabi="$cabi" -O2 -ffreestanding \
     -fno-builtin -S -emit-llvm "$RT/demo.c" -o "$TMP/demo$suffix.ll" \
-    || fail "clang could not compile demo.c (${mattr:-rv32i})"
+    || fail "clang could not compile demo.c ($carch/$cabi)"
   "$LLC" "${LLC_ARGS[@]}" "$TMP/demo$suffix.ll" -o "$TMP/demo$suffix.s" \
     || fail "llc could not select demo.c (${mattr:-rv32i})"
 
@@ -95,6 +96,43 @@ for SYM in __mulsi3 __divsi3 __udivsi3 __modsi3 __umodsi3; do
   [[ "$RELOCS" != *"$SYM"* ]] || fail "+m build still references $SYM"
 done
 grep -q '__ashldi3' <<< "$RELOCS" || fail "+m build lost the 64-bit shift libcall"
+
+# Chapter 44 gate: compressed code generation.  The same demo must still be
+# correct under -march=rv32ic, the listing must contain real c.* mnemonics,
+# and the full +m,+f,+d,+c build must agree as well.
+STATUS3=0
+OUT3=$(run_variant "-c" "+c" rv32ic ilp32) || STATUS3=$?
+[[ "$STATUS3" -eq 0 ]] || fail "RV32IC demo exited with $STATUS3"
+echo "rv32ic: $OUT3"
+[[ "$OUT1" == "$OUT3" ]] || fail "compressed build disagrees: '$OUT1' vs '$OUT3'"
+grep -q $'^\tc\.' "$TMP/demo-c.s" \
+  || fail "rv32ic build contains no compressed instructions"
+
+STATUS4=0
+OUT4=$(run_variant "-allc" "+m,+f,+d,+c" rv32imafdc ilp32d) || STATUS4=$?
+[[ "$STATUS4" -eq 0 ]] || fail "RV32IMAFDC demo exited with $STATUS4"
+echo "rv32imafdc: $OUT4"
+[[ "$OUT1" == "$OUT4" ]] || fail "full-feature build disagrees: '$OUT1' vs '$OUT4'"
+grep -q $'^\tc\.' "$TMP/demo-allc.s" \
+  || fail "rv32imafdc build contains no compressed instructions"
+
+# Same IR, same optimisation: +c must strictly shrink .text.  This is the
+# measurable statement behind "compression is a projection, not a rewrite".
+"$LLC" -march=rvmin -mtriple="$TRIPLE" -O2 "$TMP/demo.ll" -o "$TMP/demo-plain.s"
+"$LLC" -march=rvmin -mtriple="$TRIPLE" -O2 -mattr=+c "$TMP/demo.ll" \
+  -o "$TMP/demo-compressed.s"
+"$MC" -triple=rvmin -filetype=obj "$TMP/demo-plain.s" -o "$TMP/demo-plain.o"
+"$MC" -triple=rvmin -mattr=+c -filetype=obj "$TMP/demo-compressed.s" \
+  -o "$TMP/demo-compressed.o"
+"$OBJCOPY" -O binary --only-section=.text "$TMP/demo-plain.o" \
+  "$TMP/demo-plain.text"
+"$OBJCOPY" -O binary --only-section=.text "$TMP/demo-compressed.o" \
+  "$TMP/demo-compressed.text"
+PLAIN=$(stat -c%s "$TMP/demo-plain.text")
+SMALL=$(stat -c%s "$TMP/demo-compressed.text")
+[[ "$SMALL" -lt "$PLAIN" ]] \
+  || fail "+c did not shrink .text ($PLAIN -> $SMALL bytes)"
+echo "PASS: compression shrank demo .text from $PLAIN to $SMALL bytes"
 
 # Chapter 16 gate: frames larger than 2 KiB.  `-O0` and `-O2` exercise both
 # register allocators; `-verify-machineinstrs` checks the scavenged scratch

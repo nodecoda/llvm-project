@@ -106,6 +106,7 @@ git checkout rvmin-ch16     # 第 16 章（大栈帧）结束
 | 章 | 主题 | 状态 |
 | --- | --- | --- |
 | 43 | [RV32C 的 MC 层](docs/43-c-extension-mc.md) | 完成 |
+| 44 | [压缩代码生成](docs/44-c-compression.md) | 完成 |
 
 ## 当前限制（上篇结束时，第 14 章）
 

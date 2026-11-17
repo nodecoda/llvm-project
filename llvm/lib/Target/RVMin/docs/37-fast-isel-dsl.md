@@ -574,17 +574,17 @@ fast-isel 没有直接比较 dag 操作符名字的代码，它通过共享的
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:20` | `DwarfNumbers` | 本后端不读 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:25` | `RegAltNameIndices` | 本后端不读 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:79` | `DecoderMethod` | decoder 自定义方法。 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:100` | `Namespace` | 消费（derive+project） |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:101` | `HWEncoding` | 本后端不读 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:102` | `AltNames` | 本后端不读 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:103` | `DwarfNumbers` | 本后端不读 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:106` | `RegAltNameIndices` | 本后端不读 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:161` | `DecoderMethod` | decoder 自定义方法。 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:172` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:107` | `Namespace` | 消费（derive+project） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:108` | `HWEncoding` | 本后端不读 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:109` | `AltNames` | 本后端不读 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:110` | `DwarfNumbers` | 本后端不读 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:113` | `RegAltNameIndices` | 本后端不读 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:168` | `DecoderMethod` | decoder 自定义方法。 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:179` | `DecoderMethod` | decoder 自定义方法。 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:184` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:186` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:191` | `DecoderMethod` | decoder 自定义方法。 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:16` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:99` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:106` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
 
 共 129 处使用；契约外 28 处。
 <!-- END: GENERATED TD USAGE -->

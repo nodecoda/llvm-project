@@ -84,6 +84,13 @@ def GPRC : RegisterClass<"RVMin", [i32], 32,
 // it an encoding field.
 def SP : RegisterClass<"RVMin", [i32], 32, (add X2)>;
 
+// Chapter 44: value subsets of GPR used only by CompressPat.  A pattern that
+// names one of these rejects the registers the compressed encoding cannot
+// express (x0, and x2 for c.lui) while the instruction itself keeps using the
+// plain GPR class, so the assembler is unaffected.
+def GPRNoX0 : RegisterClass<"RVMin", [i32], 32, (sub GPR, X0)>;
+def GPRNoX0X2 : RegisterClass<"RVMin", [i32], 32, (sub GPR, X0, X2)>;
+
 //===----------------------------------------------------------------------===//
 // Chapter 40: F-extension registers
 //===----------------------------------------------------------------------===//

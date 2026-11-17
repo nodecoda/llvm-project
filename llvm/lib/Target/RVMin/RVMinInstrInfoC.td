@@ -40,9 +40,14 @@ def SImm10Lsb0000NonZeroAsmOperand
     : RVMinCImmAsmOperand<"SImm10Lsb0000NonZero", "isSImm10Lsb0000NonZero">;
 def SImm9Lsb0AsmOperand : RVMinCImmAsmOperand<"SImm9Lsb0", "isSImm9Lsb0">;
 def SImm12Lsb0AsmOperand : RVMinCImmAsmOperand<"SImm12Lsb0", "isSImm12Lsb0">;
+def CLUIImmAsmOperand : AsmOperandClass {
+  let Name = "CLUIImm";
+  let PredicateMethod = "isCLUIImm";
+  let RenderMethod = "addImmOperands";
+}
 
 // 6-bit signed immediate: c.addi, c.li, c.lui, c.andi.
-def simm6 : Operand<i32> {
+def simm6 : Operand<i32>, ImmLeaf<i32, [{ return isInt<6>(Imm); }]> {
   let PrintMethod = "printOperand";
   let ParserMatchClass = SImm6AsmOperand;
   let DecoderMethod = "decodeSImmOperand<6>";
@@ -55,7 +60,8 @@ def simm6 : Operand<i32> {
 // 7/8/9/10-bit unsigned immediates with low zero bits, used by the compressed
 // load/store forms.  The operand holds the full byte offset; the instruction
 // definition decides which bits go where.
-def uimm7_lsb00 : Operand<i32> {
+def uimm7_lsb00 : Operand<i32>,
+                 ImmLeaf<i32, [{ return isShiftedUInt<5, 2>(Imm); }]> {
   let PrintMethod = "printOperand";
   let ParserMatchClass = UImm7Lsb00AsmOperand;
   let DecoderMethod = "decodeUImmOperand<7>";
@@ -64,7 +70,8 @@ def uimm7_lsb00 : Operand<i32> {
     return MCOp.evaluateAsConstantImm(Imm) && isShiftedUInt<5, 2>(Imm);
   }];
 }
-def uimm8_lsb00 : Operand<i32> {
+def uimm8_lsb00 : Operand<i32>,
+                 ImmLeaf<i32, [{ return isShiftedUInt<6, 2>(Imm); }]> {
   let PrintMethod = "printOperand";
   let ParserMatchClass = UImm8Lsb00AsmOperand;
   let DecoderMethod = "decodeUImmOperand<8>";
@@ -73,7 +80,8 @@ def uimm8_lsb00 : Operand<i32> {
     return MCOp.evaluateAsConstantImm(Imm) && isShiftedUInt<6, 2>(Imm);
   }];
 }
-def uimm8_lsb000 : Operand<i32> {
+def uimm8_lsb000 : Operand<i32>,
+                  ImmLeaf<i32, [{ return isShiftedUInt<5, 3>(Imm); }]> {
   let PrintMethod = "printOperand";
   let ParserMatchClass = UImm8Lsb000AsmOperand;
   let DecoderMethod = "decodeUImmOperand<8>";
@@ -82,7 +90,8 @@ def uimm8_lsb000 : Operand<i32> {
     return MCOp.evaluateAsConstantImm(Imm) && isShiftedUInt<5, 3>(Imm);
   }];
 }
-def uimm9_lsb000 : Operand<i32> {
+def uimm9_lsb000 : Operand<i32>,
+                  ImmLeaf<i32, [{ return isShiftedUInt<6, 3>(Imm); }]> {
   let PrintMethod = "printOperand";
   let ParserMatchClass = UImm9Lsb000AsmOperand;
   let DecoderMethod = "decodeUImmOperand<9>";
@@ -91,7 +100,9 @@ def uimm9_lsb000 : Operand<i32> {
     return MCOp.evaluateAsConstantImm(Imm) && isShiftedUInt<6, 3>(Imm);
   }];
 }
-def uimm10_lsb00nonzero : Operand<i32> {
+def uimm10_lsb00nonzero : Operand<i32>,
+                          ImmLeaf<i32, [{ return Imm != 0 &&
+                                          isShiftedUInt<8, 2>(Imm); }]> {
   let PrintMethod = "printOperand";
   let ParserMatchClass = UImm10Lsb00NonZeroAsmOperand;
   let DecoderMethod = "decodeUImmOperand<10>";
@@ -101,7 +112,53 @@ def uimm10_lsb00nonzero : Operand<i32> {
            isShiftedUInt<8, 2>(Imm);
   }];
 }
-def simm10_lsb0000nonzero : Operand<i32> {
+// Chapter 44: operands that only appear in CompressPat patterns.  They carry
+// the value predicate the compress backend re-checks at emission time; the
+// instructions themselves keep the slightly wider assembler operands.
+def simm6nonzero : Operand<i32>,
+                   ImmLeaf<i32, [{ return Imm != 0 && isInt<6>(Imm); }]> {
+  let MCOperandPredicate = [{
+    int64_t Imm;
+    return MCOp.evaluateAsConstantImm(Imm) && Imm != 0 && isInt<6>(Imm);
+  }];
+}
+def uimm5nonzero : Operand<i32>,
+                   ImmLeaf<i32, [{ return Imm != 0 && isUInt<5>(Imm); }]> {
+  let MCOperandPredicate = [{
+    int64_t Imm;
+    return MCOp.evaluateAsConstantImm(Imm) && Imm != 0 && isUInt<5>(Imm);
+  }];
+}
+
+// c.lui's six-bit immediate is sign-extended to 20 bits before it is shifted
+// into place, so the instruction, the parser and the printer all speak the
+// wide form: 1..31 or 0xfffe0..0xfffff.  Everything else (0, 32..0xfffdf) is
+// not representable.
+def c_lui_imm : Operand<i32>,
+                ImmLeaf<i32, [{ if (Imm < 0)
+                                  return isInt<6>(Imm);
+                                return Imm != 0 &&
+                                       (isUInt<5>(Imm) ||
+                                        (Imm >= 0xfffe0 && Imm <= 0xfffff)); }]> {
+  // The DAG hands LUI a sign-extended 20-bit field (0xfffff arrives as -1),
+  // while the assembler spells the field itself.  Printing masks to 20 bits,
+  // so both forms canonicalize to `c.lui a0, 1048575`.
+  let PrintMethod = "printUImm20Operand";
+  let ParserMatchClass = CLUIImmAsmOperand;
+  let DecoderMethod = "decodeCLUIImmOperand";
+  let MCOperandPredicate = [{
+    int64_t Imm;
+    if (!MCOp.evaluateAsConstantImm(Imm))
+      return false;
+    if (Imm < 0)
+      return isInt<6>(Imm);
+    return Imm != 0 && (isUInt<5>(Imm) || (Imm >= 0xfffe0 && Imm <= 0xfffff));
+  }];
+}
+
+def simm10_lsb0000nonzero : Operand<i32>,
+                            ImmLeaf<i32, [{ return Imm != 0 &&
+                                            isShiftedInt<6, 4>(Imm); }]> {
   let PrintMethod = "printOperand";
   let ParserMatchClass = SImm10Lsb0000NonZeroAsmOperand;
   let DecoderMethod = "decodeSImmOperand<10>";
@@ -114,7 +171,8 @@ def simm10_lsb0000nonzero : Operand<i32> {
 
 // Compressed branch/jump targets.  The operand is the full byte offset with
 // bit 0 clear; symbolic operands are accepted and resolved by a fixup.
-def simm9_lsb0 : Operand<OtherVT> {
+def simm9_lsb0 : Operand<OtherVT>,
+                 ImmLeaf<i32, [{ return isShiftedInt<8, 1>(Imm); }]> {
   let PrintMethod = "printOperand";
   let ParserMatchClass = SImm9Lsb0AsmOperand;
   let DecoderMethod = "decodeSImmCBranchOperand<9>";
@@ -125,7 +183,8 @@ def simm9_lsb0 : Operand<OtherVT> {
     return MCOp.isBareSymbolRef();
   }];
 }
-def simm12_lsb0 : Operand<OtherVT> {
+def simm12_lsb0 : Operand<OtherVT>,
+                  ImmLeaf<i32, [{ return isShiftedInt<11, 1>(Imm); }]> {
   let PrintMethod = "printOperand";
   let ParserMatchClass = SImm12Lsb0AsmOperand;
   let DecoderMethod = "decodeSImmCBranchOperand<12>";
@@ -312,7 +371,7 @@ def C_ADDI16SP : RVMinCIInst<0b011, 0b01, (outs SP:$rd_wb),
   let Inst{2} = imm{5};
 }
 
-def C_LUI : RVMinCIInst<0b011, 0b01, (outs GPR:$rd), (ins simm6:$imm),
+def C_LUI : RVMinCIInst<0b011, 0b01, (outs GPR:$rd), (ins c_lui_imm:$imm),
                         "c.lui", "$rd, $imm">;
 
 def C_SLLI : RVMinCIInst<0b000, 0b10, (outs GPR:$rd_wb),
@@ -571,4 +630,131 @@ def C_FSDSP : RVMinCSSInst<0b101, 0b10, (outs),
   bits<0> rs1;
   let Inst{9-7} = imm{8-6};
 }
+} // Predicates = [HasStdExtC, HasStdExtD]
+
+//===----------------------------------------------------------------------===//
+// Chapter 44: CompressPat — the projection from expanded to compressed forms
+//===----------------------------------------------------------------------===//
+//
+// `-gen-compress-inst-emitter` turns each pattern below into a case of
+//
+//   static bool compressInst(MCInst &Out, const MCInst &MI,
+//                            const MCSubtargetInfo &STI);
+//
+// which the asm printer calls immediately before emitting an instruction.
+// The dag operand types are deliberately *narrower* than the 32-bit
+// instruction's operands (GPRNoX0, GPRC, SP, uimm7_lsb00, ...): TableGen
+// accepts a subset register class and emits the membership check, and it
+// re-runs each immediate's MCOperandPredicate, so a c.* form is only produced
+// when every field fits.
+//
+// Order matters: the backend emits one `if` chain per source opcode in
+// declaration order, so the most specific shape (x0/x2/SP/3-bit registers)
+// must come before the generic one.
+
+let Predicates = [HasStdExtC] in {
+  // Quadrant 0: c.addi4spn, c.lw, c.sw.
+  def : CompressPat<(ADDI GPRC:$rd, SP:$rs1, uimm10_lsb00nonzero:$imm),
+                    (C_ADDI4SPN GPRC:$rd, SP:$rs1,
+                     uimm10_lsb00nonzero:$imm)>;
+  def : CompressPat<(LW GPRC:$rd, GPRC:$rs1, uimm7_lsb00:$imm),
+                    (C_LW GPRC:$rd, GPRC:$rs1, uimm7_lsb00:$imm)>;
+  def : CompressPat<(SW GPRC:$rs2, GPRC:$rs1, uimm7_lsb00:$imm),
+                    (C_SW GPRC:$rs2, GPRC:$rs1, uimm7_lsb00:$imm)>;
+
+  // Quadrant 1.
+  def : CompressPat<(ADDI X0, X0, 0), (C_NOP)>;
+  def : CompressPat<(ADDI GPRNoX0:$rs1, GPRNoX0:$rs1, simm6nonzero:$imm),
+                    (C_ADDI GPRNoX0:$rs1, simm6nonzero:$imm)>;
+  def : CompressPat<(JAL X1, simm12_lsb0:$offset),
+                    (C_JAL simm12_lsb0:$offset)>;
+  def : CompressPat<(ADDI GPRNoX0:$rd, X0, simm6:$imm),
+                    (C_LI GPRNoX0:$rd, simm6:$imm)>;
+  def : CompressPat<(ADDI X2, X2, simm10_lsb0000nonzero:$imm),
+                    (C_ADDI16SP X2, simm10_lsb0000nonzero:$imm)>;
+  def : CompressPat<(LUI GPRNoX0X2:$rd, c_lui_imm:$imm),
+                    (C_LUI GPRNoX0X2:$rd, c_lui_imm:$imm)>;
+  def : CompressPat<(SRLI GPRC:$rs1, GPRC:$rs1, uimm5nonzero:$imm),
+                    (C_SRLI GPRC:$rs1, uimm5nonzero:$imm)>;
+  def : CompressPat<(SRAI GPRC:$rs1, GPRC:$rs1, uimm5nonzero:$imm),
+                    (C_SRAI GPRC:$rs1, uimm5nonzero:$imm)>;
+  def : CompressPat<(ANDI GPRC:$rs1, GPRC:$rs1, simm6:$imm),
+                    (C_ANDI GPRC:$rs1, simm6:$imm)>;
+  def : CompressPat<(SUB GPRC:$rs1, GPRC:$rs1, GPRC:$rs2),
+                    (C_SUB GPRC:$rs1, GPRC:$rs2)>;
+  def : CompressPat<(XOR GPRC:$rs1, GPRC:$rs1, GPRC:$rs2),
+                    (C_XOR GPRC:$rs1, GPRC:$rs2)>;
+  let isCompressOnly = true in
+  def : CompressPat<(XOR GPRC:$rs1, GPRC:$rs2, GPRC:$rs1),
+                    (C_XOR GPRC:$rs1, GPRC:$rs2)>;
+  def : CompressPat<(OR GPRC:$rs1, GPRC:$rs1, GPRC:$rs2),
+                    (C_OR GPRC:$rs1, GPRC:$rs2)>;
+  let isCompressOnly = true in
+  def : CompressPat<(OR GPRC:$rs1, GPRC:$rs2, GPRC:$rs1),
+                    (C_OR GPRC:$rs1, GPRC:$rs2)>;
+  def : CompressPat<(AND GPRC:$rs1, GPRC:$rs1, GPRC:$rs2),
+                    (C_AND GPRC:$rs1, GPRC:$rs2)>;
+  let isCompressOnly = true in
+  def : CompressPat<(AND GPRC:$rs1, GPRC:$rs2, GPRC:$rs1),
+                    (C_AND GPRC:$rs1, GPRC:$rs2)>;
+  def : CompressPat<(JAL X0, simm12_lsb0:$offset),
+                    (C_J simm12_lsb0:$offset)>;
+  def : CompressPat<(BEQ GPRC:$rs1, X0, simm9_lsb0:$imm),
+                    (C_BEQZ GPRC:$rs1, simm9_lsb0:$imm)>;
+  let isCompressOnly = true in
+  def : CompressPat<(BEQ X0, GPRC:$rs1, simm9_lsb0:$imm),
+                    (C_BEQZ GPRC:$rs1, simm9_lsb0:$imm)>;
+  def : CompressPat<(BNE GPRC:$rs1, X0, simm9_lsb0:$imm),
+                    (C_BNEZ GPRC:$rs1, simm9_lsb0:$imm)>;
+  let isCompressOnly = true in
+  def : CompressPat<(BNE X0, GPRC:$rs1, simm9_lsb0:$imm),
+                    (C_BNEZ GPRC:$rs1, simm9_lsb0:$imm)>;
+
+  // Quadrant 2.
+  def : CompressPat<(SLLI GPRNoX0:$rs1, GPRNoX0:$rs1, uimm5nonzero:$imm),
+                    (C_SLLI GPRNoX0:$rs1, uimm5nonzero:$imm)>;
+  def : CompressPat<(LW GPRNoX0:$rd, SP:$rs1, uimm8_lsb00:$imm),
+                    (C_LWSP GPRNoX0:$rd, SP:$rs1, uimm8_lsb00:$imm)>;
+  def : CompressPat<(JALR X0, GPRNoX0:$rs1, 0),
+                    (C_JR GPRNoX0:$rs1)>;
+  let isCompressOnly = true in {
+    def : CompressPat<(ADD GPRNoX0:$rs1, X0, GPRNoX0:$rs2),
+                      (C_MV GPRNoX0:$rs1, GPRNoX0:$rs2)>;
+    def : CompressPat<(ADD GPRNoX0:$rs1, GPRNoX0:$rs2, X0),
+                      (C_MV GPRNoX0:$rs1, GPRNoX0:$rs2)>;
+  }
+  def : CompressPat<(ADDI GPRNoX0:$rs1, GPRNoX0:$rs2, 0),
+                    (C_MV GPRNoX0:$rs1, GPRNoX0:$rs2)>;
+  def : CompressPat<(EBREAK), (C_EBREAK)>;
+  def : CompressPat<(JALR X1, GPRNoX0:$rs1, 0),
+                    (C_JALR GPRNoX0:$rs1)>;
+  def : CompressPat<(ADD GPRNoX0:$rs1, GPRNoX0:$rs1, GPRNoX0:$rs2),
+                    (C_ADD GPRNoX0:$rs1, GPRNoX0:$rs2)>;
+  let isCompressOnly = true in
+  def : CompressPat<(ADD GPRNoX0:$rs1, GPRNoX0:$rs2, GPRNoX0:$rs1),
+                    (C_ADD GPRNoX0:$rs1, GPRNoX0:$rs2)>;
+  def : CompressPat<(SW GPR:$rs2, SP:$rs1, uimm8_lsb00:$imm),
+                    (C_SWSP GPR:$rs2, SP:$rs1, uimm8_lsb00:$imm)>;
+} // Predicates = [HasStdExtC]
+
+let Predicates = [HasStdExtC, HasStdExtF] in {
+  def : CompressPat<(FLW FPR32C:$rd, GPRC:$rs1, uimm7_lsb00:$imm),
+                    (C_FLW FPR32C:$rd, GPRC:$rs1, uimm7_lsb00:$imm)>;
+  def : CompressPat<(FSW FPR32C:$rs2, GPRC:$rs1, uimm7_lsb00:$imm),
+                    (C_FSW FPR32C:$rs2, GPRC:$rs1, uimm7_lsb00:$imm)>;
+  def : CompressPat<(FLW FPR32:$rd, SP:$rs1, uimm8_lsb00:$imm),
+                    (C_FLWSP FPR32:$rd, SP:$rs1, uimm8_lsb00:$imm)>;
+  def : CompressPat<(FSW FPR32:$rs2, SP:$rs1, uimm8_lsb00:$imm),
+                    (C_FSWSP FPR32:$rs2, SP:$rs1, uimm8_lsb00:$imm)>;
+} // Predicates = [HasStdExtC, HasStdExtF]
+
+let Predicates = [HasStdExtC, HasStdExtD] in {
+  def : CompressPat<(FLD FPR64C:$rd, GPRC:$rs1, uimm8_lsb000:$imm),
+                    (C_FLD FPR64C:$rd, GPRC:$rs1, uimm8_lsb000:$imm)>;
+  def : CompressPat<(FSD FPR64C:$rs2, GPRC:$rs1, uimm8_lsb000:$imm),
+                    (C_FSD FPR64C:$rs2, GPRC:$rs1, uimm8_lsb000:$imm)>;
+  def : CompressPat<(FLD FPR64:$rd, SP:$rs1, uimm9_lsb000:$imm),
+                    (C_FLDSP FPR64:$rd, SP:$rs1, uimm9_lsb000:$imm)>;
+  def : CompressPat<(FSD FPR64:$rs2, SP:$rs1, uimm9_lsb000:$imm),
+                    (C_FSDSP FPR64:$rs2, SP:$rs1, uimm9_lsb000:$imm)>;
 } // Predicates = [HasStdExtC, HasStdExtD]

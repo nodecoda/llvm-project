@@ -100,7 +100,7 @@ class RVMinCBInst<bits<3> funct3, bits<2> op, dag outs, dag ins,
 
 | 操作数 | 位宽/对齐 | 用途 |
 | --- | --- | --- |
-| `simm6` | 6 位有符号 | `c.addi/c.li/c.lui/c.andi` |
+| `simm6` | 6 位有符号 | `c.addi/c.li/c.andi` |
 | `uimm5` | 5 位 | `c.slli/c.srli/c.srai` |
 | `uimm7_lsb00` | 7 位、4 对齐 | `c.lw/c.sw/c.flw/c.fsw` |
 | `uimm8_lsb00` | 8 位、4 对齐 | `c.lwsp/c.swsp/c.flwsp/c.fswsp` |
@@ -110,6 +110,7 @@ class RVMinCBInst<bits<3> funct3, bits<2> op, dag outs, dag ins,
 | `simm10_lsb0000nonzero` | 10 位、16 对齐、非零 | `c.addi16sp` |
 | `simm9_lsb0` | 9 位、2 对齐 | `c.beqz/c.bnez` |
 | `simm12_lsb0` | 12 位、2 对齐 | `c.j/c.jal` |
+| `c_lui_imm` | 20 位宽形式：1–31 或 0xfffe0–0xfffff | `c.lui`（第 44 章改为宽形式） |
 
 “非零”不是洁癖：`c.addi4spn` 的立即数为 0 时整条指令是保留编码；
 `c.addi16sp` 的立即数为 0 时与 `c.nop` 的位型冲突。把它们做成操作数谓词，

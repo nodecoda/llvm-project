@@ -64,7 +64,7 @@ for f in "$TESTS"/CodeGen/RVMin/*.ll; do
   # Expected-failure tests are covered by lit; here every input must compile.
   grep -q 'RUN: not llc' "$f" && continue
   for O in 0 1 2 3; do
-    for MATTR in "" "+m"; do
+    for MATTR in "" "+m" "+c"; do
       ARGS=(-march=rvmin -mtriple=riscv32-unknown-elf -O"$O" -verify-machineinstrs)
       [[ -n "$MATTR" ]] && ARGS+=(-mattr="$MATTR")
       "$BIN/llc" "${ARGS[@]}" "$f" -filetype=obj -o /dev/null \
@@ -153,6 +153,6 @@ QEMU=${QEMU:-qemu-riscv32-static}
 command -v "$QEMU" >/dev/null 2>&1 || fail "QEMU not found: $QEMU (set QEMU=...)"
 command -v "${LD:-ld.lld}" >/dev/null 2>&1 || fail "linker not found: ${LD:-ld.lld}"
 "$HERE/rvmin-run.sh" "$BIN" >/dev/null || fail "QEMU run gate"
-echo "PASS 8/8: QEMU run (RV32I/M/A + F/D float and double programs)"
+echo "PASS 8/8: QEMU run (RV32I/M/A + F/D float/double + compressed demo)"
 
 echo "ALL 8 GATES PASS"

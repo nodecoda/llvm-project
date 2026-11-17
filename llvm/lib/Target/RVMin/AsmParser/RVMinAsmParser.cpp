@@ -185,6 +185,17 @@ public:
   }
 
   // Chapter 43: compressed-immediate predicates.
+  bool isCLUIImm() const {
+    int64_t Value;
+    if (!evaluateConstantImm(Value))
+      return false;
+    // Accept both spellings: the 20-bit field (1048575) and the
+    // sign-extended value the DAG carries (-1).
+    if (Value < 0)
+      return isInt<6>(Value) && Value != 0;
+    return Value != 0 &&
+           (isUInt<5>(Value) || (Value >= 0xfffe0 && Value <= 0xfffff));
+  }
   bool isSImm6() const {
     int64_t Value;
     return evaluateConstantImm(Value) && isInt<6>(Value);

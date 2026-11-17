@@ -216,6 +216,19 @@ static DecodeStatus decodeUImmOperand(MCInst &Inst, uint64_t Imm,
   return MCDisassembler::Success;
 }
 
+// c.lui stores a six-bit immediate that is sign-extended to 20 bits before
+// being shifted into place (chapter 44).  Presenting the wide form keeps the
+// printer, the parser and the compressor in agreement: `c.lui a0, 1048575`
+// disassembles and re-assembles to the same two bytes.
+static DecodeStatus decodeCLUIImmOperand(MCInst &Inst, uint64_t Imm,
+                                         int64_t Address,
+                                         const MCDisassembler *Decoder) {
+  if (Imm == 0)
+    return MCDisassembler::Fail;
+  Inst.addOperand(MCOperand::createImm(SignExtend64<6>(Imm) & 0xfffff));
+  return MCDisassembler::Success;
+}
+
 #include "RVMinGenDisassemblerTables.inc"
 
 DecodeStatus RVMinDisassembler::getInstruction(MCInst &MI, uint64_t &Size,

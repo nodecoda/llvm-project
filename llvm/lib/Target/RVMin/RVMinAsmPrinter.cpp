@@ -16,6 +16,7 @@
 #include "RVMinBaseInfo.h"
 #include "MCTargetDesc/RVMinInstPrinter.h"
 #include "RVMinMCInstLower.h"
+#include "MCTargetDesc/RVMinMCTargetDesc.h"
 #include "RVMinTargetMachine.h"
 #include "TargetInfo/RVMinTargetInfo.h"
 #include "llvm/CodeGen/AsmPrinter.h"
@@ -36,6 +37,16 @@
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace llvm;
+
+// Chapter 44: the TableGen-generated compressor.  It defines
+//
+//   static bool compressInst(MCInst &Out, const MCInst &MI,
+//                            const MCSubtargetInfo &STI);
+//
+// from the CompressPat records in RVMinInstrInfoC.td, including the
+// HasStdExtC/F/D feature checks, so it is safe to call unconditionally.
+#define GEN_COMPRESS_INSTR
+#include "RVMinGenCompressInstEmitter.inc"
 
 namespace {
 
@@ -73,6 +84,18 @@ public:
     return false;
   }
 
+  /// Emit one MC instruction, replacing it with its compressed form when the
+  /// 16-bit encoding fits.  Every emission path (pseudo expansion, direct
+  /// call lowering, real instructions) funnels through here so the .text
+  /// layout and the compressor can never disagree.
+  void emitMCInst(const MCInst &Inst) {
+    MCInst CInst;
+    if (compressInst(CInst, Inst, getSubtargetInfo()))
+      OutStreamer->emitInstruction(CInst, getSubtargetInfo());
+    else
+      OutStreamer->emitInstruction(Inst, getSubtargetInfo());
+  }
+
   void emitInstruction(const MachineInstr *MI) override {
     if (MI->getOpcode() == RVMin::PseudoCALL ||
         MI->getOpcode() == RVMin::PseudoTAIL) {
@@ -83,7 +106,7 @@ public:
     if (MI->isPseudo()) {
       MCInst Expanded;
       if (lowerPseudoInstExpansion(MI, Expanded)) {
-        OutStreamer->emitInstruction(Expanded, getSubtargetInfo());
+        emitMCInst(Expanded);
         return;
       }
       llvm_unreachable("RVMin: unimplemented pseudo instruction reached the "
@@ -92,7 +115,7 @@ public:
 
     MCInst TmpInst;
     LowerRVMinMachineInstrToMCInst(MI, TmpInst, OutContext, TM, *this);
-    OutStreamer->emitInstruction(TmpInst, getSubtargetInfo());
+    emitMCInst(TmpInst);
   }
 
   /// TableGen-generated expansion for instructions declared with
@@ -130,7 +153,7 @@ public:
     Lui.addOperand(MCOperand::createReg(RVMin::X5));
     Lui.addOperand(MCOperand::createExpr(
         MCSpecifierExpr::create(Base, rvmin::S_HI20, OutContext)));
-    OutStreamer->emitInstruction(Lui, getSubtargetInfo());
+    emitMCInst(Lui);
 
     MCInst Addi;
     Addi.setOpcode(RVMin::ADDI);
@@ -138,14 +161,14 @@ public:
     Addi.addOperand(MCOperand::createReg(RVMin::X5));
     Addi.addOperand(MCOperand::createExpr(
         MCSpecifierExpr::create(Base, rvmin::S_LO12_I, OutContext)));
-    OutStreamer->emitInstruction(Addi, getSubtargetInfo());
+    emitMCInst(Addi);
 
     MCInst Jalr;
     Jalr.setOpcode(RVMin::JALR);
     Jalr.addOperand(MCOperand::createReg(IsTail ? RVMin::X0 : RVMin::X1));
     Jalr.addOperand(MCOperand::createReg(RVMin::X5));
     Jalr.addOperand(MCOperand::createImm(0));
-    OutStreamer->emitInstruction(Jalr, getSubtargetInfo());
+    emitMCInst(Jalr);
   }
 
   /// Operand helper used by the generated pseudo-expansion code: a pseudo

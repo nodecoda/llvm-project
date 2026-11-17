@@ -6,9 +6,10 @@
 #
 # It runs the whole e2e corpus through `clang --target=rvmin` in every cell of
 #
-#     {rv32i, rv32im, rv32if, rv32id} x {-O0, -O1, -O2, -O3} x scripts/e2e/*.c
+#     {rv32i, rv32im, rv32if, rv32id, rv32ic, rv32imafdc}
+#         x {-O0, -O1, -O2, -O3} x scripts/e2e/*.c
 #
-# (12 programs, 192 objects) and checks three independent things per cell:
+# (12 programs, 288 objects) and checks three independent things per cell:
 #
 #   1. Driver: `clang --target=rvmin -c` exits 0, prints nothing on stderr and
 #      produces a 32-bit RISC-V ELF object.
@@ -63,7 +64,7 @@ dump_text() {
 PARITY_FLAGS=(-ffreestanding -fno-builtin -fno-slp-vectorize -fno-vectorize)
 
 OBJECTS=0
-for march in rv32i rv32im rv32if rv32id; do
+for march in rv32i rv32im rv32if rv32id rv32ic rv32imafdc; do
   case "$march" in
     rv32i)  MATTR="";   MABI=ilp32 ;;
     rv32im) MATTR="+m"; MABI=ilp32 ;;
@@ -72,6 +73,9 @@ for march in rv32i rv32im rv32if rv32id; do
     rv32if) MATTR="+f";    MABI=ilp32f ;;
     # Chapter 41: D implies F; the driver derives ilp32d from rv32id.
     rv32id) MATTR="+f,+d"; MABI=ilp32d ;;
+    # Chapter 44: C does not change the ABI; the full string needs ilp32d.
+    rv32ic) MATTR="+c"; MABI=ilp32 ;;
+    rv32imafdc) MATTR="+m,+f,+d,+c"; MABI=ilp32d ;;
     *) fail "unexpected -march=$march" ;;
   esac
 
@@ -80,12 +84,27 @@ for march in rv32i rv32im rv32if rv32id; do
     -ffreestanding -fno-builtin -c "$E2E/arith.c" -o "$TMP/isa-$march.o"
   # RVMin emits no .riscv.attributes, so the disassembler has to be told about
   # the extensions it should decode.
-  "$OBJDUMP" -d --mattr=+m,+f,+d "$TMP/isa-$march.o" > "$TMP/isa-$march.dis"
+  "$OBJDUMP" -d --mattr=+m,+f,+d,+c "$TMP/isa-$march.o" > "$TMP/isa-$march.dis"
   if grep -Eq '^[[:space:]]+[0-9a-f]+:[[:space:]]+[0-9a-f]+[[:space:]]+mul[[:space:]]' \
        "$TMP/isa-$march.dis"; then
-    [[ "$march" == rv32im ]] || fail "$march object contains a mul instruction"
+    [[ "$march" == rv32im || "$march" == rv32imafdc ]] \
+      || fail "$march object contains a mul instruction"
   else
-    [[ "$march" != rv32im ]] || fail "RV32IM object does not contain a mul instruction"
+    [[ "$march" != rv32im && "$march" != rv32imafdc ]] \
+      || fail "$march object does not contain a mul instruction"
+  fi
+
+  # Chapter 44: C must be visible exactly where the ISA string says so.
+  # Test the raw-byte column: a 16-bit instruction prints as four hex digits
+  # ("c606"), a 32-bit one as eight ("000002b7").  Mnemonics are not usable
+  # here because llvm-objdump prints aliases (`sw`, `mv`, `jalr`).
+  if grep -Eq '^[[:space:]]+[0-9a-f]+:[[:space:]]+[0-9a-f]{4}[[:space:]]' \
+       "$TMP/isa-$march.dis"; then
+    [[ "$march" == rv32ic || "$march" == rv32imafdc ]] \
+      || fail "$march object contains a compressed instruction"
+  else
+    [[ "$march" != rv32ic && "$march" != rv32imafdc ]] \
+      || fail "$march object lacks compressed instructions"
   fi
 
   # The FP features must be visible exactly where the ISA string says so.
@@ -94,10 +113,10 @@ for march in rv32i rv32im rv32if rv32id; do
   "$OBJDUMP" -d --mattr=+f,+d "$TMP/fp-$march.o" > "$TMP/fp-$march.dis"
   if grep -Eq '^[[:space:]]+[0-9a-f]+:[[:space:]]+[0-9a-f]+[[:space:]]+fadd\.s' \
        "$TMP/fp-$march.dis"; then
-    [[ "$march" == rv32if || "$march" == rv32id ]] \
+    [[ "$march" == rv32if || "$march" == rv32id || "$march" == rv32imafdc ]] \
       || fail "$march fp.c object contains fadd.s"
   else
-    [[ "$march" == rv32i || "$march" == rv32im ]] \
+    [[ "$march" == rv32i || "$march" == rv32im || "$march" == rv32ic ]] \
       || fail "$march fp.c object lacks fadd.s"
   fi
 
@@ -106,9 +125,11 @@ for march in rv32i rv32im rv32if rv32id; do
   "$OBJDUMP" -d --mattr=+f,+d "$TMP/fpd-$march.o" > "$TMP/fpd-$march.dis"
   if grep -Eq '^[[:space:]]+[0-9a-f]+:[[:space:]]+[0-9a-f]+[[:space:]]+fadd\.d' \
        "$TMP/fpd-$march.dis"; then
-    [[ "$march" == rv32id ]] || fail "$march fp-double.c object contains fadd.d"
+    [[ "$march" == rv32id || "$march" == rv32imafdc ]] \
+      || fail "$march fp-double.c object contains fadd.d"
   else
-    [[ "$march" != rv32id ]] || fail "rv32id fp-double.c object lacks fadd.d"
+    [[ "$march" != rv32id && "$march" != rv32imafdc ]] \
+      || fail "$march fp-double.c object lacks fadd.d"
   fi
 
   for opt in O0 O1 O2 O3; do

@@ -9,6 +9,8 @@
 # the module's ABI flag (ilp32f) agrees with the backend's feature set.
 # Chapter 41 adds `-mattr=+f,+d` (rv32id/ilp32d), which must keep the same
 # source-level results while selecting double-precision instructions.
+# Chapter 44 adds `-mattr=+c` (rv32ic/ilp32) and the full `+m,+f,+d,+c`
+# (rv32imafdc/ilp32d): the compressed forms must re-assemble byte for byte.
 #
 # Usage: rvmin-e2e.sh <llvm-bin-dir>
 #
@@ -41,7 +43,7 @@ fail() {
 
 TRIPLE=riscv32-unknown-elf
 OPTS="0 1 2 3"
-MATTRS=("" "+m" "+f" "+f,+d")
+MATTRS=("" "+m" "+f" "+f,+d" "+c" "+m,+f,+d,+c")
 PROGRAMS=0
 CASES=0
 TOTAL_TEXT=0
@@ -60,10 +62,12 @@ for c in "$SRC"/*.c; do
       # ABI: an F-enabled object must carry "ilp32f" in its IR, otherwise the
       # backend's consistency check is supposed to reject it.
       case "$MATTR" in
-      "")      CARCH=rv32i;  CABI=ilp32 ;;
-      "+m")    CARCH=rv32i;  CABI=ilp32 ;;   # M does not change the ABI
-      "+f")    CARCH=rv32if; CABI=ilp32f ;;
-      "+f,+d") CARCH=rv32id; CABI=ilp32d ;;
+      "")          CARCH=rv32i;      CABI=ilp32 ;;
+      "+m")        CARCH=rv32i;      CABI=ilp32 ;;   # M does not change the ABI
+      "+f")        CARCH=rv32if;     CABI=ilp32f ;;
+      "+f,+d")     CARCH=rv32id;     CABI=ilp32d ;;
+      "+c")        CARCH=rv32ic;     CABI=ilp32 ;;   # C does not change the ABI
+      "+m,+f,+d,+c") CARCH=rv32imafdc; CABI=ilp32d ;;
       *) fail "unexpected feature set '$MATTR'" ;;
       esac
       "$CC" --target="$TRIPLE" -march="$CARCH" -mabi="$CABI" -O"$O" \
