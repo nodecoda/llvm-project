@@ -11,6 +11,11 @@
 ; RUN:   -o - | llvm-mc -triple=riscv32 -mattr=+v -filetype=obj -o /dev/null
 ; RUN: not llc -march=rvmin -mtriple=riscv32-unknown-elf -O2 -mattr=+v \
 ; RUN:   < %t/nonconst.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=ERR
+; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O2 -mattr=+v \
+; RUN:   -verify-machineinstrs < %t/mask_m2.ll | FileCheck %s --check-prefix=ASM-M2
+; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O2 -mattr=+v \
+; RUN:   < %t/mask_m2.ll -o - \
+; RUN:   | llvm-mc -triple=riscv32 -mattr=+v -filetype=obj -o /dev/null
 ;
 ; Chapter 52: <4 x i1> is legal with +v and lives in the vector register file.
 ; A constant mask is materialized as a 4-bit integer in a GPR, broadcast into
@@ -31,6 +36,19 @@ define void @selc(ptr %pa, ptr %pb, ptr %po) {
   %r = select <4 x i1> <i1 true, i1 false, i1 true, i1 false>,
                      <4 x i32> %a, <4 x i32> %b
   store <4 x i32> %r, ptr %po, align 16
+  ret void
+}
+
+;--- mask_m2.ll
+define void @sel_m2(ptr %pa, ptr %pb, ptr %po) {
+  %a = load <4 x i32>, ptr %pa, align 16
+  %b = load <4 x i32>, ptr %pb, align 16
+  %r = select <4 x i1> <i1 true, i1 false, i1 true, i1 false>,
+                     <4 x i32> %a, <4 x i32> %b
+  store <4 x i32> %r, ptr %po, align 16
+  %x = load <8 x i32>, ptr %pa, align 32
+  %y = add <8 x i32> %x, %x
+  store <8 x i32> %y, ptr %po, align 32
   ret void
 }
 
@@ -58,5 +76,11 @@ define void @selcmp(ptr %pa, ptr %pb, ptr %po) {
 ; MIR:         %[[M:[0-9]+]]:vmv0 = COPY %[[V]]
 ; MIR:         VMERGE_VVM %[[B]], %[[A]], %[[M]]
 ; MIR:         VSE32_V
+
+; ASM-M2-LABEL: sel_m2:
+; ASM-M2:       vmv.v.x v0,
+; ASM-M2:       vmerge.vvm
+; ASM-M2:       vsetivli zero, 8, e32, m2, ta, ma
+; ASM-M2:       vadd.vv
 
 ; ERR: LLVM ERROR: RVMin: non-constant vector masks are not supported yet

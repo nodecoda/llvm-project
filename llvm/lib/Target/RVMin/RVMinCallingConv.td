@@ -42,11 +42,31 @@ def RetCC_RVMin_SoftFloat : CallingConv<[
   CCIfType<[i32], CCAssignToReg<[X10, X11]>>
 ]>;
 
+// Chapter 55: LMUL=1 vector arguments.  The subtable is reached only when V is
+// enabled, so a module without V keeps the old scalar/sret path and never
+// assigns a vector value to an architectural vector register.
+//
+//   vector arguments : v8-v23 (16 registers), then a 16-byte stack slot
+//   vector returns   : v8
+//   mask register    : v0 is never an argument register
+def CC_RVMin_V : CallingConv<[
+  CCIfType<[v4i32], CCAssignToReg<[V8, V9, V10, V11, V12, V13, V14, V15,
+                                  V16, V17, V18, V19, V20, V21, V22, V23]>>,
+  CCIfType<[v4i32], CCAssignToStack<16, 16>>
+]>;
+
+def RetCC_RVMin_V : CallingConv<[
+  CCIfType<[v4i32], CCAssignToReg<[V8]>>
+]>;
+
 def CC_RVMin : CallingConv<[
   // Chapter 51: an `ilp32` module with hardware F/D uses the integer
   // convention for floating values.  All other ABIs fall through to the
   // hard-float rules below.
   CCIf<"RVMinIsSoftFloatABI(State)", CCDelegateTo<CC_RVMin_SoftFloat>>,
+
+  // Chapter 55: vector arguments, but only when the subtarget has V.
+  CCIf<"RVMinHasStdExtV(State)", CCDelegateTo<CC_RVMin_V>>,
 
   // Integer arguments are passed in a0-a7.
   CCIfType<[i32], CCAssignToReg<[X10, X11, X12, X13, X14, X15, X16, X17]>>,
@@ -67,6 +87,7 @@ def CC_RVMin : CallingConv<[
 
 def RetCC_RVMin : CallingConv<[
   CCIf<"RVMinIsSoftFloatABI(State)", CCDelegateTo<RetCC_RVMin_SoftFloat>>,
+  CCIf<"RVMinHasStdExtV(State)", CCDelegateTo<RetCC_RVMin_V>>,
   CCIfType<[i32], CCAssignToReg<[X10, X11]>>,
   CCIfType<[f32], CCAssignToReg<[F10, F11]>>,
   CCIfType<[f64], CCAssignToReg<[F10, F11]>>
@@ -91,3 +112,17 @@ def CSR_RVMin : CalleeSavedRegs<(add X1, X8, X9, (sequence "X%u", 18, 27))>;
 // caller-saved.  F and D share the same list.
 def CSR_RVMin_FP : CalleeSavedRegs<(add CSR_RVMin, F8, F9,
                                        (sequence "F%u", 18, 27))>;
+
+// Chapter 55: the vector ABI's callee-saved window is v1-v7 and v24-v31.
+// v0 is the mask register and v8-v23 are caller-saved argument registers.
+// The LMUL=2 aliases are deliberately not listed: PEI's alias-aware
+// isPhysRegModified() marks both halves of e.g. V2M2, and V2/V3 are both in
+// this list, so the generic spill/save path preserves the pair.
+def CSR_RVMin_V : CalleeSavedRegs<(add CSR_RVMin,
+                                   (sequence "V%u", 1, 7),
+                                   (sequence "V%u", 24, 31))>;
+
+// F and V can be enabled together; the callee-saved set is the union.
+def CSR_RVMin_FP_V : CalleeSavedRegs<(add CSR_RVMin_FP,
+                                      (sequence "V%u", 1, 7),
+                                      (sequence "V%u", 24, 31))>;

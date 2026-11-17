@@ -24,17 +24,29 @@ using namespace llvm;
 
 RVMinRegisterInfo::RVMinRegisterInfo() : RVMinGenRegisterInfo(RVMin::X0) {}
 
-// Generated from CSR_RVMin / CSR_RVMin_FP in RVMinCallingConv.td:
+// Generated from CSR_RVMin / CSR_RVMin_FP / CSR_RVMin_V /
+// CSR_RVMin_FP_V in RVMinCallingConv.td:
 //
-//   ILP32   ra, s0, s1, s2-s11
-//   ILP32F  the same integer set plus the floating-point fs0-fs11
+//   ILP32     ra, s0, s1, s2-s11
+//   ILP32F    the integer set plus the floating-point fs0-fs11
+//   +v        the integer set plus the vector v1-v7 and v24-v31
+//   +v,+f     the union of the floating-point and vector sets
 //
-// The FP set is chosen by the feature, not by the ABI string: without F no
-// FPR can ever hold a live value, so the two lists describe the same
-// reachable state.
+// The sets are chosen by the feature, not by the ABI string: without F no
+// FPR can hold a live value, and without V no VR can.
 const MCPhysReg *
 RVMinRegisterInfo::getCalleeSavedRegs(const MachineFunction *MF) const {
-  if (MF && MF->getSubtarget<RVMinSubtarget>().hasStdExtF())
+  if (!MF)
+    return CSR_RVMin_SaveList;
+
+  const RVMinSubtarget &STI = MF->getSubtarget<RVMinSubtarget>();
+  const bool HasV = STI.hasStdExtV();
+  const bool HasF = STI.hasStdExtF();
+  if (HasV && HasF)
+    return CSR_RVMin_FP_V_SaveList;
+  if (HasV)
+    return CSR_RVMin_V_SaveList;
+  if (HasF)
     return CSR_RVMin_FP_SaveList;
   return CSR_RVMin_SaveList;
 }
@@ -45,7 +57,14 @@ RVMinRegisterInfo::getCalleeSavedRegs(const MachineFunction *MF) const {
 // live across the call.
 const uint32_t *RVMinRegisterInfo::getCallPreservedMask(const MachineFunction &MF,
                                                         CallingConv::ID CC) const {
-  if (MF.getSubtarget<RVMinSubtarget>().hasStdExtF())
+  const RVMinSubtarget &STI = MF.getSubtarget<RVMinSubtarget>();
+  const bool HasV = STI.hasStdExtV();
+  const bool HasF = STI.hasStdExtF();
+  if (HasV && HasF)
+    return CSR_RVMin_FP_V_RegMask;
+  if (HasV)
+    return CSR_RVMin_V_RegMask;
+  if (HasF)
     return CSR_RVMin_FP_RegMask;
   return CSR_RVMin_RegMask;
 }

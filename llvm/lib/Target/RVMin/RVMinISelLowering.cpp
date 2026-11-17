@@ -27,6 +27,7 @@
 #include "llvm/CodeGen/SelectionDAG.h"
 #include "llvm/CodeGen/SelectionDAGNodes.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
+#include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
@@ -59,6 +60,30 @@ static bool RVMinIsSoftFloatABI(const CCState &State) {
   // no-F case is soft.
   const RVMinSubtarget &STI = MF.getSubtarget<RVMinSubtarget>();
   return !STI.hasStdExtF() && !STI.hasStdExtD();
+}
+
+// Chapter 55: the vector calling convention is only meaningful when V is
+// enabled.  The CC table uses this predicate to avoid assigning a v4i32 value
+// to V8 in a scalar-only module.
+static bool RVMinHasStdExtV(const CCState &State) {
+  return State.getMachineFunction()
+      .getSubtarget<RVMinSubtarget>()
+      .hasStdExtV();
+}
+
+static bool isSupportedVectorABIType(EVT VT) { return VT == MVT::v4i32; }
+static bool isLMUL2VectorABIType(EVT VT) { return VT == MVT::v8i32; }
+
+static bool isSupportedVectorABIType(const Type *Ty) {
+  auto *VT = dyn_cast<FixedVectorType>(Ty);
+  return VT && VT->getNumElements() == 4 &&
+         VT->getElementType()->isIntegerTy(32);
+}
+
+static bool isLMUL2VectorABIType(const Type *Ty) {
+  auto *VT = dyn_cast<FixedVectorType>(Ty);
+  return VT && VT->getNumElements() == 8 &&
+         VT->getElementType()->isIntegerTy(32);
 }
 
 // Chapter 51: an f64 in the soft-float ABI occupies two i32 locations.  The
@@ -1118,16 +1143,26 @@ SDValue RVMinTargetLowering::LowerFormalArguments(
   if (IsVarArg)
     report_fatal_error("RVMin: varargs are not supported yet");
 
-  // Chapter 48: vector values need a vector ABI (v8-v23, stack alignment,
-  // callee-saved rules).  Reject them instead of silently passing bits in
-  // integer registers.
-  for (const ISD::InputArg &Arg : Ins)
-    if (Arg.VT.isVector())
-      report_fatal_error("RVMin: vector arguments are not supported yet",
-                         /*gen_crash_diag=*/false);
-
   MachineFunction &MF = DAG.getMachineFunction();
   checkABICompatibility(MF);
+
+  // Chapter 55: only the LMUL=1 integer vector type has an ABI in this
+  // chapter.  LMUL=2 needs an even-aligned register pair and is deferred.
+  const RVMinSubtarget &STI = MF.getSubtarget<RVMinSubtarget>();
+  if (STI.hasStdExtV()) {
+    for (const ISD::InputArg &Arg : Ins) {
+      if (!Arg.VT.isVector())
+        continue;
+      if (isLMUL2VectorABIType(Arg.VT))
+        report_fatal_error(
+            "RVMin: LMUL=2 vector arguments are not supported yet",
+            /*gen_crash_diag=*/false);
+      if (!isSupportedVectorABIType(Arg.VT))
+        report_fatal_error("RVMin: vector arguments are not supported yet",
+                           /*gen_crash_diag=*/false);
+    }
+  }
+
   MachineRegisterInfo &RegInfo = MF.getRegInfo();
 
   SmallVector<CCValAssign, 16> ArgLocs;
@@ -1222,18 +1257,35 @@ SDValue RVMinTargetLowering::LowerCall(CallLoweringInfo &CLI,
   if (IsVarArg)
     report_fatal_error("RVMin: varargs are not supported yet");
 
-  // Chapter 48: reject vector arguments and vector results at the call
-  // boundary for the same reason as formal arguments.
-  for (const ISD::OutputArg &Arg : Outs)
-    if (Arg.VT.isVector())
-      report_fatal_error("RVMin: vector arguments are not supported yet",
-                         /*gen_crash_diag=*/false);
-  for (const ISD::InputArg &Arg : Ins)
-    if (Arg.VT.isVector())
-      report_fatal_error("RVMin: vector returns are not supported yet",
-                         /*gen_crash_diag=*/false);
-
   MachineFunction &MF = DAG.getMachineFunction();
+
+  // Chapter 55: the same LMUL=1 contract applies at a call site.  When V is
+  // disabled the type legalizer has already scalarized the value.
+  const RVMinSubtarget &STI = MF.getSubtarget<RVMinSubtarget>();
+  if (STI.hasStdExtV()) {
+    for (const ISD::OutputArg &Arg : Outs) {
+      if (!Arg.VT.isVector())
+        continue;
+      if (isLMUL2VectorABIType(Arg.VT))
+        report_fatal_error(
+            "RVMin: LMUL=2 vector arguments are not supported yet",
+            /*gen_crash_diag=*/false);
+      if (!isSupportedVectorABIType(Arg.VT))
+        report_fatal_error("RVMin: vector arguments are not supported yet",
+                           /*gen_crash_diag=*/false);
+    }
+    for (const ISD::InputArg &Arg : Ins) {
+      if (!Arg.VT.isVector())
+        continue;
+      if (isLMUL2VectorABIType(Arg.VT))
+        report_fatal_error("RVMin: LMUL=2 vector returns are not supported yet",
+                           /*gen_crash_diag=*/false);
+      if (!isSupportedVectorABIType(Arg.VT))
+        report_fatal_error("RVMin: vector returns are not supported yet",
+                           /*gen_crash_diag=*/false);
+    }
+  }
+
   EVT PtrVT = getPointerTy(DAG.getDataLayout());
 
   // Assign a location to every outgoing argument: a0-a7 first, then the stack.
@@ -1312,9 +1364,12 @@ SDValue RVMinTargetLowering::LowerCall(CallLoweringInfo &CLI,
     SDValue Address = DAG.getNode(
         ISD::ADD, DL, PtrVT, StackPtr,
         DAG.getIntPtrConstant(VA.getLocMemOffset(), DL));
+    MaybeAlign Alignment;
+    if (ArgValue.getValueType() == MVT::v4i32)
+      Alignment = Align(16);
     MemOpChains.push_back(DAG.getStore(
         Chain, DL, ArgValue, Address,
-        MachinePointerInfo::getStack(MF, VA.getLocMemOffset())));
+        MachinePointerInfo::getStack(MF, VA.getLocMemOffset()), Alignment));
   }
 
   // The stores are independent of each other and of the argument copies.
@@ -1408,16 +1463,32 @@ bool RVMinTargetLowering::CanLowerReturn(
     CallingConv::ID CallConv, MachineFunction &MF, bool IsVarArg,
     const SmallVectorImpl<ISD::OutputArg> &Outs, LLVMContext &Context,
     const Type *RetTy) const {
-  // Chapter 48: vector returns are not part of the subset yet.  Check the IR
-  // type as well as the lowered values so the diagnostic is stable even if
-  // the legalizer has already split the value.
-  if (RetTy && RetTy->isVectorTy())
-    report_fatal_error("RVMin: vector returns are not supported yet",
-                       /*gen_crash_diag=*/false);
-  for (const ISD::OutputArg &Arg : Outs)
-    if (Arg.VT.isVector())
+  // Chapter 55: a v4i32 return goes in v8.  Without V the value is demoted
+  // through the generic sret path, so every rv32i/+m/+c gate run still works.
+  const RVMinSubtarget &STI = MF.getSubtarget<RVMinSubtarget>();
+  const bool HasV = STI.hasStdExtV();
+  if (RetTy && RetTy->isVectorTy()) {
+    if (!HasV)
+      return false;
+    if (isLMUL2VectorABIType(RetTy))
+      report_fatal_error("RVMin: LMUL=2 vector returns are not supported yet",
+                         /*gen_crash_diag=*/false);
+    if (!isSupportedVectorABIType(RetTy))
       report_fatal_error("RVMin: vector returns are not supported yet",
                          /*gen_crash_diag=*/false);
+  }
+  for (const ISD::OutputArg &Arg : Outs) {
+    if (!Arg.VT.isVector())
+      continue;
+    if (!HasV)
+      return false;
+    if (isLMUL2VectorABIType(Arg.VT))
+      report_fatal_error("RVMin: LMUL=2 vector returns are not supported yet",
+                         /*gen_crash_diag=*/false);
+    if (!isSupportedVectorABIType(Arg.VT))
+      report_fatal_error("RVMin: vector returns are not supported yet",
+                         /*gen_crash_diag=*/false);
+  }
 
   SmallVector<CCValAssign, 16> RVLocs;
   CCState CCInfo(CallConv, IsVarArg, MF, RVLocs, Context);
@@ -1431,11 +1502,22 @@ SDValue RVMinTargetLowering::LowerReturn(
     SelectionDAG &DAG) const {
   MachineFunction &MF = DAG.getMachineFunction();
 
-  // Defense in depth: CanLowerReturn normally rejects this first.
-  for (const ISD::OutputArg &Arg : Outs)
-    if (Arg.VT.isVector())
-      report_fatal_error("RVMin: vector returns are not supported yet",
-                         /*gen_crash_diag=*/false);
+  // Defense in depth: CanLowerReturn normally rejects unsupported vectors
+  // first.  With V disabled a vector return never reaches this function; the
+  // generic sret demotion path handles it.
+  const RVMinSubtarget &STI = MF.getSubtarget<RVMinSubtarget>();
+  if (STI.hasStdExtV()) {
+    for (const ISD::OutputArg &Arg : Outs) {
+      if (!Arg.VT.isVector())
+        continue;
+      if (isLMUL2VectorABIType(Arg.VT))
+        report_fatal_error("RVMin: LMUL=2 vector returns are not supported yet",
+                           /*gen_crash_diag=*/false);
+      if (!isSupportedVectorABIType(Arg.VT))
+        report_fatal_error("RVMin: vector returns are not supported yet",
+                           /*gen_crash_diag=*/false);
+    }
+  }
 
   SmallVector<CCValAssign, 4> RVLocs;
   CCState CCInfo(CallConv, IsVarArg, MF, RVLocs, *DAG.getContext());

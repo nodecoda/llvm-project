@@ -195,8 +195,15 @@ void RVMinFrameLowering::emitPrologueCFI(MachineFunction &MF,
 
   CFIInstBuilder CFIBuilder(MBB, CFIPos, MachineInstr::FrameSetup);
   CFIBuilder.buildDefCFAOffset(static_cast<int64_t>(StackSize));
-  for (const CalleeSavedInfo &CS : MFI.getCalleeSavedInfo())
+  for (const CalleeSavedInfo &CS : MFI.getCalleeSavedInfo()) {
+    // RVMin's vector registers have no DWARF register numbers yet.  Emitting
+    // buildOffset() for one would produce `.cfi_offset 4294967295`, which is
+    // not a valid unwind rule.  The vector callee-saved spill still happens;
+    // only the CFI entry is omitted.
+    if (RVMin::VRRegClass.contains(CS.getReg()))
+      continue;
     CFIBuilder.buildOffset(CS.getReg(), MFI.getObjectOffset(CS.getFrameIdx()));
+  }
 }
 
 void RVMinFrameLowering::emitEpilogue(MachineFunction &MF,
@@ -223,8 +230,11 @@ void RVMinFrameLowering::emitEpilogue(MachineFunction &MF,
   if (MF.needsFrameMoves()) {
     CFIInstBuilder CFIBuilder(MBB, MBB.getFirstTerminator(),
                               MachineInstr::FrameDestroy);
-    for (const CalleeSavedInfo &CS : MFI.getCalleeSavedInfo())
+    for (const CalleeSavedInfo &CS : MFI.getCalleeSavedInfo()) {
+      if (RVMin::VRRegClass.contains(CS.getReg()))
+        continue;
       CFIBuilder.buildRestore(CS.getReg());
+    }
     CFIBuilder.buildDefCFAOffset(0);
   }
 }
@@ -258,13 +268,17 @@ bool RVMinFrameLowering::spillCalleeSavedRegisters(
 
   // Chapter 40/41: fs0-fs11 live in the floating-point file.  With D the
   // register is 64 bits wide and spills with `fsd`; with F alone it spills
-  // with `fsw`.  Everything else is an integer register and uses `sw`.
+  // with `fsw`.  Chapter 55 adds the vector callee-saved window: a VR spill
+  // is a 16-byte `vse32.v`.  Everything else is an integer register and uses
+  // `sw`.
   const RVMinSubtarget &STI =
       MBB.getParent()->getSubtarget<RVMinSubtarget>();
 
   for (const CalleeSavedInfo &CS : CSI) {
     const TargetRegisterClass *RC = &RVMin::GPRRegClass;
-    if (STI.hasStdExtD() && RVMin::FPR64RegClass.contains(CS.getReg()))
+    if (RVMin::VRRegClass.contains(CS.getReg()))
+      RC = &RVMin::VRRegClass;
+    else if (STI.hasStdExtD() && RVMin::FPR64RegClass.contains(CS.getReg()))
       RC = &RVMin::FPR64RegClass;
     else if (RVMin::FPR32RegClass.contains(CS.getReg()))
       RC = &RVMin::FPR32RegClass;
@@ -288,7 +302,9 @@ bool RVMinFrameLowering::restoreCalleeSavedRegisters(
 
   for (const CalleeSavedInfo &CS : CSI) {
     const TargetRegisterClass *RC = &RVMin::GPRRegClass;
-    if (STI.hasStdExtD() && RVMin::FPR64RegClass.contains(CS.getReg()))
+    if (RVMin::VRRegClass.contains(CS.getReg()))
+      RC = &RVMin::VRRegClass;
+    else if (STI.hasStdExtD() && RVMin::FPR64RegClass.contains(CS.getReg()))
       RC = &RVMin::FPR64RegClass;
     else if (RVMin::FPR32RegClass.contains(CS.getReg()))
       RC = &RVMin::FPR32RegClass;
