@@ -96,6 +96,7 @@ M/A/Zbb/Zbs 整数扩展、F/D 浮点、C 压缩、Zicsr/Zifencei（第 46 章�
 | --- | --- | --- | --- | --- |
 | 46 | [46-zicsr-zifencei.md](46-zicsr-zifencei.md) | Zicsr（6 条 CSR + 7 个别名、CSR 名字表）与 Zifencei（`fence.i` 迁移）；解锁 `rv32g`/`rv32gc` | `zicsr.s`；编码 24 条 + 反汇编；clang 矩阵 384 对象；门禁 8/8 | `rvmin-ch46` |
 | 47 | [47-v-extension-mc.md](47-v-extension-mc.md) | V 的 MC 层（Zve32x 子集）：`v0`–`v31`、三种 `vset`、load/store、`vmv`、算术/逻辑，共 19 条 | `v-extension.s`；编码 19 条 + 反汇编；clang 矩阵 432 对象；门禁 8/8 | `rvmin-ch47` |
+| 48 | [48-v-codegen-1.md](48-v-codegen-1.md) | V 代码生成（一）：`v4i32` 合法化、load/store、6 条 `.vv` 算术、splat/extract、16 字节 spill、保守 `vsetivli`、向量 ABI 拒绝 | `v-ext.ll`；216 次 llc；编码/反汇编/288/432 计数不变；门禁 8/8 | `rvmin-ch48` |
 
 每个章末都有对应 tag：`git checkout rvmin-ch16` 即可看到该章结束时的完整代码。
 
@@ -135,6 +136,7 @@ M/A/Zbb/Zbs 整数扩展、F/D 浮点、C 压缩、Zicsr/Zifencei（第 46 章�
 | 44 | `## 背景：压缩是投影，不是另一套代码生成` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
 | 46 | `## 背景：为什么 g 要等两章` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
 | 47 | `## 背景：为什么 V 先做 MC 层` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
+| 48 | `## 背景：为什么先做“保守但正确”的一条链` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
 
 > 第 14、23、28、39、42、45 章是验收章，本身即证据表，不套用八要素模板。
 

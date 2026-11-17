@@ -99,11 +99,20 @@ bool RVMinRegisterInfo::eliminateFrameIndex(
   Register FrameReg;
   int64_t Offset =
       TFI->getFrameIndexReference(MF, FrameIndex, FrameReg).getFixed();
-  Offset += MI.getOperand(FIOperandNum + 1).getImm();
 
-  if (isInt<12>(Offset)) {
+  // Scalar loads/stores carry an immediate offset after the frame index.
+  // Chapter 48 vector load/store instructions (vle32.v/vse32.v) have only a
+  // base register, so there is no operand to fold into.  Detect that shape
+  // instead of indexing past the end of the operand list.
+  bool HasImm = FIOperandNum + 1 < MI.getNumOperands() &&
+                MI.getOperand(FIOperandNum + 1).isImm();
+  if (HasImm)
+    Offset += MI.getOperand(FIOperandNum + 1).getImm();
+
+  if (isInt<12>(Offset) && (HasImm || Offset == 0)) {
     MI.getOperand(FIOperandNum).ChangeToRegister(FrameReg, /*isDef=*/false);
-    MI.getOperand(FIOperandNum + 1).ChangeToImmediate(Offset);
+    if (HasImm)
+      MI.getOperand(FIOperandNum + 1).ChangeToImmediate(Offset);
     return false;
   }
 
@@ -116,7 +125,8 @@ bool RVMinRegisterInfo::eliminateFrameIndex(
                                          Scratch, FrameReg, Offset);
 
   MI.getOperand(FIOperandNum).ChangeToRegister(Scratch, /*isDef=*/false);
-  MI.getOperand(FIOperandNum + 1).ChangeToImmediate(0);
+  if (HasImm)
+    MI.getOperand(FIOperandNum + 1).ChangeToImmediate(0);
   return false;
 }
 

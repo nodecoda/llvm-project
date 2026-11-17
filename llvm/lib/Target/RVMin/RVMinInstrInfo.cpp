@@ -52,6 +52,14 @@ void RVMinInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
     return;
   }
 
+  // Chapter 48: a vector register copy is `vmv.v.v`.  The AsmPrinter inserts
+  // the matching vsetivli immediately before it.
+  if (RVMin::VRRegClass.contains(DestReg, SrcReg)) {
+    BuildMI(MBB, MI, DL, get(RVMin::VMV_V_V), DestReg)
+        .addReg(SrcReg, getKillRegState(KillSrc));
+    return;
+  }
+
   // Chapter 41: FPR32 and FPR64 contain the same physical registers, so the
   // feature decides which view a copy uses.  `fsgnj.d` copies all 64 bits,
   // which is also right for an f32 value: RV32D keeps floats NaN-boxed.
@@ -261,8 +269,15 @@ void RVMinInstrInfo::storeRegToStackSlot(
     bool IsKill, int FrameIndex, const TargetRegisterClass *RC, Register VReg,
     MachineInstr::MIFlag Flags) const {
   // Chapter 41: doubles spill with fsd, floats with fsw, integers with sw.
+  // Chapter 48: a 128-bit vector spills with vse32.v.  Vector load/store have
+  // no immediate offset operand, so the frame index is the last operand and
+  // eliminateFrameIndex rewrites it to (sp) or a materialized scratch GPR.
   unsigned Opc = RVMin::SW;
-  if (RC == &RVMin::FPR64RegClass)
+  bool IsVector = false;
+  if (RC == &RVMin::VRRegClass) {
+    Opc = RVMin::VSE32_V;
+    IsVector = true;
+  } else if (RC == &RVMin::FPR64RegClass)
     Opc = RVMin::FSD;
   else if (RC == &RVMin::FPR32RegClass)
     Opc = RVMin::FSW;
@@ -270,12 +285,13 @@ void RVMinInstrInfo::storeRegToStackSlot(
     assert(RC == &RVMin::GPRRegClass &&
            "RVMin: unexpected register class in spill");
   DebugLoc DL = MI != MBB.end() ? MI->getDebugLoc() : DebugLoc();
-  MachineInstr *New = BuildMI(MBB, MI, DL, get(Opc))
-                          .addReg(SrcReg, getKillRegState(IsKill))
-                          .addFrameIndex(FrameIndex)
-                          .addImm(0);
+  MachineInstrBuilder MIB = BuildMI(MBB, MI, DL, get(Opc))
+                                .addReg(SrcReg, getKillRegState(IsKill))
+                                .addFrameIndex(FrameIndex);
+  if (!IsVector)
+    MIB.addImm(0);
   if (Flags != MachineInstr::NoFlags)
-    New->setFlag(Flags);
+    MIB->setFlag(Flags);
 }
 
 void RVMinInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
@@ -285,7 +301,11 @@ void RVMinInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
                                           Register VReg, unsigned SubReg,
                                           MachineInstr::MIFlag Flags) const {
   unsigned Opc = RVMin::LW;
-  if (RC == &RVMin::FPR64RegClass)
+  bool IsVector = false;
+  if (RC == &RVMin::VRRegClass) {
+    Opc = RVMin::VLE32_V;
+    IsVector = true;
+  } else if (RC == &RVMin::FPR64RegClass)
     Opc = RVMin::FLD;
   else if (RC == &RVMin::FPR32RegClass)
     Opc = RVMin::FLW;
@@ -294,9 +314,10 @@ void RVMinInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
            "RVMin: unexpected register class in reload");
   assert(SubReg == 0 && "RVMin has no sub-register reloads");
   DebugLoc DL = MI != MBB.end() ? MI->getDebugLoc() : DebugLoc();
-  MachineInstr *New = BuildMI(MBB, MI, DL, get(Opc), DestReg)
-                          .addFrameIndex(FrameIndex)
-                          .addImm(0);
+  MachineInstrBuilder MIB =
+      BuildMI(MBB, MI, DL, get(Opc), DestReg).addFrameIndex(FrameIndex);
+  if (!IsVector)
+    MIB.addImm(0);
   if (Flags != MachineInstr::NoFlags)
-    New->setFlag(Flags);
+    MIB->setFlag(Flags);
 }

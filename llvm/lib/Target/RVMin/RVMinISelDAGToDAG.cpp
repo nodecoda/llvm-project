@@ -125,6 +125,33 @@ bool matchFrameAddr(SDValue Addr, SDValue &FI, int64_t &Offset) {
   return true;
 }
 
+/// Recognize `base` or `base + constant` for a vector address.  Vector
+/// load/store instructions have no immediate offset field, so the caller
+/// materializes the constant into a GPR with ADDI/ADD before selecting the
+/// instruction.  A non-constant ADD (for example a variable GEP) is already a
+/// selected machine node by the time its user is visited, so it is used as-is.
+bool matchBasePlusOffset(SDValue Addr, SDValue &Base, int64_t &Offset) {
+  if (Addr.getOpcode() != ISD::ADD && Addr.getOpcode() != ISD::OR) {
+    Base = Addr;
+    Offset = 0;
+    return true;
+  }
+
+  SDValue L = Addr.getOperand(0);
+  SDValue R = Addr.getOperand(1);
+  if (!isa<ConstantSDNode>(R) && isa<ConstantSDNode>(L))
+    std::swap(L, R);
+  if (!isa<ConstantSDNode>(R)) {
+    Base = Addr;
+    Offset = 0;
+    return true;
+  }
+
+  Base = L;
+  Offset = cast<ConstantSDNode>(R)->getSExtValue();
+  return true;
+}
+
 } // end anonymous namespace
 
 void RVMinDAGToDAGISel::Select(SDNode *N) {
@@ -171,6 +198,39 @@ void RVMinDAGToDAGISel::Select(SDNode *N) {
         0);
   };
 
+  auto materializeGPRAddress = [&](SDValue Base, int64_t Off) -> SDValue {
+    if (Off == 0)
+      return Base;
+    if (isInt<12>(Off)) {
+      SDValue Imm = CurDAG->getTargetConstant(Off, DL, MVT::i32);
+      return SDValue(CurDAG->getMachineNode(RVMin::ADDI, DL, MVT::i32, Base,
+                                            Imm),
+                     0);
+    }
+    SDValue Const = materializeInt(Off);
+    return SDValue(CurDAG->getMachineNode(RVMin::ADD, DL, MVT::i32, Base,
+                                          Const),
+                   0);
+  };
+
+  auto materializeFrameAddr = [&](SDValue FI, int64_t Off) -> SDValue {
+    SDValue TFI = CurDAG->getTargetFrameIndex(
+        cast<FrameIndexSDNode>(FI)->getIndex(), MVT::i32);
+    if (Off == 0 || isInt<12>(Off)) {
+      SDValue Imm = CurDAG->getTargetConstant(Off, DL, MVT::i32);
+      return SDValue(CurDAG->getMachineNode(RVMin::ADDI, DL, MVT::i32, TFI,
+                                            Imm),
+                     0);
+    }
+    SDValue Zero = CurDAG->getTargetConstant(0, DL, MVT::i32);
+    SDValue Base = SDValue(
+        CurDAG->getMachineNode(RVMin::ADDI, DL, MVT::i32, TFI, Zero), 0);
+    SDValue Const = materializeInt(Off);
+    return SDValue(CurDAG->getMachineNode(RVMin::ADD, DL, MVT::i32, Base,
+                                          Const),
+                   0);
+  };
+
   if (N->getOpcode() == ISD::Constant) {
     ReplaceNode(
         N, materializeInt(cast<ConstantSDNode>(N)->getSExtValue()).getNode());
@@ -188,6 +248,56 @@ void RVMinDAGToDAGISel::Select(SDNode *N) {
     ReplaceNode(N, CurDAG->getMachineNode(RVMin::ADDI, DL, MVT::i32, TFI,
                                           Zero));
     return;
+  }
+
+  // Chapter 48: vector load/store.  VLE32_V/VSE32_V only have a base register,
+  // so every address shape is normalized to a GPR first: frame indices become
+  // `addi tf, sp, off` (resolved by eliminateFrameIndex), and `base + C`
+  // becomes ADDI/ADD.  This must run before the scalar load/store blocks,
+  // whose getLoadOpcode/getStoreOpcode return 0 for v4i32.
+  if (N->getOpcode() == ISD::LOAD) {
+    LoadSDNode *LD = cast<LoadSDNode>(N);
+    if (LD->getValueType(0) == MVT::v4i32 &&
+        LD->getMemoryVT() == MVT::v4i32 &&
+        LD->getExtensionType() == ISD::NON_EXTLOAD && !LD->isIndexed()) {
+      SDValue FI;
+      SDValue Base;
+      int64_t Off = 0;
+      if (matchFrameAddr(LD->getBasePtr(), FI, Off))
+        Base = materializeFrameAddr(FI, Off);
+      else {
+        matchBasePlusOffset(LD->getBasePtr(), Base, Off);
+        Base = materializeGPRAddress(Base, Off);
+      }
+      SDValue Ops[] = {Base, LD->getChain()};
+      MachineSDNode *MN = CurDAG->getMachineNode(
+          RVMin::VLE32_V, DL, MVT::v4i32, MVT::Other, Ops);
+      CurDAG->setNodeMemRefs(MN, {LD->getMemOperand()});
+      ReplaceNode(N, MN);
+      return;
+    }
+  }
+
+  if (N->getOpcode() == ISD::STORE) {
+    StoreSDNode *ST = cast<StoreSDNode>(N);
+    if (ST->getValue().getValueType() == MVT::v4i32 &&
+        ST->getMemoryVT() == MVT::v4i32 && !ST->isTruncatingStore()) {
+      SDValue FI;
+      SDValue Base;
+      int64_t Off = 0;
+      if (matchFrameAddr(ST->getBasePtr(), FI, Off))
+        Base = materializeFrameAddr(FI, Off);
+      else {
+        matchBasePlusOffset(ST->getBasePtr(), Base, Off);
+        Base = materializeGPRAddress(Base, Off);
+      }
+      SDValue Ops[] = {ST->getValue(), Base, ST->getChain()};
+      MachineSDNode *MN = CurDAG->getMachineNode(RVMin::VSE32_V, DL,
+                                                 MVT::Other, Ops);
+      CurDAG->setNodeMemRefs(MN, {ST->getMemOperand()});
+      ReplaceNode(N, MN);
+      return;
+    }
   }
 
   // Stack accesses.  Fold the frame index (and any constant offset folded into

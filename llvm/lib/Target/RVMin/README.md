@@ -116,6 +116,7 @@ git checkout rvmin-ch16     # 第 16 章（大栈帧）结束
 | --- | --- | --- |
 | 46 | [Zicsr 与 Zifencei](docs/46-zicsr-zifencei.md) | 完成 |
 | 47 | [V 的 MC 层（Zve32x 子集）](docs/47-v-extension-mc.md) | 完成 |
+| 48 | [V 代码生成（一）](docs/48-v-codegen-1.md) | 完成 |
 
 ## 当前限制（上篇结束时，第 14 章）
 

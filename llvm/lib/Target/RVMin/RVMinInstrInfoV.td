@@ -359,4 +359,14 @@ def VMV_V_V : RVMinVMVVIInst;
 def VMV_V_I : RVMinVMVVIiInst;
 def VMV_X_S : RVMinVMVXSInst;
 def VMV_S_X : RVMinVMVSXInst;
+
+// Chapter 48: integer arithmetic on <4 x i32>.  Only the .vv forms are
+// selected for now; .vx/.vi are left for the next chapter's constant and
+// scalar-broadcast optimizations.
+def : Pat<(v4i32 (add VR:$vs2, VR:$vs1)), (VADD_VV VR:$vs2, VR:$vs1)>;
+def : Pat<(v4i32 (sub VR:$vs2, VR:$vs1)), (VSUB_VV VR:$vs2, VR:$vs1)>;
+def : Pat<(v4i32 (mul VR:$vs2, VR:$vs1)), (VMUL_VV VR:$vs2, VR:$vs1)>;
+def : Pat<(v4i32 (and VR:$vs2, VR:$vs1)), (VAND_VV VR:$vs2, VR:$vs1)>;
+def : Pat<(v4i32 (or  VR:$vs2, VR:$vs1)), (VOR_VV  VR:$vs2, VR:$vs1)>;
+def : Pat<(v4i32 (xor VR:$vs2, VR:$vs1)), (VXOR_VV VR:$vs2, VR:$vs1)>;
 } // Predicates = [HasStdExtV]

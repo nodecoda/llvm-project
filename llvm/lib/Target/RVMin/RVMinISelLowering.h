@@ -114,6 +114,15 @@ public:
 private:
   SDValue lowerSELECT(SDValue Op, SelectionDAG &DAG) const;
 
+  /// Chapter 48: vector constants and element extraction.  A splat in the
+  /// 5-bit immediate range becomes VMV_V_I; everything else goes through a
+  /// private 16-byte stack slot and VLE32_V (or a scalar LW for extract).
+  SDValue lowerBUILD_VECTOR(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerSPLAT_VECTOR(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerEXTRACT_VECTOR_ELT(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerVectorThroughStack(ArrayRef<SDValue> Elems, const SDLoc &DL,
+                                  SelectionDAG &DAG) const;
+
   /// Chapter 41: f64 constants have no `fmv.d.x` on RV32, and i64 is not a
   /// legal type here.  Materialize the bit pattern through a private 8-byte
   /// stack slot: two i32 stores followed by one `fld`.

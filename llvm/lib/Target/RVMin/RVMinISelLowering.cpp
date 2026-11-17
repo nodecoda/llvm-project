@@ -62,7 +62,29 @@ RVMinTargetLowering::RVMinTargetLowering(const TargetMachine &TM,
   // register file.  D implies F, so both classes are registered together.
   if (STI.hasStdExtD())
     addRegisterClass(MVT::f64, &RVMin::FPR64RegClass);
+  // Chapter 48: with V, a fixed <4 x i32> (128 bits) is the native vector
+  // value and lives in one VR.  This must also happen before
+  // computeRegisterProperties() so the type action is Legal, not Expand.
+  if (STI.hasStdExtV())
+    addRegisterClass(MVT::v4i32, &RVMin::VRRegClass);
   computeRegisterProperties(STI.getRegisterInfo());
+
+  if (STI.hasStdExtV()) {
+    // Start from a clean slate: every vector operation this chapter does not
+    // implement is expanded by the legalizer instead of reaching instruction
+    // selection without a pattern.  The six integer ALU operations below are
+    // the ones with a direct .vv instruction.
+    for (unsigned Op = 0; Op < ISD::BUILTIN_OP_END; ++Op)
+      setOperationAction(Op, MVT::v4i32, Expand);
+    setOperationAction({ISD::ADD, ISD::SUB, ISD::MUL, ISD::AND, ISD::OR,
+                        ISD::XOR},
+                       MVT::v4i32, Legal);
+    setOperationAction(ISD::LOAD, MVT::v4i32, Legal);
+    setOperationAction(ISD::STORE, MVT::v4i32, Legal);
+    setOperationAction(ISD::BUILD_VECTOR, MVT::v4i32, Custom);
+    setOperationAction(ISD::SPLAT_VECTOR, MVT::v4i32, Custom);
+    setOperationAction(ISD::EXTRACT_VECTOR_ELT, MVT::v4i32, Custom);
+  }
 
   // Chapter 22: with A, the RV32A instructions (lr.w/sc.w/amo*.w) are exactly
   // what a 32-bit atomic needs.  Without A the size stays zero, which tells
@@ -373,7 +395,123 @@ SDValue RVMinTargetLowering::LowerOperation(SDValue Op,
     return lowerBR_JT(Op, DAG);
   case ISD::ConstantFP:
     return lowerConstantFP(Op, DAG);
+  case ISD::BUILD_VECTOR:
+    return lowerBUILD_VECTOR(Op, DAG);
+  case ISD::SPLAT_VECTOR:
+    return lowerSPLAT_VECTOR(Op, DAG);
+  case ISD::EXTRACT_VECTOR_ELT:
+    return lowerEXTRACT_VECTOR_ELT(Op, DAG);
   }
+}
+
+// Chapter 48: materialize four i32 elements through a private 16-byte stack
+// object, then read them back as one v4i32.  The vector load is selected by
+// RVMinDAGToDAGISel as VLE32_V.  The slot never escapes, so the stores and
+// load form their own chain and cannot alias a user pointer.
+SDValue RVMinTargetLowering::lowerVectorThroughStack(
+    ArrayRef<SDValue> Elems, const SDLoc &DL, SelectionDAG &DAG) const {
+  assert(Elems.size() == 4 && "RVMin vectors are exactly <4 x i32>");
+  MachineFunction &MF = DAG.getMachineFunction();
+  MachineFrameInfo &MFI = MF.getFrameInfo();
+  int FI = MFI.CreateStackObject(16, Align(16), /*isSpillSlot=*/false);
+  EVT PtrVT = getPointerTy(DAG.getDataLayout());
+  SDValue FIN = DAG.getFrameIndex(FI, PtrVT);
+  // The slot is private and never escapes, so it does not need to be ordered
+  // against the current root.  Chaining from the entry node is also required
+  // for correctness: while lowering a BUILD_VECTOR that feeds a store, the
+  // root already contains that store, and starting from getRoot() would make
+  // the new load (and therefore the stored value) depend on its own user.
+  SDValue Chain = DAG.getEntryNode();
+  for (unsigned I = 0; I != 4; ++I) {
+    SDValue Addr = DAG.getNode(ISD::ADD, DL, PtrVT, FIN,
+                               DAG.getConstant(I * 4, DL, PtrVT));
+    Chain = DAG.getStore(
+        Chain, DL, Elems[I], Addr,
+        MachinePointerInfo::getFixedStack(MF, FI, I * 4), Align(4));
+  }
+  return DAG.getLoad(MVT::v4i32, DL, Chain, FIN,
+                     MachinePointerInfo::getFixedStack(MF, FI), Align(16));
+}
+
+SDValue RVMinTargetLowering::lowerBUILD_VECTOR(SDValue Op,
+                                               SelectionDAG &DAG) const {
+  SDLoc DL(Op);
+  assert(Op.getNumOperands() == 4 && "RVMin vectors are exactly <4 x i32>");
+
+  // A build_vector whose four elements are the same constant is the natural
+  // spelling of a splat.  VMV_V_I covers the 5-bit signed immediate range;
+  // larger values reuse the stack path below.
+  auto *C0 = dyn_cast<ConstantSDNode>(Op.getOperand(0));
+  bool AllSame = C0 != nullptr;
+  if (AllSame) {
+    int64_t Value = C0->getSExtValue();
+    for (unsigned I = 1; I != 4; ++I) {
+      auto *C = dyn_cast<ConstantSDNode>(Op.getOperand(I));
+      if (!C || C->getSExtValue() != Value) {
+        AllSame = false;
+        break;
+      }
+    }
+    if (AllSame && isInt<5>(Value))
+      return SDValue(
+          DAG.getMachineNode(RVMin::VMV_V_I, DL, MVT::v4i32,
+                             DAG.getTargetConstant(Value, DL, MVT::i32)),
+          0);
+  }
+
+  SmallVector<SDValue, 4> Elems(Op->op_begin(), Op->op_end());
+  return lowerVectorThroughStack(Elems, DL, DAG);
+}
+
+SDValue RVMinTargetLowering::lowerSPLAT_VECTOR(SDValue Op,
+                                               SelectionDAG &DAG) const {
+  SDLoc DL(Op);
+  SDValue Val = Op.getOperand(0);
+  if (auto *C = dyn_cast<ConstantSDNode>(Val)) {
+    int64_t Value = C->getSExtValue();
+    if (isInt<5>(Value))
+      return SDValue(
+          DAG.getMachineNode(RVMin::VMV_V_I, DL, MVT::v4i32,
+                             DAG.getTargetConstant(Value, DL, MVT::i32)),
+          0);
+  }
+  SmallVector<SDValue, 4> Elems(4, Val);
+  return lowerVectorThroughStack(Elems, DL, DAG);
+}
+
+SDValue RVMinTargetLowering::lowerEXTRACT_VECTOR_ELT(SDValue Op,
+                                                     SelectionDAG &DAG) const {
+  SDLoc DL(Op);
+  SDValue Vec = Op.getOperand(0);
+  auto *C = dyn_cast<ConstantSDNode>(Op.getOperand(1));
+  if (!C)
+    report_fatal_error(
+        "RVMin: variable vector extract is not supported yet", false);
+  int64_t Index = C->getSExtValue();
+  if (Index < 0 || Index >= 4)
+    report_fatal_error("RVMin: vector extract index out of range", false);
+
+  // Element 0 has a direct vector-to-GPR move.  The other constant indices
+  // spill the vector once and load the requested i32, which is also a useful
+  // exercise of the vector store path.
+  if (Index == 0)
+    return SDValue(DAG.getMachineNode(RVMin::VMV_X_S, DL, MVT::i32, Vec), 0);
+
+  MachineFunction &MF = DAG.getMachineFunction();
+  MachineFrameInfo &MFI = MF.getFrameInfo();
+  int FI = MFI.CreateStackObject(16, Align(16), /*isSpillSlot=*/false);
+  EVT PtrVT = getPointerTy(DAG.getDataLayout());
+  SDValue FIN = DAG.getFrameIndex(FI, PtrVT);
+  // See lowerVectorThroughStack: the slot is private, so the entry node is a
+  // safe chain start and avoids a cycle through the current root.
+  SDValue Chain = DAG.getStore(
+      DAG.getEntryNode(), DL, Vec, FIN,
+      MachinePointerInfo::getFixedStack(MF, FI, 0), Align(16));
+  SDValue Addr = DAG.getNode(ISD::ADD, DL, PtrVT, FIN,
+                             DAG.getConstant(Index * 4, DL, PtrVT));
+  return DAG.getLoad(MVT::i32, DL, Chain, Addr,
+                     MachinePointerInfo::getFixedStack(MF, FI, Index * 4),
+                     Align(4));
 }
 
 // Chapter 19: rewrite `x * C` into shifts and adds for the constants that
@@ -750,6 +888,14 @@ SDValue RVMinTargetLowering::LowerFormalArguments(
   if (IsVarArg)
     report_fatal_error("RVMin: varargs are not supported yet");
 
+  // Chapter 48: vector values need a vector ABI (v8-v23, stack alignment,
+  // callee-saved rules).  Reject them instead of silently passing bits in
+  // integer registers.
+  for (const ISD::InputArg &Arg : Ins)
+    if (Arg.VT.isVector())
+      report_fatal_error("RVMin: vector arguments are not supported yet",
+                         /*gen_crash_diag=*/false);
+
   MachineFunction &MF = DAG.getMachineFunction();
   checkABICompatibility(MF);
   MachineRegisterInfo &RegInfo = MF.getRegInfo();
@@ -821,6 +967,17 @@ SDValue RVMinTargetLowering::LowerCall(CallLoweringInfo &CLI,
 
   if (IsVarArg)
     report_fatal_error("RVMin: varargs are not supported yet");
+
+  // Chapter 48: reject vector arguments and vector results at the call
+  // boundary for the same reason as formal arguments.
+  for (const ISD::OutputArg &Arg : Outs)
+    if (Arg.VT.isVector())
+      report_fatal_error("RVMin: vector arguments are not supported yet",
+                         /*gen_crash_diag=*/false);
+  for (const ISD::InputArg &Arg : Ins)
+    if (Arg.VT.isVector())
+      report_fatal_error("RVMin: vector returns are not supported yet",
+                         /*gen_crash_diag=*/false);
 
   MachineFunction &MF = DAG.getMachineFunction();
   EVT PtrVT = getPointerTy(DAG.getDataLayout());
@@ -960,6 +1117,17 @@ bool RVMinTargetLowering::CanLowerReturn(
     CallingConv::ID CallConv, MachineFunction &MF, bool IsVarArg,
     const SmallVectorImpl<ISD::OutputArg> &Outs, LLVMContext &Context,
     const Type *RetTy) const {
+  // Chapter 48: vector returns are not part of the subset yet.  Check the IR
+  // type as well as the lowered values so the diagnostic is stable even if
+  // the legalizer has already split the value.
+  if (RetTy && RetTy->isVectorTy())
+    report_fatal_error("RVMin: vector returns are not supported yet",
+                       /*gen_crash_diag=*/false);
+  for (const ISD::OutputArg &Arg : Outs)
+    if (Arg.VT.isVector())
+      report_fatal_error("RVMin: vector returns are not supported yet",
+                         /*gen_crash_diag=*/false);
+
   SmallVector<CCValAssign, 16> RVLocs;
   CCState CCInfo(CallConv, IsVarArg, MF, RVLocs, Context);
   return CCInfo.CheckReturn(Outs, RetCC_RVMin);
@@ -971,6 +1139,12 @@ SDValue RVMinTargetLowering::LowerReturn(
     const SmallVectorImpl<SDValue> &OutVals, const SDLoc &DL,
     SelectionDAG &DAG) const {
   MachineFunction &MF = DAG.getMachineFunction();
+
+  // Defense in depth: CanLowerReturn normally rejects this first.
+  for (const ISD::OutputArg &Arg : Outs)
+    if (Arg.VT.isVector())
+      report_fatal_error("RVMin: vector returns are not supported yet",
+                         /*gen_crash_diag=*/false);
 
   SmallVector<CCValAssign, 4> RVLocs;
   CCState CCInfo(CallConv, IsVarArg, MF, RVLocs, *DAG.getContext());

@@ -30,6 +30,7 @@
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCInst.h"
+#include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/TargetRegistry.h"
@@ -84,11 +85,38 @@ public:
     return false;
   }
 
+  /// Chapter 48: true for the data-processing vector instructions that depend
+  /// on VL/VTYPE.  The vset* family is excluded: it configures the state and
+  /// must not recursively trigger another configuration.
+  bool isVectorDataInstr(unsigned Opc) const {
+    if (Opc == RVMin::VSETIVLI || Opc == RVMin::VSETVLI ||
+        Opc == RVMin::VSETVL)
+      return false;
+    const MCInstrDesc &Desc = TM.getMCInstrInfo()->get(Opc);
+    return (Desc.TSFlags & 0x1f) == 17; // FmtV
+  }
+
+  /// Emit the conservative configuration for the <4 x i32>, e32/m1, ta/ma
+  /// subset.  Every data vector instruction is preceded by this sequence;
+  /// chapter 49 removes redundant configurations.
+  void emitVSETIVLI() {
+    MCInst VSet;
+    VSet.setOpcode(RVMin::VSETIVLI);
+    VSet.addOperand(MCOperand::createReg(RVMin::X0));
+    VSet.addOperand(MCOperand::createImm(4));   // VL = 4
+    VSet.addOperand(MCOperand::createImm(0xD0)); // e32, m1, ta, ma
+    OutStreamer->emitInstruction(VSet, getSubtargetInfo());
+  }
+
   /// Emit one MC instruction, replacing it with its compressed form when the
   /// 16-bit encoding fits.  Every emission path (pseudo expansion, direct
   /// call lowering, real instructions) funnels through here so the .text
   /// layout and the compressor can never disagree.
   void emitMCInst(const MCInst &Inst) {
+    if (getSubtargetInfo().hasFeature(RVMin::FeatureStdExtV) &&
+        isVectorDataInstr(Inst.getOpcode()))
+      emitVSETIVLI();
+
     MCInst CInst;
     if (compressInst(CInst, Inst, getSubtargetInfo()))
       OutStreamer->emitInstruction(CInst, getSubtargetInfo());
