@@ -195,9 +195,30 @@ fi
 grep -q "'D' (Double-Precision Floating-Point)" "$TMP/no-d.err" \
   || fail "missing D diagnostic without +d"
 
+# 2j. C extension (chapter 43).  The compressed encodings are 16 bits, so the
+# corpus is compared byte for byte with the reference rv32ic assembler; the FP
+# variants need +f/+d on both sides.  The diagnostic check assembles the same
+# corpus without +c and requires the missing-C message.
+CC="$HERE/rvmin-c-encoding-corpus.s"
+"$BIN/llvm-mc" -triple=rvmin -mattr=+c,+f,+d -show-encoding "$CC" > "$TMP/rvmin-c.txt"
+"$BIN/llvm-mc" -triple=riscv32 -mattr=+c,+f,+d -show-encoding "$CC" > "$TMP/ref-c.txt"
+extract "$TMP/rvmin-c.txt" > "$TMP/rvmin-c.enc"
+extract "$TMP/ref-c.txt" > "$TMP/ref-c.enc"
+NC=$(wc -l < "$TMP/rvmin-c.enc")
+[[ "$NC" -eq 35 ]] || fail "C corpus produced $NC encodings, want 35"
+diff -u "$TMP/ref-c.enc" "$TMP/rvmin-c.enc" > "$TMP/diff-c.txt" \
+  || { head -20 "$TMP/diff-c.txt" >&2; fail "C encoding mismatch between rvmin and riscv32"; }
+
+if "$BIN/llvm-mc" -triple=rvmin -filetype=obj "$CC" -o "$TMP/no-c.o" \
+     > /dev/null 2> "$TMP/no-c.err"; then
+  fail "llvm-mc -triple=rvmin accepted C instructions without +c"
+fi
+grep -q "'C' (Compressed)" "$TMP/no-c.err" \
+  || fail "missing C diagnostic without +c"
+
 # 3. ELF identification.
 MACHINE=$("$BIN/llvm-readelf" -h "$TMP/rvmin.o" | awk -F: '/Machine:/ {gsub(/^ +| +$/, "", $2); print $2}')
 [[ "$MACHINE" == "RISC-V" ]] || fail "ELF machine is '$MACHINE', want RISC-V"
 
-echo "PASS: $N RV32I + $NM M + $NZB Zbb + $NZS Zbs + $NA A + $NF F + $ND D instructions, .text identical"
+echo "PASS: $N RV32I + $NM M + $NZB Zbb + $NZS Zbs + $NA A + $NF F + $ND D + $NC C instructions, .text identical"
 echo "      (incl. label fixups and %hi/%lo), ELF machine RISC-V, missing-feature diagnostic OK"

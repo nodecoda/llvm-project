@@ -72,6 +72,14 @@ void riscv::getRISCVTargetFeatures(const Driver &D, const llvm::Triple &Triple,
   std::string MArch = getRISCVArch(Args, Triple);
 
   if (Triple.isRVMin()) {
+    // Chapter 43 decision 5: `g` includes Zicsr and Zifencei, which RVMin
+    // still does not implement.  Reject it until chapter 46 rather than
+    // silently claiming support for the full general-purpose ISA.
+    if (StringRef(MArch).contains('g')) {
+      D.Diag(diag::err_drv_unsupported_option_argument_for_target)
+          << "-march" << MArch << Triple.str();
+      return;
+    }
     if (Args.hasArg(options::OPT_march_EQ) &&
         Args.getLastArgValue(options::OPT_march_EQ) == "native") {
       D.Diag(diag::err_drv_unsupported_option_argument_for_target)
@@ -97,9 +105,10 @@ void riscv::getRISCVTargetFeatures(const Driver &D, const llvm::Triple &Triple,
       if (!Ext.consume_front("+"))
         continue;
       if (Ext == "i" || Ext == "m" || Ext == "a" || Ext == "f" ||
-          Ext == "d" || Ext == "zbb" || Ext == "zbs" || Ext == "zaamo" ||
-          Ext == "zalrsc" || Ext == "zmmul" || Ext == "zicsr" ||
-          Ext == "zifencei" || Ext == "relax")
+          Ext == "d" || Ext == "c" || Ext == "zbb" || Ext == "zbs" ||
+          Ext == "zaamo" || Ext == "zalrsc" || Ext == "zmmul" ||
+          Ext == "zca" || Ext == "zcf" || Ext == "zcd" ||
+          Ext == "zicsr" || Ext == "zifencei" || Ext == "relax")
         continue;
       D.Diag(diag::err_drv_unsupported_option_argument_for_target)
           << "-march" << MArch << Triple.str();
@@ -110,7 +119,7 @@ void riscv::getRISCVTargetFeatures(const Driver &D, const llvm::Triple &Triple,
     // implements; "+i" is implied by the target.
     llvm::erase_if(Features, [](StringRef F) {
       return F != "+m" && F != "+a" && F != "+f" && F != "+d" &&
-             F != "+zbb" && F != "+zbs";
+             F != "+c" && F != "+zbb" && F != "+zbs";
     });
     return;
   }
@@ -437,6 +446,8 @@ std::string riscv::getRISCVArch(const llvm::opt::ArgList &Args,
         return "rv32i_zbb";
       if (CPU == "generic-rv32-zbs")
         return "rv32i_zbs";
+      if (CPU == "generic-rv32-c")
+        return "rv32ic";
     }
     return "rv32i";
   }

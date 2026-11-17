@@ -43,7 +43,7 @@ ABI 仍然沿用第 40 章的 **B-lite** 策略：
   （`+d → ilp32d`，`+f → ilp32f`，否则 `ilp32`）；
 - `ilp32d` 必须有 D；`ilp32f` 不允许同时有 D（f64 合法后会走 `fa0–fa7`，
   那是 ILP32D 的约定，静默混用就是误编译）；
-- `ilp32` 仍不接受 F/D（软 ABI + 硬指令的边界转换是第 43 章）。
+- `ilp32` 仍不接受 F/D（软 ABI + 硬指令的边界转换是第 51 章）。
 
 ## 代码地图
 
@@ -272,7 +272,7 @@ spill/reload 有三路：
 | `ilp32` | 无 F | OK |
 | `ilp32f` | F，无 D | OK |
 | `ilp32d` | D | OK |
-| `ilp32` | 有 F | 报错（第 43 章） |
+| `ilp32` | 有 F | 报错（第 51 章） |
 | `ilp32f` | 有 D | 报错（f64 会误走 `fa0–fa7`） |
 | `ilp32d` | 无 D | 报错 |
 
@@ -412,7 +412,7 @@ ALL CLANG MATRIX PASS: 192 objects, ELF32 EM_RISCV, -S/-c agree,
 ## 练习
 
 1. 实现 `ilp32f + D`：在 CC/形参/调用/返回四处把 f64 按 i32 对传递，函数体
-   用栈把 i32 对拼回 f64。这是第 43 章“严格 ABI”的一半。
+   用栈把 i32 对拼回 f64。这是第 51 章“严格 ABI”的一半。
 2. 给 `fclass.d` 加 intrinsic 与 pattern，覆盖 NaN/Inf/±0/次正规数，并与
    `fclass.s` 共用 lowering。
 3. 把 f64 常量的物化优化成“两个 i32 常量 + `sw` 合并成一次 64 位栈写”，

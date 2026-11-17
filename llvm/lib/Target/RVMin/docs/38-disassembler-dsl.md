@@ -511,96 +511,99 @@ class EncodingByHwMode<list<HwMode> Ms = [], list<InstructionEncoding> Ts = []>
 | `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1176` | `isCommutable` | 消费（derive） |
 | `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1183` | `isCommutable` | 消费（derive） |
 | `llvm/lib/Target/RVMin/RVMinInstrInfo.td:1254` | `Predicates` | 消费（derive+project） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:86` | `Namespace` | 消费（derive） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:87` | `OutOperandList` | 消费（derive） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:88` | `InOperandList` | 消费（derive） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:89` | `AsmString` | 消费（derive） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:90` | `Pattern` | isel pattern；`-gen-dag-isel` 消费。 |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:91` | `Size` | 消费（derive+project） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:96` | `isPseudo` | 消费（derive） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:98` | `isCodeGenOnly` | 消费（derive+project） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:99` | `Size` | 消费（derive+project） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:100` | `TSFlags` | 消费（derive） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:114` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:115` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:116` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:117` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:118` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:119` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:121` | `TSFlags` | 消费（derive） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:135` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:136` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:137` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:138` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:139` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:141` | `TSFlags` | 消费（derive） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:153` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:154` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:155` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:156` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:157` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:158` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:160` | `TSFlags` | 消费（derive） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:174` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:175` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:176` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:177` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:178` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:179` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:181` | `TSFlags` | 消费（derive） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:195` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:196` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:197` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:198` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:199` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:200` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:201` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:202` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:204` | `TSFlags` | 消费（derive） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:217` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:218` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:219` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:221` | `TSFlags` | 消费（derive） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:234` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:235` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:236` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:237` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:238` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:239` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:241` | `TSFlags` | 消费（derive） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:260` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:261` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:262` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:263` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:264` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:265` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:266` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:268` | `TSFlags` | 消费（derive） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:286` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:287` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:288` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:289` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:290` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:291` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:293` | `TSFlags` | 消费（derive） |
-| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:85` | `Inst` | 自定义字段（需自行保证 name-based 读取方存在） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:97` | `Namespace` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:98` | `OutOperandList` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:99` | `InOperandList` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:100` | `AsmString` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:101` | `Pattern` | isel pattern；`-gen-dag-isel` 消费。 |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:102` | `Size` | 消费（derive+project） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:107` | `isPseudo` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:109` | `isCodeGenOnly` | 消费（derive+project） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:110` | `Size` | 消费（derive+project） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:111` | `TSFlags` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:125` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:126` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:127` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:128` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:129` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:130` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:132` | `TSFlags` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:146` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:147` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:148` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:149` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:150` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:152` | `TSFlags` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:164` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:165` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:166` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:167` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:168` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:169` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:171` | `TSFlags` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:185` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:186` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:187` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:188` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:189` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:190` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:192` | `TSFlags` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:206` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:207` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:208` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:209` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:210` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:211` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:212` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:213` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:215` | `TSFlags` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:228` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:229` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:230` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:232` | `TSFlags` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:245` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:246` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:247` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:248` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:249` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:250` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:252` | `TSFlags` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:271` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:272` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:273` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:274` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:275` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:276` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:277` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:279` | `TSFlags` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:297` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:298` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:299` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:300` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:301` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:302` | `Inst` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:304` | `TSFlags` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinInstrFormats.td:96` | `Inst` | 自定义字段（需自行保证 name-based 读取方存在） |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:12` | `FallbackRegAltNameIndex` | 不在本后端契约（其它后端消费或拼写错误） |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:17` | `Namespace` | 消费（derive） |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:18` | `HWEncoding` | 寄存器编码；`-gen-register-info` 消费。 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:19` | `AltNames` | 本后端不读 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:20` | `DwarfNumbers` | DWARF 编号；`-gen-register-info` 消费。 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:25` | `RegAltNameIndices` | 本后端不读 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:86` | `Namespace` | 消费（derive） |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:87` | `HWEncoding` | 寄存器编码；`-gen-register-info` 消费。 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:88` | `AltNames` | 本后端不读 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:89` | `DwarfNumbers` | DWARF 编号；`-gen-register-info` 消费。 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:92` | `RegAltNameIndices` | 本后端不读 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:147` | `DecoderMethod` | decoder 自定义方法。 |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:158` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:79` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:100` | `Namespace` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:101` | `HWEncoding` | 寄存器编码；`-gen-register-info` 消费。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:102` | `AltNames` | 本后端不读 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:103` | `DwarfNumbers` | DWARF 编号；`-gen-register-info` 消费。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:106` | `RegAltNameIndices` | 本后端不读 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:161` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:172` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:179` | `DecoderMethod` | decoder 自定义方法。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:184` | `DecoderMethod` | decoder 自定义方法。 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:16` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
-| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:85` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:99` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
 
-共 199 处使用；契约外 81 处。
+共 202 处使用；契约外 81 处。
 <!-- END: GENERATED TD USAGE -->
 
 `Inst` 是本章的核心输入，但它声明在 RVMin 自己的 `RVMinInst` 上，不在

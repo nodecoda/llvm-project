@@ -184,6 +184,54 @@ public:
     return isa<MCSymbolRefExpr>(Imm) || isa<MCSpecifierExpr>(Imm);
   }
 
+  // Chapter 43: compressed-immediate predicates.
+  bool isSImm6() const {
+    int64_t Value;
+    return evaluateConstantImm(Value) && isInt<6>(Value);
+  }
+  bool isUImm7Lsb00() const {
+    int64_t Value;
+    return evaluateConstantImm(Value) && isShiftedUInt<5, 2>(Value);
+  }
+  bool isUImm8Lsb00() const {
+    int64_t Value;
+    return evaluateConstantImm(Value) && isShiftedUInt<6, 2>(Value);
+  }
+  bool isUImm8Lsb000() const {
+    int64_t Value;
+    return evaluateConstantImm(Value) && isShiftedUInt<5, 3>(Value);
+  }
+  bool isUImm9Lsb000() const {
+    int64_t Value;
+    return evaluateConstantImm(Value) && isShiftedUInt<6, 3>(Value);
+  }
+  bool isUImm10Lsb00NonZero() const {
+    int64_t Value;
+    return evaluateConstantImm(Value) && Value != 0 &&
+           isShiftedUInt<8, 2>(Value);
+  }
+  bool isSImm10Lsb0000NonZero() const {
+    int64_t Value;
+    return evaluateConstantImm(Value) && Value != 0 &&
+           isShiftedInt<6, 4>(Value);
+  }
+  bool isSImm9Lsb0() const {
+    if (Kind != Immediate)
+      return false;
+    int64_t Value;
+    if (Imm->evaluateAsAbsolute(Value))
+      return isShiftedInt<8, 1>(Value);
+    return isa<MCSymbolRefExpr>(Imm) || isa<MCSpecifierExpr>(Imm);
+  }
+  bool isSImm12Lsb0() const {
+    if (Kind != Immediate)
+      return false;
+    int64_t Value;
+    if (Imm->evaluateAsAbsolute(Value))
+      return isShiftedInt<11, 1>(Value);
+    return isa<MCSymbolRefExpr>(Imm) || isa<MCSpecifierExpr>(Imm);
+  }
+
   void addRegOperands(MCInst &Inst, unsigned N) const {
     assert(N == 1 && "invalid number of operands");
     Inst.addOperand(MCOperand::createReg(Reg));

@@ -59,7 +59,8 @@ bool RVMinTargetInfo::setABI(const std::string &Name) {
 bool RVMinTargetInfo::isValidCPUName(StringRef Name) const {
   return llvm::is_contained(
       {"generic-rv32", "generic-rv32-m", "generic-rv32-a", "generic-rv32-f",
-       "generic-rv32-d", "generic-rv32-zbb", "generic-rv32-zbs"},
+       "generic-rv32-d", "generic-rv32-zbb", "generic-rv32-zbs",
+       "generic-rv32-c"},
       Name);
 }
 
@@ -72,15 +73,18 @@ void RVMinTargetInfo::fillValidCPUList(
   Values.push_back("generic-rv32-d");
   Values.push_back("generic-rv32-zbb");
   Values.push_back("generic-rv32-zbs");
+  Values.push_back("generic-rv32-c");
 }
 
 static bool isRVMinExtension(StringRef Ext) {
   return Ext == "i" || Ext == "m" || Ext == "a" || Ext == "f" ||
-         Ext == "d" || Ext == "zbb" || Ext == "zbs" ||
+         Ext == "d" || Ext == "c" || Ext == "zbb" || Ext == "zbs" ||
          // Implied by "a" (zalrsc/zaamo) or "m" (zmmul).  The backend has
          // patterns for the operations these unlock, so they are allowed even
          // though they are not spelled out in RVMin.td.
          Ext == "zaamo" || Ext == "zalrsc" || Ext == "zmmul" ||
+         // C is expanded by RISCVISAInfo into its Zca/Zcf/Zcd constituents.
+         Ext == "zca" || Ext == "zcf" || Ext == "zcd" ||
          Ext == "zicsr" ||
          Ext == "zifencei";
 }
@@ -136,7 +140,7 @@ bool RVMinTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
     if (!Name.consume_front("+"))
       return true;
     return Name != "m" && Name != "a" && Name != "f" && Name != "d" &&
-           Name != "zbb" && Name != "zbs";
+           Name != "c" && Name != "zbb" && Name != "zbs";
   });
   return true;
 }

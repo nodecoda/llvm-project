@@ -53,6 +53,17 @@ def FmtB      : RVMinInstFormat<4>;
 def FmtU      : RVMinInstFormat<5>;
 def FmtJ      : RVMinInstFormat<6>;
 def FmtR4     : RVMinInstFormat<7>;  // chapter 40: fused multiply-add
+// Chapter 43: the eight 16-bit compressed formats plus the CA form used by
+// c.sub/c.xor/c.or/c.and (which upstream models separately from CB).
+def FmtCR     : RVMinInstFormat<8>;
+def FmtCI     : RVMinInstFormat<9>;
+def FmtCSS    : RVMinInstFormat<10>;
+def FmtCIW    : RVMinInstFormat<11>;
+def FmtCL     : RVMinInstFormat<12>;
+def FmtCS     : RVMinInstFormat<13>;
+def FmtCB     : RVMinInstFormat<14>;
+def FmtCJ     : RVMinInstFormat<15>;
+def FmtCA     : RVMinInstFormat<16>;
 
 // Opcodes from the RISC-V base opcode map.  Only the ones RV32I needs.
 class RVMinOpcode<bits<7> val> {

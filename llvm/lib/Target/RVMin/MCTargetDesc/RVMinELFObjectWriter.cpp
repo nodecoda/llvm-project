@@ -55,6 +55,14 @@ protected:
       return ELF::R_RISCV_LO12_I;
     case rvmin::fixup_rvmin_lo12_s:
       return ELF::R_RISCV_LO12_S;
+    case rvmin::fixup_rvmin_rvc_branch:
+      return ELF::R_RISCV_RVC_BRANCH;
+    case rvmin::fixup_rvmin_rvc_jump:
+      return ELF::R_RISCV_RVC_JUMP;
+    case rvmin::fixup_rvmin_rvc_imm:
+      reportError(Fixup.getLoc(),
+                  "RVMin: compressed instructions have no immediate relocation");
+      return ELF::R_RISCV_NONE;
     default:
       reportError(Fixup.getLoc(), "RVMin: unsupported relocation");
       return ELF::R_RISCV_NONE;

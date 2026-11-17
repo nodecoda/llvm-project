@@ -91,6 +91,36 @@ static DecodeStatus DecodeGPRRegisterClass(MCInst &Inst, uint64_t RegNo,
   return MCDisassembler::Success;
 }
 
+// Chapter 43: compressed instructions encode x8-x15 (and f8-f15) in three
+// bits.  The decoder adds 8 back to recover the architectural number.
+static const unsigned GPRCDecoderTable[] = {
+    RVMin::X8, RVMin::X9,  RVMin::X10, RVMin::X11,
+    RVMin::X12, RVMin::X13, RVMin::X14, RVMin::X15};
+
+static DecodeStatus DecodeGPRCRegisterClass(MCInst &Inst, uint64_t RegNo,
+                                            uint64_t Address,
+                                            const MCDisassembler *Decoder) {
+  if (RegNo >= std::size(GPRCDecoderTable))
+    return MCDisassembler::Fail;
+  Inst.addOperand(MCOperand::createReg(GPRCDecoderTable[RegNo]));
+  return MCDisassembler::Success;
+}
+
+// The stack pointer is implicit in the c.*sp and c.addi4spn forms.  TableGen
+// emits both a two-argument and a four-argument call for this class depending
+// on whether the operand has encoding bits; both must produce `sp`.
+static DecodeStatus DecodeSPRegisterClass(MCInst &Inst, uint64_t RegNo,
+                                          uint64_t Address,
+                                          const MCDisassembler *Decoder) {
+  Inst.addOperand(MCOperand::createReg(RVMin::X2));
+  return MCDisassembler::Success;
+}
+static DecodeStatus DecodeSPRegisterClass(MCInst &Inst,
+                                          const MCDisassembler *Decoder) {
+  Inst.addOperand(MCOperand::createReg(RVMin::X2));
+  return MCDisassembler::Success;
+}
+
 // Chapter 40: the floating-point file has the same contiguous layout.  The
 // single- and double-precision views (chapter 41) share these registers, so
 // one table serves both decoder hooks.
@@ -119,6 +149,25 @@ static DecodeStatus DecodeFPR64RegisterClass(MCInst &Inst, uint64_t RegNo,
   return DecodeFPR32RegisterClass(Inst, RegNo, Address, Decoder);
 }
 
+static const unsigned FPRCDecoderTable[] = {
+    RVMin::F8, RVMin::F9,  RVMin::F10, RVMin::F11,
+    RVMin::F12, RVMin::F13, RVMin::F14, RVMin::F15};
+
+static DecodeStatus DecodeFPR32CRegisterClass(MCInst &Inst, uint64_t RegNo,
+                                              uint64_t Address,
+                                              const MCDisassembler *Decoder) {
+  if (RegNo >= std::size(FPRCDecoderTable))
+    return MCDisassembler::Fail;
+  Inst.addOperand(MCOperand::createReg(FPRCDecoderTable[RegNo]));
+  return MCDisassembler::Success;
+}
+
+static DecodeStatus DecodeFPR64CRegisterClass(MCInst &Inst, uint64_t RegNo,
+                                              uint64_t Address,
+                                              const MCDisassembler *Decoder) {
+  return DecodeFPR32CRegisterClass(Inst, RegNo, Address, Decoder);
+}
+
 // Plain sign extension: I-type, S-type and JALR's 12-bit immediate.
 template <unsigned N>
 static DecodeStatus decodeSImmOperand(MCInst &Inst, uint64_t Imm,
@@ -143,6 +192,30 @@ static DecodeStatus decodeSImmBranchOperand(MCInst &Inst, uint64_t Imm,
   return MCDisassembler::Success;
 }
 
+// Chapter 43: compressed branches/jumps are two bytes wide, so the symbolizer
+// must be told InstSize=2.  The offset itself is still a full byte offset.
+template <unsigned N>
+static DecodeStatus decodeSImmCBranchOperand(MCInst &Inst, uint64_t Imm,
+                                             int64_t Address,
+                                             const MCDisassembler *Decoder) {
+  const int64_t Value = SignExtend64<N>(Imm);
+  if (!Decoder->tryAddingSymbolicOperand(Inst, Value, Address,
+                                         /*IsBranch=*/true, /*Offset=*/0,
+                                         /*OpSize=*/4, /*InstSize=*/2))
+    Inst.addOperand(MCOperand::createImm(Value));
+  return MCDisassembler::Success;
+}
+
+// Plain unsigned immediate: the compressed formats scatter the bits, but
+// TableGen has already reassembled them into one value.
+template <unsigned N>
+static DecodeStatus decodeUImmOperand(MCInst &Inst, uint64_t Imm,
+                                      int64_t Address,
+                                      const MCDisassembler *Decoder) {
+  Inst.addOperand(MCOperand::createImm(Imm));
+  return MCDisassembler::Success;
+}
+
 #include "RVMinGenDisassemblerTables.inc"
 
 DecodeStatus RVMinDisassembler::getInstruction(MCInst &MI, uint64_t &Size,
@@ -150,18 +223,33 @@ DecodeStatus RVMinDisassembler::getInstruction(MCInst &MI, uint64_t &Size,
                                                uint64_t Address,
                                                raw_ostream &CStream) const {
   Size = 0;
-  // There is no C extension in RVMin: every instruction is exactly four
-  // bytes, so a short tail cannot be decoded at all.
+  if (Bytes.size() < 2)
+    return MCDisassembler::Fail;
+
+  // Chapter 43: the two low bits select the instruction width.  Anything
+  // other than 0b11 is a 16-bit compressed instruction; 0b11 starts a 32-bit
+  // instruction and needs two more bytes.
+  uint16_t Half = support::endian::read16le(Bytes.data());
+  if ((Half & 0x3) != 0x3) {
+    DecodeStatus Result =
+        decodeInstruction(DecoderTable16, MI, Half, Address, this, STI);
+    // A 16-bit instruction is always two bytes, even when its encoding is
+    // reserved.  Returning Size = 2 keeps objdump from resynchronising in the
+    // middle of the instruction.
+    Size = 2;
+    return Result;
+  }
+
   if (Bytes.size() < 4)
     return MCDisassembler::Fail;
 
   uint64_t Insn = support::endian::read32le(Bytes.data());
   DecodeStatus Result =
       decodeInstruction(DecoderTable32, MI, Insn, Address, this, STI);
-  // Every RVMin instruction is four bytes, so one undecodable word maps to
-  // exactly one `.word` in the output.  Returning Size = 0 here would make
-  // llvm-objdump retry at every byte offset and print four `<unknown>` lines
-  // for a single invalid word.
+  // Every 32-bit RVMin instruction is four bytes, so one undecodable word
+  // maps to exactly one `.word` in the output.  Returning Size = 0 here would
+  // make llvm-objdump retry at every byte offset and print four `<unknown>`
+  // lines for a single invalid word.
   Size = 4;
   return Result;
 }

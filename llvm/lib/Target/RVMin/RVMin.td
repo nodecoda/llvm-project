@@ -72,6 +72,15 @@ def HasStdExtD : Predicate<"Subtarget->hasStdExtD()">,
                  AssemblerPredicate<(all_of FeatureStdExtD),
                                     "'D' (Double-Precision Floating-Point)">;
 
+// Chapter 43: the C extension adds 16-bit encodings.  It does not change the
+// ABI and is orthogonal to every other optional extension.
+def FeatureStdExtC : SubtargetFeature<"c", "HasStdExtC", "true",
+                                      "Compressed instructions">;
+
+def HasStdExtC : Predicate<"Subtarget->hasStdExtC()">,
+                 AssemblerPredicate<(all_of FeatureStdExtC),
+                                    "'C' (Compressed)">;
+
 //===----------------------------------------------------------------------===//
 // Processors
 //===----------------------------------------------------------------------===//
@@ -86,6 +95,7 @@ def : RVMinProc<"generic-rv32-zbs", [FeatureStdExtZbs]>;
 def : RVMinProc<"generic-rv32-a", [FeatureStdExtA]>;
 def : RVMinProc<"generic-rv32-f", [FeatureStdExtF]>;
 def : RVMinProc<"generic-rv32-d", [FeatureStdExtD]>;
+def : RVMinProc<"generic-rv32-c", [FeatureStdExtC]>;
 
 //===----------------------------------------------------------------------===//
 // Register File
@@ -98,6 +108,7 @@ include "RVMinRegisterInfo.td"
 //===----------------------------------------------------------------------===//
 
 include "RVMinInstrInfo.td"
+include "RVMinInstrInfoC.td"
 
 include "RVMinCallingConv.td"
 

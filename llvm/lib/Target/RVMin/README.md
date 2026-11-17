@@ -101,6 +101,12 @@ git checkout rvmin-ch16     # 第 16 章（大栈帧）结束
 | 41 | [D 扩展与 ILP32D 调用约定](docs/41-d-extension.md) | 完成 |
 | 42 | [第四篇验收：F/D 全链路](docs/42-fd-acceptance.md) | 完成 |
 
+### 第五篇：压缩指令（43–45）
+
+| 章 | 主题 | 状态 |
+| --- | --- | --- |
+| 43 | [RV32C 的 MC 层](docs/43-c-extension-mc.md) | 完成 |
+
 ## 当前限制（上篇结束时，第 14 章）
 
 - i32 的算术/逻辑/移位/比较、分支、栈对象、load/store、全局数据与字符串、

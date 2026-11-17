@@ -44,6 +44,8 @@ class RVMinSubtarget : public RVMinGenSubtargetInfo {
   bool HasStdExtF = false;
   // Chapter 41: D implies F and adds the FPR64 view of the same registers.
   bool HasStdExtD = false;
+  // Chapter 43: compressed 16-bit encodings.
+  bool HasStdExtC = false;
 
   RVMinInstrInfo InstrInfo;
   RVMinTargetLowering TLInfo;
@@ -64,6 +66,7 @@ public:
   bool hasStdExtA() const { return HasStdExtA; }
   bool hasStdExtF() const { return HasStdExtF; }
   bool hasStdExtD() const { return HasStdExtD; }
+  bool hasStdExtC() const { return HasStdExtC; }
 
   void ParseSubtargetFeatures(StringRef CPU, StringRef TuneCPU, StringRef FS);
 

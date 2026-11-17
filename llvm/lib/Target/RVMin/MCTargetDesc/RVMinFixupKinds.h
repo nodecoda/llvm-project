@@ -34,6 +34,14 @@ enum FixupKind {
   fixup_rvmin_lo12_i,
   // %lo12(sym) in an S-type immediate (SB/SH/SW).
   fixup_rvmin_lo12_s,
+  // 9-bit PC-relative byte offset of a CB-format branch (c.beqz/c.bnez).
+  fixup_rvmin_rvc_branch,
+  // 12-bit PC-relative byte offset of a CJ-format jump (c.j/c.jal).
+  fixup_rvmin_rvc_jump,
+  // A 16-bit absolute immediate.  Compressed instructions have no %hi/%lo
+  // relocations; this kind exists so the encoder can reject such operands
+  // with a clear diagnostic instead of silently truncating them.
+  fixup_rvmin_rvc_imm,
 
   // Sentinel, must be last.
   fixup_rvmin_invalid,

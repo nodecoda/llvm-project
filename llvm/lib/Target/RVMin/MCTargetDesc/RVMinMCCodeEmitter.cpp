@@ -81,8 +81,21 @@ uint64_t RVMinMCCodeEmitter::getMachineOpValue(
   case RVMin::JAL:
     Kind = rvmin::fixup_rvmin_jal;
     break;
+  case RVMin::C_BEQZ:
+  case RVMin::C_BNEZ:
+    Kind = rvmin::fixup_rvmin_rvc_branch;
+    break;
+  case RVMin::C_J:
+  case RVMin::C_JAL:
+    Kind = rvmin::fixup_rvmin_rvc_jump;
+    break;
   default:
-    Kind = rvmin::fixup_rvmin_32;
+    // Compressed instructions only have branch/jump relocations.  A symbolic
+    // immediate anywhere else (for example `c.lui a0, symbol`) is rejected by
+    // the assembler backend; there is no RISC-V relocation for it.
+    Kind = MCII.get(MI.getOpcode()).getSize() == 2
+               ? rvmin::fixup_rvmin_rvc_imm
+               : rvmin::fixup_rvmin_32;
     break;
   }
 
@@ -112,7 +125,9 @@ uint64_t RVMinMCCodeEmitter::getMachineOpValue(
   }
 
   bool IsPCRel = Kind == rvmin::fixup_rvmin_branch ||
-                 Kind == rvmin::fixup_rvmin_jal;
+                 Kind == rvmin::fixup_rvmin_jal ||
+                 Kind == rvmin::fixup_rvmin_rvc_branch ||
+                 Kind == rvmin::fixup_rvmin_rvc_jump;
   Fixups.push_back(
       MCFixup::create(0, MO.getExpr(), (MCFixupKind)Kind, IsPCRel));
   return 0;
@@ -128,8 +143,11 @@ void RVMinMCCodeEmitter::encodeInstruction(const MCInst &MI,
 
   uint64_t Bits = getBinaryCodeForInstr(MI, Fixups, STI);
 
-  // RV32I is little-endian: the lowest-addressed byte holds Inst[7:0].
-  for (unsigned I = 0; I != 4; ++I)
+  // RISC-V is little-endian: the lowest-addressed byte holds Inst[7:0].
+  // Chapter 43: the instruction's Size field is 2 for C and 4 otherwise, so
+  // the same path emits both widths.
+  unsigned Size = MCII.get(MI.getOpcode()).getSize();
+  for (unsigned I = 0; I != Size; ++I)
     CB.push_back(static_cast<char>((Bits >> (8 * I)) & 0xff));
 }
 

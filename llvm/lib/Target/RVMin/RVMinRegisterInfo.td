@@ -70,6 +70,20 @@ def GPR : RegisterClass<"RVMin", [i32], 32,
        (sequence "X%u", 18, 27),
        X0, X1, X2, X3, X4)>;
 
+// Chapter 43: compressed instructions encode most integer registers in three
+// bits.  Only x8-x15 are addressable; the encoder stores the architectural
+// number (8-15) and the 3-bit field keeps the low three bits, so x8 maps to 0
+// and x15 to 7 exactly as the ISA requires.
+def GPRC : RegisterClass<"RVMin", [i32], 32,
+  (add X8, X9, X10, X11, X12, X13, X14, X15)> {
+  let DecoderMethod = "DecodeGPRCRegisterClass";
+}
+
+// The stack pointer is implicit in the c.*sp instructions; keeping it as a
+// one-register class lets the assembler accept and print `sp` without giving
+// it an encoding field.
+def SP : RegisterClass<"RVMin", [i32], 32, (add X2)>;
+
 //===----------------------------------------------------------------------===//
 // Chapter 40: F-extension registers
 //===----------------------------------------------------------------------===//
@@ -156,5 +170,17 @@ def FPR32 : RegisterClass<"RVMin", [f32], 32,
        F8, F9,
        (sequence "F%u", 18, 27))> {
   let DecoderMethod = "DecodeFPR32RegisterClass";
+}
+
+// Chapter 43: the compressed FP load/store forms address f8-f15 with three
+// bits, exactly like GPRC.
+def FPR32C : RegisterClass<"RVMin", [f32], 32,
+  (add F8, F9, F10, F11, F12, F13, F14, F15)> {
+  let DecoderMethod = "DecodeFPR32CRegisterClass";
+}
+
+def FPR64C : RegisterClass<"RVMin", [f64], 64,
+  (add F8, F9, F10, F11, F12, F13, F14, F15)> {
+  let DecoderMethod = "DecodeFPR64CRegisterClass";
 }
 
