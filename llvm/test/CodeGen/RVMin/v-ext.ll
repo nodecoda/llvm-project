@@ -8,6 +8,8 @@
 ; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O2 -mattr=+v < %s -o - \
 ; RUN:   | llvm-mc -triple=riscv32 -mattr=+v -filetype=obj -o /dev/null
 ; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O2 < %s -o /dev/null
+; RUN: llc -march=rvmin -mtriple=riscv32-unknown-elf -O0 -mattr=+v \
+; RUN:   -verify-machineinstrs -filetype=obj < %s -o /dev/null
 ;
 ; Chapter 48: <4 x i32> is legal with +v.  The chapter selects loads, stores,
 ; integer arithmetic, constant splats, element extraction and 16-byte spills.

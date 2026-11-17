@@ -9,7 +9,8 @@
 #   2. lit: CodeGen + MC tests;
 #   3. encoding gate: byte-exact against the reference RISC-V assembler;
 #   4. disassembler gate: asm -> obj -> disasm -> asm is byte-identical;
-#   5. e2e: 10 C programs x 4 -O levels x 2 feature sets, round-tripped;
+#   5. e2e: 12 C programs x 4 -O levels x 6 feature sets, round-tripped,
+#      plus the V demo (4 -O levels) round-tripped against both assemblers;
 #   6. every CodeGen test at -O0..-O3 x {rv32i,+m} with -verify-machineinstrs
 #      (tests that expect a diagnostic, i.e. "RUN: not llc", are skipped);
 #   7. the TableGen DSL contracts for seven backends, the cross-backend
@@ -56,7 +57,8 @@ echo "PASS 4/8: disassembler"
 
 # 5. End-to-end corpus.
 "$HERE/rvmin-e2e.sh" "$BIN" || fail "e2e corpus"
-echo "PASS 5/8: e2e"
+"$HERE/rvmin-e2e-v.sh" "$BIN" || fail "V e2e corpus"
+echo "PASS 5/8: e2e (+ V subset)"
 
 # 6. Machine-instruction verification at every optimization level.
 CASES=0

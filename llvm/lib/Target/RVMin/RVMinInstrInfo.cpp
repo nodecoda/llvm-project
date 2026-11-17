@@ -29,8 +29,24 @@ RVMinInstrInfo::RVMinInstrInfo(const RVMinSubtarget &STI)
 unsigned RVMinInstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
   if (MI.isDebugInstr() || MI.isCFIInstruction())
     return 0;
-  // Real RV32I instructions are always 4 bytes.  Pseudos use their declared
-  // Size (PseudoRET is 4 after expansion, ADJCALLSTACK* are 0).
+
+  // Chapter 49/50: a data vector instruction may be preceded by an
+  // AsmPrinter-inserted vsetivli (4 bytes) when the cached VL/VTYPE is not
+  // valid.  The generic AsmPrinter size verifier compares the emitted bytes
+  // against this answer, so report the upper bound: 8 when a configuration
+  // may be inserted, 4 when the instruction is already a vset*.
+  //
+  // The AsmPrinter uses the same FmtV marker (TSFlags[4:0] == 17) and the
+  // same vset exclusion in isVectorDataInstr(); keep the two in sync.
+  if ((MI.getDesc().TSFlags & 0x1f) == 17) {
+    unsigned Opc = MI.getOpcode();
+    if (Opc != RVMin::VSETIVLI && Opc != RVMin::VSETVLI &&
+        Opc != RVMin::VSETVL)
+      return 8;
+  }
+
+  // Other real RV32I instructions are always 4 bytes.  Pseudos use their
+  // declared Size (PseudoRET is 4 after expansion, ADJCALLSTACK* are 0).
   return MI.getDesc().getSize();
 }
 

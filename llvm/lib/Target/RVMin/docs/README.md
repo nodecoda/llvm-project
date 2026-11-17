@@ -5,6 +5,9 @@ M/A/Zbb/Zbs 整数扩展、F/D 浮点、C 压缩、Zicsr/Zifencei（第 46 章�
 进入向量子集（第 47–50 章）。本目录是配套教程：每章一个提交，每章都能独立
 构建、测试、复现。
 
+V 只覆盖 **Zve32x 教学子集**：SEW=32、LMUL=1、VLEN=128、无 mask、无向量 FP、
+无向量 ABI。它不是完整 RVV，也不声称 `rv32gcv` 全量支持。
+
 - 总览与快速开始：[`../README.md`](../README.md)
 - 完整实现：`llvm/lib/Target/RVMin/`
 - 门禁脚本：`scripts/`（编码、端到端、链接运行）
@@ -98,6 +101,7 @@ M/A/Zbb/Zbs 整数扩展、F/D 浮点、C 压缩、Zicsr/Zifencei（第 46 章�
 | 47 | [47-v-extension-mc.md](47-v-extension-mc.md) | V 的 MC 层（Zve32x 子集）：`v0`–`v31`、三种 `vset`、load/store、`vmv`、算术/逻辑，共 19 条 | `v-extension.s`；编码 19 条 + 反汇编；clang 矩阵 432 对象；门禁 8/8 | `rvmin-ch47` |
 | 48 | [48-v-codegen-1.md](48-v-codegen-1.md) | V 代码生成（一）：`v4i32` 合法化、load/store、6 条 `.vv` 算术、splat/extract、16 字节 spill、保守 `vsetivli`、向量 ABI 拒绝 | `v-ext.ll`；216 次 llc；编码/反汇编/288/432 计数不变；门禁 8/8 | `rvmin-ch48` |
 | 49 | [49-v-codegen-2.md](49-v-codegen-2.md) | V 代码生成（二）：块内 VL/VTYPE 去重、`.vi/.vx` 常量折叠、`vmv.v.x` 广播、`vredsum.vs` 归约、QEMU 8.2 运行 | `v-ext.ll`；V 编码/反汇编 27 条；216 次 llc；288/432 不变；门禁 8/8 | `rvmin-ch49` |
+| 50 | [50-v-acceptance.md](50-v-acceptance.md) | 第六篇验收：V 子集全链路、AC 表、计数口径、QEMU 8.2 运行与环境缺口 | `rvmin-verify-all.sh` 8/8（第 5 项含 V 静态 e2e）；`rvmin-e2e-v.sh` 4 对象；`rvmin-run-v.sh` | `rvmin-ch50` |
 
 每个章末都有对应 tag：`git checkout rvmin-ch16` 即可看到该章结束时的完整代码。
 
@@ -140,7 +144,7 @@ M/A/Zbb/Zbs 整数扩展、F/D 浮点、C 压缩、Zicsr/Zifencei（第 46 章�
 | 48 | `## 背景：为什么先做“保守但正确”的一条链` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
 | 49 | `## 背景：为什么“每条都发”可以变成“每块发一次”` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
 
-> 第 14、23、28、39、42、45 章是验收章，本身即证据表，不套用八要素模板。
+> 第 14、23、28、39、42、45、50 章是验收章，本身即证据表，不套用八要素模板。
 
 ## 验收标准（计划 §6）
 

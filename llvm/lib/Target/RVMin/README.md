@@ -5,6 +5,9 @@ RVMin 是一个教学用的 LLVM 后端：不写前端、不复用 `llvm/lib/Tar
 浮点、C 压缩、Zicsr/Zifencei，以及第 47 章起的 Zve32x 向量子集。前端使用
 clang 产出 LLVM IR，后端通过 `llc -march=rvmin` 选择。
 
+V 只覆盖 **Zve32x 教学子集**：SEW=32、LMUL=1、VLEN=128、无 mask、无向量 FP、
+无向量 ABI。它不是完整 RVV，也不声称 `rv32gcv` 全量支持。
+
 ## 快速开始
 
 完整章节索引与验收对照见 [`docs/README.md`](docs/README.md)。
@@ -118,6 +121,7 @@ git checkout rvmin-ch16     # 第 16 章（大栈帧）结束
 | 47 | [V 的 MC 层（Zve32x 子集）](docs/47-v-extension-mc.md) | 完成 |
 | 48 | [V 代码生成（一）](docs/48-v-codegen-1.md) | 完成 |
 | 49 | [V 代码生成（二）](docs/49-v-codegen-2.md) | 完成 |
+| 50 | [第六篇验收（V 子集）](docs/50-v-acceptance.md) | 完成 |
 
 ## 当前限制（上篇结束时，第 14 章）
 
