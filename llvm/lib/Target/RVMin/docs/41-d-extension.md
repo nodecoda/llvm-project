@@ -339,7 +339,7 @@ C
 "$B/bin/llvm-lit" -v "$W/llvm/test/MC/RVMin/d-extension.s" \
                          "$W/llvm/test/CodeGen/RVMin/d-ext.ll"
 
-# 4) 全部门禁（7 项）
+# 4) 全部门禁（第 41 章时为 7 项；第 42 章加入 QEMU 后为 8 项）
 bash "$W/llvm/lib/Target/RVMin/scripts/rvmin-verify-all.sh" "$B/bin"
 ```
 
@@ -366,6 +366,8 @@ widen:
 ```
 
 编码与反汇编门禁：
+
+第 41 章提交时的门禁输出（当时 7 项）：
 
 ```text
 PASS: 85 RV32I + 12 M + 19 Zbb + 8 Zbs + 20 A + 28 F + 28 D instructions, .text identical

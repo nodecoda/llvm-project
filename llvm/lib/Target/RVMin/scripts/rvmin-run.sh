@@ -8,7 +8,9 @@
 # million levels deep and only fits in the default stack because the recursive
 # calls became jumps.  Chapter 18 adds a fourth: switch statements whose dense
 # cases become a jump table in .rodata.  Chapter 19 adds a fifth: constant
-# multiplies and divisions, run both as RV32I and with M.
+# multiplies and divisions, run both as RV32I and with M.  Chapter 42 adds
+# the F/D programs: the float checks run with F alone and under D, the double
+# checks need D (the soft-float double libcalls are not in rvmin-rt.S).
 #
 # Usage: rvmin-run.sh <llvm-bin-dir> [qemu]
 #
@@ -277,3 +279,69 @@ SIZE1=$(stat -c%s "$TMP/demo")
 SIZE2=$(stat -c%s "$TMP/demo-m")
 echo "PASS: linked $SIZE1 bytes (rv32i) and $SIZE2 bytes (rv32i+m), both ran under $QEMU"
 echo "      with identical output; +m dropped the mul/div/rem libcalls entirely"
+
+# Chapter 42 gate: F/D code runs for real under QEMU.  The program exit code
+# is the first failing check, so a broken conversion, comparison or calling
+# convention is visible without any libc printing support.
+run_fp() {
+  local src=$1 suffix=$2 carch=$3 cabi=$4 mattr=$5
+  local LLC_ARGS=(-march=rvmin -mtriple="$TRIPLE" -O2 -verify-machineinstrs
+                  -mattr="$mattr")
+  local MC_ARGS=(-triple=rvmin -mattr="$mattr")
+
+  "$CC" --target="$TRIPLE" -march="$carch" -mabi="$cabi" -O2 -ffreestanding \
+    -fno-builtin -S -emit-llvm "$RT/$src.c" -o "$TMP/$suffix.ll" \
+    || fail "clang could not compile $src.c ($carch/$cabi)"
+  "$LLC" "${LLC_ARGS[@]}" "$TMP/$suffix.ll" -o "$TMP/$suffix.s" \
+    || fail "llc could not select $src.c ($carch/$cabi)"
+  "$MC" "${MC_ARGS[@]}" -filetype=obj "$TMP/$suffix.s" -o "$TMP/$suffix.o" \
+    || fail "llvm-mc rejected the $src output ($carch/$cabi)"
+  "$MC" "${MC_ARGS[@]}" -filetype=obj "$RT/rvmin-rt.S" -o "$TMP/rt-$suffix.o" \
+    || fail "llvm-mc rejected rvmin-rt.S"
+  "$MC" "${MC_ARGS[@]}" -filetype=obj "$RT/start.S" -o "$TMP/start-$suffix.o" \
+    || fail "llvm-mc rejected start.S"
+  "$LD" -m elf32lriscv -T "$RT/link.ld" -o "$TMP/$suffix" \
+    "$TMP/start-$suffix.o" "$TMP/$suffix.o" "$TMP/rt-$suffix.o" \
+    || fail "ld.lld could not link $src ($carch/$cabi)"
+  "$QEMU" "$TMP/$suffix"
+}
+
+# F alone: floats in FPR32, no double instructions at all.
+STATUS=0
+run_fp float f32-if rv32if ilp32f +f || STATUS=$?
+[[ "$STATUS" -eq 0 ]] || fail "float program (rv32if/ilp32f) exited with $STATUS"
+grep -q 'fadd.s' "$TMP/f32-if.s" || fail "the F build emitted no fadd.s"
+grep -q 'fcvt.w.s' "$TMP/f32-if.s" || fail "the F build emitted no fcvt.w.s"
+if grep -q 'fadd.d\|fld\|fsd' "$TMP/f32-if.s"; then
+  fail "the F-only build already used D instructions"
+fi
+RELOCS=$("$READELF" -r "$TMP/f32-if.o")
+for SYM in __addsf3 __mulsf3 __eqsf2 __ltsf2 __fixsfsi __floatsisf; do
+  [[ "$RELOCS" != *"$SYM"* ]] || fail "the F build still calls $SYM"
+done
+
+# The same float source under D: D implies F, so the float half must still use
+# fadd.s while the ABI becomes ilp32d.
+STATUS=0
+run_fp float f32-id rv32id ilp32d +f,+d || STATUS=$?
+[[ "$STATUS" -eq 0 ]] || fail "float program (rv32id/ilp32d) exited with $STATUS"
+grep -q 'fadd.s' "$TMP/f32-id.s" || fail "the D build lost fadd.s"
+
+# Doubles: the D-specific instructions must be there and the soft-float
+# double libcalls must be gone.
+STATUS=0
+run_fp double f64-id rv32id ilp32d +f,+d || STATUS=$?
+[[ "$STATUS" -eq 0 ]] || fail "double program (rv32id/ilp32d) exited with $STATUS"
+grep -q 'fadd.d' "$TMP/f64-id.s" || fail "the D build emitted no fadd.d"
+grep -q 'fcvt.w.d' "$TMP/f64-id.s" || fail "the D build emitted no fcvt.w.d"
+grep -q 'fcvt.s.d' "$TMP/f64-id.s" || fail "the D build emitted no fcvt.s.d"
+grep -q 'fcvt.d.s' "$TMP/f64-id.s" || fail "the D build emitted no fcvt.d.s"
+grep -q 'fsd\|fld' "$TMP/f64-id.s" || fail "the D build used no FP spill/reload"
+RELOCS=$("$READELF" -r "$TMP/f64-id.o")
+for SYM in __adddf3 __muldf3 __eqdf2 __ltdf2 __fixdfsi __floatsidf \
+           __extendsfdf2 __truncdfsf2; do
+  [[ "$RELOCS" != *"$SYM"* ]] || fail "the D build still calls $SYM"
+done
+
+echo "PASS: F/D programs ran under $QEMU (rv32if + rv32id; 9-arg calls,"
+echo "      f64 stack constants/select, and no soft-float libcalls)"

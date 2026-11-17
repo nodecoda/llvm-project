@@ -79,6 +79,7 @@ RVMin 是一个从零写的 LLVM 后端：以 RV32I 为基线，按章节逐步�
 | --- | --- | --- | --- | --- |
 | 40 | [40-f-extension.md](40-f-extension.md) | F 扩展、FPR32、ILP32F 调用约定与 ABI 校验 | `f-extension.s` + `f-ext.ll`；门禁 7/7 | `rvmin-ch40` |
 | 41 | [41-d-extension.md](41-d-extension.md) | D 扩展、FPR64、ILP32D 调用约定与 f64 常量/select | `d-extension.s` + `d-ext.ll`；门禁 7/7 | `rvmin-ch41` |
+| 42 | [42-fd-acceptance.md](42-fd-acceptance.md) | 第四篇验收：F/D 全链路、8 项门禁、192 对象矩阵与 QEMU | `rvmin-verify-all.sh` 8/8 + `rvmin-clang-matrix.sh` | `rvmin-ch42` |
 
 每个章末都有对应 tag：`git checkout rvmin-ch16` 即可看到该章结束时的完整代码。
 
@@ -115,7 +116,7 @@ RVMin 是一个从零写的 LLVM 后端：以 RV32I 为基线，按章节逐步�
 | 40 | `## 背景：特性与 ABI 是两件事` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
 | 41 | `## 背景：RV32 上的 double 为什么更麻烦` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
 
-> 第 14、23 章是验收章，本身即证据表，不套用八要素模板。
+> 第 14、23、28、39、42 章是验收章，本身即证据表，不套用八要素模板。
 
 ## 验收标准（计划 §6）
 

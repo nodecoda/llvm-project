@@ -93,12 +93,13 @@ git checkout rvmin-ch16     # 第 16 章（大栈帧）结束
 | 28 | [第三篇验收：80 对象矩阵](docs/28-acceptance.md) | 完成 |
 | 28a | [勘误：driver 拒绝未支持扩展](docs/28-acceptance.md#勘误ch28-审计) | 完成 |
 
-### 第四篇：浮点（40–42，进行中）
+### 第四篇：浮点（40–42）
 
 | 章 | 主题 | 状态 |
 | --- | --- | --- |
 | 40 | [F 扩展与 ILP32F 调用约定](docs/40-f-extension.md) | 完成 |
 | 41 | [D 扩展与 ILP32D 调用约定](docs/41-d-extension.md) | 完成 |
+| 42 | [第四篇验收：F/D 全链路](docs/42-fd-acceptance.md) | 完成 |
 
 ## 当前限制（上篇结束时，第 14 章）
 
