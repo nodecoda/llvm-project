@@ -93,6 +93,9 @@ roundtrip m 12 "$HERE/rvmin-m-encoding-corpus.s" --mattr=+m
 # Chapter 22: A instructions print `lr.w a0, (a1)`, i.e. the zero-displacement
 # form the parser accepts, so this also proves the asm printer/parser symmetry.
 roundtrip a 20 "$HERE/rvmin-a-encoding-corpus.s" --mattr=+a
+# Chapter 40: F.  This also covers the explicit `rtz` spelling: the printer
+# must reproduce it so the output can be assembled again into the same bytes.
+roundtrip f 28 "$HERE/rvmin-f-encoding-corpus.s" --mattr=+f
 
 # Label-resolved branches: the assembler has already turned the labels into
 # byte offsets, so the disassembler sees the same simm13/simm21 fields as for
@@ -111,4 +114,4 @@ fwd:
 ASM
 roundtrip labels 6 "$TMP/labels.s"
 
-echo "PASS: 117 encoding-corpus instructions + 6 label-resolved branches/jumps"
+echo "PASS: 145 encoding-corpus instructions + 6 label-resolved branches/jumps"

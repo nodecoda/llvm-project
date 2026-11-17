@@ -256,10 +256,16 @@ bool RVMinFrameLowering::spillCalleeSavedRegisters(
       *static_cast<const RVMinInstrInfo *>(MBB.getParent()->getSubtarget()
                                                .getInstrInfo());
 
-  for (const CalleeSavedInfo &CS : CSI)
+  for (const CalleeSavedInfo &CS : CSI) {
+    // Chapter 40: fs0-fs11 live in the floating-point file and need `fsw`,
+    // everything else is an integer register and uses `sw`.
+    const TargetRegisterClass *RC =
+        RVMin::FPR32RegClass.contains(CS.getReg()) ? &RVMin::FPR32RegClass
+                                                   : &RVMin::GPRRegClass;
     TII.storeRegToStackSlot(MBB, MI, CS.getReg(), /*isKill=*/true,
-                            CS.getFrameIdx(), &RVMin::GPRRegClass, Register(),
+                            CS.getFrameIdx(), RC, Register(),
                             MachineInstr::FrameSetup);
+  }
   return true;
 }
 
@@ -271,10 +277,14 @@ bool RVMinFrameLowering::restoreCalleeSavedRegisters(
       *static_cast<const RVMinInstrInfo *>(MBB.getParent()->getSubtarget()
                                                .getInstrInfo());
 
-  for (const CalleeSavedInfo &CS : CSI)
-    TII.loadRegFromStackSlot(MBB, MI, CS.getReg(), CS.getFrameIdx(),
-                             &RVMin::GPRRegClass, Register(), /*SubReg=*/0,
+  for (const CalleeSavedInfo &CS : CSI) {
+    const TargetRegisterClass *RC =
+        RVMin::FPR32RegClass.contains(CS.getReg()) ? &RVMin::FPR32RegClass
+                                                   : &RVMin::GPRRegClass;
+    TII.loadRegFromStackSlot(MBB, MI, CS.getReg(), CS.getFrameIdx(), RC,
+                             Register(), /*SubReg=*/0,
                              MachineInstr::FrameDestroy);
+  }
   return true;
 }
 

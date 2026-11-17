@@ -52,6 +52,7 @@ def FmtS      : RVMinInstFormat<3>;
 def FmtB      : RVMinInstFormat<4>;
 def FmtU      : RVMinInstFormat<5>;
 def FmtJ      : RVMinInstFormat<6>;
+def FmtR4     : RVMinInstFormat<7>;  // chapter 40: fused multiply-add
 
 // Opcodes from the RISC-V base opcode map.  Only the ones RV32I needs.
 class RVMinOpcode<bits<7> val> {
@@ -70,6 +71,14 @@ def OPC_JAL     : RVMinOpcode<0b1101111>;
 def OPC_SYSTEM  : RVMinOpcode<0b1110011>;
 def OPC_AMO     : RVMinOpcode<0b0101111>;  // ATOMIC
 def OPC_MISC_MEM: RVMinOpcode<0b0001111>;  // FENCE / FENCE.I
+// Chapter 40: floating-point opcodes.
+def OPC_LOAD_FP : RVMinOpcode<0b0000111>;  // FLW / FLD
+def OPC_STORE_FP: RVMinOpcode<0b0100111>;  // FSW / FSD
+def OPC_MADD    : RVMinOpcode<0b1000011>;
+def OPC_MSUB    : RVMinOpcode<0b1000111>;
+def OPC_NMSUB   : RVMinOpcode<0b1001011>;
+def OPC_NMADD   : RVMinOpcode<0b1001111>;
+def OPC_OP_FP   : RVMinOpcode<0b1010011>;
 
 class RVMinInst<dag outs, dag ins, string asmstr, list<dag> pattern>
     : Instruction {
@@ -230,4 +239,56 @@ class RVMinJInst<RVMinOpcode opcode, dag outs, dag ins, string mnemonic,
   let Inst{31}    = imm21{20};
 
   let TSFlags{4-0} = FmtJ.Value;
+}
+
+//===----------------------------------------------------------------------===//
+// R4-type: rs3 | fmt | rs2 | rs1 | rm | rd | opcode
+//===----------------------------------------------------------------------===//
+//
+// Used by the fused multiply-add instructions.  `fmt` is 00 for single
+// precision and 01 for double precision; `rm` is the rounding mode (111 for
+// the dynamic mode, which is what every instruction in this course uses).
+
+class RVMinR4Inst<bits<2> fmt, RVMinOpcode opcode, dag outs, dag ins,
+                  string mnemonic, string argstr>
+    : RVMinInst<outs, ins, mnemonic # " " # argstr, []> {
+  bits<5> rd;
+  bits<5> rs1;
+  bits<5> rs2;
+  bits<5> rs3;
+
+  let Inst{6-0}   = opcode.Value;
+  let Inst{11-7}  = rd;
+  let Inst{14-12} = 0b111;   // dynamic rounding mode
+  let Inst{19-15} = rs1;
+  let Inst{24-20} = rs2;
+  let Inst{26-25} = fmt;
+  let Inst{31-27} = rs3;
+
+  let TSFlags{4-0} = FmtR4.Value;
+}
+
+//===----------------------------------------------------------------------===//
+// R-type with a fixed rs2 field
+//===----------------------------------------------------------------------===//
+//
+// OP-FP encodes unary operations (fsqrt, fcvt, fmv, fclass) with rs2 as a
+// sub-opcode instead of a register.  The bit layout is otherwise the R-type
+// layout, so the MC encoder needs no special case.
+
+class RVMinRInstFixedRS2<bits<7> funct7, bits<3> funct3, bits<5> rs2val,
+                         RVMinOpcode opcode, dag outs, dag ins,
+                         string mnemonic, string argstr>
+    : RVMinInst<outs, ins, mnemonic # " " # argstr, []> {
+  bits<5> rd;
+  bits<5> rs1;
+
+  let Inst{6-0}   = opcode.Value;
+  let Inst{11-7}  = rd;
+  let Inst{14-12} = funct3;
+  let Inst{19-15} = rs1;
+  let Inst{24-20} = rs2val;
+  let Inst{31-25} = funct7;
+
+  let TSFlags{4-0} = FmtR.Value;
 }

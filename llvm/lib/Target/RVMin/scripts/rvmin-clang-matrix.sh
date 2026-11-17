@@ -6,9 +6,9 @@
 #
 # It runs the whole e2e corpus through `clang --target=rvmin` in every cell of
 #
-#     {rv32i, rv32im} x {-O0, -O1, -O2, -O3} x scripts/e2e/*.c
+#     {rv32i, rv32im, rv32if} x {-O0, -O1, -O2, -O3} x scripts/e2e/*.c
 #
-# (10 programs, 80 objects) and checks three independent things per cell:
+# (11 programs, 132 objects) and checks three independent things per cell:
 #
 #   1. Driver: `clang --target=rvmin -c` exits 0, prints nothing on stderr and
 #      produces a 32-bit RISC-V ELF object.
@@ -63,24 +63,27 @@ dump_text() {
 PARITY_FLAGS=(-ffreestanding -fno-builtin -fno-slp-vectorize -fno-vectorize)
 
 OBJECTS=0
-for march in rv32i rv32im; do
+for march in rv32i rv32im rv32if; do
   case "$march" in
-    rv32i)  MATTR="" ;;
-    rv32im) MATTR="+m" ;;
+    rv32i)  MATTR="";   MABI=ilp32 ;;
+    rv32im) MATTR="+m"; MABI=ilp32 ;;
+    # Chapter 40: the driver derives ilp32f from rv32if; spelling it out keeps
+    # the intent obvious and matches what the backend expects.
+    rv32if) MATTR="+f"; MABI=ilp32f ;;
     *) fail "unexpected -march=$march" ;;
   esac
 
   # The M extension must be visible in the object, and absent without it.
-  "$CC" --target=rvmin-unknown-elf -march="$march" -mabi=ilp32 -O2 \
+  "$CC" --target=rvmin-unknown-elf -march="$march" -mabi="$MABI" -O2 \
     -ffreestanding -fno-builtin -c "$E2E/arith.c" -o "$TMP/isa-$march.o"
   # RVMin emits no .riscv.attributes, so the disassembler has to be told about
   # the extensions it should decode.
   "$OBJDUMP" -d --mattr=+m "$TMP/isa-$march.o" > "$TMP/isa-$march.dis"
   if grep -Eq '^[[:space:]]+[0-9a-f]+:[[:space:]]+[0-9a-f]+[[:space:]]+mul[[:space:]]' \
        "$TMP/isa-$march.dis"; then
-    [[ "$march" == rv32im ]] || fail "RV32I object contains a mul instruction"
+    [[ "$march" == rv32im ]] || fail "$march object contains a mul instruction"
   else
-    [[ "$march" == rv32i ]] || fail "RV32IM object does not contain a mul instruction"
+    [[ "$march" != rv32im ]] || fail "RV32IM object does not contain a mul instruction"
   fi
 
   for opt in O0 O1 O2 O3; do
@@ -89,7 +92,7 @@ for march in rv32i rv32im; do
       stem="$TMP/$name-$march-$opt"
 
       # 1. The driver path: one clang invocation, straight to an object.
-      "$CC" --target=rvmin-unknown-elf -march="$march" -mabi=ilp32 \
+      "$CC" --target=rvmin-unknown-elf -march="$march" -mabi="$MABI" \
         -"$opt" -ffreestanding -fno-builtin -c "$src" -o "$stem.o" \
         2> "$stem.log" \
         || { cat "$stem.log" >&2; fail "clang -c failed for $name ($march, -$opt)"; }
@@ -103,11 +106,11 @@ for march in rv32i rv32im; do
         || fail "$name ($march, -$opt) is not EM_RISCV"
 
       # 2. -S then assemble must reproduce the -c object.
-      "$CC" --target=rvmin-unknown-elf -march="$march" -mabi=ilp32 \
+      "$CC" --target=rvmin-unknown-elf -march="$march" -mabi="$MABI" \
         -"$opt" -ffreestanding -fno-builtin -S "$src" -o "$stem.s" \
         || fail "clang -S failed for $name ($march, -$opt)"
       # -O is meaningless for an assembler input and clang warns about it.
-      "$CC" --target=rvmin-unknown-elf -march="$march" -mabi=ilp32 \
+      "$CC" --target=rvmin-unknown-elf -march="$march" -mabi="$MABI" \
         -c "$stem.s" -o "$stem.asm.o" \
         || fail "integrated assembler failed for $name ($march, -$opt)"
       dump_text "$stem.o" "$stem.text"
@@ -116,10 +119,10 @@ for march in rv32i rv32im; do
         || fail "-S and -c disagree for $name ($march, -$opt)"
 
       # 3. TargetInfo parity, both sides through the same rvmin backend.
-      "$CC" --target=rvmin-unknown-elf -march="$march" -mabi=ilp32 \
+      "$CC" --target=rvmin-unknown-elf -march="$march" -mabi="$MABI" \
         -"$opt" "${PARITY_FLAGS[@]}" -S -emit-llvm "$src" -o "$stem.rvmin.ll" \
         || fail "rvmin -emit-llvm failed for $name ($march, -$opt)"
-      "$CC" --target=riscv32-unknown-elf -march="$march" -mabi=ilp32 \
+      "$CC" --target=riscv32-unknown-elf -march="$march" -mabi="$MABI" \
         -"$opt" "${PARITY_FLAGS[@]}" -S -emit-llvm "$src" -o "$stem.riscv.ll" \
         || fail "riscv32 -emit-llvm failed for $name ($march, -$opt)"
       LLC_ARGS=(-march=rvmin -mtriple=rvmin-unknown-elf -"$opt" -filetype=obj)

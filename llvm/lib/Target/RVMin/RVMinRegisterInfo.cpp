@@ -10,6 +10,7 @@
 #include "RVMin.h"
 #include "RVMinFrameLowering.h"
 #include "RVMinInstrInfo.h"
+#include "RVMinSubtarget.h"
 #include "RVMinTargetMachine.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/CodeGen/MachineFunction.h"
@@ -23,9 +24,18 @@ using namespace llvm;
 
 RVMinRegisterInfo::RVMinRegisterInfo() : RVMinGenRegisterInfo(RVMin::X0) {}
 
-// Generated from CSR_RVMin in RVMinCallingConv.td: ra, s0, s1, s2-s11.
+// Generated from CSR_RVMin / CSR_RVMin_FP in RVMinCallingConv.td:
+//
+//   ILP32   ra, s0, s1, s2-s11
+//   ILP32F  the same integer set plus the floating-point fs0-fs11
+//
+// The FP set is chosen by the feature, not by the ABI string: without F no
+// FPR can ever hold a live value, so the two lists describe the same
+// reachable state.
 const MCPhysReg *
 RVMinRegisterInfo::getCalleeSavedRegs(const MachineFunction *MF) const {
+  if (MF && MF->getSubtarget<RVMinSubtarget>().hasStdExtF())
+    return CSR_RVMin_FP_SaveList;
   return CSR_RVMin_SaveList;
 }
 
@@ -35,6 +45,8 @@ RVMinRegisterInfo::getCalleeSavedRegs(const MachineFunction *MF) const {
 // live across the call.
 const uint32_t *RVMinRegisterInfo::getCallPreservedMask(const MachineFunction &MF,
                                                         CallingConv::ID CC) const {
+  if (MF.getSubtarget<RVMinSubtarget>().hasStdExtF())
+    return CSR_RVMin_FP_RegMask;
   return CSR_RVMin_RegMask;
 }
 

@@ -5,6 +5,8 @@
 #
 # Chapter 13 extends the sweep with `-mattr=+m`: the same programs must compile
 # and round-trip when multiply/divide/remainder become single instructions.
+# Chapter 40 adds `-mattr=+f`; that cell compiles its IR with -march=rv32if so
+# the module's ABI flag (ilp32f) agrees with the backend's feature set.
 #
 # Usage: rvmin-e2e.sh <llvm-bin-dir>
 #
@@ -37,7 +39,7 @@ fail() {
 
 TRIPLE=riscv32-unknown-elf
 OPTS="0 1 2 3"
-MATTRS=("" "+m")
+MATTRS=("" "+m" "+f")
 PROGRAMS=0
 CASES=0
 TOTAL_TEXT=0
@@ -52,7 +54,16 @@ for c in "$SRC"/*.c; do
       LLC_ARGS=(-march=rvmin -mtriple="$TRIPLE" -O"$O")
       [[ -n "$MATTR" ]] && LLC_ARGS+=(-mattr="$MATTR")
 
-      "$CC" --target="$TRIPLE" -march=rv32i -mabi=ilp32 -O"$O" \
+      # The feature set decides both the backend flags and the frontend's
+      # ABI: an F-enabled object must carry "ilp32f" in its IR, otherwise the
+      # backend's consistency check is supposed to reject it.
+      CARCH=rv32i
+      CABI=ilp32
+      if [[ "$MATTR" == "+f" ]]; then
+        CARCH=rv32if
+        CABI=ilp32f
+      fi
+      "$CC" --target="$TRIPLE" -march="$CARCH" -mabi="$CABI" -O"$O" \
         -S -emit-llvm "$c" -o "$base.ll" \
         || fail "$tag: clang failed"
 

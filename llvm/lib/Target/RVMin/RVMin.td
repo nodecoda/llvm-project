@@ -53,6 +53,15 @@ def HasStdExtA : Predicate<"Subtarget->hasStdExtA()">,
                  AssemblerPredicate<(all_of FeatureStdExtA),
                                     "'A' (Atomic Instructions)">;
 
+// Chapter 40: the F extension.  FLEN is 32 bits: f0-f31 hold single-precision
+// values in the FPR32 register class.
+def FeatureStdExtF : SubtargetFeature<"f", "HasStdExtF", "true",
+                                      "Single-precision floating point">;
+
+def HasStdExtF : Predicate<"Subtarget->hasStdExtF()">,
+                 AssemblerPredicate<(all_of FeatureStdExtF),
+                                    "'F' (Single-Precision Floating-Point)">;
+
 //===----------------------------------------------------------------------===//
 // Processors
 //===----------------------------------------------------------------------===//
@@ -65,6 +74,7 @@ def : RVMinProc<"generic-rv32-m", [FeatureStdExtM]>;
 def : RVMinProc<"generic-rv32-zbb", [FeatureStdExtZbb]>;
 def : RVMinProc<"generic-rv32-zbs", [FeatureStdExtZbs]>;
 def : RVMinProc<"generic-rv32-a", [FeatureStdExtA]>;
+def : RVMinProc<"generic-rv32-f", [FeatureStdExtF]>;
 
 //===----------------------------------------------------------------------===//
 // Register File

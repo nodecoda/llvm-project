@@ -1,8 +1,8 @@
 # RVMin: a from-scratch RV32I backend
 
 RVMin 是一个教学用的 LLVM 后端：不写前端、不复用 `llvm/lib/Target/RISCV` 的代码，
-只实现 RISC-V 最小整数指令集（RV32I）。前端使用 clang 产出 LLVM IR，
-后端通过 `llc -march=rvmin` 选择。
+以 RISC-V 最小指令集（RV32I）为基线，逐章加入 M/A/Zbb/Zbs 整数扩展与 F/D
+浮点扩展。前端使用 clang 产出 LLVM IR，后端通过 `llc -march=rvmin` 选择。
 
 ## 快速开始
 
@@ -92,6 +92,12 @@ git checkout rvmin-ch16     # 第 16 章（大栈帧）结束
 | 27 | [clang 链接与运行](docs/27-clang-run.md) | 完成 |
 | 28 | [第三篇验收：80 对象矩阵](docs/28-acceptance.md) | 完成 |
 | 28a | [勘误：driver 拒绝未支持扩展](docs/28-acceptance.md#勘误ch28-审计) | 完成 |
+
+### 第四篇：浮点（40–42，进行中）
+
+| 章 | 主题 | 状态 |
+| --- | --- | --- |
+| 40 | [F 扩展与 ILP32F 调用约定](docs/40-f-extension.md) | 完成 |
 
 ## 当前限制（上篇结束时，第 14 章）
 

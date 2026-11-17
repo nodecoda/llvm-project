@@ -418,9 +418,16 @@ Record 里只有声明；这些是共享 C++ 在投影之前对语义的改写�
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:19` | `AltNames` | 消费（project） |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:20` | `DwarfNumbers` | DWARF 编号；`-gen-register-info` 消费。 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:25` | `RegAltNameIndices` | 消费（project） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:86` | `Namespace` | 消费（derive+project） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:87` | `HWEncoding` | 寄存器编码；`-gen-register-info` 消费。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:88` | `AltNames` | 消费（project） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:89` | `DwarfNumbers` | DWARF 编号；`-gen-register-info` 消费。 |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:92` | `RegAltNameIndices` | 消费（project） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:137` | `DecoderMethod` | decoder 自定义方法。 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:16` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
+| `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:85` | `Num` | 自定义字段（需自行保证 name-based 读取方存在） |
 
-共 7 处使用；契约外 0 处。
+共 14 处使用；契约外 0 处。
 <!-- END: GENERATED TD USAGE -->
 
 对照第 29 章的表：

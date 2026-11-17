@@ -31,6 +31,8 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/Module.h"
+#include "llvm/Target/TargetMachine.h"
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace llvm;
@@ -42,6 +44,12 @@ RVMinTargetLowering::RVMinTargetLowering(const TargetMachine &TM,
                                          const RVMinSubtarget &STI)
     : TargetLowering(TM, STI) {
   addRegisterClass(MVT::i32, &RVMin::GPRRegClass);
+  // Chapter 40: F makes f32 a legal value type, so it stays in an FPR instead
+  // of being softened into an i32 pair.  This must happen before
+  // computeRegisterProperties(), which derives the type actions from the set
+  // of register classes.
+  if (STI.hasStdExtF())
+    addRegisterClass(MVT::f32, &RVMin::FPR32RegClass);
   computeRegisterProperties(STI.getRegisterInfo());
 
   // Chapter 22: with A, the RV32A instructions (lr.w/sc.w/amo*.w) are exactly
@@ -152,11 +160,45 @@ RVMinTargetLowering::RVMinTargetLowering(const TargetMachine &TM,
   // avoids both the constant materialization and the multiply.
   setTargetDAGCombine(ISD::MUL);
 
-  // Chapter 10: soft float.  There is no f32/f64 register class, so the type
-  // legalizer *softens* floating-point values into i32 pairs and rewrites
-  // every FP operation as a libcall.  Nothing else is needed: __addsf3,
-  // __muldf3, __ltsf2, __fixsfsi, ... fall out of the same machinery, and the
-  // `ilp32` ABI already passes floats in integer registers.
+  // Chapter 10: soft float.  Without the F extension there is no f32/f64
+  // register class, so the type legalizer *softens* floating-point values into
+  // i32 pairs and rewrites every FP operation as a libcall.  Nothing else is
+  // needed: __addsf3, __muldf3, __ltsf2, __fixsfsi, ... fall out of the same
+  // machinery, and the `ilp32` ABI already passes floats in integer registers.
+  //
+  // Chapter 40: with F, f32 is legal and the single-instruction patterns take
+  // over.  Only the operations that genuinely have no F instruction are
+  // expanded or turned into libcalls.
+  if (STI.hasStdExtF()) {
+    // These default to Expand in TargetLoweringBase even for legal types.
+    setOperationAction({ISD::FMINNUM, ISD::FMAXNUM}, MVT::f32, Legal);
+    setOperationAction(ISD::FREM, MVT::f32, LibCall);
+
+    // F has ordered EQ/LT/LE.  Every other condition is expanded into one of
+    // those plus an XOR or an operand swap, so `x != y` and friends still
+    // work without extra instructions.
+    static const ISD::CondCode FPCCToExpand[] = {
+        ISD::SETOGT, ISD::SETOGE, ISD::SETONE, ISD::SETUEQ, ISD::SETUGT,
+        ISD::SETUGE, ISD::SETULT, ISD::SETULE, ISD::SETUNE, ISD::SETGT,
+        ISD::SETGE,  ISD::SETNE,  ISD::SETO,   ISD::SETUO};
+    setCondCodeAction(FPCCToExpand, MVT::f32, Expand);
+
+    // A value select on f32 has no instruction.  It is lowered by
+    // bitcasting both arms to i32 and reusing the integer select sequence;
+    // SELECT must therefore be Custom, not Expand (the legalizer refuses to
+    // expand SELECT_CC when SELECT is also expanded).  Branches on f32
+    // conditions likewise go through a GPR.
+    setOperationAction(ISD::SELECT, MVT::f32, Custom);
+    setOperationAction(ISD::SELECT_CC, MVT::f32, Expand);
+    setOperationAction(ISD::BR_CC, MVT::f32, Expand);
+
+    // Rounding and transcendental operations are not in the minimal F subset.
+    setOperationAction({ISD::FCEIL, ISD::FFLOOR, ISD::FTRUNC, ISD::FRINT,
+                        ISD::FROUND, ISD::FROUNDEVEN},
+                       MVT::f32, Expand);
+    setOperationAction({ISD::FSIN, ISD::FCOS, ISD::FSINCOS, ISD::FPOW},
+                       MVT::f32, Expand);
+  }
 
   // Chapter 11 built `switch` as a comparison chain because RVMin had no
   // jump table: the switch builder only builds one when the target can lower
@@ -188,11 +230,81 @@ EVT RVMinTargetLowering::getSetCCResultType(const DataLayout &DL,
   return getPointerTy(DL);
 }
 
+RVMinTargetLowering::FPImmAction
+RVMinTargetLowering::getFPImmAction(const APFloat &Imm, EVT VT,
+                                    bool ForCodeSize) const {
+  if (VT == MVT::f32 && isTypeLegal(VT))
+    return FPImmAction::Bitcast;
+  return FPImmAction::ConstantPool;
+}
+
+//===----------------------------------------------------------------------===//
+// Chapter 40: ABI selection and validation
+//===----------------------------------------------------------------------===//
+//
+// The ISA decides which instructions are available; the ABI decides where
+// values cross a function boundary.  Keeping the two separate is what makes
+// `-mabi=ilp32 -march=rv32if` a meaningful (if unimplemented) request rather
+// than a silent contradiction.
+
+RVMinABI RVMinTargetLowering::getABI(const MachineFunction &MF) const {
+  const Module *M = MF.getFunction().getParent();
+  StringRef Name = getTargetMachine().getTargetABIName(*M);
+
+  if (Name.empty()) {
+    const RVMinSubtarget &STI = MF.getSubtarget<RVMinSubtarget>();
+    if (STI.hasStdExtF())
+      return RVMinABI::ILP32F;
+    return RVMinABI::ILP32;
+  }
+
+  if (Name == "ilp32")
+    return RVMinABI::ILP32;
+  if (Name == "ilp32f")
+    return RVMinABI::ILP32F;
+  if (Name == "ilp32d")
+    return RVMinABI::ILP32D;
+  report_fatal_error(Twine("RVMin: unknown ABI '") + Name +
+                         "' (expected ilp32, ilp32f or ilp32d)",
+                     /*gen_crash_diag=*/false);
+}
+
+void RVMinTargetLowering::checkABICompatibility(
+    const MachineFunction &MF) const {
+  const RVMinSubtarget &STI = MF.getSubtarget<RVMinSubtarget>();
+
+  switch (getABI(MF)) {
+  case RVMinABI::ILP32:
+    // A soft-float ABI with hardware floating point is legal RISC-V: values
+    // cross calls in a0-a7 as bit patterns while arithmetic uses the F
+    // instructions.  That boundary conversion is chapter 43; generating
+    // either convention silently would be a miscompile, so reject it.
+    if (STI.hasStdExtF())
+      report_fatal_error(
+          "RVMin: the ilp32 ABI with the F extension is not implemented yet; "
+          "use -mabi=ilp32f (or disable F with -mattr=-f)",
+          /*gen_crash_diag=*/false);
+    break;
+  case RVMinABI::ILP32F:
+    if (!STI.hasStdExtF())
+      report_fatal_error(
+          "RVMin: the ilp32f ABI requires the F extension", false);
+    break;
+  case RVMinABI::ILP32D:
+    report_fatal_error(
+        "RVMin: the ilp32d ABI requires the D extension, which arrives in "
+        "chapter 41",
+        /*gen_crash_diag=*/false);
+  }
+}
+
 SDValue RVMinTargetLowering::LowerOperation(SDValue Op,
                                             SelectionDAG &DAG) const {
   switch (Op.getOpcode()) {
   default:
     llvm_unreachable("RVMin: unhandled custom lowering");
+  case ISD::SELECT:
+    return lowerSELECT(Op, DAG);
   case ISD::SELECT_CC:
     return lowerSELECT_CC(Op, DAG);
   case ISD::BRCOND:
@@ -369,9 +481,15 @@ static void canonicalizeBranchCC(ISD::CondCode &CC, SDValue &LHS,
   }
 }
 
-// BRCOND always carries a boolean in the DAG.  When it came from a setcc we
-// can branch on the original comparison operands directly; otherwise compare
-// the boolean against zero.
+// BRCOND always carries a boolean in the DAG.  When it came from an integer
+// setcc we can branch on the original comparison operands directly; otherwise
+// compare the boolean against zero.
+//
+// Chapter 40: a floating-point setcc must take the second path.  F has no
+// conditional branch on FP values, so the comparison stays a `feq.s`/`flt.s`
+// (or its expanded form) that produces 0/1 in a GPR, and the branch tests that
+// GPR.  Branching on the FP operands directly would leave an unselectable
+// BR_CC node.
 SDValue RVMinTargetLowering::lowerBRCOND(SDValue Op,
                                          SelectionDAG &DAG) const {
   SDValue Chain = Op.getOperand(0);
@@ -379,7 +497,8 @@ SDValue RVMinTargetLowering::lowerBRCOND(SDValue Op,
   SDValue Dest = Op.getOperand(2);
   SDLoc DL(Op);
 
-  if (Cond.getOpcode() == ISD::SETCC) {
+  if (Cond.getOpcode() == ISD::SETCC &&
+      Cond.getOperand(0).getSimpleValueType() == MVT::i32) {
     SDValue LHS = Cond.getOperand(0);
     SDValue RHS = Cond.getOperand(1);
     ISD::CondCode CCVal = cast<CondCodeSDNode>(Cond.getOperand(2))->get();
@@ -446,6 +565,22 @@ SDValue RVMinTargetLowering::lowerBR_JT(SDValue Op, SelectionDAG &DAG) const {
 //   res  = false ^ ((true ^ false) & mask)
 //
 // Chapter 5 revisits this with a real branch, which is usually shorter.
+// Chapter 40: `select c, t, f` on f32.  Both arms are just 32-bit patterns,
+// so bitcast them to i32, use the integer select (a branchless mask sequence
+// built by lowerSELECT_CC), and bitcast the result back.
+SDValue RVMinTargetLowering::lowerSELECT(SDValue Op,
+                                         SelectionDAG &DAG) const {
+  SDValue Cond = Op.getOperand(0);
+  SDValue TrueV = Op.getOperand(1);
+  SDValue FalseV = Op.getOperand(2);
+  SDLoc DL(Op);
+
+  SDValue TrueInt = DAG.getBitcast(MVT::i32, TrueV);
+  SDValue FalseInt = DAG.getBitcast(MVT::i32, FalseV);
+  SDValue Sel = DAG.getNode(ISD::SELECT, DL, MVT::i32, Cond, TrueInt, FalseInt);
+  return DAG.getBitcast(MVT::f32, Sel);
+}
+
 SDValue RVMinTargetLowering::lowerSELECT_CC(SDValue Op,
                                             SelectionDAG &DAG) const {
   SDLoc DL(Op);
@@ -495,6 +630,7 @@ SDValue RVMinTargetLowering::LowerFormalArguments(
     report_fatal_error("RVMin: varargs are not supported yet");
 
   MachineFunction &MF = DAG.getMachineFunction();
+  checkABICompatibility(MF);
   MachineRegisterInfo &RegInfo = MF.getRegInfo();
 
   SmallVector<CCValAssign, 16> ArgLocs;
@@ -508,8 +644,10 @@ SDValue RVMinTargetLowering::LowerFormalArguments(
     MVT LocVT = VA.getLocVT();
 
     if (VA.isRegLoc()) {
-      // Arguments 1..8 arrive in a0-a7.
-      Register VReg = RegInfo.createVirtualRegister(&RVMin::GPRRegClass);
+      // Arguments 1..8 arrive in a0-a7, or in fa0-fa7 under a hard-float ABI.
+      // LocVT is the register-sized type from the CC table, so the register
+      // class follows from it: i32 -> GPR, f32 -> FPR32.
+      Register VReg = RegInfo.createVirtualRegister(getRegClassFor(LocVT));
       RegInfo.addLiveIn(VA.getLocReg(), VReg);
       InVals.push_back(DAG.getCopyFromReg(Chain, DL, VReg, LocVT));
       continue;

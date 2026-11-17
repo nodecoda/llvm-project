@@ -35,17 +35,45 @@ unsigned RVMinInstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
 }
 
 // RV32I has no move instruction; `addi rd, rs, 0` is the canonical copy.
+// Chapter 40 adds the three floating-point cases:
+//
+//   FPR -> FPR   fsgnj.s rd, rs, rs   (the canonical `fmv.s` alias)
+//   FPR -> GPR   fmv.x.w rd, rs
+//   GPR -> FPR   fmv.w.x rd, rs
 void RVMinInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
                                  MachineBasicBlock::iterator MI,
                                  const DebugLoc &DL, Register DestReg,
                                  Register SrcReg, bool KillSrc,
                                  bool RenamableDest, bool RenamableSrc) const {
-  if (!RVMin::GPRRegClass.contains(DestReg, SrcReg))
-    llvm_unreachable("RVMin: only GPR-to-GPR copies are supported");
+  if (RVMin::GPRRegClass.contains(DestReg, SrcReg)) {
+    BuildMI(MBB, MI, DL, get(RVMin::ADDI), DestReg)
+        .addReg(SrcReg, getKillRegState(KillSrc))
+        .addImm(0);
+    return;
+  }
 
-  BuildMI(MBB, MI, DL, get(RVMin::ADDI), DestReg)
-      .addReg(SrcReg, getKillRegState(KillSrc))
-      .addImm(0);
+  if (RVMin::FPR32RegClass.contains(DestReg, SrcReg)) {
+    BuildMI(MBB, MI, DL, get(RVMin::FSGNJ_S), DestReg)
+        .addReg(SrcReg, getKillRegState(KillSrc))
+        .addReg(SrcReg, getKillRegState(KillSrc));
+    return;
+  }
+
+  if (RVMin::FPR32RegClass.contains(DestReg) &&
+      RVMin::GPRRegClass.contains(SrcReg)) {
+    BuildMI(MBB, MI, DL, get(RVMin::FMV_W_X), DestReg)
+        .addReg(SrcReg, getKillRegState(KillSrc));
+    return;
+  }
+
+  if (RVMin::GPRRegClass.contains(DestReg) &&
+      RVMin::FPR32RegClass.contains(SrcReg)) {
+    BuildMI(MBB, MI, DL, get(RVMin::FMV_X_W), DestReg)
+        .addReg(SrcReg, getKillRegState(KillSrc));
+    return;
+  }
+
+  llvm_unreachable("RVMin: unsupported physical register copy");
 }
 
 namespace {
@@ -218,9 +246,12 @@ void RVMinInstrInfo::storeRegToStackSlot(
     MachineBasicBlock &MBB, MachineBasicBlock::iterator MI, Register SrcReg,
     bool IsKill, int FrameIndex, const TargetRegisterClass *RC, Register VReg,
     MachineInstr::MIFlag Flags) const {
-  assert(RC == &RVMin::GPRRegClass && "RVMin only has one register class");
+  const bool IsFPR = RC == &RVMin::FPR32RegClass;
+  assert((IsFPR || RC == &RVMin::GPRRegClass) &&
+         "RVMin: unexpected register class in spill");
   DebugLoc DL = MI != MBB.end() ? MI->getDebugLoc() : DebugLoc();
-  MachineInstr *New = BuildMI(MBB, MI, DL, get(RVMin::SW))
+  MachineInstr *New = BuildMI(MBB, MI, DL,
+                              get(IsFPR ? RVMin::FSW : RVMin::SW))
                           .addReg(SrcReg, getKillRegState(IsKill))
                           .addFrameIndex(FrameIndex)
                           .addImm(0);
@@ -234,10 +265,13 @@ void RVMinInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
                                           const TargetRegisterClass *RC,
                                           Register VReg, unsigned SubReg,
                                           MachineInstr::MIFlag Flags) const {
-  assert(RC == &RVMin::GPRRegClass && "RVMin only has one register class");
+  const bool IsFPR = RC == &RVMin::FPR32RegClass;
+  assert((IsFPR || RC == &RVMin::GPRRegClass) &&
+         "RVMin: unexpected register class in reload");
   assert(SubReg == 0 && "RVMin has no sub-register reloads");
   DebugLoc DL = MI != MBB.end() ? MI->getDebugLoc() : DebugLoc();
-  MachineInstr *New = BuildMI(MBB, MI, DL, get(RVMin::LW), DestReg)
+  MachineInstr *New = BuildMI(MBB, MI, DL,
+                              get(IsFPR ? RVMin::FLW : RVMin::LW), DestReg)
                           .addFrameIndex(FrameIndex)
                           .addImm(0);
   if (Flags != MachineInstr::NoFlags)

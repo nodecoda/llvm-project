@@ -56,6 +56,11 @@ namespace {
 /// for memory types this chapter does not handle, so the TableGen patterns get
 /// a chance.
 unsigned getLoadOpcode(const LoadSDNode *LD) {
+  // Chapter 40: a full-width single-precision load.  Narrowing loads and
+  // extending loads of FP values do not exist in the F subset.
+  if (LD->getMemoryVT() == MVT::f32 &&
+      LD->getExtensionType() == ISD::NON_EXTLOAD)
+    return RVMin::FLW;
   switch (LD->getMemoryVT().getSimpleVT().SimpleTy) {
   case MVT::i8:
     return LD->getExtensionType() == ISD::ZEXTLOAD ? RVMin::LBU : RVMin::LB;
@@ -70,6 +75,8 @@ unsigned getLoadOpcode(const LoadSDNode *LD) {
 
 /// The store opcode for a truncating i32 store, keyed on the memory type.
 unsigned getStoreOpcode(const StoreSDNode *ST) {
+  if (ST->getMemoryVT() == MVT::f32 && !ST->isTruncatingStore())
+    return RVMin::FSW;
   switch (ST->getMemoryVT().getSimpleVT().SimpleTy) {
   case MVT::i8:
     return RVMin::SB;
@@ -111,15 +118,15 @@ void RVMinDAGToDAGISel::Select(SDNode *N) {
 
   SDLoc DL(N);
 
-  // Materialize integer constants.  RV32I has no "load immediate", so this is
-  // ADDI for the 12-bit range and LUI+ADDI for everything else:
+  // Materialize a 32-bit integer constant into a GPR.  RV32I has no "load
+  // immediate", so this is ADDI for the 12-bit range and LUI+ADDI for
+  // everything else:
   //
   //   imm = (hi20 << 12) + lo12,  lo12 in [-2048, 2047]
   //
   // LUI writes hi20 into bits 31:12 and sign-extends the result, which is why
   // the pairing covers the whole 32-bit range (including INT32_MIN).
-  if (N->getOpcode() == ISD::Constant) {
-    int64_t Imm = cast<ConstantSDNode>(N)->getSExtValue();
+  auto materializeInt = [&](int64_t Imm) -> SDValue {
     SDValue Zero = CurDAG->getRegister(RVMin::X0, MVT::i32);
     auto targetImm = [&](int64_t V) {
       return CurDAG->getTargetConstant(
@@ -127,29 +134,32 @@ void RVMinDAGToDAGISel::Select(SDNode *N) {
     };
 
     // zero is the x0 register, not an ADDI.
-    if (Imm == 0) {
-      ReplaceNode(N, Zero.getNode());
-      return;
-    }
+    if (Imm == 0)
+      return Zero;
 
-    if (isInt<12>(Imm)) {
-      SDValue ImmV = targetImm(Imm);
-      ReplaceNode(N, CurDAG->getMachineNode(RVMin::ADDI, DL, MVT::i32, Zero,
-                                            ImmV));
-      return;
-    }
+    if (isInt<12>(Imm))
+      return SDValue(CurDAG->getMachineNode(RVMin::ADDI, DL, MVT::i32, Zero,
+                                            targetImm(Imm)),
+                     0);
 
     int64_t Hi = (Imm + 0x800) >> 12;
     int64_t Lo = Imm - (Hi << 12);
     assert(isInt<12>(Lo) && "LUI+ADDI split is always encodable");
-    SDValue HiV = targetImm(Hi);
-    SDValue LoV = targetImm(Lo);
     SDValue Lui =
-        SDValue(CurDAG->getMachineNode(RVMin::LUI, DL, MVT::i32, HiV), 0);
+        SDValue(CurDAG->getMachineNode(RVMin::LUI, DL, MVT::i32,
+                                       targetImm(Hi)),
+                0);
+    return SDValue(
+        CurDAG->getMachineNode(RVMin::ADDI, DL, MVT::i32, Lui, targetImm(Lo)),
+        0);
+  };
+
+  if (N->getOpcode() == ISD::Constant) {
     ReplaceNode(
-        N, CurDAG->getMachineNode(RVMin::ADDI, DL, MVT::i32, Lui, LoV));
+        N, materializeInt(cast<ConstantSDNode>(N)->getSExtValue()).getNode());
     return;
   }
+
 
   // A frame index used as a value is the address of a stack object.  Select it
   // as `addi rd, sp, offset`; eliminateFrameIndex fills in the real offset and
@@ -177,10 +187,12 @@ void RVMinDAGToDAGISel::Select(SDNode *N) {
             CurDAG->getTargetFrameIndex(cast<FrameIndexSDNode>(FI)->getIndex(),
                                         MVT::i32);
         SDValue Imm = CurDAG->getTargetConstant(Off, DL, MVT::i32);
-        // Machine nodes put the chain after the explicit operands.
+        // Machine nodes put the chain after the explicit operands.  The
+        // result type is the load's own type: i32 for a promoted integer
+        // load, f32 for FLW.
         SDValue Ops[] = {TFI, Imm, LD->getChain()};
-        MachineSDNode *MN = CurDAG->getMachineNode(Opc, DL, MVT::i32,
-                                                   MVT::Other, Ops);
+        MachineSDNode *MN = CurDAG->getMachineNode(
+            Opc, DL, LD->getValueType(0), MVT::Other, Ops);
         CurDAG->setNodeMemRefs(MN, {LD->getMemOperand()});
         ReplaceNode(N, MN);
         return;

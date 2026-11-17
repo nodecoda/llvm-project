@@ -21,12 +21,20 @@ def CC_RVMin : CallingConv<[
   // Integer arguments are passed in a0-a7.
   CCIfType<[i32], CCAssignToReg<[X10, X11, X12, X13, X14, X15, X16, X17]>>,
 
+  // Chapter 40: under a hard-float ABI, single-precision arguments use the
+  // floating-point argument registers instead.  With F disabled these rules
+  // are never reached: the type legalizer has already softened f32 to i32
+  // before the calling-convention analysis runs.
+  CCIfType<[f32], CCAssignToReg<[F10, F11, F12, F13, F14, F15, F16, F17]>>,
+
   // Everything else goes on the stack, 4-byte aligned.
-  CCIfType<[i32], CCAssignToStack<4, 4>>
+  CCIfType<[i32], CCAssignToStack<4, 4>>,
+  CCIfType<[f32], CCAssignToStack<4, 4>>
 ]>;
 
 def RetCC_RVMin : CallingConv<[
-  CCIfType<[i32], CCAssignToReg<[X10, X11]>>
+  CCIfType<[i32], CCAssignToReg<[X10, X11]>>,
+  CCIfType<[f32], CCAssignToReg<[F10, F11]>>
 ]>;
 
 // Callee-saved registers: the return address and s0-s11.  The same list feeds
@@ -42,3 +50,9 @@ def RetCC_RVMin : CallingConv<[
 // prologue and reloading it before the return is exactly how a non-leaf
 // function keeps its own return address.
 def CSR_RVMin : CalleeSavedRegs<(add X1, X8, X9, (sequence "X%u", 18, 27))>;
+
+// Chapter 40: the floating-point callee-saved set is fs0-fs11 (f8, f9 and
+// f18-f27 in architectural numbering).  ft0-ft11 and fa0-fa7 are
+// caller-saved.  F and D share the same list.
+def CSR_RVMin_FP : CalleeSavedRegs<(add CSR_RVMin, F8, F9,
+                                       (sequence "F%u", 18, 27))>;

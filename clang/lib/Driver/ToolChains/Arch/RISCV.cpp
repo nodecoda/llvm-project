@@ -96,10 +96,10 @@ void riscv::getRISCVTargetFeatures(const Driver &D, const llvm::Triple &Triple,
       StringRef Ext = F;
       if (!Ext.consume_front("+"))
         continue;
-      if (Ext == "i" || Ext == "m" || Ext == "a" || Ext == "zbb" ||
-          Ext == "zbs" || Ext == "zaamo" || Ext == "zalrsc" ||
-          Ext == "zmmul" || Ext == "zicsr" || Ext == "zifencei" ||
-          Ext == "relax")
+      if (Ext == "i" || Ext == "m" || Ext == "a" || Ext == "f" ||
+          Ext == "zbb" || Ext == "zbs" || Ext == "zaamo" ||
+          Ext == "zalrsc" || Ext == "zmmul" || Ext == "zicsr" ||
+          Ext == "zifencei" || Ext == "relax")
         continue;
       D.Diag(diag::err_drv_unsupported_option_argument_for_target)
           << "-march" << MArch << Triple.str();
@@ -109,7 +109,8 @@ void riscv::getRISCVTargetFeatures(const Driver &D, const llvm::Triple &Triple,
     // through RVMinTargetInfo, so keep only the four extensions the backend
     // implements; "+i" is implied by the target.
     llvm::erase_if(Features, [](StringRef F) {
-      return F != "+m" && F != "+a" && F != "+zbb" && F != "+zbs";
+      return F != "+m" && F != "+a" && F != "+f" && F != "+zbb" &&
+             F != "+zbs";
     });
     return;
   }
@@ -268,6 +269,13 @@ StringRef riscv::getRISCVABI(const ArgList &Args, const llvm::Triple &Triple) {
   if (Triple.isRVMin()) {
     if (const Arg *A = Args.getLastArg(options::OPT_mabi_EQ))
       return A->getValue();
+    // Chapter 40: derive the default ABI from -march, like the RISC-V driver:
+    // rv32if -> ilp32f, rv32id -> ilp32d, everything else -> ilp32.
+    std::string Arch = getRISCVArch(Args, Triple);
+    auto ParseResult = llvm::RISCVISAInfo::parseArchString(
+        Arch, /*EnableExperimentalExtension=*/true);
+    if (!llvm::errorToBool(ParseResult.takeError()))
+      return (*ParseResult)->computeDefaultABI();
     return "ilp32";
   }
 

@@ -69,3 +69,70 @@ def GPR : RegisterClass<"RVMin", [i32], 32,
        (sequence "X%u", 8, 9),
        (sequence "X%u", 18, 27),
        X0, X1, X2, X3, X4)>;
+
+//===----------------------------------------------------------------------===//
+// Chapter 40: F-extension registers
+//===----------------------------------------------------------------------===//
+//
+// The floating-point register file is separate from the integer file.  RVMin
+// models the single-precision view as its own 32-bit class; chapter 41 adds a
+// 64-bit view over the same architectural registers, selected by the operand
+// type of each instruction.
+//
+// The DWARF numbers start at 32 so that f0 and x0 do not collide.
+class RVMinFPR<bits<5> num, int dwarf, string n, list<string> alt = []>
+    : Register<n> {
+  field bits<5> Num = num;
+  let Namespace = "RVMin";
+  let HWEncoding{4-0} = num;
+  let AltNames = alt;
+  let DwarfNumbers = [dwarf];
+}
+
+let RegAltNameIndices = [ABIRegAltName] in {
+
+def F0:  RVMinFPR<0, 32, "f0", ["ft0"]>;
+def F1:  RVMinFPR<1, 33, "f1", ["ft1"]>;
+def F2:  RVMinFPR<2, 34, "f2", ["ft2"]>;
+def F3:  RVMinFPR<3, 35, "f3", ["ft3"]>;
+def F4:  RVMinFPR<4, 36, "f4", ["ft4"]>;
+def F5:  RVMinFPR<5, 37, "f5", ["ft5"]>;
+def F6:  RVMinFPR<6, 38, "f6", ["ft6"]>;
+def F7:  RVMinFPR<7, 39, "f7", ["ft7"]>;
+def F8:  RVMinFPR<8, 40, "f8", ["fs0"]>;
+def F9:  RVMinFPR<9, 41, "f9", ["fs1"]>;
+def F10: RVMinFPR<10,42,"f10", ["fa0"]>;
+def F11: RVMinFPR<11,43,"f11", ["fa1"]>;
+def F12: RVMinFPR<12,44,"f12", ["fa2"]>;
+def F13: RVMinFPR<13,45,"f13", ["fa3"]>;
+def F14: RVMinFPR<14,46,"f14", ["fa4"]>;
+def F15: RVMinFPR<15,47,"f15", ["fa5"]>;
+def F16: RVMinFPR<16,48,"f16", ["fa6"]>;
+def F17: RVMinFPR<17,49,"f17", ["fa7"]>;
+def F18: RVMinFPR<18,50,"f18", ["fs2"]>;
+def F19: RVMinFPR<19,51,"f19", ["fs3"]>;
+def F20: RVMinFPR<20,52,"f20", ["fs4"]>;
+def F21: RVMinFPR<21,53,"f21", ["fs5"]>;
+def F22: RVMinFPR<22,54,"f22", ["fs6"]>;
+def F23: RVMinFPR<23,55,"f23", ["fs7"]>;
+def F24: RVMinFPR<24,56,"f24", ["fs8"]>;
+def F25: RVMinFPR<25,57,"f25", ["fs9"]>;
+def F26: RVMinFPR<26,58,"f26", ["fs10"]>;
+def F27: RVMinFPR<27,59,"f27", ["fs11"]>;
+def F28: RVMinFPR<28,60,"f28", ["ft8"]>;
+def F29: RVMinFPR<29,61,"f29", ["ft9"]>;
+def F30: RVMinFPR<30,62,"f30", ["ft10"]>;
+def F31: RVMinFPR<31,63,"f31", ["ft11"]>;
+
+} // RegAltNameIndices = [ABIRegAltName]
+
+// Allocation order: caller-saved argument registers first (fa0-fa7), then the
+// temporaries, then the callee-saved fs0-fs11 last.
+def FPR32 : RegisterClass<"RVMin", [f32], 32,
+  (add (sequence "F%u", 10, 17),
+       (sequence "F%u", 0, 7),
+       (sequence "F%u", 28, 31),
+       F8, F9,
+       (sequence "F%u", 18, 27))> {
+  let DecoderMethod = "DecodeFPR32RegisterClass";
+}

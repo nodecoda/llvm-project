@@ -47,7 +47,10 @@ bool RVMinTargetInfo::initFeatureMap(
 }
 
 bool RVMinTargetInfo::setABI(const std::string &Name) {
-  if (Name != "ilp32")
+  // Chapter 40: the driver derives ilp32f/ilp32d from -march=rv32if/rv32id, so
+  // the frontend has to accept them even though the backend currently only
+  // implements the ilp32f half (see RVMinISelLowering::checkABICompatibility).
+  if (Name != "ilp32" && Name != "ilp32f" && Name != "ilp32d")
     return false;
   ABI = Name;
   return true;
@@ -55,8 +58,8 @@ bool RVMinTargetInfo::setABI(const std::string &Name) {
 
 bool RVMinTargetInfo::isValidCPUName(StringRef Name) const {
   return llvm::is_contained(
-      {"generic-rv32", "generic-rv32-m", "generic-rv32-a", "generic-rv32-zbb",
-       "generic-rv32-zbs"},
+      {"generic-rv32", "generic-rv32-m", "generic-rv32-a", "generic-rv32-f",
+       "generic-rv32-zbb", "generic-rv32-zbs"},
       Name);
 }
 
@@ -65,13 +68,14 @@ void RVMinTargetInfo::fillValidCPUList(
   Values.push_back("generic-rv32");
   Values.push_back("generic-rv32-m");
   Values.push_back("generic-rv32-a");
+  Values.push_back("generic-rv32-f");
   Values.push_back("generic-rv32-zbb");
   Values.push_back("generic-rv32-zbs");
 }
 
 static bool isRVMinExtension(StringRef Ext) {
-  return Ext == "i" || Ext == "m" || Ext == "a" || Ext == "zbb" ||
-         Ext == "zbs" ||
+  return Ext == "i" || Ext == "m" || Ext == "a" || Ext == "f" ||
+         Ext == "zbb" || Ext == "zbs" ||
          // Implied by "a" (zalrsc/zaamo) or "m" (zmmul).  The backend has
          // patterns for the operations these unlock, so they are allowed even
          // though they are not spelled out in RVMin.td.
@@ -93,6 +97,28 @@ bool RVMinTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
     return false;
   }
 
+  // Chapter 40: diagnose ABI/ISA mismatches here so clang users get an
+  // ordinary error instead of a backend failure.  The backend repeats these
+  // checks for llc and hand-written IR (RVMinISelLowering.cpp).
+  StringRef ABIName = getABI();
+  if (ABIName == "ilp32" && ISAInfo->hasExtension("f")) {
+    Diags.Report(diag::err_invalid_feature_combination)
+        << "the ilp32 ABI with the F extension is not implemented yet; use "
+           "-mabi=ilp32f or disable F";
+    return false;
+  }
+  if ((ABIName == "ilp32f" || ABIName == "ilp32d") &&
+      !ISAInfo->hasExtension("f")) {
+    Diags.Report(diag::err_invalid_feature_combination)
+        << "the " + ABIName + " ABI requires the F extension";
+    return false;
+  }
+  if (ABIName == "ilp32d" && !ISAInfo->hasExtension("d")) {
+    Diags.Report(diag::err_invalid_feature_combination)
+        << "the ilp32d ABI requires the D extension";
+    return false;
+  }
+
   // The RISC-V driver emits a long "-<ext>" list to switch off every optional
   // extension, plus spellings such as +i/+zicsr/+zifencei/+relax that RVMin
   // does not model.  Keep only the features the backend actually implements;
@@ -102,7 +128,8 @@ bool RVMinTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
     StringRef Name = F;
     if (!Name.consume_front("+"))
       return true;
-    return Name != "m" && Name != "a" && Name != "zbb" && Name != "zbs";
+    return Name != "m" && Name != "a" && Name != "f" && Name != "zbb" &&
+           Name != "zbs";
   });
   return true;
 }

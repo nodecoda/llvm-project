@@ -911,3 +911,197 @@ def PseudoBRIND : RVMinPseudo<(outs), (ins GPR:$rs1), "", []>,
 }
 
 def : Pat<(brind GPR:$rs1), (PseudoBRIND GPR:$rs1)>;
+
+//===----------------------------------------------------------------------===//
+// Chapter 40: the F extension (single-precision floating point)
+//===----------------------------------------------------------------------===//
+//
+// All of these instructions live behind `-mattr=+f`.  Arithmetic uses the
+// dynamic rounding mode (rm = 111); `fptosi`/`fptoui` need round-toward-zero,
+// so those two conversions have a second definition whose assembly form spells
+// `rtz` out.  Spelling it out is what lets llc's output be re-assembled into
+// the same bytes (the e2e gate checks exactly that).
+
+let Predicates = [HasStdExtF] in {
+
+let hasSideEffects = 0, mayLoad = 0, mayStore = 0 in {
+
+//--- Memory ---------------------------------------------------------------
+// FLW/FSW use the I/S layouts with funct3 = 010 and the FP opcodes.
+let mayLoad = 1 in
+def FLW : RVMinIInst<0b010, OPC_LOAD_FP, (outs FPR32:$rd),
+                     (ins GPR:$rs1, simm12:$imm12), "flw",
+                     "$rd, ${imm12}(${rs1})">;
+
+let hasSideEffects = 1, mayStore = 1 in
+def FSW : RVMinSInst<0b010, OPC_STORE_FP, (outs),
+                     (ins FPR32:$rs2, GPR:$rs1, simm12:$imm12), "fsw",
+                     "$rs2, ${imm12}(${rs1})">;
+
+//--- Arithmetic -----------------------------------------------------------
+def FADD_S : RVMinRInst<0b0000000, 0b111, OPC_OP_FP, (outs FPR32:$rd),
+                        (ins FPR32:$rs1, FPR32:$rs2), "fadd.s",
+                        "$rd, $rs1, $rs2"> {
+  let isCommutable = 1;
+}
+def FSUB_S : RVMinRInst<0b0000100, 0b111, OPC_OP_FP, (outs FPR32:$rd),
+                        (ins FPR32:$rs1, FPR32:$rs2), "fsub.s",
+                        "$rd, $rs1, $rs2">;
+def FMUL_S : RVMinRInst<0b0001000, 0b111, OPC_OP_FP, (outs FPR32:$rd),
+                        (ins FPR32:$rs1, FPR32:$rs2), "fmul.s",
+                        "$rd, $rs1, $rs2"> {
+  let isCommutable = 1;
+}
+def FDIV_S : RVMinRInst<0b0001100, 0b111, OPC_OP_FP, (outs FPR32:$rd),
+                        (ins FPR32:$rs1, FPR32:$rs2), "fdiv.s",
+                        "$rd, $rs1, $rs2">;
+def FSQRT_S : RVMinRInstFixedRS2<0b0101100, 0b111, 0b00000, OPC_OP_FP,
+                                 (outs FPR32:$rd), (ins FPR32:$rs1),
+                                 "fsqrt.s", "$rd, $rs1">;
+
+//--- Sign injection -------------------------------------------------------
+def FSGNJ_S : RVMinRInst<0b0010000, 0b000, OPC_OP_FP, (outs FPR32:$rd),
+                         (ins FPR32:$rs1, FPR32:$rs2), "fsgnj.s",
+                         "$rd, $rs1, $rs2"> {
+  let isCommutable = 1;
+}
+def FSGNJN_S : RVMinRInst<0b0010000, 0b001, OPC_OP_FP, (outs FPR32:$rd),
+                          (ins FPR32:$rs1, FPR32:$rs2), "fsgnjn.s",
+                          "$rd, $rs1, $rs2">;
+def FSGNJX_S : RVMinRInst<0b0010000, 0b010, OPC_OP_FP, (outs FPR32:$rd),
+                          (ins FPR32:$rs1, FPR32:$rs2), "fsgnjx.s",
+                          "$rd, $rs1, $rs2">;
+
+//--- Minimum / maximum ----------------------------------------------------
+def FMIN_S : RVMinRInst<0b0010100, 0b000, OPC_OP_FP, (outs FPR32:$rd),
+                        (ins FPR32:$rs1, FPR32:$rs2), "fmin.s",
+                        "$rd, $rs1, $rs2"> {
+  let isCommutable = 1;
+}
+def FMAX_S : RVMinRInst<0b0010100, 0b001, OPC_OP_FP, (outs FPR32:$rd),
+                        (ins FPR32:$rs1, FPR32:$rs2), "fmax.s",
+                        "$rd, $rs1, $rs2"> {
+  let isCommutable = 1;
+}
+
+//--- Comparisons (result is 0/1 in a GPR) ---------------------------------
+def FEQ_S : RVMinRInst<0b1010000, 0b010, OPC_OP_FP, (outs GPR:$rd),
+                       (ins FPR32:$rs1, FPR32:$rs2), "feq.s",
+                       "$rd, $rs1, $rs2"> {
+  let isCommutable = 1;
+}
+def FLT_S : RVMinRInst<0b1010000, 0b001, OPC_OP_FP, (outs GPR:$rd),
+                       (ins FPR32:$rs1, FPR32:$rs2), "flt.s",
+                       "$rd, $rs1, $rs2">;
+def FLE_S : RVMinRInst<0b1010000, 0b000, OPC_OP_FP, (outs GPR:$rd),
+                       (ins FPR32:$rs1, FPR32:$rs2), "fle.s",
+                       "$rd, $rs1, $rs2">;
+def FCLASS_S : RVMinRInstFixedRS2<0b1110000, 0b001, 0b00000, OPC_OP_FP,
+                                  (outs GPR:$rd), (ins FPR32:$rs1),
+                                  "fclass.s", "$rd, $rs1">;
+
+//--- Conversions ----------------------------------------------------------
+// Dynamic rounding mode: used for int -> FP (the C conversion follows the
+// current rounding mode) and for explicit lrint/lround-style operations.
+def FCVT_W_S : RVMinRInstFixedRS2<0b1100000, 0b111, 0b00000, OPC_OP_FP,
+                                  (outs GPR:$rd), (ins FPR32:$rs1),
+                                  "fcvt.w.s", "$rd, $rs1">;
+def FCVT_WU_S : RVMinRInstFixedRS2<0b1100000, 0b111, 0b00001, OPC_OP_FP,
+                                   (outs GPR:$rd), (ins FPR32:$rs1),
+                                   "fcvt.wu.s", "$rd, $rs1">;
+
+// Round toward zero: the C cast semantics, and the form the instruction
+// selector uses for fptosi/fptoui.  The trailing `rtz` is part of the
+// assembly text so a disassembly round trip reproduces the same encoding.
+def FCVT_W_S_RTZ : RVMinRInstFixedRS2<0b1100000, 0b001, 0b00000, OPC_OP_FP,
+                                      (outs GPR:$rd), (ins FPR32:$rs1),
+                                      "fcvt.w.s", "$rd, $rs1, rtz">;
+def FCVT_WU_S_RTZ : RVMinRInstFixedRS2<0b1100000, 0b001, 0b00001, OPC_OP_FP,
+                                       (outs GPR:$rd), (ins FPR32:$rs1),
+                                       "fcvt.wu.s", "$rd, $rs1, rtz">;
+
+def FCVT_S_W : RVMinRInstFixedRS2<0b1101000, 0b111, 0b00000, OPC_OP_FP,
+                                  (outs FPR32:$rd), (ins GPR:$rs1),
+                                  "fcvt.s.w", "$rd, $rs1">;
+def FCVT_S_WU : RVMinRInstFixedRS2<0b1101000, 0b111, 0b00001, OPC_OP_FP,
+                                   (outs FPR32:$rd), (ins GPR:$rs1),
+                                   "fcvt.s.wu", "$rd, $rs1">;
+
+//--- Register moves -------------------------------------------------------
+def FMV_X_W : RVMinRInstFixedRS2<0b1110000, 0b000, 0b00000, OPC_OP_FP,
+                                 (outs GPR:$rd), (ins FPR32:$rs1),
+                                 "fmv.x.w", "$rd, $rs1">;
+def FMV_W_X : RVMinRInstFixedRS2<0b1111000, 0b000, 0b00000, OPC_OP_FP,
+                                 (outs FPR32:$rd), (ins GPR:$rs1),
+                                 "fmv.w.x", "$rd, $rs1">;
+
+} // hasSideEffects = 0, mayLoad = 0, mayStore = 0
+
+//--- Fused multiply-add (R4) ---------------------------------------------
+def FMADD_S : RVMinR4Inst<0b00, OPC_MADD, (outs FPR32:$rd),
+                          (ins FPR32:$rs1, FPR32:$rs2, FPR32:$rs3),
+                          "fmadd.s", "$rd, $rs1, $rs2, $rs3">;
+def FMSUB_S : RVMinR4Inst<0b00, OPC_MSUB, (outs FPR32:$rd),
+                          (ins FPR32:$rs1, FPR32:$rs2, FPR32:$rs3),
+                          "fmsub.s", "$rd, $rs1, $rs2, $rs3">;
+def FNMSUB_S : RVMinR4Inst<0b00, OPC_NMSUB, (outs FPR32:$rd),
+                           (ins FPR32:$rs1, FPR32:$rs2, FPR32:$rs3),
+                           "fnmsub.s", "$rd, $rs1, $rs2, $rs3">;
+def FNMADD_S : RVMinR4Inst<0b00, OPC_NMADD, (outs FPR32:$rd),
+                           (ins FPR32:$rs1, FPR32:$rs2, FPR32:$rs3),
+                           "fnmadd.s", "$rd, $rs1, $rs2, $rs3">;
+
+} // Predicates = [HasStdExtF]
+
+//===----------------------------------------------------------------------===//
+// Chapter 40: selection patterns
+//===----------------------------------------------------------------------===//
+
+let Predicates = [HasStdExtF] in {
+
+def : Pat<(f32 (fadd FPR32:$rs1, FPR32:$rs2)), (FADD_S FPR32:$rs1, FPR32:$rs2)>;
+def : Pat<(f32 (fsub FPR32:$rs1, FPR32:$rs2)), (FSUB_S FPR32:$rs1, FPR32:$rs2)>;
+def : Pat<(f32 (fmul FPR32:$rs1, FPR32:$rs2)), (FMUL_S FPR32:$rs1, FPR32:$rs2)>;
+def : Pat<(f32 (fdiv FPR32:$rs1, FPR32:$rs2)), (FDIV_S FPR32:$rs1, FPR32:$rs2)>;
+def : Pat<(f32 (fsqrt FPR32:$rs1)), (FSQRT_S FPR32:$rs1)>;
+
+def : Pat<(f32 (fabs FPR32:$rs1)), (FSGNJX_S FPR32:$rs1, FPR32:$rs1)>;
+def : Pat<(f32 (fneg FPR32:$rs1)), (FSGNJN_S FPR32:$rs1, FPR32:$rs1)>;
+def : Pat<(f32 (fcopysign FPR32:$rs1, FPR32:$rs2)),
+          (FSGNJ_S FPR32:$rs1, FPR32:$rs2)>;
+
+def : Pat<(f32 (fminnum FPR32:$rs1, FPR32:$rs2)),
+          (FMIN_S FPR32:$rs1, FPR32:$rs2)>;
+def : Pat<(f32 (fmaxnum FPR32:$rs1, FPR32:$rs2)),
+          (FMAX_S FPR32:$rs1, FPR32:$rs2)>;
+
+def : Pat<(f32 (fma FPR32:$rs1, FPR32:$rs2, FPR32:$rs3)),
+          (FMADD_S FPR32:$rs1, FPR32:$rs2, FPR32:$rs3)>;
+
+// Comparisons: only the ordered predicates that the hardware provides.
+def : Pat<(i32 (setoeq FPR32:$rs1, FPR32:$rs2)),
+          (FEQ_S FPR32:$rs1, FPR32:$rs2)>;
+def : Pat<(i32 (setolt FPR32:$rs1, FPR32:$rs2)),
+          (FLT_S FPR32:$rs1, FPR32:$rs2)>;
+def : Pat<(i32 (setole FPR32:$rs1, FPR32:$rs2)),
+          (FLE_S FPR32:$rs1, FPR32:$rs2)>;
+
+// C casts round toward zero.
+def : Pat<(i32 (fp_to_sint FPR32:$rs1)), (FCVT_W_S_RTZ FPR32:$rs1)>;
+def : Pat<(i32 (fp_to_uint FPR32:$rs1)), (FCVT_WU_S_RTZ FPR32:$rs1)>;
+def : Pat<(f32 (sint_to_fp GPR:$rs1)), (FCVT_S_W GPR:$rs1)>;
+def : Pat<(f32 (uint_to_fp GPR:$rs1)), (FCVT_S_WU GPR:$rs1)>;
+
+// Bitcasts between the integer and FP files are the Fmv instructions.
+def : Pat<(f32 (bitconvert i32:$rs1)), (FMV_W_X GPR:$rs1)>;
+def : Pat<(i32 (bitconvert f32:$rs1)), (FMV_X_W FPR32:$rs1)>;
+
+// Memory.
+def : Pat<(f32 (load GPR:$addr)), (FLW GPR:$addr, 0)>;
+def : Pat<(f32 (load (add GPR:$addr, simm12:$off))),
+          (FLW GPR:$addr, simm12:$off)>;
+def : Pat<(store FPR32:$val, GPR:$addr), (FSW FPR32:$val, GPR:$addr, 0)>;
+def : Pat<(store FPR32:$val, (add GPR:$addr, simm12:$off)),
+          (FSW FPR32:$val, GPR:$addr, simm12:$off)>;
+
+} // Predicates = [HasStdExtF]

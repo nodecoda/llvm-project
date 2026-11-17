@@ -359,6 +359,19 @@ bool RVMinAsmParser::parseOperand(OperandVector &Operands, StringRef Mnemonic) {
   if (parseRegister(Operands).isSuccess())
     return false;
 
+  // `fcvt.w.s` and `fcvt.wu.s` print an explicit rounding mode, e.g.
+  // `fcvt.w.s a0, fa1, rtz`.  A bare identifier would otherwise be parsed as
+  // a symbol expression, so hand the matcher a literal token operand instead;
+  // it compares it against the `rtz` text in the instruction's AsmString.
+  if (Mnemonic.starts_with("fcvt.") &&
+      getLexer().is(AsmToken::Identifier) &&
+      getLexer().getTok().getIdentifier() == "rtz") {
+    Operands.push_back(
+        RVMinOperand::createToken("rtz", getLexer().getTok().getLoc()));
+    Lex();
+    return false;
+  }
+
   // %hi(sym) / %lo(sym): a relocation specifier around an expression.
   if (getLexer().is(AsmToken::Percent)) {
     if (parseSpecifierOperand(Operands).isFailure())

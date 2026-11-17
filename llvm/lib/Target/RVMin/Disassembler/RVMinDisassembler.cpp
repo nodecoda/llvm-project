@@ -91,6 +91,26 @@ static DecodeStatus DecodeGPRRegisterClass(MCInst &Inst, uint64_t RegNo,
   return MCDisassembler::Success;
 }
 
+// Chapter 40: the floating-point file has the same contiguous layout.  The
+// single- and double-precision views (chapter 41) share these registers, so
+// one table serves both decoder hooks.
+static const unsigned FPR32DecoderTable[] = {
+    RVMin::F0,  RVMin::F1,  RVMin::F2,  RVMin::F3,  RVMin::F4,  RVMin::F5,
+    RVMin::F6,  RVMin::F7,  RVMin::F8,  RVMin::F9,  RVMin::F10, RVMin::F11,
+    RVMin::F12, RVMin::F13, RVMin::F14, RVMin::F15, RVMin::F16, RVMin::F17,
+    RVMin::F18, RVMin::F19, RVMin::F20, RVMin::F21, RVMin::F22, RVMin::F23,
+    RVMin::F24, RVMin::F25, RVMin::F26, RVMin::F27, RVMin::F28, RVMin::F29,
+    RVMin::F30, RVMin::F31};
+
+static DecodeStatus DecodeFPR32RegisterClass(MCInst &Inst, uint64_t RegNo,
+                                             uint64_t Address,
+                                             const MCDisassembler *Decoder) {
+  if (RegNo >= std::size(FPR32DecoderTable))
+    return MCDisassembler::Fail;
+  Inst.addOperand(MCOperand::createReg(FPR32DecoderTable[RegNo]));
+  return MCDisassembler::Success;
+}
+
 // Plain sign extension: I-type, S-type and JALR's 12-bit immediate.
 template <unsigned N>
 static DecodeStatus decodeSImmOperand(MCInst &Inst, uint64_t Imm,
