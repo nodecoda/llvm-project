@@ -179,13 +179,18 @@ roundtrip rv32i 85 "$HERE/rvmin-encoding-corpus.s"
 roundtrip m 12 "$HERE/rvmin-m-encoding-corpus.s" --mattr=+m
 # Chapter 22: A instructions print `lr.w a0, (a1)`, i.e. the zero-displacement
 # form the parser accepts, so this also proves the asm printer/parser symmetry.
-roundtrip a 20 "$HERE/rvmin-a-encoding-corpus.s" --mattr=+a
+# Chapter 46 removed fence.i from this corpus (it is Zifencei now), so A
+# round-trips 19 instructions instead of 20.
+roundtrip a 19 "$HERE/rvmin-a-encoding-corpus.s" --mattr=+a
 # Chapter 40: F.  This also covers the explicit `rtz` spelling: the printer
 # must reproduce it so the output can be assembled again into the same bytes.
 roundtrip f 28 "$HERE/rvmin-f-encoding-corpus.s" --mattr=+f
 # Chapter 41: D.  Same `rtz` symmetry; the double registers use the FPR64
 # decoder hook but the same architectural table.
 roundtrip d 28 "$HERE/rvmin-d-encoding-corpus.s" --mattr=+f,+d
+# Chapter 46: Zicsr + Zifencei.  Aliases print back as aliases, so this also
+# proves the InstAlias table is symmetric with the asm matcher.
+roundtrip zicsr 24 "$HERE/rvmin-zicsr-encoding-corpus.s" --mattr=+zicsr,+zifencei,+f
 # Chapter 43: C.  The corpus is 35 explicit compressed instructions (integer,
 # F and D variants); the second run is a 16/32-bit mixed stream.
 roundtrip_c c 35 "$HERE/rvmin-c-encoding-corpus.s" --mattr=+c,+f,+d
@@ -208,4 +213,4 @@ fwd:
 ASM
 roundtrip labels 6 "$TMP/labels.s"
 
-echo "PASS: 173 encoding-corpus instructions + 35 compressed + 6 mixed + 6 label-resolved branches/jumps"
+echo "PASS: 172 encoding-corpus instructions + 35 compressed + 6 mixed + 24 zicsr/zifencei + 6 label-resolved branches/jumps"

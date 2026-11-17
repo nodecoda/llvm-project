@@ -152,12 +152,12 @@ python3 dsl-surface.py --status-matrix --update DOC --usage a.td b.td
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:191` | `DecoderMethod` | `DAGOperand`, `InstructionEncoding` | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 | 未消费 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:16` | `Num` | — | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:106` | `Num` | — | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 | 自定义 |
-| `llvm/lib/Target/RVMin/RVMin.td:128` | `AsmWriterClassName` | `AsmWriter` | — | — | `project` | — | — | — | — |
-| `llvm/lib/Target/RVMin/RVMin.td:135` | `ShouldEmitMatchRegisterAltName` | `AsmParser` | — | — | — | `project` | — | — | — |
-| `llvm/lib/Target/RVMin/RVMin.td:136` | `AllowDuplicateRegisterNames` | `AsmParser` | — | — | — | `project` | — | — | — |
-| `llvm/lib/Target/RVMin/RVMin.td:144` | `InstructionSet` | — | — | — | — | — | — | — | — |
-| `llvm/lib/Target/RVMin/RVMin.td:145` | `AssemblyParsers` | `Target` | — | — | — | `derive` | — | — | — |
-| `llvm/lib/Target/RVMin/RVMin.td:146` | `AssemblyWriters` | `Target` | — | — | `derive` | — | — | — | — |
+| `llvm/lib/Target/RVMin/RVMin.td:148` | `AsmWriterClassName` | `AsmWriter` | — | — | `project` | — | — | — | — |
+| `llvm/lib/Target/RVMin/RVMin.td:155` | `ShouldEmitMatchRegisterAltName` | `AsmParser` | — | — | — | `project` | — | — | — |
+| `llvm/lib/Target/RVMin/RVMin.td:156` | `AllowDuplicateRegisterNames` | `AsmParser` | — | — | — | `project` | — | — | — |
+| `llvm/lib/Target/RVMin/RVMin.td:164` | `InstructionSet` | — | — | — | — | — | — | — | — |
+| `llvm/lib/Target/RVMin/RVMin.td:165` | `AssemblyParsers` | `Target` | — | — | — | `derive` | — | — | — |
+| `llvm/lib/Target/RVMin/RVMin.td:166` | `AssemblyWriters` | `Target` | — | — | `derive` | — | — | — | — |
 
 共 24 处使用；7 个后端都消费 2 处，至少一个消费 16 处，自定义字段 2 处。
 <!-- END: GENERATED CROSS-BACKEND STATUS -->

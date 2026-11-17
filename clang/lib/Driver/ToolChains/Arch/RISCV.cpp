@@ -72,14 +72,8 @@ void riscv::getRISCVTargetFeatures(const Driver &D, const llvm::Triple &Triple,
   std::string MArch = getRISCVArch(Args, Triple);
 
   if (Triple.isRVMin()) {
-    // Chapter 43 decision 5: `g` includes Zicsr and Zifencei, which RVMin
-    // still does not implement.  Reject it until chapter 46 rather than
-    // silently claiming support for the full general-purpose ISA.
-    if (StringRef(MArch).contains('g')) {
-      D.Diag(diag::err_drv_unsupported_option_argument_for_target)
-          << "-march" << MArch << Triple.str();
-      return;
-    }
+    // Chapter 46: `g` (i/m/a/f/d/zicsr/zifencei) and `gc` are now spelled out
+    // by features the backend implements, so the chapter 43 rejection is gone.
     if (Args.hasArg(options::OPT_march_EQ) &&
         Args.getLastArgValue(options::OPT_march_EQ) == "native") {
       D.Diag(diag::err_drv_unsupported_option_argument_for_target)
@@ -115,11 +109,13 @@ void riscv::getRISCVTargetFeatures(const Driver &D, const llvm::Triple &Triple,
       return;
     }
     // The integrated assembler consumes this vector directly, without going
-    // through RVMinTargetInfo, so keep only the four extensions the backend
-    // implements; "+i" is implied by the target.
+    // through RVMinTargetInfo, so keep only the extensions the backend
+    // implements; "+i" is implied by the target.  "+relax" is deliberately
+    // dropped: RVMin has no linker relaxation yet.
     llvm::erase_if(Features, [](StringRef F) {
       return F != "+m" && F != "+a" && F != "+f" && F != "+d" &&
-             F != "+c" && F != "+zbb" && F != "+zbs";
+             F != "+c" && F != "+zbb" && F != "+zbs" && F != "+zicsr" &&
+             F != "+zifencei";
     });
     return;
   }

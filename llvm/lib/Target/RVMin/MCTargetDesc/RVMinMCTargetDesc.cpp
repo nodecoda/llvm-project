@@ -19,6 +19,54 @@
 
 using namespace llvm;
 
+namespace llvm {
+namespace rvmin {
+
+// Chapter 46: the CSRs this course actually touches.  The numbers are fixed by
+// the RISC-V privileged and vector specs; names are the canonical spellings
+// shared with GNU as and llvm-mc -triple=riscv32.
+struct CSRNameEntry {
+  StringRef Name;
+  unsigned Encoding;
+};
+
+static constexpr CSRNameEntry CSRNames[] = {
+    // Floating-point control and status (require F).
+    {"fflags", 0x001},
+    {"frm", 0x002},
+    {"fcsr", 0x003},
+    // Vector control (used by chapters 47-50).
+    {"vstart", 0x008},
+    {"vl", 0xC20},
+    {"vtype", 0xC21},
+    {"vlenb", 0xC22},
+    // Machine-mode CSRs used by the bare-metal demos.
+    {"mstatus", 0x300},
+    {"mtvec", 0x305},
+    {"mepc", 0x341},
+    {"mcause", 0x342},
+};
+
+bool parseCSRName(StringRef Name, unsigned &Encoding) {
+  for (const CSRNameEntry &Entry : CSRNames) {
+    if (Entry.Name == Name) {
+      Encoding = Entry.Encoding;
+      return true;
+    }
+  }
+  return false;
+}
+
+StringRef getCSRName(unsigned Encoding) {
+  for (const CSRNameEntry &Entry : CSRNames)
+    if (Entry.Encoding == Encoding)
+      return Entry.Name;
+  return StringRef();
+}
+
+} // namespace rvmin
+} // namespace llvm
+
 #define GET_INSTRINFO_MC_DESC
 #define ENABLE_INSTR_PREDICATE_VERIFIER
 #include "RVMinGenInstrInfo.inc"

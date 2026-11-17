@@ -116,6 +116,22 @@ def bare_symbol : Operand<i32> {
   let PrintMethod = "printOperand";
 }
 
+// Chapter 46: a CSR operand is a 12-bit number, but assembly spells it as a
+// name (`mstatus`, `fflags`, ...) or a raw number.  The parser resolves names
+// through the table in MCTargetDesc/RVMinMCTargetDesc.cpp, so both spellings
+// produce the same immediate in the MCInst.
+def CSRSystemReg : AsmOperandClass {
+  let Name = "CSRSystemRegister";
+  let ParserMethod = "parseCSRSystemRegister";
+  let DiagnosticType = "InvalidCSRSystemRegister";
+}
+
+def csr_sysreg : Operand<i32> {
+  let PrintMethod = "printCSRSystemRegister";
+  let ParserMatchClass = CSRSystemReg;
+  let DecoderMethod = "decodeUImmOperand<12>";
+}
+
 //===----------------------------------------------------------------------===//
 // ALU: register-register (R-type)
 //===----------------------------------------------------------------------===//
@@ -744,7 +760,6 @@ class RVMinFixedInst<bits<32> inst, string mnemonic>
 
 let Predicates = [HasStdExtA] in {
 def FENCE   : RVMinFixedInst<0x0ff0000f, "fence">;
-def FENCE_I : RVMinFixedInst<0x0000100f, "fence.i">;
 
 // IR `fence` instructions (ordering 4=acquire, 5=release, 6=acq_rel,
 // 7=seq_cst) all become the same fence.  ATOMIC_FENCE's second operand is
@@ -773,6 +788,106 @@ def : RVMinAMOPat<atomic_load_min,  AMOMIN_W_AQRL>;
 def : RVMinAMOPat<atomic_load_umax, AMOMAXU_W_AQRL>;
 def : RVMinAMOPat<atomic_load_umin, AMOMINU_W_AQRL>;
 } // Predicates = [HasStdExtA]
+
+// Chapter 46: fence.i belongs to Zifencei, not to A.  Keeping it under A would
+// make `rv32i + zifencei` unable to assemble the instruction Zifencei is named
+// after, and would make `rv32g` depend on atomics for an instruction-fetch
+// fence.
+let Predicates = [HasStdExtZifencei] in
+def FENCE_I : RVMinFixedInst<0x0000100f, "fence.i">;
+
+//===----------------------------------------------------------------------===//
+// SYSTEM: Zicsr (chapter 46)
+//===----------------------------------------------------------------------===//
+//
+// All six CSR instructions share the I-type layout:
+//
+//   imm[11:0] = csr | rs1/zimm | funct3 | rd | opcode=SYSTEM
+//
+// funct3 001/010/011 name the register forms (rs1 is a GPR) and 101/110/111
+// the immediate forms (rs1 is a 5-bit unsigned zimm).  Every one of them may
+// read and write a CSR, so hasSideEffects is 1 and they are never reordered or
+// deleted.  The assembler aliases below are the standard pseudo-instructions
+// from the RISC-V manual: they assemble to the same MCInst and the printer
+// prints them back, so asm -> obj -> asm stays byte-identical.
+
+class RVMinCSRRegInst<bits<3> funct3, dag outs, dag ins, string mnemonic,
+                      string argstr>
+    : RVMinInst<outs, ins, mnemonic # " " # argstr, []> {
+  bits<5> rd;
+  bits<5> rs1;
+  bits<12> csr;
+
+  let Inst{6-0}   = OPC_SYSTEM.Value;
+  let Inst{11-7}  = rd;
+  let Inst{14-12} = funct3;
+  let Inst{19-15} = rs1;
+  let Inst{31-20} = csr;
+
+  let TSFlags{4-0} = FmtI.Value;
+  let hasSideEffects = 1;
+  let mayLoad = 0;
+  let mayStore = 0;
+}
+
+class RVMinCSRImmInst<bits<3> funct3, dag outs, dag ins, string mnemonic,
+                      string argstr>
+    : RVMinInst<outs, ins, mnemonic # " " # argstr, []> {
+  bits<5> rd;
+  bits<5> zimm;
+  bits<12> csr;
+
+  let Inst{6-0}   = OPC_SYSTEM.Value;
+  let Inst{11-7}  = rd;
+  let Inst{14-12} = funct3;
+  let Inst{19-15} = zimm;
+  let Inst{31-20} = csr;
+
+  let TSFlags{4-0} = FmtI.Value;
+  let hasSideEffects = 1;
+  let mayLoad = 0;
+  let mayStore = 0;
+}
+
+let Predicates = [HasStdExtZicsr] in {
+def CSRRW : RVMinCSRRegInst<0b001, (outs GPR:$rd),
+                            (ins csr_sysreg:$csr, GPR:$rs1),
+                            "csrrw", "$rd, $csr, $rs1">;
+def CSRRS : RVMinCSRRegInst<0b010, (outs GPR:$rd),
+                            (ins csr_sysreg:$csr, GPR:$rs1),
+                            "csrrs", "$rd, $csr, $rs1">;
+def CSRRC : RVMinCSRRegInst<0b011, (outs GPR:$rd),
+                            (ins csr_sysreg:$csr, GPR:$rs1),
+                            "csrrc", "$rd, $csr, $rs1">;
+def CSRRWI : RVMinCSRImmInst<0b101, (outs GPR:$rd),
+                             (ins csr_sysreg:$csr, uimm5:$zimm),
+                             "csrrwi", "$rd, $csr, $zimm">;
+def CSRRSI : RVMinCSRImmInst<0b110, (outs GPR:$rd),
+                             (ins csr_sysreg:$csr, uimm5:$zimm),
+                             "csrrsi", "$rd, $csr, $zimm">;
+def CSRRCI : RVMinCSRImmInst<0b111, (outs GPR:$rd),
+                             (ins csr_sysreg:$csr, uimm5:$zimm),
+                             "csrrci", "$rd, $csr, $zimm">;
+
+// Standard pseudo-instructions (RISC-V unprivileged ISA, "Zicsr").
+def : InstAlias<"csrr $rd, $csr", (CSRRS GPR:$rd, csr_sysreg:$csr, X0)>;
+def : InstAlias<"csrw $csr, $rs", (CSRRW X0, csr_sysreg:$csr, GPR:$rs)>;
+def : InstAlias<"csrs $csr, $rs", (CSRRS X0, csr_sysreg:$csr, GPR:$rs)>;
+def : InstAlias<"csrc $csr, $rs", (CSRRC X0, csr_sysreg:$csr, GPR:$rs)>;
+def : InstAlias<"csrwi $csr, $imm", (CSRRWI X0, csr_sysreg:$csr, uimm5:$imm)>;
+def : InstAlias<"csrsi $csr, $imm", (CSRRSI X0, csr_sysreg:$csr, uimm5:$imm)>;
+def : InstAlias<"csrci $csr, $imm", (CSRRCI X0, csr_sysreg:$csr, uimm5:$imm)>;
+// The immediate forms of csrw/csrs/csrc are legal input, but they alias the
+// same MCInst as csrwi/csrsi/csrci.  EmitPriority 0 keeps them out of the
+// printer (which would otherwise drop both sides as "ambiguous" and print the
+// long `csrrw zero, csr, imm` form) while the assembler still accepts them.
+def : InstAlias<"csrw $csr, $imm", (CSRRWI X0, csr_sysreg:$csr, uimm5:$imm), 0>;
+def : InstAlias<"csrs $csr, $imm", (CSRRSI X0, csr_sysreg:$csr, uimm5:$imm), 0>;
+def : InstAlias<"csrc $csr, $imm", (CSRRCI X0, csr_sysreg:$csr, uimm5:$imm), 0>;
+def : InstAlias<"csrrw $rd, $csr, $imm", (CSRRWI GPR:$rd, csr_sysreg:$csr, uimm5:$imm)>;
+def : InstAlias<"csrrs $rd, $csr, $imm", (CSRRSI GPR:$rd, csr_sysreg:$csr, uimm5:$imm)>;
+def : InstAlias<"csrrc $rd, $csr, $imm", (CSRRCI GPR:$rd, csr_sysreg:$csr, uimm5:$imm)>;
+} // Predicates = [HasStdExtZicsr]
 
 //===----------------------------------------------------------------------===//
 // SYSTEM: environment calls

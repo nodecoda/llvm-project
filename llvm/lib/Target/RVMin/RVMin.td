@@ -81,6 +81,24 @@ def HasStdExtC : Predicate<"Subtarget->hasStdExtC()">,
                  AssemblerPredicate<(all_of FeatureStdExtC),
                                     "'C' (Compressed)">;
 
+// Chapter 46: Zicsr adds the six CSR instructions; Zifencei owns fence.i.
+// `g` expands to i/m/a/f/d/zicsr/zifencei, which is why chapters 43-45
+// rejected `-march=rv32g*` and this chapter can accept it.
+def FeatureStdExtZicsr : SubtargetFeature<"zicsr", "HasStdExtZicsr", "true",
+                                          "Control and status register instructions">;
+
+def HasStdExtZicsr : Predicate<"Subtarget->hasStdExtZicsr()">,
+                     AssemblerPredicate<(all_of FeatureStdExtZicsr),
+                                        "'Zicsr' (Control and Status Register Instructions)">;
+
+def FeatureStdExtZifencei : SubtargetFeature<"zifencei", "HasStdExtZifencei",
+                                             "true",
+                                             "Instruction-fetch fence">;
+
+def HasStdExtZifencei : Predicate<"Subtarget->hasStdExtZifencei()">,
+                        AssemblerPredicate<(all_of FeatureStdExtZifencei),
+                                           "'Zifencei' (Instruction-Fetch Fence)">;
+
 //===----------------------------------------------------------------------===//
 // Processors
 //===----------------------------------------------------------------------===//
@@ -96,6 +114,8 @@ def : RVMinProc<"generic-rv32-a", [FeatureStdExtA]>;
 def : RVMinProc<"generic-rv32-f", [FeatureStdExtF]>;
 def : RVMinProc<"generic-rv32-d", [FeatureStdExtD]>;
 def : RVMinProc<"generic-rv32-c", [FeatureStdExtC]>;
+def : RVMinProc<"generic-rv32-zicsr", [FeatureStdExtZicsr]>;
+def : RVMinProc<"generic-rv32-zifencei", [FeatureStdExtZifencei]>;
 
 //===----------------------------------------------------------------------===//
 // Register File

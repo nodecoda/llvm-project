@@ -46,6 +46,10 @@ class RVMinSubtarget : public RVMinGenSubtargetInfo {
   bool HasStdExtD = false;
   // Chapter 43: compressed 16-bit encodings.
   bool HasStdExtC = false;
+  // Chapter 46: CSR instructions and the instruction-fetch fence.  `g`
+  // implies both, so they are what make rv32g/rv32gc legal.
+  bool HasStdExtZicsr = false;
+  bool HasStdExtZifencei = false;
 
   RVMinInstrInfo InstrInfo;
   RVMinTargetLowering TLInfo;
@@ -67,6 +71,8 @@ public:
   bool hasStdExtF() const { return HasStdExtF; }
   bool hasStdExtD() const { return HasStdExtD; }
   bool hasStdExtC() const { return HasStdExtC; }
+  bool hasStdExtZicsr() const { return HasStdExtZicsr; }
+  bool hasStdExtZifencei() const { return HasStdExtZifencei; }
 
   void ParseSubtargetFeatures(StringRef CPU, StringRef TuneCPU, StringRef FS);
 

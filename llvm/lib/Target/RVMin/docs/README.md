@@ -1,8 +1,9 @@
 # RVMin 教程索引
 
-RVMin 是一个从零写的 LLVM 后端：以 RV32I 为基线，按章节逐步加入 M/A/Zbb/Zbs
-整数扩展与 F/D 浮点扩展。本目录是配套教程：每章一个提交，每章都能独立构建、
-测试、复现。
+RVMin 是一个从零写的 LLVM 后端：以 RV32I 为基线，按章节逐步加入
+M/A/Zbb/Zbs 整数扩展、F/D 浮点、C 压缩、Zicsr/Zifencei（第 46 章），随后
+进入向量子集（第 47–50 章）。本目录是配套教程：每章一个提交，每章都能独立
+构建、测试、复现。
 
 - 总览与快速开始：[`../README.md`](../README.md)
 - 完整实现：`llvm/lib/Target/RVMin/`
@@ -89,6 +90,12 @@ RVMin 是一个从零写的 LLVM 后端：以 RV32I 为基线，按章节逐步�
 | 44 | [44-c-compression.md](44-c-compression.md) | 压缩代码生成：`-gen-compress-inst-emitter`、`CompressPat`、AsmPrinter 投影 | `c-ext.ll`；288 对象矩阵；QEMU demo `.text` 784→592 | `rvmin-ch44` |
 | 45 | [45-c-acceptance.md](45-c-acceptance.md) | 第五篇验收：C 全链路、288 对象矩阵、`.text` 收缩与运行一致性 | `rvmin-verify-all.sh` 8/8 + `rvmin-clang-matrix.sh` | `rvmin-ch45` |
 
+### 第六篇：CSR 与向量（46–50）
+
+| 章 | 文档 | 主题 | 本章门禁 | tag |
+| --- | --- | --- | --- | --- |
+| 46 | [46-zicsr-zifencei.md](46-zicsr-zifencei.md) | Zicsr（6 条 CSR + 7 个别名、CSR 名字表）与 Zifencei（`fence.i` 迁移）；解锁 `rv32g`/`rv32gc` | `zicsr.s`；编码 24 条 + 反汇编；clang 矩阵 384 对象；门禁 8/8 | `rvmin-ch46` |
+
 每个章末都有对应 tag：`git checkout rvmin-ch16` 即可看到该章结束时的完整代码。
 
 ## 每章固定包含什么
@@ -125,6 +132,7 @@ RVMin 是一个从零写的 LLVM 后端：以 RV32I 为基线，按章节逐步�
 | 41 | `## 背景：RV32 上的 double 为什么更麻烦` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
 | 43 | `## 背景：16 位指令为什么是另一套格式` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
 | 44 | `## 背景：压缩是投影，不是另一套代码生成` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
+| 46 | `## 背景：为什么 g 要等两章` | `## 代码地图` | `## 构建与验证` | `## 常见坑` | `## 练习` |
 
 > 第 14、23、28、39、42、45 章是验收章，本身即证据表，不套用八要素模板。
 

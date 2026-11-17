@@ -70,6 +70,7 @@ class RVMinAsmParser : public MCTargetAsmParser {
   ParseStatus parseRegister(OperandVector &Operands);
   ParseStatus parseExpression(OperandVector &Operands);
   ParseStatus parseSpecifierOperand(OperandVector &Operands);
+  ParseStatus parseCSRSystemRegister(OperandVector &Operands);
   ParseStatus parseMemOpBaseReg(OperandVector &Operands);
 
   /// @name Auto-generated Matcher Functions
@@ -79,6 +80,18 @@ class RVMinAsmParser : public MCTargetAsmParser {
 #include "RVMinGenAsmMatcher.inc"
 
   /// }
+
+public:
+  // Chapter 46: the generated matcher reports a near-miss for a malformed CSR
+  // operand through this enum.  The block must live inside the parser class.
+  enum RVMinMatchResultTy : unsigned {
+    Match_Dummy = FIRST_TARGET_MATCH_RESULT_TY,
+#define GET_OPERAND_DIAGNOSTIC_TYPES
+#include "RVMinGenAsmMatcher.inc"
+#undef GET_OPERAND_DIAGNOSTIC_TYPES
+  };
+
+private:
 
 public:
   RVMinAsmParser(const MCSubtargetInfo &STI, MCAsmParser &Parser,
@@ -91,13 +104,14 @@ public:
 
 /// A parsed RVMin assembly operand.
 class RVMinOperand : public MCParsedAsmOperand {
-  enum KindTy { Token, Register, Immediate } Kind;
+  enum KindTy { Token, Register, Immediate, SystemReg } Kind;
 
   SMLoc StartLoc, EndLoc;
   union {
     StringRef Tok;
     MCRegister Reg;
     const MCExpr *Imm;
+    unsigned SysReg;
   };
 
 public:
@@ -107,6 +121,11 @@ public:
   bool isReg() const override { return Kind == Register; }
   bool isImm() const override { return Kind == Immediate; }
   bool isMem() const override { return false; }
+
+  unsigned getSysReg() const {
+    assert(Kind == SystemReg && "not a system register");
+    return SysReg;
+  }
 
   StringRef getToken() const {
     assert(Kind == Token && "not a token");
@@ -138,12 +157,19 @@ public:
       O << "Immediate ";
       MAI.printExpr(O, *Imm);
       break;
+    case SystemReg:
+      O << "SystemReg " << SysReg;
+      break;
     }
   }
 
   bool evaluateConstantImm(int64_t &Value) const {
     return Kind == Immediate && Imm->evaluateAsAbsolute(Value);
   }
+
+  // Chapter 46: a CSR operand parsed by parseCSRSystemRegister below.  The
+  // generated matcher validates the class with this predicate.
+  bool isCSRSystemRegister() const { return Kind == SystemReg; }
 
   // Predicates referenced from RVMinInstrInfo.td (PredicateMethod).
   bool isSImm12() const {
@@ -257,6 +283,11 @@ public:
       Inst.addOperand(MCOperand::createExpr(Imm));
   }
 
+  void addCSRSystemRegisterOperands(MCInst &Inst, unsigned N) const {
+    assert(N == 1 && "invalid number of operands");
+    Inst.addOperand(MCOperand::createImm(SysReg));
+  }
+
   static std::unique_ptr<RVMinOperand> createToken(StringRef Tok, SMLoc Loc) {
     auto Op = std::make_unique<RVMinOperand>(Token);
     Op->Tok = Tok;
@@ -276,6 +307,14 @@ public:
                                                  SMLoc End) {
     auto Op = std::make_unique<RVMinOperand>(Immediate);
     Op->Imm = Expr;
+    Op->StartLoc = Start;
+    Op->EndLoc = End;
+    return Op;
+  }
+  static std::unique_ptr<RVMinOperand> createSysReg(unsigned Encoding,
+                                                   SMLoc Start, SMLoc End) {
+    auto Op = std::make_unique<RVMinOperand>(SystemReg);
+    Op->SysReg = Encoding;
     Op->StartLoc = Start;
     Op->EndLoc = End;
     return Op;
@@ -403,6 +442,37 @@ ParseStatus RVMinAsmParser::parseLiteralValues(unsigned Size) {
   return parseMany(parseOne) ? ParseStatus::Failure : ParseStatus::Success;
 }
 
+// Chapter 46: a CSR operand is either a name from the rvmin:: table or an
+// expression that folds to a 12-bit number.  Keeping both spellings in one
+// parser means `csrr a0, mstatus` and `csrr a0, 0x300` produce identical
+// MCInsts, and the disassembler can print whichever the table knows.
+ParseStatus RVMinAsmParser::parseCSRSystemRegister(OperandVector &Operands) {
+  SMLoc S = getLoc();
+
+  if (getLexer().is(AsmToken::Identifier)) {
+    StringRef Name;
+    if (getParser().parseIdentifier(Name))
+      return ParseStatus::Failure;
+    unsigned Encoding;
+    if (!rvmin::parseCSRName(Name, Encoding))
+      return Error(S, "unknown CSR name '" + Name + "'");
+    Operands.push_back(RVMinOperand::createSysReg(Encoding, S, getLoc()));
+    return ParseStatus::Success;
+  }
+
+  const MCExpr *Expr;
+  if (getParser().parseExpression(Expr))
+    return ParseStatus::Failure;
+
+  int64_t Value;
+  if (!Expr->evaluateAsAbsolute(Value) || !isUInt<12>(Value))
+    return Error(S, "CSR number must be an integer in the range 0..4095");
+
+  Operands.push_back(
+      RVMinOperand::createSysReg(static_cast<unsigned>(Value), S, getLoc()));
+  return ParseStatus::Success;
+}
+
 ParseStatus RVMinAsmParser::parseDirective(AsmToken DirectiveID) {
   // The generic parser knows .byte/.4byte/.8byte; provide the GNU spellings
   // used by hand-written RISC-V assembly.
@@ -415,6 +485,17 @@ ParseStatus RVMinAsmParser::parseDirective(AsmToken DirectiveID) {
 }
 
 bool RVMinAsmParser::parseOperand(OperandVector &Operands, StringRef Mnemonic) {
+  // Chapter 46: operands whose grammar is target-specific (currently only the
+  // CSR name-or-number operand) get the first chance.  The generated matcher
+  // knows from the mnemonic which operand classes have a custom parser, so
+  // this is a no-op for every instruction that has none.
+  ParseStatus Custom =
+      MatchOperandParserImpl(Operands, Mnemonic, /*ParseForAllFeatures=*/true);
+  if (Custom.isSuccess())
+    return false;
+  if (Custom.isFailure())
+    return true;
+
   if (parseRegister(Operands).isSuccess())
     return false;
 
@@ -520,6 +601,12 @@ bool RVMinAsmParser::matchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
   }
   case Match_MnemonicFail:
     return Error(IDLoc, "invalid instruction mnemonic");
+  case Match_InvalidCSRSystemRegister: {
+    SMLoc Loc = IDLoc;
+    if (ErrorInfo != ~0U && ErrorInfo < Operands.size())
+      Loc = Operands[ErrorInfo]->getStartLoc();
+    return Error(Loc, "expected a CSR name or a 12-bit CSR number");
+  }
   case Match_InvalidOperand: {
     SMLoc Loc = IDLoc;
     if (ErrorInfo != ~0U) {

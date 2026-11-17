@@ -363,12 +363,12 @@ RVMin 的顶层 `RVMin.td` 只写了 6 个 target 配置字段，它们全部不
 
 | 文件:行 | 字段 | 契约状态 |
 | --- | --- | --- |
-| `llvm/lib/Target/RVMin/RVMin.td:128` | `AsmWriterClassName` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMin.td:135` | `ShouldEmitMatchRegisterAltName` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMin.td:136` | `AllowDuplicateRegisterNames` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMin.td:144` | `InstructionSet` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMin.td:145` | `AssemblyParsers` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMin.td:146` | `AssemblyWriters` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMin.td:148` | `AsmWriterClassName` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMin.td:155` | `ShouldEmitMatchRegisterAltName` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMin.td:156` | `AllowDuplicateRegisterNames` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMin.td:164` | `InstructionSet` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMin.td:165` | `AssemblyParsers` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMin.td:166` | `AssemblyWriters` | 不在本后端契约（其它后端消费或拼写错误） |
 
 共 6 处使用；契约外 6 处。
 <!-- END: GENERATED TD USAGE -->

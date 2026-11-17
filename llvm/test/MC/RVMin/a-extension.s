@@ -29,7 +29,7 @@ amominu.w a0, a2, (a1)
 amomaxu.w a0, a2, (a1)
 amoadd.w.aqrl a0, a2, (a1)
 fence
-fence.i
+# Chapter 46 moved fence.i to Zifencei; see zicsr.s.
 
 # CHECK: lr.w a0, (a1)                        # encoding: [0x2f,0xa5,0x05,0x10]
 # CHECK-NEXT: lr.w.aq a0, (a1)                # encoding: [0x2f,0xa5,0x05,0x14]
@@ -48,7 +48,6 @@ fence.i
 # CHECK-NEXT: amomaxu.w a0, a2, (a1)          # encoding: [0x2f,0xa5,0xc5,0xe0]
 # CHECK-NEXT: amoadd.w.aqrl a0, a2, (a1)      # encoding: [0x2f,0xa5,0xc5,0x06]
 # CHECK-NEXT: fence                           # encoding: [0x0f,0x00,0xf0,0x0f]
-# CHECK-NEXT: fence.i                         # encoding: [0x0f,0x10,0x00,0x00]
 
 # Without +a the assembler must name the missing feature instead of silently
 # accepting the mnemonic.
@@ -63,11 +62,8 @@ fence.i
 0x2f 0xa5 0xc5 0x00
 # fence
 0x0f 0x00 0xf0 0x0f
-# fence.i
-0x0f 0x10 0x00 0x00
 
 # DIS: {{^}}	lr.w a0, (a1){{$}}
 # DIS-NEXT: {{^}}	sc.w.aqrl a0, a2, (a1){{$}}
 # DIS-NEXT: {{^}}	amoadd.w a0, a2, (a1){{$}}
 # DIS-NEXT: {{^}}	fence{{$}}
-# DIS-NEXT: {{^}}	fence.i{{$}}

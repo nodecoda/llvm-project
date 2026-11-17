@@ -109,6 +109,12 @@ git checkout rvmin-ch16     # 第 16 章（大栈帧）结束
 | 44 | [压缩代码生成](docs/44-c-compression.md) | 完成 |
 | 45 | [第五篇验收：C 全链路](docs/45-c-acceptance.md) | 完成 |
 
+### 第六篇：CSR 与向量（46–50）
+
+| 章 | 主题 | 状态 |
+| --- | --- | --- |
+| 46 | [Zicsr 与 Zifencei](docs/46-zicsr-zifencei.md) | 完成 |
+
 ## 当前限制（上篇结束时，第 14 章）
 
 - i32 的算术/逻辑/移位/比较、分支、栈对象、load/store、全局数据与字符串、

@@ -9,6 +9,7 @@
 #ifndef LLVM_LIB_TARGET_RVMIN_MCTARGETDESC_RVMINMCTARGETDESC_H
 #define LLVM_LIB_TARGET_RVMIN_MCTARGETDESC_RVMINMCTARGETDESC_H
 
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/DataTypes.h"
 
 #include <memory>
@@ -34,6 +35,17 @@ MCAsmBackend *createRVMinMCAsmBackend(const Target &T,
 
 std::unique_ptr<MCObjectTargetWriter>
 createRVMinELFObjectWriter(uint8_t OSABI);
+
+namespace rvmin {
+/// Chapter 46: the CSR name table.  Assembly accepts either one of these names
+/// or a raw 12-bit number; the printer prefers the name, which is what keeps
+/// `asm -> obj -> asm` readable and byte-identical.
+bool parseCSRName(StringRef Name, unsigned &Encoding);
+
+/// Return the canonical name for a CSR encoding, or an empty StringRef when
+/// the encoding is not in the table.
+StringRef getCSRName(unsigned Encoding);
+} // namespace rvmin
 } // namespace llvm
 
 #define GET_REGINFO_ENUM

@@ -26,4 +26,5 @@
         amomaxu.w   a0, a2, (a1)
         amoadd.w.aqrl a0, a2, (a1)
         fence
-        fence.i
+# Chapter 46 moved fence.i out of A into Zifencei; the instruction now lives
+# in rvmin-zicsr-encoding-corpus.s and is gated by +zifencei, not +a.

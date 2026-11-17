@@ -24,13 +24,22 @@
 
 using namespace llvm;
 
+#define PRINT_ALIAS_INSTR
 #include "RVMinGenAsmWriter.inc"
 
 void RVMinInstPrinter::printInst(const MCInst *MI, uint64_t Address,
                                  StringRef Annot, const MCSubtargetInfo &STI,
                                  raw_ostream &O) {
-  printInstruction(MI, Address, STI, O);
-  printAnnotation(O, Annot);
+  // Chapter 46: InstAlias records let the printer spell the standard
+  // pseudo-instructions (`csrr`, `csrw`, ...) instead of the canonical
+  // `csrrs rd, csr, zero` form.  Try the alias table first; without a match,
+  // fall back to the instruction's own AsmString.
+  if (printAliasInstr(MI, Address, STI, O))
+    printAnnotation(O, Annot);
+  else {
+    printInstruction(MI, Address, STI, O);
+    printAnnotation(O, Annot);
+  }
 }
 
 void RVMinInstPrinter::printRegName(raw_ostream &O, MCRegister Reg) {
@@ -53,6 +62,24 @@ void RVMinInstPrinter::printOperand(const MCInst *MI, unsigned OpNo,
   }
 
   assert(MO.isExpr() && "unknown operand kind in printOperand");
+  MAI.printExpr(O, *MO.getExpr());
+}
+
+void RVMinInstPrinter::printCSRSystemRegister(const MCInst *MI, unsigned OpNo,
+                                              const MCSubtargetInfo &STI,
+                                              raw_ostream &O) {
+  const MCOperand &MO = MI->getOperand(OpNo);
+  if (MO.isImm()) {
+    unsigned Encoding = static_cast<unsigned>(MO.getImm()) & 0xFFF;
+    StringRef Name = rvmin::getCSRName(Encoding);
+    if (!Name.empty())
+      O << Name;
+    else
+      O << Encoding;
+    return;
+  }
+
+  assert(MO.isExpr() && "unknown operand kind in printCSRSystemRegister");
   MAI.printExpr(O, *MO.getExpr());
 }
 

@@ -10,9 +10,9 @@
 //
 // The class is deliberately thin: everything about ILP32 data layout, the
 // calling convention and the __riscv* macros comes from RISCV32TargetInfo.
-// What changes is the feature surface: RVMin only implements RV32I plus
-// M/Zbb/Zbs/A, so everything else must either be ignored (+i, +zicsr,
-// +zifencei, +relax) or diagnosed (C/F/D/V and the rest).
+// What changes is the feature surface: RVMin implements RV32I plus
+// M/Zbb/Zbs/A/C/F/D and, since chapter 46, Zicsr/Zifencei.  Everything else
+// must either be ignored (+i, +relax) or diagnosed (V and the rest).
 //
 //===----------------------------------------------------------------------===//
 
@@ -60,7 +60,7 @@ bool RVMinTargetInfo::isValidCPUName(StringRef Name) const {
   return llvm::is_contained(
       {"generic-rv32", "generic-rv32-m", "generic-rv32-a", "generic-rv32-f",
        "generic-rv32-d", "generic-rv32-zbb", "generic-rv32-zbs",
-       "generic-rv32-c"},
+       "generic-rv32-c", "generic-rv32-zicsr", "generic-rv32-zifencei"},
       Name);
 }
 
@@ -74,6 +74,8 @@ void RVMinTargetInfo::fillValidCPUList(
   Values.push_back("generic-rv32-zbb");
   Values.push_back("generic-rv32-zbs");
   Values.push_back("generic-rv32-c");
+  Values.push_back("generic-rv32-zicsr");
+  Values.push_back("generic-rv32-zifencei");
 }
 
 static bool isRVMinExtension(StringRef Ext) {
@@ -131,16 +133,17 @@ bool RVMinTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
   }
 
   // The RISC-V driver emits a long "-<ext>" list to switch off every optional
-  // extension, plus spellings such as +i/+zicsr/+zifencei/+relax that RVMin
-  // does not model.  Keep only the features the backend actually implements;
-  // this vector is what ends up in every function's target-features
-  // attribute, so leaking the rest would make the backend warn on each run.
+  // extension, plus spellings such as +i/+relax that RVMin does not model.
+  // Keep only the features the backend actually implements; this vector is
+  // what ends up in every function's target-features attribute, so leaking
+  // the rest would make the backend warn on each run.
   llvm::erase_if(Features, [](const std::string &F) {
     StringRef Name = F;
     if (!Name.consume_front("+"))
       return true;
     return Name != "m" && Name != "a" && Name != "f" && Name != "d" &&
-           Name != "c" && Name != "zbb" && Name != "zbs";
+           Name != "c" && Name != "zbb" && Name != "zbs" &&
+           Name != "zicsr" && Name != "zifencei";
   });
   return true;
 }

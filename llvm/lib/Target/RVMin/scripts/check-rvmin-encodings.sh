@@ -145,7 +145,7 @@ AC="$HERE/rvmin-a-encoding-corpus.s"
 extract "$TMP/rvmin-a.txt" > "$TMP/rvmin-a.enc"
 extract "$TMP/ref-a.txt" > "$TMP/ref-a.enc"
 NA=$(wc -l < "$TMP/rvmin-a.enc")
-[[ "$NA" -eq 20 ]] || fail "A corpus produced $NA encodings, want 20"
+[[ "$NA" -eq 19 ]] || fail "A corpus produced $NA encodings, want 19 (fence.i moved to Zifencei in chapter 46)"
 diff -u "$TMP/ref-a.enc" "$TMP/rvmin-a.enc" > "$TMP/diff-a.txt" \
   || { head -20 "$TMP/diff-a.txt" >&2; fail "A encoding mismatch between rvmin and riscv32"; }
 
@@ -216,9 +216,40 @@ fi
 grep -q "'C' (Compressed)" "$TMP/no-c.err" \
   || fail "missing C diagnostic without +c"
 
+# 2k. Zicsr + Zifencei (chapter 46).  This corpus mixes the six canonical CSR
+# instructions, their aliases (csrr/csrw/csrs/csrc/csrwi/csrsi/csrci), named
+# and numeric CSRs, and fence.i.  The negative checks assemble a fence.i-only
+# file without +zifencei and the CSR-only part without +zicsr, so each feature
+# is proven to gate exactly its own instructions.
+ZC="$HERE/rvmin-zicsr-encoding-corpus.s"
+"$BIN/llvm-mc" -triple=rvmin -mattr=+zicsr,+zifencei,+f -show-encoding "$ZC" > "$TMP/rvmin-z.txt"
+"$BIN/llvm-mc" -triple=riscv32 -mattr=+zicsr,+zifencei,+f -show-encoding "$ZC" > "$TMP/ref-z.txt"
+extract "$TMP/rvmin-z.txt" > "$TMP/rvmin-z.enc"
+extract "$TMP/ref-z.txt" > "$TMP/ref-z.enc"
+NZC=$(wc -l < "$TMP/rvmin-z.enc")
+[[ "$NZC" -eq 24 ]] || fail "Zicsr/Zifencei corpus produced $NZC encodings, want 24"
+diff -u "$TMP/ref-z.enc" "$TMP/rvmin-z.enc" > "$TMP/diff-z.txt" \
+  || { head -20 "$TMP/diff-z.txt" >&2; fail "CSR encoding mismatch between rvmin and riscv32"; }
+
+grep -v 'fence\.i' "$ZC" > "$TMP/zicsr-only.s"
+if "$BIN/llvm-mc" -triple=rvmin -mattr=+f -filetype=obj "$TMP/zicsr-only.s" \
+     -o "$TMP/no-zicsr.o" > /dev/null 2> "$TMP/no-zicsr.err"; then
+  fail "llvm-mc -triple=rvmin accepted CSR instructions without +zicsr"
+fi
+grep -q "'Zicsr' (Control and Status Register Instructions)" "$TMP/no-zicsr.err" \
+  || fail "missing Zicsr diagnostic without +zicsr"
+
+echo 'fence.i' > "$TMP/zifencei-only.s"
+if "$BIN/llvm-mc" -triple=rvmin -mattr=+a -filetype=obj "$TMP/zifencei-only.s" \
+     -o "$TMP/no-zifencei.o" > /dev/null 2> "$TMP/no-zifencei.err"; then
+  fail "llvm-mc -triple=rvmin accepted fence.i without +zifencei (A must not imply it)"
+fi
+grep -q "'Zifencei' (Instruction-Fetch Fence)" "$TMP/no-zifencei.err" \
+  || fail "missing Zifencei diagnostic without +zifencei"
+
 # 3. ELF identification.
 MACHINE=$("$BIN/llvm-readelf" -h "$TMP/rvmin.o" | awk -F: '/Machine:/ {gsub(/^ +| +$/, "", $2); print $2}')
 [[ "$MACHINE" == "RISC-V" ]] || fail "ELF machine is '$MACHINE', want RISC-V"
 
-echo "PASS: $N RV32I + $NM M + $NZB Zbb + $NZS Zbs + $NA A + $NF F + $ND D + $NC C instructions, .text identical"
+echo "PASS: $N RV32I + $NM M + $NZB Zbb + $NZS Zbs + $NA A + $NF F + $ND D + $NC C + $NZC Zicsr/Zifencei instructions, .text identical"
 echo "      (incl. label fixups and %hi/%lo), ELF machine RISC-V, missing-feature diagnostic OK"

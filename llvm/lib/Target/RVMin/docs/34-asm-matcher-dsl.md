@@ -514,12 +514,12 @@ Record 里只有声明；这些是共享 C++ 在投影之前对语义的改写�
 
 | 文件:行 | 字段 | 契约状态 |
 | --- | --- | --- |
-| `llvm/lib/Target/RVMin/RVMin.td:128` | `AsmWriterClassName` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMin.td:135` | `ShouldEmitMatchRegisterAltName` | 消费（project） |
-| `llvm/lib/Target/RVMin/RVMin.td:136` | `AllowDuplicateRegisterNames` | 消费（project） |
-| `llvm/lib/Target/RVMin/RVMin.td:144` | `InstructionSet` | 不在本后端契约（其它后端消费或拼写错误） |
-| `llvm/lib/Target/RVMin/RVMin.td:145` | `AssemblyParsers` | 消费（derive） |
-| `llvm/lib/Target/RVMin/RVMin.td:146` | `AssemblyWriters` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMin.td:148` | `AsmWriterClassName` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMin.td:155` | `ShouldEmitMatchRegisterAltName` | 消费（project） |
+| `llvm/lib/Target/RVMin/RVMin.td:156` | `AllowDuplicateRegisterNames` | 消费（project） |
+| `llvm/lib/Target/RVMin/RVMin.td:164` | `InstructionSet` | 不在本后端契约（其它后端消费或拼写错误） |
+| `llvm/lib/Target/RVMin/RVMin.td:165` | `AssemblyParsers` | 消费（derive） |
+| `llvm/lib/Target/RVMin/RVMin.td:166` | `AssemblyWriters` | 不在本后端契约（其它后端消费或拼写错误） |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:12` | `FallbackRegAltNameIndex` | 不在本后端契约（其它后端消费或拼写错误） |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:17` | `Namespace` | 消费（derive+project） |
 | `llvm/lib/Target/RVMin/RVMinRegisterInfo.td:18` | `HWEncoding` | 寄存器编码；`-gen-register-info` 消费。 |
