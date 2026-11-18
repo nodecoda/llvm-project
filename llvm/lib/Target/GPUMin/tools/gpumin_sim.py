@@ -13,11 +13,13 @@ at a time with the state ownership frozen in chapter 11:
     global / constant    per grid
 
 Chapter 12 uses it to run vecadd and the chapter 05/06/07/09 samples.  The
-kernel launch ABI is still the temporary "arguments in r4-r11" form; chapter
-13 replaces it with the launch descriptor.
+legacy "arguments in r4-r11" form stays for those samples; chapter 13 adds
+`--launch`, which writes an argument block into global memory and exposes its
+address through `sr.args` (backed by ur0).
 """
 
 import argparse
+import json
 import struct
 import sys
 
@@ -239,11 +241,12 @@ class Lane:
 
 
 class Warp:
-    def __init__(self, lanes, pc):
+    def __init__(self, lanes, pc, ur0=0):
         self.lanes = lanes
         self.pc = pc
         self.mask = (1 << len(lanes)) - 1
         self.ur = [0] * 8
+        self.ur[0] = ur0            # chapter 13: args pointer
 
     def active_lanes(self):
         return [i for i in range(len(self.lanes)) if self.mask & (1 << i)]
@@ -316,6 +319,8 @@ class Simulator:
         self.model = Model()
         self.registers = {}
         self.dumps = []
+        self.args_addr = None
+        self.launch_dumps = []
 
     def find(self, name):
         if name not in self.image.symbols:
@@ -324,6 +329,51 @@ class Simulator:
         if sym["value"] < self.image.text_addr:
             raise SimError("symbol %s is not in .text" % name)
         return (sym["value"] - self.image.text_addr) // 4
+
+    def apply_launch(self, desc):
+        if not isinstance(desc, dict):
+            raise SimError("launch descriptor must be a JSON object")
+        if desc.get("grid_dims", 1) != 1:
+            raise SimError("only a 1D grid is supported")
+        grid = desc.get("grid", 1)
+        block = desc.get("block", self.threads)
+        if not isinstance(grid, int) or isinstance(grid, bool) or grid < 1:
+            raise SimError("launch grid must be a positive integer")
+        if (not isinstance(block, int) or isinstance(block, bool) or
+                block % WARP_SIZE or not 8 <= block <= 32):
+            raise SimError("launch block must be a multiple of 8 in 8..32")
+        self.blocks = grid
+        self.threads = block
+        self.nwarps = block // WARP_SIZE
+
+        args = desc.get("args", [])
+        if not isinstance(args, list):
+            raise SimError("launch args must be a list of words")
+        args_addr = desc.get("args_addr", 0x100)
+        if (not isinstance(args_addr, int) or isinstance(args_addr, bool) or
+                args_addr < 0 or args_addr % 4):
+            raise SimError("args_addr must be a non-negative aligned integer")
+        if args_addr + 4 * len(args) > len(self.memory.global_mem):
+            raise SimError("launch args do not fit in global memory")
+        for i, value in enumerate(args):
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise SimError("launch args must be integers")
+            self.memory.global_mem[args_addr + 4 * i:
+                                   args_addr + 4 * i + 4] = \
+                (value & MASK32).to_bytes(4, "little")
+        self.args_addr = args_addr
+
+        for spec in desc.get("fill", []):
+            try:
+                self.fill(int(spec["addr"]), int(spec["start"]),
+                          int(spec["step"]), int(spec["count"]))
+            except (KeyError, TypeError, ValueError):
+                raise SimError("launch fill entries need addr/start/step/count")
+        for spec in desc.get("dump", []):
+            try:
+                self.launch_dumps.append((int(spec["addr"]), int(spec["count"])))
+            except (KeyError, TypeError, ValueError):
+                raise SimError("launch dump entries need addr/count")
 
     def fill(self, addr, start, step, count):
         for i in range(count):
@@ -350,7 +400,7 @@ class Simulator:
                 for i, value in enumerate(args):
                     for lane in lanes:
                         lane.write_r(4 + i, value)
-                warps.append(Warp(lanes, entry))
+                warps.append(Warp(lanes, entry, self.args_addr or 0))
             self._run_block(warps)
 
     def _run_block(self, warps):
@@ -359,7 +409,11 @@ class Simulator:
         for warp in warps:
             self._run_warp(warp)
 
-    def _special(self, lane, name, mask):
+    def _special(self, warp, lane, name, mask):
+        if name == "args":
+            if self.args_addr is None:
+                raise SimError("sr.args read without a launch descriptor")
+            return warp.ur[0]
         return {
             "laneid": lane.laneid,
             "warpid": lane.warpid,
@@ -528,12 +582,14 @@ class Simulator:
                             raise SimError("ret with lr=0 at pc=%d" % pc)
                     warp.pc = warp.lanes[warp.active_lanes()[0]].read_r(31)
                     continue
-                names = {v: k for k, v in Model().special_funct.items()}
+                names = {v: k for k, v in self.model.special_funct.items()}
+                names[self.model.args_funct] = "args"
                 if funct in names:
                     name = names[funct]
                     for i in warp.active_lanes():
                         lane = warp.lanes[i]
-                        lane.write_r(rd, self._special(lane, name, warp.mask))
+                        lane.write_r(rd, self._special(warp, lane, name,
+                                                       warp.mask))
                     warp.pc += 1
                     continue
                 raise SimError("unknown SYS funct %d at pc=%d" % (funct, pc))
@@ -553,7 +609,9 @@ def main(argv=None):
     ap.add_argument("--blocks", type=parse_int, default=1)
     ap.add_argument("--threads", type=parse_int, default=32)
     ap.add_argument("--arg", action="append", type=parse_int, default=[],
-                    help="kernel argument for r4, r5, ... (repeatable)")
+                    help="legacy kernel argument for r4, r5, ... (repeatable)")
+    ap.add_argument("--launch", metavar="FILE",
+                    help="JSON launch descriptor (grid/block/args)")
     ap.add_argument("--fill", action="append", default=[],
                     metavar="ADDR=START,STEP,COUNT",
                     help="fill COUNT words at byte ADDR with START + i*STEP")
@@ -572,15 +630,27 @@ def main(argv=None):
         if args.dump_text:
             for i in range(len(image.text_bytes) // 4):
                 print("%08x" % image.word(i))
+        if args.launch and args.arg:
+            ap.error("--launch and --arg describe different kernel ABIs")
         sim = Simulator(image, blocks=args.blocks,
                         threads=args.threads, trace=args.trace,
                         max_steps=args.max_steps)
+        if args.launch:
+            try:
+                with open(args.launch, encoding="utf-8") as f:
+                    sim.apply_launch(json.load(f))
+            except json.JSONDecodeError as e:
+                raise SimError("bad launch JSON: %s" % e)
         for spec in args.fill:
             addr_text, rest = spec.split("=", 1)
             start, step, count = (parse_int(x) for x in rest.split(","))
             sim.fill(parse_int(addr_text), start, step, count)
         if args.kernel:
             sim.run(args.kernel, args.arg)
+        for addr, count in sim.launch_dumps:
+            words = sim.dump(addr, count)
+            print(" ".join("%d" % w if w < 2**31 else "%d" % s32(w)
+                           for w in words))
         for spec in args.dump:
             addr_text, count = spec.split("=", 1)
             words = sim.dump(parse_int(addr_text), parse_int(count))

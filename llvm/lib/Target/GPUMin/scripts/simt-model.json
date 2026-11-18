@@ -30,5 +30,11 @@
     { "id": 2, "name": "shared", "scope": "block", "readonly": false },
     { "id": 3, "name": "private", "scope": "lane", "readonly": false },
     { "id": 4, "name": "constant", "scope": "grid", "readonly": true }
-  ]
+  ],
+  "launch": {
+    "args_funct": 9,
+    "args_register": "ur0",
+    "grid_dims": 1,
+    "max_threads_per_block": 32
+  }
 }

@@ -43,6 +43,14 @@ class Model:
     def special_funct(self):
         return {r["name"]: r["funct"] for r in self.data["special_registers"]}
 
+    @property
+    def launch(self):
+        return self.data["launch"]
+
+    @property
+    def args_funct(self):
+        return self.data["launch"]["args_funct"]
+
     # --- thread identity -------------------------------------------------
     def laneid(self, tid):
         return tid % self.warp_size
@@ -115,6 +123,10 @@ class Model:
                          "nwarps", "activemask"}
         assert self.data["sys_funct"]["exit"] == 0
         assert self.data["sys_funct"]["ret"] == 1
+        assert self.args_funct == 9
+        assert self.launch["args_register"] == "ur0"
+        assert self.launch["grid_dims"] == 1
+        assert self.launch["max_threads_per_block"] == self.threads_per_block
         return True
 
     def check_doc(self, path):
@@ -158,7 +170,10 @@ def main(argv=None):
         print("OK: SIMT model matches " + args.check_doc)
         return 0
     if args.encoding:
-        funct = model.special_funct[args.encoding]
+        if args.encoding == "args":
+            funct = model.args_funct
+        else:
+            funct = model.special_funct[args.encoding]
         word = (0x12 << 26) | (1 << 21) | funct
         print(",".join(f"0x{(word >> (8 * i)) & 0xFF:02x}" for i in range(4)))
         return 0

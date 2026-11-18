@@ -12,6 +12,7 @@
 # CHECK: sr.ntid r1            # encoding: [0x06,0x00,0x20,0x48]
 # CHECK: sr.nwarps r1          # encoding: [0x07,0x00,0x20,0x48]
 # CHECK: sr.activemask r1      # encoding: [0x08,0x00,0x20,0x48]
+# CHECK: sr.args r1            # encoding: [0x09,0x00,0x20,0x48]
 sr.laneid r1
 sr.warpid r1
 sr.blockid r1
@@ -19,6 +20,7 @@ sr.tid r1
 sr.ntid r1
 sr.nwarps r1
 sr.activemask r1
+sr.args r1
 
 # The destination is the ordinary 5-bit GPR field.
 # CHECK: sr.laneid r7          # encoding: [0x02,0x00,0xe0,0x48]
@@ -34,5 +36,6 @@ sr.activemask r31
 # DIS: sr.ntid r1
 # DIS: sr.nwarps r1
 # DIS: sr.activemask r1
+# DIS: sr.args r1
 # DIS: sr.laneid r7
 # DIS: sr.activemask r31

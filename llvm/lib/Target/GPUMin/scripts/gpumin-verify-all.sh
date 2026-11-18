@@ -5,9 +5,9 @@
 # Usage: gpumin-verify-all.sh <llvm-bin-dir>
 #
 # Gates 1-5 and 8 are the static surface fixed by chapter 10.  Gates 6 and 7
-# are wired in here from the start but report SKIP until the simulator
-# (chapter 12) and the scheduling model (chapter 18) exist; the MVP stop
-# condition is 8/8, not "the static part still builds".
+# are wired in here from the start but report SKIP until the simulator and
+# launch code (chapters 12-13) and the scheduling model (chapter 18) exist;
+# the MVP stop condition is 8/8, not "the static part still builds".
 #
 set -uo pipefail
 
@@ -95,16 +95,24 @@ else
   fail 5 "static e2e (llc/llvm-mc failed)"
 fi
 
-# --- 6. simulator e2e -----------------------------------------------------
-if [ -x "$HERE/check-ch12.sh" ]; then
-  if "$HERE/check-ch12.sh" "$BIN" > "$TMP/ch12.log" 2>&1; then
-    pass 6 "simulator e2e"
+# --- 6. simulator and launch e2e -----------------------------------------
+if [ -x "$HERE/check-ch12.sh" ] || [ -x "$HERE/check-ch13.sh" ]; then
+  ok6=1
+  for gate in check-ch12.sh check-ch13.sh; do
+    if [ -x "$HERE/$gate" ]; then
+      if ! "$HERE/$gate" "$BIN" > "$TMP/$gate.log" 2>&1; then
+        cat "$TMP/$gate.log" >&2
+        ok6=0
+      fi
+    fi
+  done
+  if [ "$ok6" = 1 ]; then
+    pass 6 "simulator and launch e2e"
   else
-    cat "$TMP/ch12.log" >&2
-    fail 6 "simulator e2e"
+    fail 6 "simulator and launch e2e"
   fi
 else
-  skip 6 "simulator e2e arrives with chapter 12"
+  skip 6 "simulator and launch e2e arrive with chapters 12-13"
 fi
 
 # --- 7. scheduling / occupancy -------------------------------------------
@@ -172,6 +180,8 @@ done
 [ -x "$HERE/check-ch11.sh" ] || { echo "missing gate 11" >&2; ok=0; }
 [ -f "$HERE/../docs/12-"*.md ] || { echo "missing doc 12" >&2; ok=0; }
 [ -x "$HERE/check-ch12.sh" ] || { echo "missing gate 12" >&2; ok=0; }
+[ -f "$HERE/../docs/13-"*.md ] || { echo "missing doc 13" >&2; ok=0; }
+[ -x "$HERE/check-ch13.sh" ] || { echo "missing gate 13" >&2; ok=0; }
 
 missing=$(grep -L '退出条件' "$HERE/../docs"/[0-9][0-9]-*.md || true)
 if [ -n "$missing" ]; then

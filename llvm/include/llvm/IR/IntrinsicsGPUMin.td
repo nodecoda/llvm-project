@@ -43,6 +43,12 @@ let TargetPrefix = "gpumin" in { // All intrinsics start with "llvm.gpumin.".
                                     [IntrNoMem, IntrSpeculatable,
                                      IntrWillReturn]>;
 
+  // Address of the launch descriptor's argument block.  The launcher writes
+  // it into the uniform register ur0; the read is uniform across the warp.
+  def int_gpumin_args : Intrinsic<[llvm_i32_ty], [],
+                                  [IntrNoMem, IntrSpeculatable,
+                                   IntrWillReturn]>;
+
   // One bit per lane: bit i is set when lane i is active in the current warp.
   // Deliberately *not* IntrSpeculatable: the mask changes when a warp
   // diverges (chapter 14), so hoisting the read out of a branch would observe

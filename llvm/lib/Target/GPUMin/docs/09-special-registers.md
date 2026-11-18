@@ -6,14 +6,15 @@
 一类**不是普通值**的输入——这条 lane 是谁、它属于哪个 warp、哪个 block、
 同 warp 里还有哪些 lane 活着。本章把这些状态接进 GM32：
 
-1. 七个只读特殊寄存器：`laneid`、`warpid`、`blockid`、`tid`、`ntid`、
-   `nwarps`、`activemask`；
+1. 七个 SIMT 身份特殊寄存器：`laneid`、`warpid`、`blockid`、`tid`、`ntid`、
+   `nwarps`、`activemask`；第 13 章在同一编码空间追加 `sr.args`
+   （launch 参数块指针，来自 `ur0`）；
 2. IR 入口是 target intrinsic：`llvm.gpumin.laneid()` 等，返回 `i32`；
 3. 每个 selector 是 SYS opcode（`0x12`）的一个独立 `funct`，汇编写作
    `sr.<name> rd`，例如 `sr.laneid r1`；
 4. `activemask` 是 **i32 位图**，bit i 表示 lane i 是否活跃，不是谓词
    寄存器；全活跃时教学配置下是 `0xff`；
-5. 七个读都是纯操作，同一区域里的重复读会 CSE；但 `activemask` 故意
+5. 这些读都是纯操作，同一区域里的重复读会 CSE；但 `activemask` 故意
    不标 `IntrSpeculatable`，避免被提出分歧区域；
 6. MC 编码、反汇编、CodeGen 选择、内核 `exit` 全部有测试。
 
@@ -96,6 +97,7 @@ active mask 是**整个 warp 共享**的位图。把 0xff 写进 `p0` 只会得�
 | 6 | `sr.ntid` | block 内线程数 |
 | 7 | `sr.nwarps` | block 内 warp 数 |
 | 8 | `sr.activemask` | warp 活跃 lane 位图 |
+| 9 | `sr.args` | launch 参数块指针（第 13 章，读 `ur0`） |
 
 备选方案是一条通用 `sr rd, n`，`n` 是 5 位 selector。它少七条指令定义，
 但需要给汇编器写一个自定义操作数（解析 `laneid`/`warpid` 这些标识符），

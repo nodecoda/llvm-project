@@ -12,6 +12,7 @@ declare i32 @llvm.gpumin.tid()
 declare i32 @llvm.gpumin.ntid()
 declare i32 @llvm.gpumin.nwarps()
 declare i32 @llvm.gpumin.activemask()
+declare i32 @llvm.gpumin.args()
 
 define i32 @laneid() {
 ; CHECK-LABEL: laneid:
@@ -100,3 +101,11 @@ define void @kernel_ids() #0 {
 }
 
 attributes #0 = { "gpumin_kernel" }
+
+define i32 @args() {
+; CHECK-LABEL: args:
+; CHECK:       sr.args r4
+; CHECK:       ret
+  %v = call i32 @llvm.gpumin.args()
+  ret i32 %v
+}
