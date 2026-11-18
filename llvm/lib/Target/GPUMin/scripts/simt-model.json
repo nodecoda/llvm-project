@@ -38,6 +38,11 @@
     "grid_dims": 1,
     "max_threads_per_block": 32
   },
+  "barrier": {
+    "name": "bar.sync",
+    "funct": 11,
+    "scope": "block"
+  },
   "shared": {
     "window_base": 0,
     "bytes_per_block": 49152,

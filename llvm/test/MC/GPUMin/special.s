@@ -24,6 +24,10 @@ sr.activemask r1
 sr.args r1
 sr.shared r1
 
+# Chapter 17: the block barrier is SYS funct 11 with no operands.
+# CHECK: bar.sync              # encoding: [0x0b,0x00,0x00,0x48]
+bar.sync
+
 # The destination is the ordinary 5-bit GPR field.
 # CHECK: sr.laneid r7          # encoding: [0x02,0x00,0xe0,0x48]
 # CHECK: sr.activemask r31     # encoding: [0x08,0x00,0xe0,0x4b]
@@ -40,5 +44,6 @@ sr.activemask r31
 # DIS: sr.activemask r1
 # DIS: sr.args r1
 # DIS: sr.shared r1
+# DIS: bar.sync
 # DIS: sr.laneid r7
 # DIS: sr.activemask r31

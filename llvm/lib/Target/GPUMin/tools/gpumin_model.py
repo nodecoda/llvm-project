@@ -52,6 +52,14 @@ class Model:
         return self.data["launch"]["args_funct"]
 
     @property
+    def barrier_funct(self):
+        # Chapter 17: SYS funct 11, the value the opcode map reserved in
+        # chapter 02.  The barrier has no operands, so the whole instruction
+        # is "SYS with this funct"; an id can be added later without moving
+        # the existing encoding.
+        return self.data["barrier"]["funct"]
+
+    @property
     def shared_base(self):
         # The MVP launcher places every block's shared window at offset 0; the
         # register exists so kernels never bake that number in.
@@ -136,6 +144,8 @@ class Model:
         assert self.data["sys_funct"]["exit"] == 0
         assert self.data["sys_funct"]["ret"] == 1
         assert self.args_funct == 9
+        assert self.barrier_funct == 11
+        assert self.data["barrier"]["scope"] == "block"
         assert self.launch["args_register"] == "ur0"
         assert self.launch["grid_dims"] == 1
         assert self.launch["max_threads_per_block"] == self.threads_per_block
@@ -185,6 +195,10 @@ def main(argv=None):
         print("OK: SIMT model matches " + args.check_doc)
         return 0
     if args.encoding:
+        if args.encoding == "barrier":
+            word = (0x12 << 26) | model.barrier_funct
+            print(",".join(f"0x{(word >> (8 * i)) & 0xFF:02x}" for i in range(4)))
+            return 0
         if args.encoding == "args":
             funct = model.args_funct
         else:

@@ -381,6 +381,17 @@ def RET : GPUMinInst<(outs), (ins), "ret", []> {
   let isTerminator = 1;
 }
 
+// Chapter 17: the block barrier.  SYS funct 11 was reserved for it in the
+// opcode map from chapter 02.  It is effectful and convergent: the DAG must
+// not merge two barriers, drop one, or move it across a branch, and the
+// machine scheduler in chapter 18 must treat it as a boundary.
+def BAR_SYNC : GPUMinInst<(outs), (ins), "bar.sync", [(int_gpumin_barrier)]> {
+  let Inst{31-26} = OPC_SYS.Value;
+  let Inst{10-0} = 11;
+  let hasSideEffects = 1;
+  let isConvergent = 1;
+}
+
 // Special register reads (chapter 09).  Each selector is a distinct funct
 // value, so `sr.laneid r1` and `sr.warpid r1` are different instructions at
 // every layer: encoder, decoder, printer and DAG matcher.

@@ -56,6 +56,12 @@ let TargetPrefix = "gpumin" in { // All intrinsics start with "llvm.gpumin.".
                                     [IntrNoMem, IntrSpeculatable,
                                      IntrWillReturn]>;
 
+  // Chapter 17: block-wide barrier.  A call returns only when every warp in
+  // the block has reached it, which is what makes shared-memory exchanges
+  // across warps well defined.  It has no value, so the node is pure chain.
+  def int_gpumin_barrier : Intrinsic<[], [], [IntrHasSideEffects,
+                                             IntrConvergent]>;
+
   // One bit per lane: bit i is set when lane i is active in the current warp.
   // The value is *not* a function of the operands (there are none): it depends
   // on which lanes are executing, so two reads on either side of a branch can

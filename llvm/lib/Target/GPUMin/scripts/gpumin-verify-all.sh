@@ -98,7 +98,7 @@ fi
 # --- 6. simulator and launch e2e -----------------------------------------
 if [ -x "$HERE/check-ch12.sh" ] || [ -x "$HERE/check-ch13.sh" ]; then
   ok6=1
-  for gate in check-ch12.sh check-ch13.sh check-ch14.sh check-ch15.sh check-ch16.sh; do
+  for gate in check-ch12.sh check-ch13.sh check-ch14.sh check-ch15.sh check-ch16.sh check-ch17.sh; do
     if [ -x "$HERE/$gate" ]; then
       if ! "$HERE/$gate" "$BIN" > "$TMP/$gate.log" 2>&1; then
         cat "$TMP/$gate.log" >&2
@@ -188,6 +188,8 @@ done
 [ -x "$HERE/check-ch15.sh" ] || { echo "missing gate 15" >&2; ok=0; }
 [ -f "$HERE/../docs/16-"*.md ] || { echo "missing doc 16" >&2; ok=0; }
 [ -x "$HERE/check-ch16.sh" ] || { echo "missing gate 16" >&2; ok=0; }
+[ -f "$HERE/../docs/17-"*.md ] || { echo "missing doc 17" >&2; ok=0; }
+[ -x "$HERE/check-ch17.sh" ] || { echo "missing gate 17" >&2; ok=0; }
 
 missing=$(grep -L '退出条件' "$HERE/../docs"/[0-9][0-9]-*.md || true)
 if [ -n "$missing" ]; then

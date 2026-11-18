@@ -99,6 +99,7 @@ active mask 是**整个 warp 共享**的位图。把 0xff 写进 `p0` 只会得�
 | 8 | `sr.activemask` | warp 活跃 lane 位图 |
 | 9 | `sr.args` | launch 参数块指针（第 13 章，读 `ur0`） |
 | 10 | `sr.shared` | block 共享窗口基址（第 16 章） |
+| 11 | `bar.sync` | block 屏障，无操作数（第 17 章） |
 
 备选方案是一条通用 `sr rd, n`，`n` 是 5 位 selector。它少八条指令定义，
 但需要给汇编器写一个自定义操作数（解析 `laneid`/`warpid` 这些标识符），

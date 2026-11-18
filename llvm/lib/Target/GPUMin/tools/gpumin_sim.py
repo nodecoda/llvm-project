@@ -250,6 +250,7 @@ class Warp:
         self.mask = self.frames[0][1]
         self.ur = [0] * 8
         self.ur[0] = ur0            # chapter 13: args pointer
+        self.steps = 0              # instructions retired by this warp
 
     def _normalize(self):
         # Frames that reached the same instruction can run together: every
@@ -343,7 +344,7 @@ class Memory:
 class Simulator:
     def __init__(self, image, *, blocks=1, threads=32, trace=False,
                  max_steps=100000, global_size=1 << 20, private_size=4096,
-                 shared_size=49152, strict_uniform=False):
+                 shared_size=49152, strict_uniform=False, schedule="interleaved"):
         if threads % WARP_SIZE or threads > 32:
             raise SimError("--threads must be a multiple of 8 and <= 32")
         self.image = image
@@ -353,6 +354,14 @@ class Simulator:
         self.trace = trace
         self.max_steps = max_steps
         self.strict_uniform = strict_uniform
+        # Chapter 17: how the block hands out issue slots.  "interleaved" runs
+        # one instruction from each warp in turn; "greedy" lets a warp run
+        # until it finishes or parks at a barrier.  Both are valid schedules,
+        # which is exactly why a program that only works under one of them is
+        # a race, not a program.
+        if schedule not in ("interleaved", "greedy"):
+            raise SimError("--schedule must be interleaved or greedy")
+        self.schedule = schedule
         self.memory = Memory(global_size, private_size, shared_size)
         self.shared = bytearray(shared_size)
         self.model = Model()
@@ -367,6 +376,7 @@ class Simulator:
             "branches": 0,
             "splits": 0,
             "frames_max": 0,
+            "barriers": 0,
         }
         self.registers = {}
         self.dumps = []
@@ -455,10 +465,43 @@ class Simulator:
             self._run_block(warps)
 
     def _run_block(self, warps):
-        # MVP: warps run to completion one after another.  The barrier chapter
-        # (17) replaces this with a block-wide scheduler.
-        for warp in warps:
-            self._run_warp(warp)
+        """Chapter 17: a block scheduler with a real barrier.
+
+        A warp either runs a slice of instructions or parks at `bar.sync`.
+        The barrier releases when every *live* warp has arrived; a warp that
+        exited no longer blocks the rest.  That choice is the model's, not the
+        hardware's: CUDA leaves the exited-lane case undefined, and this
+        simulator makes it defined so a reduction can shrink its grid.
+        """
+        n = len(warps)
+        done = [False] * n
+        waiting = [False] * n
+        while True:
+            runnable = False
+            for i, warp in enumerate(warps):
+                if done[i] or waiting[i]:
+                    continue
+                runnable = True
+                steps = 1 if self.schedule == "interleaved" else None
+                status = self._run_warp(warp, steps=steps)
+                if status == "done":
+                    done[i] = True
+                elif status == "barrier":
+                    waiting[i] = True
+            if not runnable:
+                if any(waiting):
+                    self.stats["barriers"] += 1
+                    waiting = [False] * n
+                    continue
+                return
+            # A round with nothing parked is a round where every warp either
+            # finished or ran; loop again.
+            if all(done[i] or waiting[i] for i in range(n)):
+                if any(waiting):
+                    self.stats["barriers"] += 1
+                    waiting = [False] * n
+                    continue
+                return
 
     def _special(self, warp, lane, name, mask):
         if name == "args":
@@ -480,16 +523,24 @@ class Simulator:
         """One line of chapter 15 execution statistics."""
         s = self.stats
         return ("issued=%d lane_instrs=%d loads=%d stores=%d branches=%d "
-                "splits=%d frames_max=%d" %
+                "splits=%d frames_max=%d barriers=%d" %
                 (s["issued"], s["lane_instrs"], s["loads"], s["stores"],
-                 s["branches"], s["splits"], s["frames_max"]))
+                 s["branches"], s["splits"], s["frames_max"],
+                 s["barriers"]))
 
-    def _run_warp(self, warp):
-        steps = 0
-        while steps < self.max_steps:
+    def _run_warp(self, warp, steps=None):
+        """Run until the warp finishes ("done"), parks at a barrier, or has
+        executed `steps` instructions (the interleaved scheduler passes 1)."""
+        ran = 0
+        while True:
+            if steps is not None and ran >= steps:
+                return None
+            if warp.steps >= self.max_steps:
+                raise SimError("step limit reached")
             if not warp.select():
-                return
-            steps += 1
+                return "done"
+            warp.steps += 1
+            ran += 1
             pc = warp.pc
             self.stats["issued"] += 1
             self.stats["lane_instrs"] += bin(warp.mask).count("1")
@@ -648,6 +699,11 @@ class Simulator:
                 if funct == 0:  # EXIT: only this frame's lanes end
                     warp.set_current([])
                     continue
+                if funct == self.model.barrier_funct:  # BAR.SYNC
+                    # Every lane of the warp arrives together, so the park is
+                    # whole-warp.  The scheduler decides when it leaves.
+                    warp.advance()
+                    return "barrier"
                 if funct == 1:  # RET: lanes may return to different PCs
                     groups = {}
                     for i in warp.active_lanes():
@@ -695,6 +751,9 @@ def main(argv=None):
     ap.add_argument("--dump-text", action="store_true",
                     help="print the loaded .text words as hex, one per line")
     ap.add_argument("--trace", action="store_true")
+    ap.add_argument("--schedule", choices=("interleaved", "greedy"),
+                    default="interleaved",
+                    help="block issue order (chapter 17)")
     ap.add_argument("--strict-uniform", action="store_true",
                     help="chapter 12 model: reject a divergent branch")
     ap.add_argument("--stats", action="store_true",
@@ -714,7 +773,8 @@ def main(argv=None):
         sim = Simulator(image, blocks=args.blocks,
                         threads=args.threads, trace=args.trace,
                         max_steps=args.max_steps,
-                        strict_uniform=args.strict_uniform)
+                        strict_uniform=args.strict_uniform,
+                        schedule=args.schedule)
         if args.launch:
             try:
                 with open(args.launch, encoding="utf-8") as f:

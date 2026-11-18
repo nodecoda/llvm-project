@@ -2,8 +2,8 @@
 # deliberately adds coverage; the gate fails on a mismatch so that "it still
 # compiles" cannot silently replace "the tests still exist".
 mc_lit_files=3
-codegen_lit_files=8
-chapter_docs=17
-chapter_gates=16
-e2e_programs=9
-mc_instructions=41
+codegen_lit_files=9
+chapter_docs=18
+chapter_gates=17
+e2e_programs=10
+mc_instructions=42
