@@ -65,6 +65,12 @@ private:
   Error emitReduce2D(const Op &O);
   Error emitSharedStore(const Op &O);
   Lowered emitSharedSlice(const Op &O);
+  Error emitDot(const Op &O);
+  llvm::GlobalVariable *createSharedWindow(Type TensorTy);
+  void storeSharedTile(llvm::GlobalVariable *Window, Type SrcTy,
+                       llvm::ArrayRef<LlvmValue *> Elts);
+  LlvmValue *loadSharedElem(llvm::GlobalVariable *Window, int64_t Stride,
+                            LlvmValue *Row, LlvmValue *Col, llvm::Type *ElemTy);
   void barrierIfSharedDirty();
   void maskedStore(LlvmValue *Ptr, LlvmValue *Stored, LlvmValue *Mask);
   Error emitOp(const Op &O);
@@ -265,31 +271,57 @@ void FuncEmitter::barrierIfSharedDirty() {
   SharedDirty = false;
 }
 
+llvm::GlobalVariable *FuncEmitter::createSharedWindow(Type TensorTy) {
+  llvm::ArrayRef<int64_t> Shape = TensorTy.getShape();
+  llvm::Type *ElemTy = llvmType(TensorTy.getElementType());
+  auto *SlotTy =
+      ArrayType::get(ElemTy, static_cast<uint64_t>(Shape[0] * Shape[1]));
+  std::string Name =
+      ("__gpumin_sh_" + TF.getName() + "_" + Twine(SharedCounter++)).str();
+  auto *Window =
+      new GlobalVariable(M, SlotTy, false, GlobalValue::InternalLinkage,
+                         Constant::getNullValue(SlotTy), Name, nullptr,
+                         GlobalValue::NotThreadLocal, 2);
+  Window->setAlignment(Align(4));
+  return Window;
+}
+
+void FuncEmitter::storeSharedTile(llvm::GlobalVariable *Window, Type SrcTy,
+                                  llvm::ArrayRef<LlvmValue *> Elts) {
+  int64_t Cols = SrcTy.getShape()[1];
+  auto *SlotTy = cast<ArrayType>(Window->getValueType());
+  for (unsigned I = 0; I < Elts.size(); ++I) {
+    LlvmValue *Row = coordValue(SrcTy, I, true);
+    LlvmValue *Col = coordValue(SrcTy, I, false);
+    LlvmValue *Index = B.CreateAdd(B.CreateMul(Row, B.getInt32(Cols)), Col);
+    LlvmValue *Slot = B.CreateGEP(SlotTy, Window, {B.getInt32(0), Index});
+    B.CreateStore(Elts[I], Slot);
+  }
+  SharedDirty = true;
+}
+
+LlvmValue *FuncEmitter::loadSharedElem(llvm::GlobalVariable *Window,
+                                       int64_t Stride, LlvmValue *Row,
+                                       LlvmValue *Col, llvm::Type *ElemTy) {
+  auto *SlotTy = cast<ArrayType>(Window->getValueType());
+  LlvmValue *Index = B.CreateAdd(B.CreateMul(Row, B.getInt32(Stride)), Col);
+  LlvmValue *Slot = B.CreateGEP(SlotTy, Window, {B.getInt32(0), Index});
+  return B.CreateLoad(ElemTy, Slot);
+}
+
 Error FuncEmitter::emitSharedStore(const Op &O) {
   auto It = Env.find(O.Operands[0]);
   if (It == Env.end() || !It->second.Shared)
     return createStringError(inconvertibleErrorCode(),
                              "shared_store source is not a shared handle");
-  llvm::GlobalVariable *Window = It->second.Shared;
   const Lowered &Src = Env.at(O.Operands[1]);
-  Type SrcTy = O.Operands[1]->getType();
-  int64_t Cols = SrcTy.getShape()[1];
-  auto *SlotTy = cast<ArrayType>(Window->getValueType());
-  for (unsigned I = 0; I < Src.Elts.size(); ++I) {
-    LlvmValue *Row = coordValue(SrcTy, I, true);
-    LlvmValue *Col = coordValue(SrcTy, I, false);
-    LlvmValue *Index = B.CreateAdd(B.CreateMul(Row, B.getInt32(Cols)), Col);
-    LlvmValue *Slot = B.CreateGEP(SlotTy, Window, {B.getInt32(0), Index});
-    B.CreateStore(Src.Elts[I], Slot);
-  }
-  SharedDirty = true;
+  storeSharedTile(It->second.Shared, O.Operands[1]->getType(), Src.Elts);
   return Error::success();
 }
 
 Lowered FuncEmitter::emitSharedSlice(const Op &O) {
   barrierIfSharedDirty();
   llvm::GlobalVariable *Window = Env.at(O.Operands[0]).Shared;
-  auto *SlotTy = cast<ArrayType>(Window->getValueType());
   Type HandleTy = O.Operands[0]->getType();
   int64_t Cols = HandleTy.getShape()[1];
   Type ResTy = O.Result->getType();
@@ -309,11 +341,50 @@ Lowered FuncEmitter::emitSharedSlice(const Op &O) {
                            : B.getInt32(static_cast<uint32_t>(O.Imm));
     LlvmValue *Col = IsCol ? B.getInt32(static_cast<uint32_t>(O.Imm))
                            : coordValue(ResTy, I, false);
-    LlvmValue *Index = B.CreateAdd(B.CreateMul(Row, B.getInt32(Cols)), Col);
-    LlvmValue *Slot = B.CreateGEP(SlotTy, Window, {B.getInt32(0), Index});
-    V.Elts.push_back(B.CreateLoad(ElemTy, Slot));
+    V.Elts.push_back(loadSharedElem(Window, Cols, Row, Col, ElemTy));
   }
   return V;
+}
+
+Error FuncEmitter::emitDot(const Op &O) {
+  const Lowered &ATile = Env.at(O.Operands[0]);
+  const Lowered &BTile = Env.at(O.Operands[1]);
+  const Lowered &Acc = Env.at(O.Operands[2]);
+  Type ATy = O.Operands[0]->getType();
+  Type BTy = O.Operands[1]->getType();
+  Type ResTy = O.Result->getType();
+  llvm::ArrayRef<int64_t> AS = ATy.getShape();
+  llvm::ArrayRef<int64_t> BS = BTy.getShape();
+  int64_t K = AS[1], N = BS[1];
+
+  // The dot is staging plus a rank-1 update, exactly like chapter 34's
+  // hand-written loop.  The difference is where the loop lives: here it is
+  // inside the backend, so the TTIR stays one operation.
+  llvm::GlobalVariable *WA = createSharedWindow(ATy);
+  storeSharedTile(WA, ATy, ATile.Elts);
+  llvm::GlobalVariable *WB = createSharedWindow(BTy);
+  storeSharedTile(WB, BTy, BTile.Elts);
+  barrierIfSharedDirty();
+
+  Expected<unsigned> CountOrErr = elementsPerThread(ResTy);
+  if (!CountOrErr)
+    return CountOrErr.takeError();
+  llvm::Type *ElemTy = llvmType(ResTy.getElementType());
+  Lowered V;
+  V.IsTensor = true;
+  for (unsigned I = 0; I < *CountOrErr; ++I) {
+    LlvmValue *Row = coordValue(ResTy, I, true);
+    LlvmValue *Col = coordValue(ResTy, I, false);
+    LlvmValue *Sum = elementAt(Acc, I);
+    for (int64_t KK = 0; KK < K; ++KK) {
+      LlvmValue *AV = loadSharedElem(WA, K, Row, B.getInt32(KK), ElemTy);
+      LlvmValue *BV = loadSharedElem(WB, N, B.getInt32(KK), Col, ElemTy);
+      Sum = B.CreateFAdd(Sum, B.CreateFMul(AV, BV));
+    }
+    V.Elts.push_back(Sum);
+  }
+  Env[O.Result] = std::move(V);
+  return Error::success();
 }
 
 Error FuncEmitter::emitReduce(const Op &O) {
@@ -573,6 +644,9 @@ Error FuncEmitter::emitOp(const Op &O) {
   case OpKind::SharedRow:
     Env[O.Result] = emitSharedSlice(O);
     return Error::success();
+
+  case OpKind::Dot:
+    return emitDot(O);
 
   case OpKind::Exp2: {
     const Lowered &Src = Env.at(O.Operands[0]);

@@ -1,0 +1,470 @@
+{
+  "grid_dims": 2,
+  "grid": [
+    4,
+    4
+  ],
+  "block": 32,
+  "args_addr": 4096,
+  "args": [
+    0,
+    8192,
+    16384
+  ],
+  "fill": [
+    {
+      "addr": 0,
+      "start": 0,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 128,
+      "start": 3,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 256,
+      "start": 6,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 384,
+      "start": 9,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 512,
+      "start": 12,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 640,
+      "start": 15,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 768,
+      "start": 18,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 896,
+      "start": 21,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 1024,
+      "start": 24,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 1152,
+      "start": 27,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 1280,
+      "start": 30,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 1408,
+      "start": 33,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 1536,
+      "start": 36,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 1664,
+      "start": 39,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 1792,
+      "start": 42,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 1920,
+      "start": 45,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 2048,
+      "start": 48,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 2176,
+      "start": 51,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 2304,
+      "start": 54,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 2432,
+      "start": 57,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 2560,
+      "start": 60,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 2688,
+      "start": 63,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 2816,
+      "start": 66,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 2944,
+      "start": 69,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 3072,
+      "start": 72,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 3200,
+      "start": 75,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 3328,
+      "start": 78,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 3456,
+      "start": 81,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 3584,
+      "start": 84,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 3712,
+      "start": 87,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 3840,
+      "start": 90,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 3968,
+      "start": 93,
+      "step": 1,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 8192,
+      "start": 0,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 8320,
+      "start": 1,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 8448,
+      "start": 2,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 8576,
+      "start": 3,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 8704,
+      "start": 4,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 8832,
+      "start": 5,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 8960,
+      "start": 6,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 9088,
+      "start": 7,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 9216,
+      "start": 8,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 9344,
+      "start": 9,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 9472,
+      "start": 10,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 9600,
+      "start": 11,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 9728,
+      "start": 12,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 9856,
+      "start": 13,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 9984,
+      "start": 14,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 10112,
+      "start": 15,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 10240,
+      "start": 16,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 10368,
+      "start": 17,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 10496,
+      "start": 18,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 10624,
+      "start": 19,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 10752,
+      "start": 20,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 10880,
+      "start": 21,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 11008,
+      "start": 22,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 11136,
+      "start": 23,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 11264,
+      "start": 24,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 11392,
+      "start": 25,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 11520,
+      "start": 26,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 11648,
+      "start": 27,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 11776,
+      "start": 28,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 11904,
+      "start": 29,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 12032,
+      "start": 30,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    },
+    {
+      "addr": 12160,
+      "start": 31,
+      "step": 2,
+      "count": 32,
+      "format": "f32"
+    }
+  ],
+  "dump": [
+    {
+      "addr": 16384,
+      "count": 1024
+    }
+  ]
+}

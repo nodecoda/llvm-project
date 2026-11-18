@@ -3,7 +3,7 @@
 # compiles" cannot silently replace "the tests still exist".
 mc_lit_files=3
 codegen_lit_files=9
-chapter_docs=35
-chapter_gates=34
+chapter_docs=36
+chapter_gates=35
 e2e_programs=11
 mc_instructions=49

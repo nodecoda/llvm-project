@@ -404,8 +404,9 @@ static Op makeSharedSlice(OpKind Kind, Value *Handle, int64_t Index) {
   O.Kind = Kind;
   O.Operands = {Handle};
   O.Imm = Index;
-  llvm::ArrayRef<int64_t> Shape = Handle->getType().getShape();
-  Type Elem = Handle->getType().getElementType();
+  Type HandleTy = Handle->getType();
+  llvm::ArrayRef<int64_t> Shape = HandleTy.getShape();
+  Type Elem = HandleTy.getElementType();
   O.Ty = Kind == OpKind::SharedCol ? Type::tensor({Shape[0], 1}, Elem)
                                    : Type::tensor({1, Shape[1]}, Elem);
   return O;
@@ -423,6 +424,22 @@ Value *Function::createSharedRow(Value *Handle, int64_t Index) {
   Op O = makeSharedSlice(OpKind::SharedRow, Handle, Index);
   O.Result = createValue(O.Ty);
   Value *V = O.Result;
+  Ops.push_back(std::move(O));
+  return V;
+}
+
+Value *Function::createDot(Value *A, Value *B, Value *Acc) {
+  Type ATy = A->getType();
+  Type BTy = B->getType();
+  llvm::ArrayRef<int64_t> AS = ATy.getShape();
+  llvm::ArrayRef<int64_t> BS = BTy.getShape();
+  Type ResTy = Type::tensor({AS[0], BS[1]}, ATy.getElementType());
+  Value *V = createValue(ResTy);
+  Op O;
+  O.Kind = OpKind::Dot;
+  O.Result = V;
+  O.Operands = {A, B, Acc};
+  O.Ty = ResTy;
   Ops.push_back(std::move(O));
   return V;
 }
@@ -754,6 +771,22 @@ static void printOps(llvm::raw_ostream &OS, llvm::ArrayRef<Op> Ops,
       OS << ") <{index = " << O.Imm << " : i32}> : (";
       O.Operands[0]->getType().print(OS);
       OS << ") -> ";
+      O.Result->getType().print(OS);
+      OS << "\n";
+      break;
+    case OpKind::Dot:
+      O.Result->printName(OS);
+      OS << " = tt.dot ";
+      O.Operands[0]->printName(OS);
+      OS << ", ";
+      O.Operands[1]->printName(OS);
+      OS << ", ";
+      O.Operands[2]->printName(OS);
+      OS << ", inputPrecision = tf32 : ";
+      O.Operands[0]->getType().print(OS);
+      OS << " * ";
+      O.Operands[1]->getType().print(OS);
+      OS << " -> ";
       O.Result->getType().print(OS);
       OS << "\n";
       break;

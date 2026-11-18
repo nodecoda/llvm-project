@@ -1120,7 +1120,8 @@ Expected<Value *> Lowerer::lowerCall(const Object &Node) {
     Expected<int64_t> IndexOrErr = evalInt(*IndexNode);
     if (!IndexOrErr)
       return IndexOrErr.takeError();
-    llvm::ArrayRef<int64_t> Shape = Handle->getType().getShape();
+    Type HandleTy = Handle->getType();
+    llvm::ArrayRef<int64_t> Shape = HandleTy.getShape();
     int64_t Limit = IsCol ? Shape[1] : Shape[0];
     if (*IndexOrErr < 0 || *IndexOrErr >= Limit)
       return errAt(Node, "the shared " + Twine(IsCol ? "column" : "row") +
@@ -1445,10 +1446,67 @@ Expected<Value *> Lowerer::lowerCall(const Object &Node) {
     return F.createExpandDims(V, static_cast<unsigned>(Axis));
   }
 
-  if (Name == "dot")
-    return errAt(Node,
-                 "tl.dot is not supported; chapter 30 uses a rank-1 update "
-                 "loop instead");
+  if (Name == "dot") {
+    const json::Value *ANode = GetArg(0);
+    const json::Value *BNode = GetArg(1);
+    const json::Value *AccNode = GetArg(2);
+    if (!ANode || !BNode)
+      return errAt(Node, "tl.dot expects (a, b) or (a, b, acc)");
+    if (Args->size() > 3)
+      return errAt(Node, "tl.dot takes at most three arguments");
+    if (!Keywords.empty())
+      return errAt(Node, "tl.dot keyword arguments are not supported in "
+                         "chapter 35");
+    Expected<Value *> AOrErr = lowerExpr(*ANode);
+    if (!AOrErr)
+      return AOrErr.takeError();
+    Expected<Value *> BOrErr = lowerExpr(*BNode);
+    if (!BOrErr)
+      return BOrErr.takeError();
+    Value *A = *AOrErr;
+    Value *B = *BOrErr;
+    auto CheckTile = [&](Value *V, StringRef Side) -> Error {
+      Type VTy = V->getType();
+      if (!VTy.isTensor() || VTy.getShape().size() != 2 ||
+          !VTy.getElementType().isF32())
+        return errAt(Node, "tl.dot requires 2D f32 tiles");
+      llvm::ArrayRef<int64_t> S = VTy.getShape();
+      int64_t Rows = S[0] == 1 ? 1 : S[0] / WarpsPerBlock;
+      int64_t Cols = S[1] == 1 ? 1 : S[1] / LanesPerWarp;
+      if ((S[0] != 1 && S[0] % WarpsPerBlock) ||
+          (S[1] != 1 && S[1] % LanesPerWarp) ||
+          Rows * Cols > MaxElementsPerThread)
+        return errAt(Node, ("tl.dot " + Twine(Side) +
+                            " tile must fit 4 warps x 8 lanes with at most 8 "
+                            "elements per thread")
+                               .str());
+      return Error::success();
+    };
+    if (Error E = CheckTile(A, "left"))
+      return E;
+    if (Error E = CheckTile(B, "right"))
+      return E;
+    Type ATy = A->getType();
+    Type BTy = B->getType();
+    llvm::ArrayRef<int64_t> AS = ATy.getShape();
+    llvm::ArrayRef<int64_t> BS = BTy.getShape();
+    if (AS[1] != BS[0])
+      return errAt(Node, "tl.dot K dimensions do not match");
+    Value *Acc;
+    if (AccNode) {
+      Expected<Value *> AccOrErr = lowerExpr(*AccNode);
+      if (!AccOrErr)
+        return AccOrErr.takeError();
+      Acc = *AccOrErr;
+      Type ResTy = Type::tensor({AS[0], BS[1]}, Type::f32());
+      if (Acc->getType() != ResTy)
+        return errAt(Node, "tl.dot acc shape does not match a*b");
+    } else {
+      Value *Zero = F.createConstant(0.0, Type::f32());
+      Acc = F.createSplat(Zero, Type::tensor({AS[0], BS[1]}, Type::f32()));
+    }
+    return F.createDot(A, B, Acc);
+  }
 
   return errAt(Node, ("unsupported tl function '" + Name + "'").str());
 }

@@ -1,0 +1,58 @@
+// Golden canonical TTIR for scripts/triton/dot2d.py.  The whole 32-step
+// rank-1 loop of chapter 30 collapsed into one tt.dot; its third operand is
+// the zero accumulator, which canonicalize folds back into a dense constant.
+// The chapter-35 gate parses this with the stock triton-opt (tt.dot is a
+// registered Triton op) and compares canonical forms on both sides.
+module {
+  tt.func public @dot_kernel(%a_ptr: !tt.ptr<f32>, %b_ptr: !tt.ptr<f32>, %c_ptr: !tt.ptr<f32>) {
+    %pm = tt.get_program_id x : i32
+    %pn = tt.get_program_id y : i32
+    %2 = arith.constant 8 : i32
+    %3 = arith.muli %pm, %2 : i32
+    %4 = tt.make_range {start = 0 : i32, end = 8 : i32} : tensor<8xi32>
+    %5 = tt.expand_dims %4 {axis = 1 : i32} : tensor<8xi32> -> tensor<8x1xi32>
+    %6 = tt.splat %3 : i32 -> tensor<8x1xi32>
+    %rm = arith.addi %6, %5 : tensor<8x1xi32>
+    %8 = arith.constant 8 : i32
+    %9 = arith.muli %pn, %8 : i32
+    %10 = tt.make_range {start = 0 : i32, end = 8 : i32} : tensor<8xi32>
+    %11 = tt.expand_dims %10 {axis = 0 : i32} : tensor<8xi32> -> tensor<1x8xi32>
+    %12 = tt.splat %9 : i32 -> tensor<1x8xi32>
+    %rn = arith.addi %12, %11 : tensor<1x8xi32>
+    %14 = tt.make_range {start = 0 : i32, end = 32 : i32} : tensor<32xi32>
+    %kk_r = tt.expand_dims %14 {axis = 0 : i32} : tensor<32xi32> -> tensor<1x32xi32>
+    %16 = tt.make_range {start = 0 : i32, end = 32 : i32} : tensor<32xi32>
+    %kk_c = tt.expand_dims %16 {axis = 1 : i32} : tensor<32xi32> -> tensor<32x1xi32>
+    %18 = arith.constant 32 : i32
+    %19 = tt.splat %18 : i32 -> tensor<8x1xi32>
+    %20 = arith.muli %rm, %19 : tensor<8x1xi32>
+    %21 = tt.splat %a_ptr : !tt.ptr<f32> -> tensor<8x1x!tt.ptr<f32>>
+    %22 = tt.addptr %21, %20 : tensor<8x1x!tt.ptr<f32>>, tensor<8x1xi32>
+    %23 = tt.broadcast %22 : tensor<8x1x!tt.ptr<f32>> -> tensor<8x32x!tt.ptr<f32>>
+    %24 = tt.broadcast %kk_r : tensor<1x32xi32> -> tensor<8x32xi32>
+    %25 = tt.addptr %23, %24 : tensor<8x32x!tt.ptr<f32>>, tensor<8x32xi32>
+    %a = tt.load %25 : tensor<8x32x!tt.ptr<f32>>
+    %27 = arith.constant 32 : i32
+    %28 = tt.splat %27 : i32 -> tensor<32x1xi32>
+    %29 = arith.muli %kk_c, %28 : tensor<32x1xi32>
+    %30 = tt.splat %b_ptr : !tt.ptr<f32> -> tensor<32x1x!tt.ptr<f32>>
+    %31 = tt.addptr %30, %29 : tensor<32x1x!tt.ptr<f32>>, tensor<32x1xi32>
+    %32 = tt.broadcast %31 : tensor<32x1x!tt.ptr<f32>> -> tensor<32x8x!tt.ptr<f32>>
+    %33 = tt.broadcast %rn : tensor<1x8xi32> -> tensor<32x8xi32>
+    %34 = tt.addptr %32, %33 : tensor<32x8x!tt.ptr<f32>>, tensor<32x8xi32>
+    %b = tt.load %34 : tensor<32x8x!tt.ptr<f32>>
+    %36 = arith.constant 0.000000e+00 : f32
+    %37 = tt.splat %36 : f32 -> tensor<8x8xf32>
+    %acc = tt.dot %a, %b, %37, inputPrecision = tf32 : tensor<8x32xf32> * tensor<32x8xf32> -> tensor<8x8xf32>
+    %39 = arith.constant 32 : i32
+    %40 = tt.splat %39 : i32 -> tensor<8x1xi32>
+    %41 = arith.muli %rm, %40 : tensor<8x1xi32>
+    %42 = tt.splat %c_ptr : !tt.ptr<f32> -> tensor<8x1x!tt.ptr<f32>>
+    %43 = tt.addptr %42, %41 : tensor<8x1x!tt.ptr<f32>>, tensor<8x1xi32>
+    %44 = tt.broadcast %43 : tensor<8x1x!tt.ptr<f32>> -> tensor<8x8x!tt.ptr<f32>>
+    %45 = tt.broadcast %rn : tensor<1x8xi32> -> tensor<8x8xi32>
+    %46 = tt.addptr %44, %45 : tensor<8x8x!tt.ptr<f32>>, tensor<8x8xi32>
+    tt.store %46, %acc : tensor<8x8x!tt.ptr<f32>>
+    tt.return
+  }
+}

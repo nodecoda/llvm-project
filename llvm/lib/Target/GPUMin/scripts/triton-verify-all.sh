@@ -7,12 +7,13 @@
 # T1  AST: the C++ frontend sees all kernels and their arguments.
 # T2  TTIR: every generated module is accepted by triton-opt.
 # T3  Canonical: add_i32, f32_add, reduce_sum, control_flow, elementwise,
-#     layout2d, matmul2d, softmax2d, attention, ifelse and matmul_shared
-#     match goldens.
+#     layout2d, matmul2d, softmax2d, attention, ifelse, matmul_shared and
+#     dot2d match goldens.
 # T4  Layout: the Triton layout pass accepts gpumin:1 / 8 threads / 4 warps.
 # T5  CodeGen: every e2e kernel compiles with -verify-machineinstrs.
-# T6  Simulator: the eleven e2e programs match their reference JSON.
-# T7  Diagnostics: seven unsupported forms fail with actionable messages.
+# T6  Simulator: the twelve e2e programs match their reference JSON.
+# T7  Diagnostics: seven unsupported forms (including a 1D tl.dot) fail
+#     with actionable messages.
 #
 # T2-T4 report SKIP when triton-opt is not available; the rest must pass.
 #
@@ -97,8 +98,10 @@ if [ -n "$TRITON_OPT" ] && [ -x "$TRITON_OPT" ]; then
   "$TOOL" --emit-ttir --arg-type 'a_ptr=ptr<f32>' --arg-type 'b_ptr=ptr<f32>' \
     --arg-type 'c_ptr=ptr<f32>' "$TRITON/matmul_shared.py" \
     -o "$TMP/matmul_shared.ttir" || ok=0
+  "$TOOL" --emit-ttir --arg-type 'a_ptr=ptr<f32>' --arg-type 'b_ptr=ptr<f32>' \
+    --arg-type 'c_ptr=ptr<f32>' "$TRITON/dot2d.py" -o "$TMP/dot2d.ttir" || ok=0
   for f in add_i32 f32_add reduce cf matmul elementwise layout2d matmul2d \
-           softmax2d attention ifelse; do
+           softmax2d attention ifelse dot2d; do
     [ -f "$TMP/$f.ttir" ] || ok=0
     if [ -f "$TMP/$f.ttir" ] && ! "$TRITON_OPT" "$TMP/$f.ttir" -o /dev/null; then
       ok=0
@@ -111,7 +114,7 @@ if [ -n "$TRITON_OPT" ] && [ -x "$TRITON_OPT" ]; then
     ok=0
   fi
   if [ "$ok" = 1 ]; then
-    pass T2 "triton-opt parses all twelve TTIR modules"
+    pass T2 "triton-opt parses all thirteen TTIR modules"
   else
     fail T2 "triton-opt rejected a generated module"
   fi
@@ -144,8 +147,9 @@ if [ -n "$TRITON_OPT" ] && [ -x "$TRITON_OPT" ]; then
   check_golden ifelse "$TMP/ifelse.ttir" "$TRITON/ifelse.ttir" || ok=0
   check_golden matmul_shared "$TMP/matmul_shared.ttir" \
     "$TRITON/matmul_shared.ttir" --allow-unregistered-dialect || ok=0
+  check_golden dot2d "$TMP/dot2d.ttir" "$TRITON/dot2d.ttir" || ok=0
   if [ "$ok" = 1 ]; then
-    pass T3 "all eleven canonical forms match their goldens"
+    pass T3 "all twelve canonical forms match their goldens"
   else
     for d in "$TMP"/*.diff; do
       [ -f "$d" ] && cat "$d" >&2
@@ -214,14 +218,16 @@ fi
 "$TOOL" --emit-llvm --arg-type 'a_ptr=ptr<f32>' --arg-type 'b_ptr=ptr<f32>' \
   --arg-type 'c_ptr=ptr<f32>' "$TRITON/matmul_shared.py" \
   -o "$TMP/matmul_shared.ll"
+"$TOOL" --emit-llvm --arg-type 'a_ptr=ptr<f32>' --arg-type 'b_ptr=ptr<f32>' \
+  --arg-type 'c_ptr=ptr<f32>' "$TRITON/dot2d.py" -o "$TMP/dot2d.ll"
 ok=1
 for f in add_i32 f32_add reduce matmul cf elementwise layout2d matmul2d \
-         softmax2d attention ifelse matmul_shared; do
+         softmax2d attention ifelse matmul_shared dot2d; do
   "$LLC" -march=gpumin -O1 -verify-machineinstrs -filetype=obj \
     "$TMP/$f.ll" -o "$TMP/$f.o" || ok=0
 done
 if [ "$ok" = 1 ]; then
-  pass T5 "all twelve kernels compile with -verify-machineinstrs"
+  pass T5 "all thirteen kernels compile with -verify-machineinstrs"
 else
   fail T5 "llc rejected a generated kernel"
 fi
@@ -229,12 +235,12 @@ fi
 # --- T6. simulator e2e ---------------------------------------------------
 ok=1
 for prog in add_i32 add_f32 reduce matmul_no_dot elementwise layout2d \
-            matmul2d softmax2d attention ifelse matmul_shared; do
+            matmul2d softmax2d attention ifelse matmul_shared dot2d; do
   python3 "$E2E/run_e2e.py" "$E2E/$prog" --bin "$BIN" --sim "$SIM" \
     > "$TMP/e2e-$prog.log" 2>&1 || { cat "$TMP/e2e-$prog.log" >&2; ok=0; }
 done
 if [ "$ok" = 1 ]; then
-  pass T6 "the eleven e2e programs match their reference JSON"
+  pass T6 "the twelve e2e programs match their reference JSON"
 else
   fail T6 "an e2e program mismatched"
 fi
@@ -342,8 +348,8 @@ expect_fail "a shape-mismatched maximum" \
   'tensor type mismatch' "$TMP/neg-maxshape.py" || ok=0
 expect_fail "a 2D reduction without keep_dims" \
   'keep_dims=True' "$TMP/neg-reduce2d.py" || ok=0
-expect_fail "tl.dot" \
-  'tl.dot is not supported' "$TMP/neg-dot.py" || ok=0
+expect_fail "a 1D tl.dot" \
+  'tl.dot requires 2D f32 tiles' "$TMP/neg-dot.py" || ok=0
 if [ "$ok" = 1 ]; then
   pass T7 "seven unsupported forms fail with actionable messages"
 fi

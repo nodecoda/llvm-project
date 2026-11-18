@@ -13,7 +13,8 @@
 #      assembly reads sr.blockidx/sr.blockidy and global memory;
 #   4. the simulator reproduces the 32x32x32 product for a 4x4 grid of 8x8
 #      tiles (1024 f32 outputs);
-#   5. tl.dot and illegal 2D zero shapes fail with actionable diagnostics.
+#   5. a 1D tl.dot (chapter 35 only supports 2D) and illegal 2D zero shapes
+#      fail with actionable diagnostics.
 #
 # TRITON_OPT may point at triton-opt; check 1b is SKIP when it is absent.
 #
@@ -120,9 +121,9 @@ def k(p):
 PY
 if "$TOOL" --emit-ttir --arg-type p=ptr "$TMP/dot.py" \
       > /dev/null 2> "$TMP/dot.err"; then
-  fail "tl.dot was accepted"
+  fail "a 1D tl.dot was accepted"
 fi
-grep -q 'tl.dot is not supported' "$TMP/dot.err" ||
+grep -q 'tl.dot requires 2D f32 tiles' "$TMP/dot.err" ||
   { cat "$TMP/dot.err" >&2; fail "the tl.dot diagnostic is not actionable"; }
 
 cat > "$TMP/big.py" <<'PY'
@@ -158,7 +159,7 @@ if "$TOOL" --emit-llvm --arg-type p=ptr "$TMP/col.py" \
 fi
 grep -q 'columns must be 1 or a multiple of 8' "$TMP/col.err" ||
   { cat "$TMP/col.err" >&2; fail "the column diagnostic is not actionable"; }
-echo "PASS 5/5: tl.dot, oversized tiles and bad columns fail with messages"
+echo "PASS 5/5: a 1D tl.dot, oversized tiles and bad columns fail with messages"
 
 echo
 echo "Chapter 30: 5/5 checks passed"

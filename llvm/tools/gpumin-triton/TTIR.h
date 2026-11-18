@@ -119,6 +119,7 @@ enum class OpKind {
   SharedStore,
   SharedCol,
   SharedRow,
+  Dot,
   Return
 };
 
@@ -175,6 +176,7 @@ public:
   void createSharedStore(Value *Handle, Value *Src);
   Value *createSharedCol(Value *Handle, int64_t Index);
   Value *createSharedRow(Value *Handle, int64_t Index);
+  Value *createDot(Value *A, Value *B, Value *Acc);
   void createReturn(Value *V);
   void setResultType(Type Ty) { ResultTy = Ty; HasResult = true; }
 

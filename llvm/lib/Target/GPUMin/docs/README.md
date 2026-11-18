@@ -79,6 +79,7 @@ scripts/gpumin-verify-all.sh <llvm-bin-dir>
 | 32 | [attention](32-attention.md) | `check-ch32.sh` + `triton-verify-all.sh` | QK^T → softmax → PV、`tl.debug_barrier()`、第三课收束 |
 | 33 | [runtime-if](33-runtime-if.md) | `check-ch33.sh` + `triton-verify-all.sh` | `scf.if` region、then/else/merge、分支作用域、第四课开篇 |
 | 34 | [shared-tile](34-shared-tile.md) | `check-ch34.sh` + `triton-verify-all.sh` | shared staging、列/行切片、自动 barrier、`glb_ld` 5× |
+| 35 | [tl-dot](35-tl-dot.md) | `check-ch35.sh` + `triton-verify-all.sh` | `tt.dot`、`inputPrecision = tf32`、无 MMA 展开 |
 
 ## 8 项总门禁
 
