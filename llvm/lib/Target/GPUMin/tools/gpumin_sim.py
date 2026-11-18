@@ -20,6 +20,7 @@ address through `sr.args` (backed by ur0).
 
 import argparse
 import json
+import math
 import struct
 import sys
 
@@ -38,6 +39,21 @@ def sext(value, bits):
     sign = 1 << (bits - 1)
     value &= (1 << bits) - 1
     return value - (1 << bits) if value & sign else value
+
+
+def f32_bits_to_float(bits):
+    """Reinterpret a 32-bit register as an IEEE-754 single."""
+    return struct.unpack("<f", struct.pack("<I", bits & MASK32))[0]
+
+
+def f32_to_bits(value):
+    """Round a Python float to single precision and return its bit pattern.
+
+    Python computes in double precision, so every f32 operation has to make
+    this round trip; otherwise a chain of adds would keep denormal precision
+    the hardware never had.
+    """
+    return struct.unpack("<I", struct.pack("<f", value))[0]
 
 
 class SimError(Exception):
@@ -668,6 +684,23 @@ class Simulator:
                     lane.write_r(rd, v)
                 warp.advance()
                 continue
+            if op == 0x07:  # FALU: f32 add/sub/mul
+                funct = word & 0xF
+                for i in warp.active_lanes():
+                    lane = warp.lanes[i]
+                    a = f32_bits_to_float(lane.read_r(rs1))
+                    b = f32_bits_to_float(lane.read_r(rs2))
+                    if funct == 0:
+                        v = a + b
+                    elif funct == 1:
+                        v = a - b
+                    elif funct == 2:
+                        v = a * b
+                    else:
+                        raise SimError("bad FALU funct %d" % funct)
+                    lane.write_r(rd, f32_to_bits(v))
+                warp.advance()
+                continue
             if op == 0x03:  # SETP
                 pd = (word >> 21) & 7
                 funct = word & 0x7FF
@@ -692,6 +725,31 @@ class Simulator:
                         v = a >= b
                     else:
                         raise SimError("bad SETP relation %d" % rel)
+                    lane.write_p(pd, 1 if v else 0)
+                warp.advance()
+                continue
+            if op == 0x0A:  # FSETP: ordered f32 compare
+                pd = (word >> 21) & 7
+                funct = word & 0x7FF
+                for i in warp.active_lanes():
+                    lane = warp.lanes[i]
+                    a = f32_bits_to_float(lane.read_r(rs1))
+                    b = f32_bits_to_float(lane.read_r(rs2))
+                    ordered = not (math.isnan(a) or math.isnan(b))
+                    if funct == 0:      # oeq
+                        v = ordered and a == b
+                    elif funct == 1:    # one
+                        v = ordered and a != b
+                    elif funct == 2:    # olt
+                        v = ordered and a < b
+                    elif funct == 3:    # ole
+                        v = ordered and a <= b
+                    elif funct == 4:    # ogt
+                        v = ordered and a > b
+                    elif funct == 5:    # oge
+                        v = ordered and a >= b
+                    else:
+                        raise SimError("bad FSETP funct %d" % funct)
                     lane.write_p(pd, 1 if v else 0)
                 warp.advance()
                 continue

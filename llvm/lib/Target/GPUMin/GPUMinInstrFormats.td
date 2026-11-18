@@ -82,6 +82,8 @@ def OPC_SETP : GPUMinOpcode<0x03>;  // predicate compare
 def OPC_SELP : GPUMinOpcode<0x04>;  // predicated select
 def OPC_MOVI : GPUMinOpcode<0x05>;  // move immediate
 def OPC_ADDI : GPUMinOpcode<0x06>;  // add immediate (chapter 07)
+def OPC_FALU : GPUMinOpcode<0x07>;  // f32 add/sub/mul (chapter 25)
+def OPC_FSETP: GPUMinOpcode<0x0A>;  // f32 predicate compare (chapter 25)
 def OPC_LD   : GPUMinOpcode<0x08>;
 def OPC_ST   : GPUMinOpcode<0x09>;
 def OPC_BRA  : GPUMinOpcode<0x10>;

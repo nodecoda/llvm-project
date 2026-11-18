@@ -113,7 +113,7 @@ def MOVI : GPUMinMovI<OPC_MOVI.Value, (outs GPR:$rd), (ins simm16:$imm),
 def ADDI : GPUMinI<OPC_ADDI.Value, (outs GPR:$rd), (ins GPR:$rs1, simm16:$imm),
                    "addi $rd, $rs1, $imm", []>;
 
-def : Pat<(add GPR:$rs1, simm16imm:$imm), (ADDI $rs1, simm16imm:$imm)>;
+def : Pat<(add i32:$rs1, simm16imm:$imm), (ADDI $rs1, simm16imm:$imm)>;
 
 //===----------------------------------------------------------------------===//
 // Integer ALU (opcode 0x02)
@@ -134,6 +134,21 @@ defm XOR : GPUMinALU<0x4, "xor">;
 defm SHL : GPUMinALU<0x5, "shl">;
 defm SHR : GPUMinALU<0x6, "shr">;
 defm SAR : GPUMinALU<0x7, "sar">;
+
+//===----------------------------------------------------------------------===//
+// Float32 ALU (opcode 0x07, chapter 25)
+//===----------------------------------------------------------------------===//
+//
+// GM32 has one register file and one 32-bit register class, so an f32 value
+// lives in the same GPR as an i32 bit pattern.  The opcode decides how the
+// bits are interpreted: 0x02 is integer, 0x07 is IEEE-754 single precision.
+
+def FADD : GPUMinR2<OPC_FALU.Value, 0x0, (outs GPR:$rd),
+                    (ins GPR:$rs1, GPR:$rs2), "fadd $rd, $rs1, $rs2", []>;
+def FSUB : GPUMinR2<OPC_FALU.Value, 0x1, (outs GPR:$rd),
+                    (ins GPR:$rs1, GPR:$rs2), "fsub $rd, $rs1, $rs2", []>;
+def FMUL : GPUMinR2<OPC_FALU.Value, 0x2, (outs GPR:$rd),
+                    (ins GPR:$rs1, GPR:$rs2), "fmul $rd, $rs1, $rs2", []>;
 
 //===----------------------------------------------------------------------===//
 // Predicate compare (opcode 0x03)
@@ -162,39 +177,68 @@ def SETP_UGT : GPUMinSetp<OPC_SETP.Value, 0xC, "setp.ugt $pd, $rs1, $rs2">;
 def SETP_UGE : GPUMinSetp<OPC_SETP.Value, 0xD, "setp.uge $pd, $rs1, $rs2">;
 
 //===----------------------------------------------------------------------===//
+// Float32 compare (opcode 0x0A, chapter 25)
+//===----------------------------------------------------------------------===//
+//
+// The predicate file is shared with integer compares; funct[2:0] selects the
+// IEEE relation.  Only ordered relations are encoded; unordered ones are
+// expanded before selection.
+
+def FSETP_OEQ : GPUMinSetp<OPC_FSETP.Value, 0x0, "fsetp.oeq $pd, $rs1, $rs2">;
+def FSETP_ONE : GPUMinSetp<OPC_FSETP.Value, 0x1, "fsetp.one $pd, $rs1, $rs2">;
+def FSETP_OLT : GPUMinSetp<OPC_FSETP.Value, 0x2, "fsetp.olt $pd, $rs1, $rs2">;
+def FSETP_OLE : GPUMinSetp<OPC_FSETP.Value, 0x3, "fsetp.ole $pd, $rs1, $rs2">;
+def FSETP_OGT : GPUMinSetp<OPC_FSETP.Value, 0x4, "fsetp.ogt $pd, $rs1, $rs2">;
+def FSETP_OGE : GPUMinSetp<OPC_FSETP.Value, 0x5, "fsetp.oge $pd, $rs1, $rs2">;
+
+//===----------------------------------------------------------------------===//
 // SelectionDAG patterns (chapter 04)
 //===----------------------------------------------------------------------===//
 
 // Integer ALU.  The three shifts are three different DAG nodes: `shl`, the
 // logical `srl`, and the arithmetic `sra`.  Mapping them to the right funct
 // value is the whole point of the table in GPUMinInstrFormats.td.
-def : Pat<(add  GPR:$rs1, GPR:$rs2), (ADD $rs1, $rs2)>;
-def : Pat<(sub  GPR:$rs1, GPR:$rs2), (SUB $rs1, $rs2)>;
-def : Pat<(and  GPR:$rs1, GPR:$rs2), (AND $rs1, $rs2)>;
-def : Pat<(or   GPR:$rs1, GPR:$rs2), (OR  $rs1, $rs2)>;
-def : Pat<(xor  GPR:$rs1, GPR:$rs2), (XOR $rs1, $rs2)>;
-def : Pat<(shl  GPR:$rs1, GPR:$rs2), (SHL $rs1, $rs2)>;
-def : Pat<(srl  GPR:$rs1, GPR:$rs2), (SHR $rs1, $rs2)>;
-def : Pat<(sra  GPR:$rs1, GPR:$rs2), (SAR $rs1, $rs2)>;
+def : Pat<(add  i32:$rs1, i32:$rs2), (ADD $rs1, $rs2)>;
+def : Pat<(sub  i32:$rs1, i32:$rs2), (SUB $rs1, $rs2)>;
+def : Pat<(and  i32:$rs1, i32:$rs2), (AND $rs1, $rs2)>;
+def : Pat<(or   i32:$rs1, i32:$rs2), (OR  $rs1, $rs2)>;
+def : Pat<(xor  i32:$rs1, i32:$rs2), (XOR $rs1, $rs2)>;
+def : Pat<(shl  i32:$rs1, i32:$rs2), (SHL $rs1, $rs2)>;
+def : Pat<(srl  i32:$rs1, i32:$rs2), (SHR $rs1, $rs2)>;
+def : Pat<(sra  i32:$rs1, i32:$rs2), (SAR $rs1, $rs2)>;
 
 // Comparisons produce a predicate register, which is why i1 has to be a legal
 // type for this target (see GPUMinISelLowering.cpp).
-def : Pat<(setcc GPR:$rs1, GPR:$rs2, SETEQ), (SETP_EQ $rs1, $rs2)>;
-def : Pat<(setcc GPR:$rs1, GPR:$rs2, SETNE), (SETP_NE $rs1, $rs2)>;
-def : Pat<(setcc GPR:$rs1, GPR:$rs2, SETLT), (SETP_LT $rs1, $rs2)>;
-def : Pat<(setcc GPR:$rs1, GPR:$rs2, SETLE), (SETP_LE $rs1, $rs2)>;
-def : Pat<(setcc GPR:$rs1, GPR:$rs2, SETGT), (SETP_GT $rs1, $rs2)>;
-def : Pat<(setcc GPR:$rs1, GPR:$rs2, SETGE), (SETP_GE $rs1, $rs2)>;
-def : Pat<(setcc GPR:$rs1, GPR:$rs2, SETUEQ), (SETP_UEQ $rs1, $rs2)>;
-def : Pat<(setcc GPR:$rs1, GPR:$rs2, SETUNE), (SETP_UNE $rs1, $rs2)>;
-def : Pat<(setcc GPR:$rs1, GPR:$rs2, SETULT), (SETP_ULT $rs1, $rs2)>;
-def : Pat<(setcc GPR:$rs1, GPR:$rs2, SETULE), (SETP_ULE $rs1, $rs2)>;
-def : Pat<(setcc GPR:$rs1, GPR:$rs2, SETUGT), (SETP_UGT $rs1, $rs2)>;
-def : Pat<(setcc GPR:$rs1, GPR:$rs2, SETUGE), (SETP_UGE $rs1, $rs2)>;
+def : Pat<(setcc i32:$rs1, i32:$rs2, SETEQ), (SETP_EQ $rs1, $rs2)>;
+def : Pat<(setcc i32:$rs1, i32:$rs2, SETNE), (SETP_NE $rs1, $rs2)>;
+def : Pat<(setcc i32:$rs1, i32:$rs2, SETLT), (SETP_LT $rs1, $rs2)>;
+def : Pat<(setcc i32:$rs1, i32:$rs2, SETLE), (SETP_LE $rs1, $rs2)>;
+def : Pat<(setcc i32:$rs1, i32:$rs2, SETGT), (SETP_GT $rs1, $rs2)>;
+def : Pat<(setcc i32:$rs1, i32:$rs2, SETGE), (SETP_GE $rs1, $rs2)>;
+def : Pat<(setcc i32:$rs1, i32:$rs2, SETUEQ), (SETP_UEQ $rs1, $rs2)>;
+def : Pat<(setcc i32:$rs1, i32:$rs2, SETUNE), (SETP_UNE $rs1, $rs2)>;
+def : Pat<(setcc i32:$rs1, i32:$rs2, SETULT), (SETP_ULT $rs1, $rs2)>;
+def : Pat<(setcc i32:$rs1, i32:$rs2, SETULE), (SETP_ULE $rs1, $rs2)>;
+def : Pat<(setcc i32:$rs1, i32:$rs2, SETUGT), (SETP_UGT $rs1, $rs2)>;
+def : Pat<(setcc i32:$rs1, i32:$rs2, SETUGE), (SETP_UGE $rs1, $rs2)>;
 
 // `select` on a predicate register.  The i1 condition is a real value in the
 // PRED file, which is why chapter 04 makes i1 a legal type.
-def : Pat<(select i1:$pd, GPR:$rs1, GPR:$rs2), (SELP $pd, $rs1, $rs2)>;
+def : Pat<(select i1:$pd, i32:$rs1, i32:$rs2), (SELP $pd, $rs1, $rs2)>;
+
+// Chapter 25: f32 lives in GPR, so the three arithmetic nodes are one line
+// each.  The leading `f32` is what tells TableGen which type of the
+// multi-type GPR class this pattern means.
+def : Pat<(f32 (fadd f32:$rs1, f32:$rs2)), (FADD $rs1, $rs2)>;
+def : Pat<(f32 (fsub f32:$rs1, f32:$rs2)), (FSUB $rs1, $rs2)>;
+def : Pat<(f32 (fmul f32:$rs1, f32:$rs2)), (FMUL $rs1, $rs2)>;
+
+def : Pat<(i1 (setoeq f32:$rs1, f32:$rs2)), (FSETP_OEQ $rs1, $rs2)>;
+def : Pat<(i1 (setone f32:$rs1, f32:$rs2)), (FSETP_ONE $rs1, $rs2)>;
+def : Pat<(i1 (setolt f32:$rs1, f32:$rs2)), (FSETP_OLT $rs1, $rs2)>;
+def : Pat<(i1 (setole f32:$rs1, f32:$rs2)), (FSETP_OLE $rs1, $rs2)>;
+def : Pat<(i1 (setogt f32:$rs1, f32:$rs2)), (FSETP_OGT $rs1, $rs2)>;
+def : Pat<(i1 (setoge f32:$rs1, f32:$rs2)), (FSETP_OGE $rs1, $rs2)>;
 
 //===----------------------------------------------------------------------===//
 // Memory (opcodes 0x08 / 0x09)
@@ -246,45 +290,51 @@ defm ST_LOCAL   : GPUMinMemStores<"local",  0b10>;
 // Selecting a 32-bit load: the address is either already in a register (offset
 // zero) or a base plus a displacement that fits the 11-bit field.  Anything
 // else stays a register add and reaches the load through the first pattern.
-def : Pat<(load GPR:$base), (LD_GLOBAL_B32 $base, 0)>;
-def : Pat<(load (add GPR:$base, simm11imm:$off)),
+def : Pat<(i32 (load i32:$base)), (LD_GLOBAL_B32 $base, 0)>;
+def : Pat<(f32 (load i32:$base)), (LD_GLOBAL_B32 $base, 0)>;
+def : Pat<(i32 (load (add i32:$base, simm11imm:$off))),
+          (LD_GLOBAL_B32 $base, simm11imm:$off)>;
+def : Pat<(f32 (load (add i32:$base, simm11imm:$off))),
           (LD_GLOBAL_B32 $base, simm11imm:$off)>;
 
-def : Pat<(store GPR:$val, GPR:$base), (ST_GLOBAL_B32 $val, $base, 0)>;
-def : Pat<(store GPR:$val, (add GPR:$base, simm11imm:$off)),
+def : Pat<(store i32:$val, i32:$base), (ST_GLOBAL_B32 $val, $base, 0)>;
+def : Pat<(store f32:$val, i32:$base), (ST_GLOBAL_B32 $val, $base, 0)>;
+def : Pat<(store i32:$val, (add i32:$base, simm11imm:$off)),
+          (ST_GLOBAL_B32 $val, $base, simm11imm:$off)>;
+def : Pat<(store f32:$val, (add i32:$base, simm11imm:$off)),
           (ST_GLOBAL_B32 $val, $base, simm11imm:$off)>;
 
 // Chapter 08: narrow loads and stores.  i8/i16 are promoted to i32, so the
 // memory operations arrive as extloads and truncstores.  Each extension kind
 // has its own opcode: using a 32-bit load plus a shift would read three bytes
 // too many (and fault across a page boundary).
-def : Pat<(zextloadi8 GPR:$base), (LD_GLOBAL_U8 $base, 0)>;
-def : Pat<(sextloadi8 GPR:$base), (LD_GLOBAL_S8 $base, 0)>;
-def : Pat<(extloadi8 GPR:$base),  (LD_GLOBAL_U8 $base, 0)>;
-def : Pat<(zextloadi8 (add GPR:$base, simm11imm:$off)),
+def : Pat<(i32 (zextloadi8 i32:$base)), (LD_GLOBAL_U8 $base, 0)>;
+def : Pat<(i32 (sextloadi8 i32:$base)), (LD_GLOBAL_S8 $base, 0)>;
+def : Pat<(i32 (extloadi8 i32:$base)),  (LD_GLOBAL_U8 $base, 0)>;
+def : Pat<(i32 (zextloadi8 (add i32:$base, simm11imm:$off))),
           (LD_GLOBAL_U8 $base, simm11imm:$off)>;
-def : Pat<(sextloadi8 (add GPR:$base, simm11imm:$off)),
+def : Pat<(i32 (sextloadi8 (add i32:$base, simm11imm:$off))),
           (LD_GLOBAL_S8 $base, simm11imm:$off)>;
-def : Pat<(extloadi8 (add GPR:$base, simm11imm:$off)),
+def : Pat<(i32 (extloadi8 (add i32:$base, simm11imm:$off))),
           (LD_GLOBAL_U8 $base, simm11imm:$off)>;
 
-def : Pat<(zextloadi16 GPR:$base), (LD_GLOBAL_U16 $base, 0)>;
-def : Pat<(sextloadi16 GPR:$base), (LD_GLOBAL_S16 $base, 0)>;
-def : Pat<(extloadi16 GPR:$base),  (LD_GLOBAL_U16 $base, 0)>;
-def : Pat<(zextloadi16 (add GPR:$base, simm11imm:$off)),
+def : Pat<(i32 (zextloadi16 i32:$base)), (LD_GLOBAL_U16 $base, 0)>;
+def : Pat<(i32 (sextloadi16 i32:$base)), (LD_GLOBAL_S16 $base, 0)>;
+def : Pat<(i32 (extloadi16 i32:$base)),  (LD_GLOBAL_U16 $base, 0)>;
+def : Pat<(i32 (zextloadi16 (add i32:$base, simm11imm:$off))),
           (LD_GLOBAL_U16 $base, simm11imm:$off)>;
-def : Pat<(sextloadi16 (add GPR:$base, simm11imm:$off)),
+def : Pat<(i32 (sextloadi16 (add i32:$base, simm11imm:$off))),
           (LD_GLOBAL_S16 $base, simm11imm:$off)>;
-def : Pat<(extloadi16 (add GPR:$base, simm11imm:$off)),
+def : Pat<(i32 (extloadi16 (add i32:$base, simm11imm:$off))),
           (LD_GLOBAL_U16 $base, simm11imm:$off)>;
 
-def : Pat<(truncstorei8 GPR:$val, GPR:$base),
+def : Pat<(truncstorei8 i32:$val, i32:$base),
           (ST_GLOBAL_B8 $val, $base, 0)>;
-def : Pat<(truncstorei8 GPR:$val, (add GPR:$base, simm11imm:$off)),
+def : Pat<(truncstorei8 i32:$val, (add i32:$base, simm11imm:$off)),
           (ST_GLOBAL_B8 $val, $base, simm11imm:$off)>;
-def : Pat<(truncstorei16 GPR:$val, GPR:$base),
+def : Pat<(truncstorei16 i32:$val, i32:$base),
           (ST_GLOBAL_B16 $val, $base, 0)>;
-def : Pat<(truncstorei16 GPR:$val, (add GPR:$base, simm11imm:$off)),
+def : Pat<(truncstorei16 i32:$val, (add i32:$base, simm11imm:$off)),
           (ST_GLOBAL_B16 $val, $base, simm11imm:$off)>;
 
 //===----------------------------------------------------------------------===//

@@ -18,6 +18,16 @@ using namespace llvm;
 #define GET_CALLING_CONV_IMPL
 #include "GPUMinGenCallingConv.inc"
 
+GPUMinTargetLowering::FPImmAction
+GPUMinTargetLowering::getFPImmAction(const APFloat &Imm, EVT VT,
+                                     bool ForCodeSize) const {
+  // Every f32 bit pattern fits in one GPR, so the selector materialises it
+  // with movi/shift.  ConstantPool would make every literal a memory load.
+  if (VT == MVT::f32)
+    return FPImmAction::Legal;
+  return TargetLowering::getFPImmAction(Imm, VT, ForCodeSize);
+}
+
 GPUMinTargetLowering::GPUMinTargetLowering(const TargetMachine &TM,
                                            const GPUMinSubtarget &STI)
     : TargetLowering(TM, STI) {
@@ -25,6 +35,22 @@ GPUMinTargetLowering::GPUMinTargetLowering(const TargetMachine &TM,
   // must happen before computeRegisterProperties(), which derives the legal
   // type set from the registered classes.
   addRegisterClass(MVT::i32, &GPUMin::GPRRegClass);
+
+  // Chapter 25: f32 is a legal value type that lives in the same 32-bit GPR.
+  // This must also happen before computeRegisterProperties().
+  addRegisterClass(MVT::f32, &GPUMin::GPRRegClass);
+
+  // Chapter 25: the ISA provides ordered oeq/one/olt/ole/ogt/oge.  Everything
+  // unordered is expanded into those plus SETO/SETUO, and a float branch or
+  // select is expanded into setcc + integer branch/select because GM32 has no
+  // BR_CC/SELECT_CC form that reads a predicate.
+  setOperationAction(ISD::BR_CC, MVT::f32, Expand);
+  setOperationAction(ISD::SELECT_CC, MVT::f32, Expand);
+  // SETTRUE/SETFALSE are folded away by the DAG combiner and need no table
+  // entry; this LLVM has no SETTRUE_FP/SETFALSE_FP enumerators.
+  setCondCodeAction({ISD::SETO, ISD::SETUO, ISD::SETUEQ, ISD::SETUNE,
+                     ISD::SETUGT, ISD::SETUGE, ISD::SETULT, ISD::SETULE},
+                    MVT::f32, Expand);
 
   // Chapter 04: a comparison result is one bit per lane, which GM32 keeps in
   // p0-p7.  Making i1 a legal type is what lets `setcc` produce a predicate

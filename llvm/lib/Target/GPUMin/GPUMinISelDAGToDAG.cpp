@@ -60,6 +60,9 @@ unsigned pickLoadOpcode(unsigned AS, EVT MemVT, ISD::LoadExtType Ext) {
       return Signed ? GPUMin::LD_LOCAL_S16 : GPUMin::LD_LOCAL_U16;
     return Signed ? GPUMin::LD_CONST_S16 : GPUMin::LD_CONST_U16;
   case MVT::i32:
+  case MVT::f32:
+    // f32 lives in the same 32-bit register, so the width is B32 and only
+    // the DAG value type differs.
     if (AS == AS_SHARED)
       return GPUMin::LD_SHARED_B32;
     if (AS == AS_LOCAL)
@@ -78,6 +81,7 @@ unsigned pickStoreOpcode(unsigned AS, EVT MemVT) {
   case MVT::i16:
     return Shared ? GPUMin::ST_SHARED_B16 : GPUMin::ST_LOCAL_B16;
   case MVT::i32:
+  case MVT::f32:
     return Shared ? GPUMin::ST_SHARED_B32 : GPUMin::ST_LOCAL_B32;
   default:
     llvm_unreachable("GPUMin: unexpected store width");
@@ -103,6 +107,78 @@ class GPUMinDAGToDAGISel : public SelectionDAGISel {
       SharedOffsets[&GV] = Next;
       Next += DL.getTypeAllocSize(GV.getValueType());
     }
+  }
+
+  /// Materialise a 32-bit bit pattern in a register: movi for a signed
+  /// 16-bit value, otherwise a shift pair (and, for the general case, an or
+  /// of two halves).  VT is the DAG type of the result, which lets f32
+  /// constants reuse the exact integer sequence.
+  void selectImmediate(SDNode *N, uint32_t V, EVT VT) {
+    int32_t SV = static_cast<int32_t>(V);
+    SDLoc DL(N);
+    if (isInt<16>(SV)) {
+      SDValue Imm =
+          CurDAG->getTargetConstant(V, DL, MVT::i32);
+      SDNode *Mov = CurDAG->getMachineNode(GPUMin::MOVI, DL, VT, Imm);
+      ReplaceNode(N, Mov);
+      return;
+    }
+    // Chapter 08: a 16-bit *unsigned* constant (the 0xff/0xffff masks the
+    // type legalizer inserts for i8/i16 arithmetic) is still reachable.
+    // movi sign-extends, so materialise V and clear the high half:
+    //   movi rd, V; movi rt, 16; shl rd, rd, rt; shr rd, rd, rt
+    if (isUInt<16>(V)) {
+      int32_t SImm = static_cast<int16_t>(SV);
+      SDValue Imm =
+          CurDAG->getTargetConstant(static_cast<uint32_t>(SImm), DL, MVT::i32);
+      SDNode *Mov = CurDAG->getMachineNode(GPUMin::MOVI, DL, VT, Imm);
+      SDValue Sixteen = SDValue(
+          CurDAG->getMachineNode(
+              GPUMin::MOVI, DL, MVT::i32,
+              CurDAG->getTargetConstant(16, DL, MVT::i32)),
+          0);
+      SDValue Shl = SDValue(
+          CurDAG->getMachineNode(GPUMin::SHL, DL, VT, SDValue(Mov, 0),
+                                 Sixteen),
+          0);
+      SDNode *Shr = CurDAG->getMachineNode(GPUMin::SHR, DL, VT, Shl, Sixteen);
+      ReplaceNode(N, Shr);
+      return;
+    }
+    // A general 32-bit constant.  `movi` sign-extends, so the low half is
+    // materialised and then shifted up and logically back down to clear the
+    // ones above bit 15; the high half only needs one shift.
+    //   movi rd, hi; movi rt, 16; shl rd, rd, rt
+    //   movi rt2, lo; shl rt2, rt2, rt; shr rt2, rt2, rt
+    //   or rd, rd, rt2
+    int32_t Hi = static_cast<int16_t>((V >> 16) & 0xffff);
+    int32_t Lo = static_cast<int16_t>(V & 0xffff);
+    SDValue Sixteen = SDValue(
+        CurDAG->getMachineNode(
+            GPUMin::MOVI, DL, MVT::i32,
+            CurDAG->getTargetConstant(16, DL, MVT::i32)),
+        0);
+    SDValue HiMov = SDValue(
+        CurDAG->getMachineNode(
+            GPUMin::MOVI, DL, VT,
+            CurDAG->getTargetConstant(static_cast<uint32_t>(Hi), DL,
+                                      MVT::i32)),
+        0);
+    SDValue HiShifted = SDValue(
+        CurDAG->getMachineNode(GPUMin::SHL, DL, VT, HiMov, Sixteen), 0);
+    SDValue LoMov = SDValue(
+        CurDAG->getMachineNode(
+            GPUMin::MOVI, DL, VT,
+            CurDAG->getTargetConstant(static_cast<uint32_t>(Lo), DL,
+                                      MVT::i32)),
+        0);
+    SDValue LoShifted = SDValue(
+        CurDAG->getMachineNode(GPUMin::SHL, DL, VT, LoMov, Sixteen), 0);
+    SDValue LoClean = SDValue(
+        CurDAG->getMachineNode(GPUMin::SHR, DL, VT, LoShifted, Sixteen), 0);
+    SDNode *Combined =
+        CurDAG->getMachineNode(GPUMin::OR, DL, VT, HiShifted, LoClean);
+    ReplaceNode(N, Combined);
   }
 
 public:
@@ -169,8 +245,10 @@ void GPUMinDAGToDAGISel::Select(SDNode *N) {
       SDValue Ops[] = {LD->getBasePtr(),
                        CurDAG->getTargetConstant(0, DL, MVT::i32),
                        LD->getChain()};
+      // Keep the DAG type: an f32 load from shared/local/constant is still
+      // a 32-bit register, but its value is a float.
       SDNode *Inst = CurDAG->getMachineNode(
-          Opc, DL, CurDAG->getVTList(MVT::i32, MVT::Other), Ops);
+          Opc, DL, CurDAG->getVTList(LD->getValueType(0), MVT::Other), Ops);
       CurDAG->setNodeMemRefs(cast<MachineSDNode>(Inst), {LD->getMemOperand()});
       ReplaceNode(N, Inst);
       return;
@@ -201,76 +279,16 @@ void GPUMinDAGToDAGISel::Select(SDNode *N) {
   // explicit.  Chapter 04 adds the two-instruction sequence for wide values.
   if (N->getOpcode() == ISD::Constant) {
     auto *C = cast<ConstantSDNode>(N);
-    int64_t V = C->getSExtValue();
-    SDLoc DL(N);
-    if (isInt<16>(V)) {
-      SDValue Imm =
-          CurDAG->getTargetConstant(static_cast<uint32_t>(V), DL, MVT::i32);
-      SDNode *Mov = CurDAG->getMachineNode(GPUMin::MOVI, DL, MVT::i32, Imm);
-      ReplaceNode(N, Mov);
-      return;
-    }
-    // Chapter 08: a 16-bit *unsigned* constant (the 0xff/0xffff masks the
-    // type legalizer inserts for i8/i16 arithmetic) is still reachable.
-    // movi sign-extends, so materialise V and clear the high half:
-    //   movi rd, V; movi rt, 16; shl rd, rd, rt; shr rd, rd, rt
-    if (isUInt<16>(C->getZExtValue())) {
-      // Print/encode the canonical signed 16-bit form (-1 for 0xffff): the
-      // field is simm16 and the assembler rejects 65535.  The low 16 bits are
-      // identical, and the shift pair clears the sign extension afterwards.
-      int32_t SImm = static_cast<int16_t>(V);
-      SDValue Imm =
-          CurDAG->getTargetConstant(static_cast<uint32_t>(SImm), DL, MVT::i32);
-      SDNode *Mov = CurDAG->getMachineNode(GPUMin::MOVI, DL, MVT::i32, Imm);
-      SDValue Sixteen = SDValue(
-          CurDAG->getMachineNode(
-              GPUMin::MOVI, DL, MVT::i32,
-              CurDAG->getTargetConstant(16, DL, MVT::i32)),
-          0);
-      SDValue Shl = SDValue(
-          CurDAG->getMachineNode(GPUMin::SHL, DL, MVT::i32, SDValue(Mov, 0),
-                                 Sixteen),
-          0);
-      SDNode *Shr = CurDAG->getMachineNode(GPUMin::SHR, DL, MVT::i32, Shl,
-                                           Sixteen);
-      ReplaceNode(N, Shr);
-      return;
-    }
-    // A general 32-bit constant.  `movi` sign-extends, so the low half is
-    // materialised and then shifted up and logically back down to clear the
-    // ones above bit 15; the high half only needs one shift.
-    //   movi rd, hi; movi rt, 16; shl rd, rd, rt
-    //   movi rt2, lo; shl rt2, rt2, rt; shr rt2, rt2, rt
-    //   or rd, rd, rt2
-    int32_t Hi = static_cast<int16_t>((V >> 16) & 0xffff);
-    int32_t Lo = static_cast<int16_t>(V & 0xffff);
-    SDValue Sixteen = SDValue(
-        CurDAG->getMachineNode(
-            GPUMin::MOVI, DL, MVT::i32,
-            CurDAG->getTargetConstant(16, DL, MVT::i32)),
-        0);
-    SDValue HiMov = SDValue(
-        CurDAG->getMachineNode(
-            GPUMin::MOVI, DL, MVT::i32,
-            CurDAG->getTargetConstant(static_cast<uint32_t>(Hi), DL,
-                                      MVT::i32)),
-        0);
-    SDValue HiShifted = SDValue(
-        CurDAG->getMachineNode(GPUMin::SHL, DL, MVT::i32, HiMov, Sixteen), 0);
-    SDValue LoMov = SDValue(
-        CurDAG->getMachineNode(
-            GPUMin::MOVI, DL, MVT::i32,
-            CurDAG->getTargetConstant(static_cast<uint32_t>(Lo), DL,
-                                      MVT::i32)),
-        0);
-    SDValue LoShifted = SDValue(
-        CurDAG->getMachineNode(GPUMin::SHL, DL, MVT::i32, LoMov, Sixteen), 0);
-    SDValue LoClean = SDValue(
-        CurDAG->getMachineNode(GPUMin::SHR, DL, MVT::i32, LoShifted, Sixteen),
-        0);
-    SDNode *Combined = CurDAG->getMachineNode(GPUMin::OR, DL, MVT::i32,
-                                              HiShifted, LoClean);
-    ReplaceNode(N, Combined);
+    selectImmediate(N, static_cast<uint32_t>(C->getSExtValue()), MVT::i32);
+    return;
+  }
+
+  // f32 constants are bit patterns too.  isFPImmLegal() keeps them in the
+  // DAG instead of turning them into constant-pool loads.
+  if (N->getOpcode() == ISD::ConstantFP) {
+    auto *C = cast<ConstantFPSDNode>(N);
+    APInt Bits = C->getValueAPF().bitcastToAPInt();
+    selectImmediate(N, static_cast<uint32_t>(Bits.getZExtValue()), MVT::f32);
     return;
   }
 

@@ -81,6 +81,9 @@ enum class OpKind {
   AddI,
   SubI,
   MulI,
+  AddF,
+  SubF,
+  MulF,
   AndI,
   OrI,
   XOrI,
@@ -88,6 +91,7 @@ enum class OpKind {
   ShrI,
   AShrI,
   CmpI,
+  CmpF,
   GetProgramId,
   MakeRange,
   Splat,
@@ -104,6 +108,7 @@ struct Op {
   Value *Result = nullptr;
   llvm::SmallVector<Value *, 2> Operands;
   int64_t Imm = 0;
+  double FImm = 0.0;
   int64_t Start = 0;
   int64_t End = 0;
   unsigned Axis = 0;
@@ -121,6 +126,7 @@ public:
 
   Value *addArg(llvm::StringRef Name, Type Ty);
   Value *createConstant(int64_t Imm, Type Ty);
+  Value *createConstant(double FImm, Type Ty);
   Value *createBinary(OpKind Kind, Value *LHS, Value *RHS);
   Value *createCmp(CmpPred Pred, Value *LHS, Value *RHS);
   Value *createGetProgramId(unsigned Axis);

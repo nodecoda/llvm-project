@@ -8,6 +8,7 @@
 
 #include "LLVMEmit.h"
 
+#include "llvm/ADT/APFloat.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
@@ -40,8 +41,9 @@ public:
 
 private:
   Expected<unsigned> elementsPerThread(Type Ty) const;
+  llvm::Type *llvmType(Type Ty);
   LlvmValue *elementAt(const Lowered &V, unsigned R) const;
-  LlvmValue *maskedLoad(LlvmValue *Ptr, LlvmValue *Mask);
+  LlvmValue *maskedLoad(LlvmValue *Ptr, LlvmValue *Mask, llvm::Type *ElemTy);
   void maskedStore(LlvmValue *Ptr, LlvmValue *Stored, LlvmValue *Mask);
   Error emitOp(const Op &O);
   Error emitPrologue();
@@ -66,24 +68,41 @@ Expected<unsigned> FuncEmitter::elementsPerThread(Type Ty) const {
   return static_cast<unsigned>(N / ThreadsPerBlock);
 }
 
+llvm::Type *FuncEmitter::llvmType(Type Ty) {
+  switch (Ty.getKind()) {
+  case Type::Kind::I1:
+    return B.getInt1Ty();
+  case Type::Kind::I32:
+    return B.getInt32Ty();
+  case Type::Kind::F32:
+    return B.getFloatTy();
+  case Type::Kind::Ptr:
+    return PointerType::get(Ctx, 1);
+  case Type::Kind::Tensor:
+    return llvmType(Ty.getElementType());
+  }
+  llvm_unreachable("unknown TTIR type");
+}
+
 LlvmValue *FuncEmitter::elementAt(const Lowered &V, unsigned R) const {
   return V.IsTensor ? V.Elts[R] : V.Elts[0];
 }
 
-LlvmValue *FuncEmitter::maskedLoad(LlvmValue *Ptr, LlvmValue *Mask) {
+LlvmValue *FuncEmitter::maskedLoad(LlvmValue *Ptr, LlvmValue *Mask,
+                                   llvm::Type *ElemTy) {
   if (!Mask)
-    return B.CreateLoad(B.getInt32Ty(), Ptr);
+    return B.CreateLoad(ElemTy, Ptr);
   BasicBlock *Before = B.GetInsertBlock();
   BasicBlock *LoadBB = BasicBlock::Create(Ctx, "load", LF);
   BasicBlock *MergeBB = BasicBlock::Create(Ctx, "merge", LF);
   B.CreateCondBr(Mask, LoadBB, MergeBB);
   B.SetInsertPoint(LoadBB);
-  LlvmValue *Loaded = B.CreateLoad(B.getInt32Ty(), Ptr);
+  LlvmValue *Loaded = B.CreateLoad(ElemTy, Ptr);
   B.CreateBr(MergeBB);
   B.SetInsertPoint(MergeBB);
-  PHINode *Phi = B.CreatePHI(B.getInt32Ty(), 2);
+  PHINode *Phi = B.CreatePHI(ElemTy, 2);
   Phi->addIncoming(Loaded, LoadBB);
-  Phi->addIncoming(B.getInt32(0), Before);
+  Phi->addIncoming(Constant::getNullValue(ElemTy), Before);
   return Phi;
 }
 
@@ -124,6 +143,10 @@ Error FuncEmitter::emitPrologue() {
     LlvmValue *Raw = B.CreateLoad(B.getInt32Ty(), Slot);
     if (Arg->getType().isPtr())
       Env[Arg] = {{B.CreateIntToPtr(Raw, PtrTy)}, false};
+    else if (Arg->getType().isF32())
+      // sr.args stores raw 32-bit words.  A float parameter is the same
+      // word reinterpreted, so bitcast rather than converting its value.
+      Env[Arg] = {{B.CreateBitCast(Raw, B.getFloatTy())}, false};
     else
       Env[Arg] = {{Raw}, false};
     ++Index;
@@ -134,7 +157,11 @@ Error FuncEmitter::emitPrologue() {
 Error FuncEmitter::emitOp(const Op &O) {
   switch (O.Kind) {
   case OpKind::Constant:
-    Env[O.Result] = {{B.getInt32(static_cast<uint32_t>(O.Imm))}, false};
+    if (O.Ty.isF32())
+      Env[O.Result] = {
+          {ConstantFP::get(Ctx, APFloat(static_cast<float>(O.FImm)))}, false};
+    else
+      Env[O.Result] = {{B.getInt32(static_cast<uint32_t>(O.Imm))}, false};
     return Error::success();
 
   case OpKind::GetProgramId: {
@@ -196,11 +223,14 @@ Error FuncEmitter::emitOp(const Op &O) {
     const Lowered &Ptr = Env.at(O.Operands[0]);
     const Lowered *Mask =
         O.Operands.size() > 1 ? &Env.at(O.Operands[1]) : nullptr;
+    Type ResultTy = O.Result->getType();
+    Type ElemTy = ResultTy.isTensor() ? ResultTy.getElementType() : ResultTy;
+    llvm::Type *ElemLlvmTy = llvmType(ElemTy);
     Lowered V;
     V.IsTensor = Ptr.IsTensor;
     for (unsigned R = 0; R < Ptr.Elts.size(); ++R) {
       LlvmValue *MaskElt = Mask ? elementAt(*Mask, R) : nullptr;
-      V.Elts.push_back(maskedLoad(Ptr.Elts[R], MaskElt));
+      V.Elts.push_back(maskedLoad(Ptr.Elts[R], MaskElt, ElemLlvmTy));
     }
     Env[O.Result] = std::move(V);
     return Error::success();
@@ -263,6 +293,44 @@ Error FuncEmitter::emitOp(const Op &O) {
     return Error::success();
   }
 
+  case OpKind::CmpF: {
+    const Lowered &L = Env.at(O.Operands[0]);
+    const Lowered &RHS = Env.at(O.Operands[1]);
+    FCmpInst::Predicate Pred;
+    switch (O.Pred) {
+    case CmpPred::Eq:
+      Pred = FCmpInst::FCMP_OEQ;
+      break;
+    case CmpPred::Ne:
+      Pred = FCmpInst::FCMP_ONE;
+      break;
+    case CmpPred::Slt:
+      Pred = FCmpInst::FCMP_OLT;
+      break;
+    case CmpPred::Sle:
+      Pred = FCmpInst::FCMP_OLE;
+      break;
+    case CmpPred::Sgt:
+      Pred = FCmpInst::FCMP_OGT;
+      break;
+    case CmpPred::Sge:
+      Pred = FCmpInst::FCMP_OGE;
+      break;
+    case CmpPred::Ult:
+    case CmpPred::Ule:
+    case CmpPred::Ugt:
+    case CmpPred::Uge:
+      llvm_unreachable("unsigned predicates do not exist for f32");
+    }
+    Lowered V;
+    V.IsTensor = L.IsTensor;
+    for (unsigned I = 0; I < L.Elts.size(); ++I)
+      V.Elts.push_back(B.CreateFCmp(Pred, elementAt(L, I),
+                                    elementAt(RHS, I)));
+    Env[O.Result] = std::move(V);
+    return Error::success();
+  }
+
   case OpKind::Return:
     B.CreateRetVoid();
     return Error::success();
@@ -284,6 +352,15 @@ Error FuncEmitter::emitOp(const Op &O) {
         break;
       case OpKind::MulI:
         V.Elts.push_back(B.CreateMul(A, Bv));
+        break;
+      case OpKind::AddF:
+        V.Elts.push_back(B.CreateFAdd(A, Bv));
+        break;
+      case OpKind::SubF:
+        V.Elts.push_back(B.CreateFSub(A, Bv));
+        break;
+      case OpKind::MulF:
+        V.Elts.push_back(B.CreateFMul(A, Bv));
         break;
       case OpKind::AndI:
         V.Elts.push_back(B.CreateAnd(A, Bv));

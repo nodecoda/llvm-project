@@ -1,0 +1,23 @@
+// Golden canonical TTIR for scripts/triton/f32_add.py with BLOCK=256 and
+// !tt.ptr<f32> pointers.  It is the same op sequence Triton 3.9's Python
+// frontend produces (make_range -> splat/addptr -> load -> addf -> store);
+// the chapter-25 gate canonicalises both sides with triton-opt before
+// comparing.
+module {
+  tt.func public @f32_add(%arg0: !tt.ptr<f32>, %arg1: !tt.ptr<f32>, %arg2: !tt.ptr<f32>) {
+    %c256_i32 = arith.constant 256 : i32
+    %0 = tt.make_range {end = 256 : i32, start = 0 : i32} : tensor<256xi32>
+    %1 = tt.splat %arg0 : !tt.ptr<f32> -> tensor<256x!tt.ptr<f32>>
+    %2 = tt.addptr %1, %0 : tensor<256x!tt.ptr<f32>>, tensor<256xi32>
+    %3 = tt.load %2 : tensor<256x!tt.ptr<f32>>
+    %4 = tt.splat %arg1 : !tt.ptr<f32> -> tensor<256x!tt.ptr<f32>>
+    %5 = tt.addptr %4, %0 : tensor<256x!tt.ptr<f32>>, tensor<256xi32>
+    %6 = tt.load %5 : tensor<256x!tt.ptr<f32>>
+    %7 = tt.splat %arg2 : !tt.ptr<f32> -> tensor<256x!tt.ptr<f32>>
+    %8 = tt.addptr %7, %0 : tensor<256x!tt.ptr<f32>>, tensor<256xi32>
+    %9 = arith.addf %3, %6 : tensor<256xf32>
+    tt.store %8, %9 : tensor<256x!tt.ptr<f32>>
+    tt.return
+  }
+}
+

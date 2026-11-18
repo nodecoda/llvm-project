@@ -57,7 +57,7 @@ static cl::list<std::string> ConstexprBindings(
     "constexpr", cl::desc("Bind a tl.constexpr argument: NAME=INT"),
     cl::value_desc("NAME=INT"));
 static cl::list<std::string> ArgTypeBindings(
-    "arg-type", cl::desc("Type a runtime argument: NAME=i32|ptr"),
+    "arg-type", cl::desc("Type a runtime argument: NAME=i32|f32|ptr|ptr<f32>"),
     cl::value_desc("NAME=TYPE"));
 static cl::opt<std::string> Output("o", cl::desc("Write output to <file>"),
                                    cl::value_desc("file"), cl::init("-"));
@@ -91,12 +91,17 @@ static Expected<KernelBindings> parseBindings() {
     gpumintriton::Type Ty;
     if (TypeText == "i32")
       Ty = gpumintriton::Type::i32();
+    else if (TypeText == "f32")
+      Ty = gpumintriton::Type::f32();
     else if (TypeText == "ptr" || TypeText == "ptr<i32>")
       Ty = gpumintriton::Type::ptr(gpumintriton::Type::i32());
+    else if (TypeText == "ptr<f32>")
+      Ty = gpumintriton::Type::ptr(gpumintriton::Type::f32());
     else
-      return createStringError(inconvertibleErrorCode(),
-                               "unsupported argument type '%s' (use i32 or ptr)",
-                               TypeText.str().c_str());
+      return createStringError(
+          inconvertibleErrorCode(),
+          "unsupported argument type '%s' (use i32, f32, ptr or ptr<f32>)",
+          TypeText.str().c_str());
     B.ArgTypes[Name.str()] = Ty;
   }
   return B;

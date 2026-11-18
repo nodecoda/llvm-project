@@ -9,6 +9,7 @@
 #include "TTIR.h"
 
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/Format.h"
 #include <cassert>
 
 using namespace llvm;
@@ -132,6 +133,18 @@ Value *Function::createConstant(int64_t Imm, Type Ty) {
   return V;
 }
 
+Value *Function::createConstant(double FImm, Type Ty) {
+  assert(Ty.isF32() && "float constant must be f32");
+  Value *V = createValue(Ty);
+  Op O;
+  O.Kind = OpKind::Constant;
+  O.Result = V;
+  O.FImm = FImm;
+  O.Ty = Ty;
+  Ops.push_back(std::move(O));
+  return V;
+}
+
 Value *Function::createBinary(OpKind Kind, Value *LHS, Value *RHS) {
   assert(LHS->getType() == RHS->getType() && "binary operand type mismatch");
   Value *V = createValue(LHS->getType());
@@ -149,9 +162,11 @@ Value *Function::createCmp(CmpPred Pred, Value *LHS, Value *RHS) {
   Type ResultTy = Type::i1();
   if (LHS->getType().isTensor())
     ResultTy = Type::tensor(LHS->getType().getShape(), Type::i1());
+  Type OperandTy = LHS->getType();
+  Type ElemTy = OperandTy.isTensor() ? OperandTy.getElementType() : OperandTy;
   Value *V = createValue(ResultTy);
   Op O;
-  O.Kind = OpKind::CmpI;
+  O.Kind = ElemTy.isF32() ? OpKind::CmpF : OpKind::CmpI;
   O.Result = V;
   O.Operands = {LHS, RHS};
   O.Pred = Pred;
@@ -266,6 +281,12 @@ static StringRef binaryName(OpKind Kind) {
     return "arith.subi";
   case OpKind::MulI:
     return "arith.muli";
+  case OpKind::AddF:
+    return "arith.addf";
+  case OpKind::SubF:
+    return "arith.subf";
+  case OpKind::MulF:
+    return "arith.mulf";
   case OpKind::AndI:
     return "arith.andi";
   case OpKind::OrI:
@@ -309,6 +330,29 @@ static StringRef cmpName(CmpPred Pred) {
   llvm_unreachable("unknown cmp predicate");
 }
 
+static StringRef cmpfName(CmpPred Pred) {
+  switch (Pred) {
+  case CmpPred::Eq:
+    return "oeq";
+  case CmpPred::Ne:
+    return "one";
+  case CmpPred::Slt:
+    return "olt";
+  case CmpPred::Sle:
+    return "ole";
+  case CmpPred::Sgt:
+    return "ogt";
+  case CmpPred::Sge:
+    return "oge";
+  case CmpPred::Ult:
+  case CmpPred::Ule:
+  case CmpPred::Ugt:
+  case CmpPred::Uge:
+    llvm_unreachable("unsigned predicates do not exist for f32");
+  }
+  llvm_unreachable("unknown cmp predicate");
+}
+
 void Function::print(raw_ostream &OS) const {
   OS << "  tt.func public @" << Name << "(";
   for (size_t I = 0; I < Args.size(); ++I) {
@@ -330,7 +374,12 @@ void Function::print(raw_ostream &OS) const {
     switch (O.Kind) {
     case OpKind::Constant:
       O.Result->printName(OS);
-      OS << " = arith.constant " << O.Imm << " : ";
+      OS << " = arith.constant ";
+      if (O.Ty.isF32())
+        OS << format("%.6e", O.FImm);
+      else
+        OS << O.Imm;
+      OS << " : ";
       O.Ty.print(OS);
       OS << "\n";
       break;
@@ -398,6 +447,16 @@ void Function::print(raw_ostream &OS) const {
     case OpKind::CmpI:
       O.Result->printName(OS);
       OS << " = arith.cmpi " << cmpName(O.Pred) << ", ";
+      O.Operands[0]->printName(OS);
+      OS << ", ";
+      O.Operands[1]->printName(OS);
+      OS << " : ";
+      O.Ty.print(OS);
+      OS << "\n";
+      break;
+    case OpKind::CmpF:
+      O.Result->printName(OS);
+      OS << " = arith.cmpf " << cmpfName(O.Pred) << ", ";
       O.Operands[0]->printName(OS);
       OS << ", ";
       O.Operands[1]->printName(OS);

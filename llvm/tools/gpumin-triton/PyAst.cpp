@@ -42,6 +42,10 @@ def conv(node):
         for attr in ("lineno", "col_offset", "end_lineno", "end_col_offset"):
             if hasattr(node, attr):
                 out[attr] = getattr(node, attr)
+        # JSON cannot distinguish 2 from 2.0 once llvm::json normalises an
+        # integral double to int64, so the dumper records the Python type.
+        if isinstance(node, ast.Constant) and isinstance(node.value, float):
+            out["value_is_float"] = True
         return out
     if isinstance(node, list):
         return [conv(item) for item in node]

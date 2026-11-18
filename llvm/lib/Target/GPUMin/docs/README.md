@@ -69,6 +69,7 @@ scripts/gpumin-verify-all.sh <llvm-bin-dir>
 | 22 | [ttir-min](22-ttir-min.md) | `check-ch22.sh` | TTIR-min、SSA、标量 lowering |
 | 23 | [tensor-semantics](23-tensor-semantics.md) | `check-ch23.sh` | tensor、指针、mask、`tt.addptr` |
 | 24 | [fixed-layout-llvm](24-fixed-layout-llvm.md) | `check-ch24.sh` | 固定布局、标量化、`sr.args` ABI |
+| 25 | [f32](25-f32.md) | `check-ch25.sh` | f32 ISA、`addf/mulf/cmpf`、浮点常量 |
 
 ## 8 项总门禁
 

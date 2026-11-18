@@ -28,6 +28,11 @@ public:
 
   const char *getTargetNodeName(unsigned Opcode) const override;
 
+  /// f32 literals stay in the DAG; selectImmediate() materialises the bit
+  /// pattern with movi/shift instead of a constant-pool load.
+  FPImmAction getFPImmAction(const APFloat &Imm, EVT VT,
+                             bool ForCodeSize) const override;
+
   bool CanLowerReturn(CallingConv::ID CallConv, MachineFunction &MF,
                       bool IsVarArg,
                       const SmallVectorImpl<ISD::OutputArg> &Outs,

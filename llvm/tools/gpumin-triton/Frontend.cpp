@@ -92,6 +92,14 @@ bool isI32Tensor(const Type &T) {
   return T.isTensor() && T.getElementType().isI32();
 }
 
+bool isFloatLike(const Type &T) {
+  return T.isF32() || (T.isTensor() && T.getElementType().isF32());
+}
+
+bool isF32Tensor(const Type &T) {
+  return T.isTensor() && T.getElementType().isF32();
+}
+
 /// Lowers one kernel body into one TTIR function.
 ///
 /// Chapter 22 handled scalars; chapter 23 adds the tensor and pointer
@@ -228,9 +236,16 @@ Expected<Value *> Lowerer::lowerExpr(const Object &Node) {
   StringRef Type = typeOf(Node);
 
   if (Type == "Constant") {
+    // llvm::json::getAsInteger() converts an integral double such as 2.0 to
+    // int64, so the dumper's explicit marker decides the TTIR type.
+    if (Node.getBoolean("value_is_float").value_or(false)) {
+      if (auto FImm = Node.getNumber("value"))
+        return F.createConstant(*FImm, Type::f32());
+      return errAt(Node, "malformed float constant");
+    }
     if (auto Imm = Node.getInteger("value"))
       return F.createConstant(*Imm, Type::i32());
-    return errAt(Node, "only integer constants are supported");
+    return errAt(Node, "only integer and float constants are supported");
   }
 
   if (Type == "Name") {
@@ -329,9 +344,20 @@ Expected<Value *> Lowerer::lowerExpr(const Object &Node) {
       if (!OperandOrErr)
         return OperandOrErr.takeError();
       Value *Operand = *OperandOrErr;
-      if (!Operand->getType().isI32())
-        return errAt(Node, "unary minus requires an i32 operand");
-      Value *Zero = F.createConstant(0, Type::i32());
+      gpumintriton::Type OpTy = Operand->getType();
+      if (OpTy.isF32()) {
+        Value *Zero = F.createConstant(0.0, gpumintriton::Type::f32());
+        return F.createBinary(OpKind::SubF, Zero, Operand);
+      }
+      if (isF32Tensor(OpTy)) {
+        gpumintriton::Type TensorTy = OpTy;
+        Value *Zero = F.createConstant(0.0, gpumintriton::Type::f32());
+        return F.createBinary(OpKind::SubF, splatTo(Zero, TensorTy),
+                              Operand);
+      }
+      if (!OpTy.isI32())
+        return errAt(Node, "unary minus requires an i32 or f32 operand");
+      Value *Zero = F.createConstant(int64_t(0), gpumintriton::Type::i32());
       return F.createBinary(OpKind::SubI, Zero, Operand);
     }
     return errAt(Node, ("unsupported unary operator '" + OpType + "'").str());
@@ -375,6 +401,42 @@ Expected<Value *> Lowerer::lowerBinary(const Object &Node, OpKind Kind,
     return F.createAddPtr(Ptr, Offset);
   }
 
+  if (isFloatLike(LT) || isFloatLike(RT)) {
+    OpKind FloatKind;
+    switch (Kind) {
+    case OpKind::AddI:
+      FloatKind = OpKind::AddF;
+      break;
+    case OpKind::SubI:
+      FloatKind = OpKind::SubF;
+      break;
+    case OpKind::MulI:
+      FloatKind = OpKind::MulF;
+      break;
+    default:
+      return errAt(Node,
+                   "floating-point operands only support '+', '-' and '*'");
+    }
+    if (LT.isF32() && RT.isF32())
+      return F.createBinary(FloatKind, LHS, RHS);
+    if (LT.isTensor() && RT.isF32()) {
+      if (!LT.getElementType().isF32())
+        return errAt(Node, "mixed f32/tensor<f32> operand types");
+      return F.createBinary(FloatKind, LHS, splatTo(RHS, LT));
+    }
+    if (LT.isF32() && RT.isTensor()) {
+      if (!RT.getElementType().isF32())
+        return errAt(Node, "mixed f32/tensor<f32> operand types");
+      return F.createBinary(FloatKind, splatTo(LHS, RT), RHS);
+    }
+    if (LT.isTensor() && RT.isTensor()) {
+      if (LT != RT)
+        return errAt(Node, "tensor type mismatch");
+      return F.createBinary(FloatKind, LHS, RHS);
+    }
+    return errAt(Node, "mixed float and integer operands are not supported");
+  }
+
   if (LT.isI32() && RT.isI32())
     return F.createBinary(Kind, LHS, RHS);
   if (LT.isTensor() && RT.isI32())
@@ -393,6 +455,28 @@ Expected<Value *> Lowerer::lowerCompare(const Object &Node, CmpPred Pred,
                                         Value *LHS, Value *RHS) {
   Type LT = LHS->getType();
   Type RT = RHS->getType();
+
+  if (isFloatLike(LT) || isFloatLike(RT)) {
+    if (LT.isF32() && RT.isF32())
+      return F.createCmp(Pred, LHS, RHS);
+    if (LT.isTensor() && RT.isF32()) {
+      if (!LT.getElementType().isF32())
+        return errAt(Node, "mixed f32/tensor<f32> operands in comparison");
+      return F.createCmp(Pred, LHS, splatTo(RHS, LT));
+    }
+    if (LT.isF32() && RT.isTensor()) {
+      if (!RT.getElementType().isF32())
+        return errAt(Node, "mixed f32/tensor<f32> operands in comparison");
+      return F.createCmp(Pred, splatTo(LHS, RT), RHS);
+    }
+    if (LT.isTensor() && RT.isTensor()) {
+      if (LT != RT)
+        return errAt(Node, "tensor type mismatch in comparison");
+      return F.createCmp(Pred, LHS, RHS);
+    }
+    return errAt(Node,
+                 "mixed float and integer operands in comparison");
+  }
 
   if (LT.isI32() && RT.isI32())
     return F.createCmp(Pred, LHS, RHS);

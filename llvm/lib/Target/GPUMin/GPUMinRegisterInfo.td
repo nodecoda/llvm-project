@@ -34,7 +34,7 @@ foreach i = 0-31 in {
 // The allocation order puts the caller-saved window first and keeps r0 (zero),
 // r30 (sp) and r31 (lr) last.  Reserved registers are still reserved; the
 // order only decides which registers the allocator prefers.
-def GPR : RegisterClass<"GPUMin", [i32], 32,
+def GPR : RegisterClass<"GPUMin", [i32, f32], 32,
   (add R1, R2, R3,
        (sequence "R%u", 4, 11),
        (sequence "R%u", 12, 19),
