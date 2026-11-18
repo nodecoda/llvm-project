@@ -22,6 +22,7 @@ movi r3, 42
 # CHECK: udiv r7, r8, r9        # encoding: [0x11,0x48,0xe8,0x08]
 # CHECK: srem r10, r11, r12     # encoding: [0x12,0x60,0x4b,0x09]
 # CHECK: urem r13, r14, r15     # encoding: [0x13,0x78,0xae,0x09]
+# CHECK: mul r16, r17, r18      # encoding: [0x14,0x90,0x11,0x0a]
 add r4, r5, r6
 sub r7, r8, r9
 and r10, r11, r12
@@ -34,6 +35,7 @@ sdiv r4, r5, r6
 udiv r7, r8, r9
 srem r10, r11, r12
 urem r13, r14, r15
+mul r16, r17, r18
 
 # CHECK: setp.eq p0, r1, r2     # encoding: [0x00,0x10,0x01,0x0c]
 # CHECK: setp.lt p7, r30, r31   # encoding: [0x02,0xf8,0xfe,0x0c]
@@ -62,6 +64,7 @@ exit
 # DIS: udiv r7, r8, r9
 # DIS: srem r10, r11, r12
 # DIS: urem r13, r14, r15
+# DIS: mul r16, r17, r18
 # DIS: setp.eq p0, r1, r2
 # DIS: setp.lt p7, r30, r31
 # DIS: selp r4, p0, r4, r5

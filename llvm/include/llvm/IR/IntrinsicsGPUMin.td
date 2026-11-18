@@ -29,6 +29,15 @@ let TargetPrefix = "gpumin" in { // All intrinsics start with "llvm.gpumin.".
                                      [IntrNoMem, IntrSpeculatable,
                                       IntrWillReturn]>;
 
+  // Chapter 29: x/y block coordinates inside a 2D grid.  sr.blockid stays the
+  // linear index (blockidy * gridX + blockidx), so 1D kernels are unchanged.
+  def int_gpumin_blockidx : Intrinsic<[llvm_i32_ty], [],
+                                      [IntrNoMem, IntrSpeculatable,
+                                       IntrWillReturn]>;
+  def int_gpumin_blockidy : Intrinsic<[llvm_i32_ty], [],
+                                      [IntrNoMem, IntrSpeculatable,
+                                       IntrWillReturn]>;
+
   // Thread index inside its block.
   def int_gpumin_tid : Intrinsic<[llvm_i32_ty], [],
                                  [IntrNoMem, IntrSpeculatable, IntrWillReturn]>;

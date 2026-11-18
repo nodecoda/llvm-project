@@ -117,7 +117,7 @@ class Model:
         return mask
 
     def special(self, name, *, tid, blockid, active_lanes,
-                ntid=None, nwarps=None):
+                ntid=None, nwarps=None, blockidx=0, blockidy=0):
         if name == "laneid":
             return self.laneid(tid)
         if name == "warpid":
@@ -134,6 +134,10 @@ class Model:
             return self.activemask(active_lanes)
         if name == "shared":
             return self.shared_base
+        if name == "blockidx":
+            return blockidx
+        if name == "blockidy":
+            return blockidy
         raise KeyError(name)
 
     # --- checks ----------------------------------------------------------
@@ -159,6 +163,10 @@ class Model:
         assert self.special("warpid", tid=13, blockid=0, active_lanes=[]) == 1
         assert self.special("tid", tid=13, blockid=0, active_lanes=[]) == 13
         assert self.special("blockid", tid=0, blockid=7, active_lanes=[]) == 7
+        assert self.special("blockidx", tid=0, blockid=7, active_lanes=[],
+                            blockidx=3) == 3
+        assert self.special("blockidy", tid=0, blockid=7, active_lanes=[],
+                            blockidy=2) == 2
         assert self.special("ntid", tid=0, blockid=0, active_lanes=[]) == 32
         assert self.special("nwarps", tid=0, blockid=0, active_lanes=[]) == 4
         assert self.special("activemask", tid=0, blockid=0,
@@ -166,7 +174,8 @@ class Model:
 
         names = set(self.special_funct)
         assert names == {"laneid", "warpid", "blockid", "tid", "ntid",
-                         "nwarps", "activemask", "shared"}
+                         "nwarps", "activemask", "shared", "blockidx",
+                         "blockidy"}
         assert self.data["sys_funct"]["exit"] == 0
         assert self.data["sys_funct"]["ret"] == 1
         assert self.args_funct == 9
@@ -181,7 +190,7 @@ class Model:
         assert all(w >= 1 for w in self.issue_units.values())
         assert self.data["barrier"]["scope"] == "block"
         assert self.launch["args_register"] == "ur0"
-        assert self.launch["grid_dims"] == 1
+        assert self.launch["grid_dims"] == 2
         assert self.launch["max_threads_per_block"] == self.threads_per_block
         assert self.shared_base == 0
         assert self.divergence["policy"] == "min-pc-frame-merge"

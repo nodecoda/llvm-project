@@ -8,7 +8,7 @@
 #   1. TTIR lowers to LLVM IR with the sr.args kernel ABI (no formal args);
 #   2. tensor<256xi32> becomes 8 scalar elements per thread (r*32+tid);
 #   3. the 32-thread block compiles and runs the masked i32 vecadd on the sim;
-#   4. the kernel object reads sr.args/sr.tid/sr.blockid and ends in exit;
+#   4. the kernel object reads sr.args/sr.tid/sr.blockidx and ends in exit;
 #   5. tensor sizes that are not a multiple of 32 are rejected up front.
 #
 set -euo pipefail
@@ -46,8 +46,10 @@ grep -q '@llvm.gpumin.args()' "$TMP/add.ll" ||
   fail "missing llvm.gpumin.args"
 grep -q '@llvm.gpumin.tid()' "$TMP/add.ll" ||
   fail "missing llvm.gpumin.tid"
-grep -q '@llvm.gpumin.blockid()' "$TMP/add.ll" ||
-  fail "missing llvm.gpumin.blockid"
+# Chapter 29 splits tt.get_program_id x into the x coordinate; on a 1D grid
+# sr.blockidx is the linear block id, so this chapter keeps the same result.
+grep -q '@llvm.gpumin.blockidx()' "$TMP/add.ll" ||
+  fail "missing llvm.gpumin.blockidx"
 if grep -q 'nvvm\|ptx' "$TMP/add.ll"; then
   fail "LLVM IR leaked NVIDIA-specific constructs"
 fi
@@ -89,9 +91,10 @@ echo "PASS 3/5: masked i32 vecadd runs on the 32-thread block"
 # --- 4. the object uses the launch ABI -----------------------------------
 grep -q 'sr.args' "$TMP/add.s" || fail "assembly does not read sr.args"
 grep -q 'sr.tid' "$TMP/add.s" || fail "assembly does not read sr.tid"
-grep -q 'sr.blockid' "$TMP/add.s" || fail "assembly does not read sr.blockid"
+grep -q 'sr.blockidx' "$TMP/add.s" ||
+  fail "assembly does not read sr.blockidx"
 grep -q $'^\texit$' "$TMP/add.s" || fail "kernel does not end in exit"
-echo "PASS 4/5: the object reads sr.args/tid/blockid and exits"
+echo "PASS 4/5: the object reads sr.args/tid/blockidx and exits"
 
 # --- 5. layout errors are diagnosed --------------------------------------
 if "$TOOL" --emit-llvm --constexpr BLOCK=100 \

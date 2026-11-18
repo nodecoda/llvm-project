@@ -8,6 +8,8 @@ target triple = "gpumin-unknown-elf"
 declare i32 @llvm.gpumin.laneid()
 declare i32 @llvm.gpumin.warpid()
 declare i32 @llvm.gpumin.blockid()
+declare i32 @llvm.gpumin.blockidx()
+declare i32 @llvm.gpumin.blockidy()
 declare i32 @llvm.gpumin.tid()
 declare i32 @llvm.gpumin.ntid()
 declare i32 @llvm.gpumin.nwarps()
@@ -35,6 +37,22 @@ define i32 @blockid() {
 ; CHECK:       sr.blockid r4
 ; CHECK:       ret
   %v = call i32 @llvm.gpumin.blockid()
+  ret i32 %v
+}
+
+define i32 @blockidx() {
+; CHECK-LABEL: blockidx:
+; CHECK:       sr.blockidx r4
+; CHECK:       ret
+  %v = call i32 @llvm.gpumin.blockidx()
+  ret i32 %v
+}
+
+define i32 @blockidy() {
+; CHECK-LABEL: blockidy:
+; CHECK:       sr.blockidy r4
+; CHECK:       ret
+  %v = call i32 @llvm.gpumin.blockidy()
   ret i32 %v
 }
 

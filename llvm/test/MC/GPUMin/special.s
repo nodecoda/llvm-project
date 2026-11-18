@@ -14,6 +14,9 @@
 # CHECK: sr.activemask r1      # encoding: [0x08,0x00,0x20,0x48]
 # CHECK: sr.args r1            # encoding: [0x09,0x00,0x20,0x48]
 # CHECK: sr.shared r1          # encoding: [0x0a,0x00,0x20,0x48]
+# Chapter 29: 2D grid coordinates (funct 12/13; 11 is bar.sync).
+# CHECK: sr.blockidx r1        # encoding: [0x0c,0x00,0x20,0x48]
+# CHECK: sr.blockidy r1        # encoding: [0x0d,0x00,0x20,0x48]
 sr.laneid r1
 sr.warpid r1
 sr.blockid r1
@@ -23,6 +26,8 @@ sr.nwarps r1
 sr.activemask r1
 sr.args r1
 sr.shared r1
+sr.blockidx r1
+sr.blockidy r1
 
 # Chapter 17: the block barrier is SYS funct 11 with no operands.
 # CHECK: bar.sync              # encoding: [0x0b,0x00,0x00,0x48]
@@ -44,6 +49,8 @@ sr.activemask r31
 # DIS: sr.activemask r1
 # DIS: sr.args r1
 # DIS: sr.shared r1
+# DIS: sr.blockidx r1
+# DIS: sr.blockidy r1
 # DIS: bar.sync
 # DIS: sr.laneid r7
 # DIS: sr.activemask r31

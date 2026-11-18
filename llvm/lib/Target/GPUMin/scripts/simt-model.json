@@ -20,7 +20,9 @@
     { "name": "ntid", "funct": 6 },
     { "name": "nwarps", "funct": 7 },
     { "name": "activemask", "funct": 8 },
-    { "name": "shared", "funct": 10 }
+    { "name": "shared", "funct": 10 },
+    { "name": "blockidx", "funct": 12 },
+    { "name": "blockidy", "funct": 13 }
   ],
   "active_mask": {
     "bits": 8,
@@ -35,7 +37,7 @@
   "launch": {
     "args_funct": 9,
     "args_register": "ur0",
-    "grid_dims": 1,
+    "grid_dims": 2,
     "max_threads_per_block": 32
   },
   "scheduling": {

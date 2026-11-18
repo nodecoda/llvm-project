@@ -96,6 +96,9 @@ enum class OpKind {
   CmpF,
   GetProgramId,
   MakeRange,
+  ExpandDims,
+  Broadcast,
+  Trans,
   Splat,
   AddPtr,
   Load,
@@ -138,6 +141,9 @@ public:
   Value *createCmp(CmpPred Pred, Value *LHS, Value *RHS);
   Value *createGetProgramId(unsigned Axis);
   Value *createMakeRange(int64_t Start, int64_t End);
+  Value *createExpandDims(Value *Src, unsigned Axis);
+  Value *createBroadcast(Value *Src, Type DstTy);
+  Value *createTrans(Value *Src);
   Value *createSplat(Value *Scalar, Type TensorTy);
   Value *createAddPtr(Value *Ptr, Value *Offset);
   Value *createLoad(Value *Ptr, Value *Mask);

@@ -262,10 +262,13 @@ class ELFImage:
 
 
 class Lane:
-    def __init__(self, laneid, warpid, blockid, threads, nwarps, private_size):
+    def __init__(self, laneid, warpid, blockid, blockidx, blockidy,
+                 threads, nwarps, private_size):
         self.laneid = laneid
         self.warpid = warpid
         self.blockid = blockid
+        self.blockidx = blockidx
+        self.blockidy = blockidy
         self.tid = warpid * WARP_SIZE + laneid
         self.ntid = threads
         self.nwarps = nwarps
@@ -405,6 +408,10 @@ class Simulator:
             raise SimError("--threads must be a multiple of 8 and <= 32")
         self.image = image
         self.blocks = blocks
+        # 1D launches (--blocks) still use the chapter-13 coordinates.  A
+        # launch descriptor with "grid_dims": 2 overwrites both values in
+        # apply_launch().
+        self.grid_x, self.grid_y = blocks, 1
         self.threads = threads
         self.nwarps = threads // WARP_SIZE
         self.trace = trace
@@ -482,16 +489,26 @@ class Simulator:
     def apply_launch(self, desc):
         if not isinstance(desc, dict):
             raise SimError("launch descriptor must be a JSON object")
-        if desc.get("grid_dims", 1) != 1:
-            raise SimError("only a 1D grid is supported")
-        grid = desc.get("grid", 1)
+        grid_dims = desc.get("grid_dims", 1)
+        if grid_dims not in (1, 2):
+            raise SimError("launch grid_dims must be 1 or 2")
+        if grid_dims == 1:
+            grid = desc.get("grid", 1)
+            if not isinstance(grid, int) or isinstance(grid, bool) or grid < 1:
+                raise SimError("launch grid must be a positive integer")
+            self.grid_x, self.grid_y = grid, 1
+        else:
+            grid = desc.get("grid")
+            if (not isinstance(grid, list) or len(grid) != 2 or
+                    any(not isinstance(v, int) or isinstance(v, bool) or v < 1
+                        for v in grid)):
+                raise SimError("a 2D launch needs grid = [gx, gy]")
+            self.grid_x, self.grid_y = grid
         block = desc.get("block", self.threads)
-        if not isinstance(grid, int) or isinstance(grid, bool) or grid < 1:
-            raise SimError("launch grid must be a positive integer")
         if (not isinstance(block, int) or isinstance(block, bool) or
                 block % WARP_SIZE or not 8 <= block <= 32):
             raise SimError("launch block must be a multiple of 8 in 8..32")
-        self.blocks = grid
+        self.blocks = self.grid_x * self.grid_y
         self.threads = block
         self.nwarps = block // WARP_SIZE
 
@@ -538,10 +555,12 @@ class Simulator:
     def run(self, kernel, args=()):
         entry = self.find(kernel)
         for blockid in range(self.blocks):
+            blockidy, blockidx = divmod(blockid, self.grid_x)
             self.shared = bytearray(self.memory.shared_size)
             warps = []
             for w in range(self.nwarps):
-                lanes = [Lane(i, w, blockid, self.threads, self.nwarps,
+                lanes = [Lane(i, w, blockid, blockidx, blockidy,
+                              self.threads, self.nwarps,
                               self.memory.private_size)
                          for i in range(WARP_SIZE)]
                 if len(args) > 8:
@@ -622,6 +641,8 @@ class Simulator:
             "laneid": lane.laneid,
             "warpid": lane.warpid,
             "blockid": lane.blockid,
+            "blockidx": lane.blockidx,
+            "blockidy": lane.blockidy,
             "tid": lane.tid,
             "ntid": lane.ntid,
             "nwarps": lane.nwarps,
@@ -720,6 +741,8 @@ class Simulator:
                         v = srem32(a, b)
                     elif funct == 0x013:
                         v = urem32(a, b)
+                    elif funct == 0x014:
+                        v = a * b
                     else:
                         raise SimError("bad ALU funct %d" % funct)
                     lane.write_r(rd, v)

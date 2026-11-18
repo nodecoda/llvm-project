@@ -9,6 +9,7 @@
 #include "Frontend.h"
 
 #include "llvm/Support/Error.h"
+#include <algorithm>
 #include <map>
 
 using namespace llvm;
@@ -28,6 +29,26 @@ StringRef stringField(const Object &Node, StringRef Name) {
   if (auto S = Node.getString(Name))
     return *S;
   return {};
+}
+
+bool isNoneConstant(const json::Value &V) {
+  const Object *Node = V.getAsObject();
+  if (!Node || typeOf(*Node) != "Constant")
+    return false;
+  const json::Value *Value = Node->get("value");
+  return Value && Value->getAsNull();
+}
+
+bool isFullSlice(const json::Value &V) {
+  const Object *Node = V.getAsObject();
+  if (!Node || typeOf(*Node) != "Slice")
+    return false;
+  for (const char *Field : {"lower", "upper", "step"}) {
+    const json::Value *Part = Node->get(Field);
+    if (Part && !Part->getAsNull())
+      return false;
+  }
+  return true;
 }
 
 bool isJitDecorator(const json::Value &Decorator) {
@@ -121,6 +142,9 @@ private:
                                 Value *RHS);
   Expected<Value *> lowerCompare(const Object &Node, CmpPred Pred, Value *LHS,
                                  Value *RHS);
+  Expected<Value *> lowerSubscript(const Object &Node);
+  Expected<Type> broadcastType(const Object &Node, Type A, Type B);
+  Expected<Value *> broadcastTo(const Object &Node, Value *V, Type Dst);
   Expected<Value *> lowerFloorDiv(const Object &Node, Value *LHS, Value *RHS,
                                   bool IsMod);
   Expected<Type> normalizePair(const Object &Node, Value *&LHS, Value *&RHS);
@@ -457,6 +481,25 @@ Expected<Value *> Lowerer::lowerExpr(const Object &Node) {
     return errAt(Node, ("unsupported unary operator '" + OpType + "'").str());
   }
 
+  if (Type == "Attribute") {
+    StringRef Attr = stringField(Node, "attr");
+    if (Attr != "T")
+      return errAt(Node, ("unsupported attribute '" + Attr + "'").str());
+    const json::Value *ValueNode = Node.get("value");
+    if (!ValueNode)
+      return errAt(Node, "malformed attribute");
+    Expected<Value *> VOrErr = lowerExpr(*ValueNode);
+    if (!VOrErr)
+      return VOrErr.takeError();
+    Value *V = *VOrErr;
+    if (!V->getType().isTensor() || V->getType().getShape().size() != 2)
+      return errAt(Node, "transpose requires a 2D tensor");
+    return F.createTrans(V);
+  }
+
+  if (Type == "Subscript")
+    return lowerSubscript(Node);
+
   if (Type == "Call")
     return lowerCall(Node);
 
@@ -489,8 +532,30 @@ Expected<Value *> Lowerer::lowerBinary(const Object &Node, OpKind Kind,
     } else if (PtrTy.isPtr() && OffsetTy.isTensor()) {
       Ptr = F.createSplat(Ptr, Type::tensor(OffsetTy.getShape(), PtrTy));
     } else if (PtrTy.isTensor() && OffsetTy.isTensor()) {
-      if (PtrTy.getShape() != OffsetTy.getShape())
-        return errAt(Node, "pointer/offset tensor shapes differ");
+      if (PtrTy.getShape() != OffsetTy.getShape()) {
+        llvm::ArrayRef<int64_t> SP = PtrTy.getShape();
+        llvm::ArrayRef<int64_t> SO = OffsetTy.getShape();
+        if (SP.size() != 2 || SO.size() != 2)
+          return errAt(Node, "pointer/offset tensor shapes differ");
+        int64_t Rows = std::max(SP[0], SO[0]);
+        int64_t Cols = std::max(SP[1], SO[1]);
+        auto Fits = [](int64_t Dim, int64_t Want) {
+          return Dim == Want || Dim == 1;
+        };
+        if (!Fits(SP[0], Rows) || !Fits(SP[1], Cols) || !Fits(SO[0], Rows) ||
+            !Fits(SO[1], Cols))
+          return errAt(Node, "pointer/offset tensor shapes differ");
+        Type PtrDst = Type::tensor({Rows, Cols}, PtrTy.getElementType());
+        Type OffDst = Type::tensor({Rows, Cols}, Type::i32());
+        Expected<Value *> P = broadcastTo(Node, Ptr, PtrDst);
+        if (!P)
+          return P.takeError();
+        Expected<Value *> O = broadcastTo(Node, Offset, OffDst);
+        if (!O)
+          return O.takeError();
+        Ptr = *P;
+        Offset = *O;
+      }
     }
     return F.createAddPtr(Ptr, Offset);
   }
@@ -524,9 +589,16 @@ Expected<Value *> Lowerer::lowerBinary(const Object &Node, OpKind Kind,
       return F.createBinary(FloatKind, splatTo(LHS, RT), RHS);
     }
     if (LT.isTensor() && RT.isTensor()) {
-      if (LT != RT)
-        return errAt(Node, "tensor type mismatch");
-      return F.createBinary(FloatKind, LHS, RHS);
+      Expected<Type> DstOrErr = broadcastType(Node, LT, RT);
+      if (!DstOrErr)
+        return DstOrErr.takeError();
+      Expected<Value *> L = broadcastTo(Node, LHS, *DstOrErr);
+      if (!L)
+        return L.takeError();
+      Expected<Value *> R = broadcastTo(Node, RHS, *DstOrErr);
+      if (!R)
+        return R.takeError();
+      return F.createBinary(FloatKind, *L, *R);
     }
     return errAt(Node, "mixed float and integer operands are not supported");
   }
@@ -538,9 +610,16 @@ Expected<Value *> Lowerer::lowerBinary(const Object &Node, OpKind Kind,
   if (LT.isI32() && RT.isTensor())
     return F.createBinary(Kind, splatTo(LHS, RT), RHS);
   if (LT.isTensor() && RT.isTensor()) {
-    if (LT != RT)
-      return errAt(Node, "tensor type mismatch");
-    return F.createBinary(Kind, LHS, RHS);
+    Expected<Type> DstOrErr = broadcastType(Node, LT, RT);
+    if (!DstOrErr)
+      return DstOrErr.takeError();
+    Expected<Value *> L = broadcastTo(Node, LHS, *DstOrErr);
+    if (!L)
+      return L.takeError();
+    Expected<Value *> R = broadcastTo(Node, RHS, *DstOrErr);
+    if (!R)
+      return R.takeError();
+    return F.createBinary(Kind, *L, *R);
   }
   return errAt(Node, "unsupported operand types for this operator");
 }
@@ -564,9 +643,16 @@ Expected<Value *> Lowerer::lowerCompare(const Object &Node, CmpPred Pred,
       return F.createCmp(Pred, splatTo(LHS, RT), RHS);
     }
     if (LT.isTensor() && RT.isTensor()) {
-      if (LT != RT)
-        return errAt(Node, "tensor type mismatch in comparison");
-      return F.createCmp(Pred, LHS, RHS);
+      Expected<Type> DstOrErr = broadcastType(Node, LT, RT);
+      if (!DstOrErr)
+        return DstOrErr.takeError();
+      Expected<Value *> L = broadcastTo(Node, LHS, *DstOrErr);
+      if (!L)
+        return L.takeError();
+      Expected<Value *> R = broadcastTo(Node, RHS, *DstOrErr);
+      if (!R)
+        return R.takeError();
+      return F.createCmp(Pred, *L, *R);
     }
     return errAt(Node,
                  "mixed float and integer operands in comparison");
@@ -579,11 +665,70 @@ Expected<Value *> Lowerer::lowerCompare(const Object &Node, CmpPred Pred,
   if (LT.isI32() && RT.isTensor())
     return F.createCmp(Pred, splatTo(LHS, RT), RHS);
   if (LT.isTensor() && RT.isTensor()) {
-    if (LT != RT)
-      return errAt(Node, "tensor type mismatch in comparison");
-    return F.createCmp(Pred, LHS, RHS);
+    Expected<Type> DstOrErr = broadcastType(Node, LT, RT);
+    if (!DstOrErr)
+      return DstOrErr.takeError();
+    Expected<Value *> L = broadcastTo(Node, LHS, *DstOrErr);
+    if (!L)
+      return L.takeError();
+    Expected<Value *> R = broadcastTo(Node, RHS, *DstOrErr);
+    if (!R)
+      return R.takeError();
+    return F.createCmp(Pred, *L, *R);
   }
   return errAt(Node, "comparisons require i32 or tensor<i32> operands");
+}
+
+Expected<Value *> Lowerer::lowerSubscript(const Object &Node) {
+  const json::Value *ValueNode = Node.get("value");
+  const json::Value *SliceNode = Node.get("slice");
+  const Object *Tuple = SliceNode ? SliceNode->getAsObject() : nullptr;
+  if (!ValueNode || !Tuple || typeOf(*Tuple) != "Tuple")
+    return errAt(Node, "chapter 29 only supports [:, None] and [None, :]");
+  const Array *Elts = Tuple->getArray("elts");
+  if (!Elts || Elts->size() != 2)
+    return errAt(Node, "chapter 29 only supports [:, None] and [None, :]");
+  unsigned Axis;
+  if (isFullSlice((*Elts)[0]) && isNoneConstant((*Elts)[1]))
+    Axis = 1; // x[:, None] -> tensor<Nx1>
+  else if (isNoneConstant((*Elts)[0]) && isFullSlice((*Elts)[1]))
+    Axis = 0; // x[None, :] -> tensor<1xN>
+  else
+    return errAt(Node, "chapter 29 only supports [:, None] and [None, :]");
+  Expected<Value *> VOrErr = lowerExpr(*ValueNode);
+  if (!VOrErr)
+    return VOrErr.takeError();
+  Value *V = *VOrErr;
+  if (!V->getType().isTensor() || V->getType().getShape().size() != 1)
+    return errAt(Node, "expand_dims requires a 1D tensor");
+  return F.createExpandDims(V, Axis);
+}
+
+Expected<Type> Lowerer::broadcastType(const Object &Node, Type A, Type B) {
+  if (A == B)
+    return A;
+  if (!A.isTensor() || !B.isTensor() ||
+      A.getElementType() != B.getElementType())
+    return errAt(Node, "tensor type mismatch");
+  llvm::ArrayRef<int64_t> SA = A.getShape();
+  llvm::ArrayRef<int64_t> SB = B.getShape();
+  if (SA.size() != 2 || SB.size() != 2)
+    return errAt(Node, "tensor type mismatch");
+  int64_t Rows = std::max(SA[0], SB[0]);
+  int64_t Cols = std::max(SA[1], SB[1]);
+  auto Fits = [](int64_t Dim, int64_t Want) { return Dim == Want || Dim == 1; };
+  if (!Fits(SA[0], Rows) || !Fits(SA[1], Cols) || !Fits(SB[0], Rows) ||
+      !Fits(SB[1], Cols))
+    return errAt(Node, "tensor shapes are not broadcast-compatible");
+  return Type::tensor({Rows, Cols}, A.getElementType());
+}
+
+Expected<Value *> Lowerer::broadcastTo(const Object &Node, Value *V, Type Dst) {
+  if (V->getType() == Dst)
+    return V;
+  if (!V->getType().isTensor() || !Dst.isTensor())
+    return errAt(Node, "only tensors can be broadcast");
+  return F.createBroadcast(V, Dst);
 }
 
 Expected<Type> Lowerer::normalizePair(const Object &Node, Value *&LHS,
@@ -599,8 +744,17 @@ Expected<Type> Lowerer::normalizePair(const Object &Node, Value *&LHS,
       return errAt(Node, "scalar/tensor element types differ");
     LHS = splatTo(LHS, RT);
   } else if (LT.isTensor() && RT.isTensor()) {
-    if (LT != RT)
-      return errAt(Node, "tensor type mismatch");
+    Expected<Type> DstOrErr = broadcastType(Node, LT, RT);
+    if (!DstOrErr)
+      return DstOrErr.takeError();
+    Expected<Value *> L = broadcastTo(Node, LHS, *DstOrErr);
+    if (!L)
+      return L.takeError();
+    Expected<Value *> R = broadcastTo(Node, RHS, *DstOrErr);
+    if (!R)
+      return R.takeError();
+    LHS = *L;
+    RHS = *R;
   } else if (LT != RT) {
     return errAt(Node, "operand type mismatch");
   }
@@ -748,9 +902,10 @@ Expected<Value *> Lowerer::lowerCall(const Object &Node) {
     Expected<int64_t> AxisOrErr = evalInt(*AxisNode);
     if (!AxisOrErr)
       return AxisOrErr.takeError();
-    if (*AxisOrErr != 0)
-      return errAt(Node, "chapter 23 only supports tl.program_id(0)");
-    return F.createGetProgramId(0);
+    if (*AxisOrErr != 0 && *AxisOrErr != 1)
+      return errAt(Node, "chapter 29 only supports tl.program_id(0) and "
+                         "tl.program_id(1)");
+    return F.createGetProgramId(static_cast<unsigned>(*AxisOrErr));
   }
 
   if (Name == "arange") {
@@ -767,6 +922,19 @@ Expected<Value *> Lowerer::lowerCall(const Object &Node) {
     if (*EndOrErr <= *StartOrErr)
       return errAt(Node, "tl.arange requires end > start");
     return F.createMakeRange(*StartOrErr, *EndOrErr);
+  }
+
+  if (Name == "trans") {
+    const json::Value *ValueNode = GetArg(0);
+    if (!ValueNode)
+      return errAt(Node, "tl.trans expects one tensor");
+    Expected<Value *> VOrErr = lowerExpr(*ValueNode);
+    if (!VOrErr)
+      return VOrErr.takeError();
+    Value *V = *VOrErr;
+    if (!V->getType().isTensor() || V->getType().getShape().size() != 2)
+      return errAt(Node, "tl.trans requires a 2D tensor");
+    return F.createTrans(V);
   }
 
   if (Name == "load") {
@@ -999,6 +1167,8 @@ Expected<Value *> Lowerer::lowerCall(const Object &Node) {
     Value *Src = *SrcOrErr;
     if (!Src->getType().isTensor())
       return errAt(Node, "tl." + Name + " expects a tensor");
+    if (Src->getType().getShape().size() != 1)
+      return errAt(Node, "reductions require a 1D tensor");
 
     const json::Value *AxisNode = GetArg(1);
     auto AxisIt = Keywords.find("axis");

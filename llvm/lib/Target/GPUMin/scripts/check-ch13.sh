@@ -52,7 +52,9 @@ import json, sys
 launch = json.load(open(sys.argv[1]))["launch"]
 assert launch["args_funct"] == 9, launch
 assert launch["args_register"] == "ur0", launch
-assert launch["grid_dims"] == 1, launch
+# The model grew a second grid dimension in chapter 29; the
+# descriptor default and this chapter stay 1D.
+assert launch["grid_dims"] == 2, launch
 PY
 
 cat > "$TMP/args.ll" <<'IR'

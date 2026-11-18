@@ -200,6 +200,55 @@ Value *Function::createMakeRange(int64_t Start, int64_t End) {
   return V;
 }
 
+Value *Function::createExpandDims(Value *Src, unsigned Axis) {
+  assert(Src->getType().isTensor() && Src->getType().getShape().size() == 1 &&
+         "expand_dims needs a 1D tensor");
+  assert(Axis <= 1 && "expand_dims only supports axis 0 or 1");
+  ArrayRef<int64_t> SrcShape = Src->getType().getShape();
+  Type DstTy =
+      Axis == 0
+          ? Type::tensor({1, SrcShape[0]}, Src->getType().getElementType())
+          : Type::tensor({SrcShape[0], 1}, Src->getType().getElementType());
+  Value *V = createValue(DstTy);
+  Op O;
+  O.Kind = OpKind::ExpandDims;
+  O.Result = V;
+  O.Operands = {Src};
+  O.Axis = Axis;
+  O.Ty = DstTy;
+  Ops.push_back(std::move(O));
+  return V;
+}
+
+Value *Function::createBroadcast(Value *Src, Type DstTy) {
+  assert(Src->getType().isTensor() && DstTy.isTensor() &&
+         "broadcast needs tensors");
+  Value *V = createValue(DstTy);
+  Op O;
+  O.Kind = OpKind::Broadcast;
+  O.Result = V;
+  O.Operands = {Src};
+  O.Ty = DstTy;
+  Ops.push_back(std::move(O));
+  return V;
+}
+
+Value *Function::createTrans(Value *Src) {
+  assert(Src->getType().isTensor() && Src->getType().getShape().size() == 2 &&
+         "trans needs a 2D tensor");
+  ArrayRef<int64_t> S = Src->getType().getShape();
+  Type DstTy = Type::tensor({S[1], S[0]}, Src->getType().getElementType());
+  Value *V = createValue(DstTy);
+  Op O;
+  O.Kind = OpKind::Trans;
+  O.Result = V;
+  O.Operands = {Src};
+  O.Axis = 1; // order = [1, 0]
+  O.Ty = DstTy;
+  Ops.push_back(std::move(O));
+  return V;
+}
+
 Value *Function::createSplat(Value *Scalar, Type TensorTy) {
   assert(TensorTy.isTensor() && "splat result must be a tensor");
   assert(TensorTy.getElementType() == Scalar->getType() &&
@@ -427,6 +476,36 @@ void Function::print(raw_ostream &OS) const {
       OS << " = tt.make_range {start = " << O.Start << " : i32, end = "
          << O.End << " : i32} : ";
       O.Ty.print(OS);
+      OS << "\n";
+      break;
+    case OpKind::ExpandDims:
+      O.Result->printName(OS);
+      OS << " = tt.expand_dims ";
+      O.Operands[0]->printName(OS);
+      OS << " {axis = " << O.Axis << " : i32} : ";
+      O.Operands[0]->getType().print(OS);
+      OS << " -> ";
+      O.Result->getType().print(OS);
+      OS << "\n";
+      break;
+    case OpKind::Broadcast:
+      O.Result->printName(OS);
+      OS << " = tt.broadcast ";
+      O.Operands[0]->printName(OS);
+      OS << " : ";
+      O.Operands[0]->getType().print(OS);
+      OS << " -> ";
+      O.Result->getType().print(OS);
+      OS << "\n";
+      break;
+    case OpKind::Trans:
+      O.Result->printName(OS);
+      OS << " = tt.trans ";
+      O.Operands[0]->printName(OS);
+      OS << " {order = array<i32: 1, 0>} : ";
+      O.Operands[0]->getType().print(OS);
+      OS << " -> ";
+      O.Result->getType().print(OS);
       OS << "\n";
       break;
     case OpKind::Splat:

@@ -317,7 +317,8 @@ Gates: 7 passed, 0 failed, 1 skipped
    `blockid * block + tid`。
 8. **constant 空间**。本章参数块放在 global；如果改到 constant，要
    先让 launcher 有写入 constant 的路径。
-9. **2D/3D launch**。模型里 `grid_dims = 1`；传别的值会被拒绝。
+9. **2D/3D launch**。本章的 `--launch` 描述只有 1D grid；模型从第 29 章
+   起支持 `grid_dims = 2`，3D 仍然会被拒绝。
 10. **把 `sr.args` 当每 lane 值**。它来自 `ur0`，一个 warp 内必须一致；
     第 14 章的分歧不会改变它。
 

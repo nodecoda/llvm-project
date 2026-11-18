@@ -1,0 +1,96 @@
+// Golden canonical TTIR for scripts/triton/layout2d.py.  Triton's
+// canonicalizer keeps the arange -> expand_dims -> broadcast chain, folds
+// r * 8 to a dense constant, prints the shared-memory transpose as tt.trans
+// with order [1, 0], and keeps tt.get_program_id y for the second grid axis.
+// The chapter-29 gate canonicalises both sides before diffing.
+module {
+  tt.func public @copy2d_kernel(%arg0: !tt.ptr<i32>, %arg1: !tt.ptr<i32>) {
+    %cst = arith.constant dense<8> : tensor<8x1xi32>
+    %0 = tt.make_range {end = 8 : i32, start = 0 : i32} : tensor<8xi32>
+    %1 = tt.expand_dims %0 {axis = 1 : i32} : tensor<8xi32> -> tensor<8x1xi32>
+    %2 = tt.make_range {end = 8 : i32, start = 0 : i32} : tensor<8xi32>
+    %3 = tt.expand_dims %2 {axis = 0 : i32} : tensor<8xi32> -> tensor<1x8xi32>
+    %4 = arith.muli %1, %cst : tensor<8x1xi32>
+    %5 = tt.broadcast %4 : tensor<8x1xi32> -> tensor<8x8xi32>
+    %6 = tt.broadcast %3 : tensor<1x8xi32> -> tensor<8x8xi32>
+    %7 = arith.addi %5, %6 : tensor<8x8xi32>
+    %8 = tt.splat %arg0 : !tt.ptr<i32> -> tensor<8x8x!tt.ptr<i32>>
+    %9 = tt.addptr %8, %7 : tensor<8x8x!tt.ptr<i32>>, tensor<8x8xi32>
+    %10 = tt.load %9 : tensor<8x8x!tt.ptr<i32>>
+    %11 = tt.splat %arg1 : !tt.ptr<i32> -> tensor<8x8x!tt.ptr<i32>>
+    %12 = tt.addptr %11, %7 : tensor<8x8x!tt.ptr<i32>>, tensor<8x8xi32>
+    tt.store %12, %10 : tensor<8x8x!tt.ptr<i32>>
+    tt.return
+  }
+  tt.func public @trans2d_kernel(%arg0: !tt.ptr<i32>, %arg1: !tt.ptr<i32>) {
+    %cst = arith.constant dense<8> : tensor<8x1xi32>
+    %0 = tt.make_range {end = 8 : i32, start = 0 : i32} : tensor<8xi32>
+    %1 = tt.expand_dims %0 {axis = 1 : i32} : tensor<8xi32> -> tensor<8x1xi32>
+    %2 = tt.make_range {end = 8 : i32, start = 0 : i32} : tensor<8xi32>
+    %3 = tt.expand_dims %2 {axis = 0 : i32} : tensor<8xi32> -> tensor<1x8xi32>
+    %4 = arith.muli %1, %cst : tensor<8x1xi32>
+    %5 = tt.broadcast %4 : tensor<8x1xi32> -> tensor<8x8xi32>
+    %6 = tt.broadcast %3 : tensor<1x8xi32> -> tensor<8x8xi32>
+    %7 = arith.addi %5, %6 : tensor<8x8xi32>
+    %8 = tt.splat %arg0 : !tt.ptr<i32> -> tensor<8x8x!tt.ptr<i32>>
+    %9 = tt.addptr %8, %7 : tensor<8x8x!tt.ptr<i32>>, tensor<8x8xi32>
+    %10 = tt.load %9 : tensor<8x8x!tt.ptr<i32>>
+    %11 = tt.trans %10 {order = array<i32: 1, 0>} : tensor<8x8xi32> -> tensor<8x8xi32>
+    %12 = tt.splat %arg1 : !tt.ptr<i32> -> tensor<8x8x!tt.ptr<i32>>
+    %13 = tt.addptr %12, %7 : tensor<8x8x!tt.ptr<i32>>, tensor<8x8xi32>
+    tt.store %13, %11 : tensor<8x8x!tt.ptr<i32>>
+    tt.return
+  }
+  tt.func public @bcast2d_kernel(%arg0: !tt.ptr<i32>) {
+    %cst = arith.constant dense<8> : tensor<8x1xi32>
+    %cst_0 = arith.constant dense<10> : tensor<1x8xi32>
+    %0 = tt.make_range {end = 8 : i32, start = 0 : i32} : tensor<8xi32>
+    %1 = tt.expand_dims %0 {axis = 1 : i32} : tensor<8xi32> -> tensor<8x1xi32>
+    %2 = tt.make_range {end = 8 : i32, start = 0 : i32} : tensor<8xi32>
+    %3 = tt.expand_dims %2 {axis = 0 : i32} : tensor<8xi32> -> tensor<1x8xi32>
+    %4 = arith.muli %3, %cst_0 : tensor<1x8xi32>
+    %5 = tt.broadcast %1 : tensor<8x1xi32> -> tensor<8x8xi32>
+    %6 = tt.broadcast %4 : tensor<1x8xi32> -> tensor<8x8xi32>
+    %7 = arith.addi %5, %6 : tensor<8x8xi32>
+    %8 = arith.muli %1, %cst : tensor<8x1xi32>
+    %9 = tt.splat %arg0 : !tt.ptr<i32> -> tensor<8x1x!tt.ptr<i32>>
+    %10 = tt.addptr %9, %8 : tensor<8x1x!tt.ptr<i32>>, tensor<8x1xi32>
+    %11 = tt.broadcast %10 : tensor<8x1x!tt.ptr<i32>> -> tensor<8x8x!tt.ptr<i32>>
+    %12 = tt.broadcast %3 : tensor<1x8xi32> -> tensor<8x8xi32>
+    %13 = tt.addptr %11, %12 : tensor<8x8x!tt.ptr<i32>>, tensor<8x8xi32>
+    tt.store %13, %7 : tensor<8x8x!tt.ptr<i32>>
+    tt.return
+  }
+  tt.func public @grid2d_kernel(%arg0: !tt.ptr<i32>, %arg1: !tt.ptr<i32>) {
+    %cst = arith.constant dense<16> : tensor<8x1xi32>
+    %c8_i32 = arith.constant 8 : i32
+    %0 = tt.get_program_id x : i32
+    %1 = tt.get_program_id y : i32
+    %2 = tt.make_range {end = 8 : i32, start = 0 : i32} : tensor<8xi32>
+    %3 = tt.expand_dims %2 {axis = 1 : i32} : tensor<8xi32> -> tensor<8x1xi32>
+    %4 = tt.make_range {end = 8 : i32, start = 0 : i32} : tensor<8xi32>
+    %5 = tt.expand_dims %4 {axis = 0 : i32} : tensor<8xi32> -> tensor<1x8xi32>
+    %6 = arith.muli %1, %c8_i32 : i32
+    %7 = tt.splat %6 : i32 -> tensor<8x1xi32>
+    %8 = arith.addi %7, %3 : tensor<8x1xi32>
+    %9 = arith.muli %8, %cst : tensor<8x1xi32>
+    %10 = arith.muli %0, %c8_i32 : i32
+    %11 = tt.splat %10 : i32 -> tensor<8x1xi32>
+    %12 = arith.addi %9, %11 : tensor<8x1xi32>
+    %13 = tt.broadcast %12 : tensor<8x1xi32> -> tensor<8x8xi32>
+    %14 = tt.broadcast %5 : tensor<1x8xi32> -> tensor<8x8xi32>
+    %15 = arith.addi %13, %14 : tensor<8x8xi32>
+    %16 = tt.splat %arg0 : !tt.ptr<i32> -> tensor<8x8x!tt.ptr<i32>>
+    %17 = tt.addptr %16, %15 : tensor<8x8x!tt.ptr<i32>>, tensor<8x8xi32>
+    %18 = tt.load %17 : tensor<8x8x!tt.ptr<i32>>
+    %19 = tt.splat %arg1 : !tt.ptr<i32> -> tensor<8x8x!tt.ptr<i32>>
+    %20 = tt.addptr %19, %15 : tensor<8x8x!tt.ptr<i32>>, tensor<8x8xi32>
+    %21 = tt.splat %0 : i32 -> tensor<8x8xi32>
+    %22 = arith.addi %18, %21 : tensor<8x8xi32>
+    %23 = tt.splat %1 : i32 -> tensor<8x8xi32>
+    %24 = arith.addi %22, %23 : tensor<8x8xi32>
+    tt.store %20, %24 : tensor<8x8x!tt.ptr<i32>>
+    tt.return
+  }
+}
+

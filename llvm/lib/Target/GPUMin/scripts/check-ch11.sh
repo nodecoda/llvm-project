@@ -8,7 +8,7 @@
 #   1. the JSON model is internally consistent (warp/block arithmetic, masks,
 #      special-register names, address spaces);
 #   2. every special-register funct in the model matches llvm-mc's encoding;
-#   3. the seven intrinsics still lower to exactly those `sr.*` instructions;
+#   3. the nine intrinsics still lower to exactly those `sr.*` instructions;
 #   4. the chapter-09 and chapter-11 docs still state the frozen numbers.
 #
 set -euo pipefail
@@ -64,6 +64,8 @@ declare i32 @llvm.gpumin.ntid()
 declare i32 @llvm.gpumin.nwarps()
 declare i32 @llvm.gpumin.activemask()
 declare i32 @llvm.gpumin.shared()
+declare i32 @llvm.gpumin.blockidx()
+declare i32 @llvm.gpumin.blockidy()
 
 define i32 @laneid() {
   %v = call i32 @llvm.gpumin.laneid()
@@ -95,6 +97,14 @@ define i32 @activemask() {
 }
 define i32 @shared() {
   %v = call i32 @llvm.gpumin.shared()
+  ret i32 %v
+}
+define i32 @blockidx() {
+  %v = call i32 @llvm.gpumin.blockidx()
+  ret i32 %v
+}
+define i32 @blockidy() {
+  %v = call i32 @llvm.gpumin.blockidy()
   ret i32 %v
 }
 IR

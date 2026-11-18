@@ -73,6 +73,7 @@ scripts/gpumin-verify-all.sh <llvm-bin-dir>
 | 26 | [reduction](26-reduction.md) | `check-ch26.sh` | `tt.reduce`、shared、双 barrier |
 | 27 | [triton-e2e](27-triton-e2e.md) | `check-ch27.sh` + `triton-verify-all.sh` | `tl.where`、编译期循环、四个 e2e |
 | 28 | [elementwise](28-elementwise.md) | `check-ch28.sh` + `triton-verify-all.sh` | `//`/`%`、`tl.cdiv`、min/max、f32 `tl.max` |
+| 29 | [layout2d](29-layout2d.md) | `check-ch29.sh` + `triton-verify-all.sh` | 2D tensor、`expand_dims`/`broadcast`/`trans`、2D grid、`mul` |
 
 ## 8 项总门禁
 

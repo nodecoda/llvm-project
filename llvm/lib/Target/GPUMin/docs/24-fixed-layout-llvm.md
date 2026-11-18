@@ -79,7 +79,7 @@ struct Lowered {
 | TTIR | LLVM |
 | --- | --- |
 | `arith.constant` | `i32` 常量 |
-| `tt.get_program_id x` | `llvm.gpumin.blockid()` |
+| `tt.get_program_id x` | `llvm.gpumin.blockidx()`（第 29 章起；1D grid 中等于 `blockid`） |
 | `tt.make_range` | `r*32 + tid`，每个 r 一个 `add` |
 | `tt.splat` | 同一个标量值复制到 `N/32` 个元素 |
 | `tt.addptr` | 每个元素一个 `getelementptr i32` |
@@ -125,7 +125,7 @@ out[i] = x[i] + y[i]
 门禁还会检查：
 
 - IR 里没有 `nvvm`/`ptx` 残留；
-- 汇编里有 `sr.args`、`sr.tid`、`sr.blockid`，并以 `exit` 结束；
+- 汇编里有 `sr.args`、`sr.tid`、`sr.blockidx`，并以 `exit` 结束；
 - `tensor<256xi32>` 正好展开成 8 个 store。
 
 ## 已知限制：BLOCK 上限

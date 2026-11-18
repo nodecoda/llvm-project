@@ -29,7 +29,10 @@ define i32 @a_sar(i32 %a, i32 %b) { %c = ashr i32 %a, %b ret i32 %c }
 ; CHECK-LABEL: a_sar:
 ; CHECK:       sar r4, r4, r5
 
-; Chapter 28: the extended ALU funct space.
+; Chapter 28: the extended ALU funct space.  Chapter 29 adds integer mul.
+define i32 @a_mul(i32 %a, i32 %b) { %c = mul i32 %a, %b ret i32 %c }
+; CHECK-LABEL: a_mul:
+; CHECK:       mul r4, r4, r5
 define i32 @a_sdiv(i32 %a, i32 %b) { %c = sdiv i32 %a, %b ret i32 %c }
 ; CHECK-LABEL: a_sdiv:
 ; CHECK:       sdiv r4, r4, r5
@@ -42,6 +45,15 @@ define i32 @a_srem(i32 %a, i32 %b) { %c = srem i32 %a, %b ret i32 %c }
 define i32 @a_urem(i32 %a, i32 %b) { %c = urem i32 %a, %b ret i32 %c }
 ; CHECK-LABEL: a_urem:
 ; CHECK:       urem r4, r4, r5
+
+; A non-power-of-two constant multiplier is a real mul, not a libcall.
+define i32 @mul10(i32 %x) {
+; CHECK-LABEL: mul10:
+; CHECK:       movi {{r[0-9]+}}, 10
+; CHECK:       mul r4, r4, {{r[0-9]+}}
+  %r = mul i32 %x, 10
+  ret i32 %r
+}
 
 ; isIntDivCheap: a constant divisor stays a real sdiv, never a magic multiply.
 define i32 @div3(i32 %x) {

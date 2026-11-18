@@ -147,6 +147,11 @@ def SREM : GPUMinR2<OPC_ALU.Value, 0x012, (outs GPR:$rd),
                     (ins GPR:$rs1, GPR:$rs2), "srem $rd, $rs1, $rs2", []>;
 def UREM : GPUMinR2<OPC_ALU.Value, 0x013, (outs GPR:$rd),
                     (ins GPR:$rs1, GPR:$rs2), "urem $rd, $rs1, $rs2", []>;
+// Chapter 29: 32-bit integer multiply.  2D index arithmetic (row * C + col)
+// needs it as soon as the multiplier is not a power of two, and the generic
+// expansion would otherwise reach a __mulsi3 libcall this target lacks.
+def MUL : GPUMinR2<OPC_ALU.Value, 0x014, (outs GPR:$rd),
+                   (ins GPR:$rs1, GPR:$rs2), "mul $rd, $rs1, $rs2", []>;
 
 //===----------------------------------------------------------------------===//
 // Float32 ALU (opcode 0x07, chapter 25)
@@ -226,6 +231,7 @@ def : Pat<(sdiv i32:$rs1, i32:$rs2), (SDIV $rs1, $rs2)>;
 def : Pat<(udiv i32:$rs1, i32:$rs2), (UDIV $rs1, $rs2)>;
 def : Pat<(srem i32:$rs1, i32:$rs2), (SREM $rs1, $rs2)>;
 def : Pat<(urem i32:$rs1, i32:$rs2), (UREM $rs1, $rs2)>;
+def : Pat<(mul i32:$rs1, i32:$rs2), (MUL $rs1, $rs2)>;
 
 // Comparisons produce a predicate register, which is why i1 has to be a legal
 // type for this target (see GPUMinISelLowering.cpp).
@@ -474,6 +480,8 @@ def BAR_SYNC : GPUMinInst<(outs), (ins), "bar.sync", [(int_gpumin_barrier)]> {
 //   6 ntid     7 nwarps   8 activemask
 //   9 args     launch descriptor pointer (chapter 13, sourced from ur0)
 //  10 shared   base of this block's shared window (chapter 16)
+//  12 blockidx 2D grid x coordinate (chapter 29; 11 is bar.sync)
+//  13 blockidy 2D grid y coordinate
 multiclass GPUMinSR<bits<11> funct, string mnemonic> {
   def "" : GPUMinSysR1<OPC_SYS.Value, funct, (outs GPR:$rd), (ins),
                        mnemonic#" $rd", []>;
@@ -492,6 +500,8 @@ let hasSideEffects = 1 in
 defm SR_ACTIVEMASK : GPUMinSR<0x008, "sr.activemask">;
 defm SR_ARGS     : GPUMinSR<0x009, "sr.args">;
 defm SR_SHARED   : GPUMinSR<0x00A, "sr.shared">;
+defm SR_BLOCKIDX : GPUMinSR<0x00C, "sr.blockidx">;
+defm SR_BLOCKIDY : GPUMinSR<0x00D, "sr.blockidy">;
 
 // The IR side is a target intrinsic.  Each read is a value with no operands,
 // so the pattern is a direct instruction match; there is no addressing mode
@@ -505,6 +515,8 @@ def : Pat<(int_gpumin_nwarps), (SR_NWARPS)>;
 def : Pat<(int_gpumin_activemask), (SR_ACTIVEMASK)>;
 def : Pat<(int_gpumin_args), (SR_ARGS)>;
 def : Pat<(int_gpumin_shared), (SR_SHARED)>;
+def : Pat<(int_gpumin_blockidx), (SR_BLOCKIDX)>;
+def : Pat<(int_gpumin_blockidy), (SR_BLOCKIDY)>;
 
 //===----------------------------------------------------------------------===//
 // Selection DAG nodes

@@ -7,7 +7,8 @@
 同 warp 里还有哪些 lane 活着。本章把这些状态接进 GM32：
 
 1. 七个 SIMT 身份特殊寄存器：`laneid`、`warpid`、`blockid`、`tid`、`ntid`、
-   `nwarps`、`activemask`；第 13 章在同一编码空间追加 `sr.args`
+   `nwarps`、`activemask`；第 13 章在同一编码空间追加 `sr.args`，
+   第 29 章再追加 `sr.blockidx`/`sr.blockidy`
    （launch 参数块指针，来自 `ur0`）；
 2. IR 入口是 target intrinsic：`llvm.gpumin.laneid()` 等，返回 `i32`；
 3. 每个 selector 是 SYS opcode（`0x12`）的一个独立 `funct`，汇编写作
@@ -99,6 +100,8 @@ active mask 是**整个 warp 共享**的位图。把 0xff 写进 `p0` 只会得�
 | 8 | `sr.activemask` | warp 活跃 lane 位图 |
 | 9 | `sr.args` | launch 参数块指针（第 13 章，读 `ur0`） |
 | 10 | `sr.shared` | block 共享窗口基址（第 16 章） |
+| 12 | `sr.blockidx` | 2D grid 的 x 坐标（第 29 章） |
+| 13 | `sr.blockidy` | 2D grid 的 y 坐标（第 29 章） |
 | 11 | `bar.sync` | block 屏障，无操作数（第 17 章） |
 
 备选方案是一条通用 `sr rd, n`，`n` 是 5 位 selector。它少八条指令定义，
