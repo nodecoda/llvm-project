@@ -1,0 +1,14 @@
+
+#ifndef ELF_RELOC
+#error "ELF_RELOC must be defined"
+#endif
+
+// GM32 (gpumin) relocation types.  The machine number is EM_GPUMIN (0xfe00),
+// so the numbering is ours: 0 is the obligatory R_*_NONE, and the rest mirror
+// the four fixups the MC layer can produce.
+ELF_RELOC(R_GPUMIN_NONE,          0)
+ELF_RELOC(R_GPUMIN_32,            1)
+ELF_RELOC(R_GPUMIN_32_PCREL,      2)
+ELF_RELOC(R_GPUMIN_16_PCREL,      3)
+ELF_RELOC(R_GPUMIN_21_PCREL,      4)
+ELF_RELOC(R_GPUMIN_RELATIVE,      5)

@@ -40,9 +40,11 @@ define i32 @forty_two() {
   ret i32 42
 }
 
-define void @k() {
+define void @k() #0 {
   ret void
 }
+
+attributes #0 = { "gpumin_kernel" }
 IR
 
 # --- 1. instruction selection + return-value liveness -----------------------
@@ -53,8 +55,10 @@ grep -q 'mov r4, r5' "$TMP/ch03.s" \
   || fail "the returned argument never reached r4 (copy eliminated as dead)"
 grep -q 'movi r4, 42' "$TMP/ch03.s" \
   || fail "the returned constant never reached r4"
-[ "$(grep -c '^	exit$' "$TMP/ch03.s")" -eq 3 ] \
-  || fail "each function must end with exactly one exit"
+[ "$(grep -c '^	ret$' "$TMP/ch03.s")" -eq 2 ] \
+  || fail "each device function must end with exactly one ret"
+[ "$(grep -c '^	exit$' "$TMP/ch03.s")" -eq 1 ] \
+  || fail "the kernel must end with exactly one exit"
 echo "PASS 1/4: arguments, returned constants and returned values lower correctly"
 
 # --- 2. ELF machine number --------------------------------------------------
@@ -76,8 +80,10 @@ grep -q $'\tmov r4, r5$' "$TMP/objdump.txt" \
   || fail "objdump did not decode the mov"
 grep -q $'\tmovi r4, 42$' "$TMP/objdump.txt" \
   || fail "objdump did not decode the movi"
-[ "$(grep -c $'\texit$' "$TMP/objdump.txt")" -eq 3 ] \
-  || fail "objdump did not decode all three exits"
+[ "$(grep -c $'\tret$' "$TMP/objdump.txt")" -eq 2 ] \
+  || fail "objdump did not decode both device returns"
+[ "$(grep -c $'\texit$' "$TMP/objdump.txt")" -eq 1 ] \
+  || fail "objdump did not decode the kernel exit"
 echo "PASS 3/4: llvm-objdump -d decodes the object file"
 
 # --- 4. codegen path == MC path --------------------------------------------

@@ -7,7 +7,8 @@
 # Four checks, in increasing order of what they prove:
 #   1. the target is registered under its own Triple arch;
 #   2. an empty module produces a listing (the codegen pipeline runs);
-#   3. `ret void` becomes the GM32 `exit` word (ISel + pseudo expansion);
+#   3. `ret void` in a kernel becomes the GM32 `exit` word (ISel + pseudo
+#      expansion; chapter 07 adds the device-function `ret`);
 #   4. `exit` encodes to 0x48000000 (opcode 0x12 in bits 31:26).
 #
 set -euo pipefail
@@ -31,9 +32,10 @@ echo "PASS 2/4: empty module emits a listing"
 
 cat > "$TMP/ret.ll" <<'IR'
 target triple = "gpumin-unknown-elf"
-define void @k() {
+define void @k() #0 {
   ret void
 }
+attributes #0 = { "gpumin_kernel" }
 IR
 "$BIN/llc" -march=gpumin "$TMP/ret.ll" -o "$TMP/ret.s"
 grep -qw 'exit' "$TMP/ret.s" || fail "ret void did not lower to exit"

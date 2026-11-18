@@ -54,6 +54,10 @@ public:
   uint64_t getBranchTargetOpValue(const MCInst &MI, unsigned OpNo,
                                   SmallVectorImpl<MCFixup> &Fixups,
                                   const MCSubtargetInfo &STI) const;
+
+  uint64_t getCallTargetOpValue(const MCInst &MI, unsigned OpNo,
+                                SmallVectorImpl<MCFixup> &Fixups,
+                                const MCSubtargetInfo &STI) const;
 };
 
 } // end anonymous namespace
@@ -103,6 +107,20 @@ uint64_t GPUMinMCCodeEmitter::getBranchTargetOpValue(
 
   Fixups.push_back(MCFixup::create(/*Offset=*/0, MO.getExpr(),
                                    (MCFixupKind)gpumin::fixup_gpumin_16_pcrel,
+                                   /*IsPCRel=*/true));
+  return 0;
+}
+
+uint64_t GPUMinMCCodeEmitter::getCallTargetOpValue(
+    const MCInst &MI, unsigned OpNo, SmallVectorImpl<MCFixup> &Fixups,
+    const MCSubtargetInfo &STI) const {
+  const MCOperand &MO = MI.getOperand(OpNo);
+  // Direct calls only: the J format has no register form, so a callee is
+  // always a symbol and always needs the layout pass to compute its offset.
+  assert(MO.isExpr() && "call target must be a symbol");
+
+  Fixups.push_back(MCFixup::create(/*Offset=*/0, MO.getExpr(),
+                                   (MCFixupKind)gpumin::fixup_gpumin_21_pcrel,
                                    /*IsPCRel=*/true));
   return 0;
 }

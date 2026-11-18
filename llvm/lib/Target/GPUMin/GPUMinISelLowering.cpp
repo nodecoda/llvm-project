@@ -47,6 +47,8 @@ const char *GPUMinTargetLowering::getTargetNodeName(unsigned Opcode) const {
     return "GPUMinISD::RET";
   case GPUMinISD::BRCOND:
     return "GPUMinISD::BRCOND";
+  case GPUMinISD::KRET:
+    return "GPUMinISD::KRET";
   default:
     return nullptr;
   }
@@ -125,7 +127,83 @@ SDValue GPUMinTargetLowering::LowerReturn(
   RetOps[0] = Chain;
   if (Glue)
     RetOps.push_back(Glue);
-  return DAG.getNode(GPUMinISD::RET, DL, MVT::Other, RetOps);
+
+  // Chapter 07 splits the two meanings of "return": a kernel terminates the
+  // launch (`exit`), a device function goes back to lr (`ret`).  The
+  // distinction is carried by the "gpumin_kernel" attribute, which is also
+  // what the launcher in chapter 13 will look for.
+  unsigned RetOpcode = MF.getFunction().hasFnAttribute("gpumin_kernel")
+                           ? GPUMinISD::KRET
+                           : GPUMinISD::RET;
+  return DAG.getNode(RetOpcode, DL, MVT::Other, RetOps);
+}
+
+SDValue GPUMinTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
+                                        SmallVectorImpl<SDValue> &InVals) const {
+  SelectionDAG &DAG = CLI.DAG;
+  SDLoc DL = CLI.DL;
+  MachineFunction &MF = DAG.getMachineFunction();
+
+  SmallVector<CCValAssign, 8> ArgLocs;
+  CCState CCInfo(CLI.CallConv, CLI.IsVarArg, MF, ArgLocs, *DAG.getContext());
+  CCInfo.AnalyzeCallOperands(CLI.Outs, CC_GPUMin);
+
+  // Stack arguments need an outgoing-argument area, which is the frame
+  // chapter's job; chapter 07 covers the register half of the ABI only.
+  if (CCInfo.getStackSize() != 0)
+    report_fatal_error("GPUMin: stack arguments are not supported yet");
+
+  // A function with a call must save lr: the callee is free to overwrite it.
+  MF.getFrameInfo().setHasCalls(true);
+
+  SDValue Chain = CLI.Chain;
+  SDValue Glue;
+  SmallVector<SDValue, 8> Ops;
+  Ops.push_back(Chain);
+
+  // Direct calls only: the J format has no register form, so the callee is a
+  // symbol whose offset is resolved by the assembler.
+  SDValue Callee = CLI.Callee;
+  if (auto *G = dyn_cast<GlobalAddressSDNode>(Callee))
+    Callee = DAG.getTargetGlobalAddress(
+        G->getGlobal(), DL, getPointerTy(DAG.getDataLayout()));
+  else
+    report_fatal_error("GPUMin: indirect calls are not supported yet");
+  Ops.push_back(Callee);
+
+  for (unsigned I = 0; I != ArgLocs.size(); ++I) {
+    CCValAssign &VA = ArgLocs[I];
+    if (!VA.isRegLoc())
+      report_fatal_error("GPUMin: stack arguments are not supported yet");
+    Chain = DAG.getCopyToReg(Chain, DL, VA.getLocReg(), CLI.OutVals[I], Glue);
+    Glue = Chain.getValue(1);
+    // The register operand makes the argument live *into* the call; without
+    // it the copy could be sunk or deleted.
+    Ops.push_back(DAG.getRegister(VA.getLocReg(), VA.getLocVT()));
+  }
+
+  const GPUMinSubtarget &ST = MF.getSubtarget<GPUMinSubtarget>();
+  const uint32_t *Mask =
+      ST.getRegisterInfo()->getCallPreservedMask(MF, CLI.CallConv);
+  Ops.push_back(DAG.getRegisterMask(Mask));
+
+  if (Glue.getNode())
+    Ops.push_back(Glue);
+
+  // A target node, not a machine node: selection happens later, and the CALL
+  // instruction itself declares the caller-saved registers it destroys.
+  SDVTList NodeTys = DAG.getVTList(MVT::Other, MVT::Glue);
+  SDValue Call = DAG.getNode(GPUMinISD::CALL, DL, NodeTys, Ops);
+  Chain = Call.getValue(0);
+  Glue = Call.getValue(1);
+
+  if (CLI.RetTy->isVoidTy())
+    return Chain;
+
+  EVT RetVT = getValueType(DAG.getDataLayout(), CLI.RetTy);
+  SDValue Ret = DAG.getCopyFromReg(Chain, DL, GPUMin::R4, RetVT, Glue);
+  InVals.push_back(Ret);
+  return Ret.getValue(1);
 }
 
 SDValue GPUMinTargetLowering::LowerOperation(SDValue Op,

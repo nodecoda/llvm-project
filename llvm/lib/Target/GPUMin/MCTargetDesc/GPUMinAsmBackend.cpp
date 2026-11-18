@@ -70,6 +70,7 @@ public:
       // name                  offset bits flags
       {"fixup_gpumin_32",          0, 32, 0},
       {"fixup_gpumin_16_pcrel",    0, 16, 0},
+      {"fixup_gpumin_21_pcrel",    0, 21, 0},
     };
     // clang-format on
     static_assert(std::size(Infos) == gpumin::NumTargetFixupKinds,
@@ -106,22 +107,34 @@ void GPUMinAsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
     return;
   }
 
-  assert(Fixup.getKind() == gpumin::fixup_gpumin_16_pcrel &&
+  assert((Fixup.getKind() == gpumin::fixup_gpumin_16_pcrel ||
+          Fixup.getKind() == gpumin::fixup_gpumin_21_pcrel) &&
          "unknown GPUMin fixup kind");
 
   // `Value` is already (target - instruction address): the fixup is created
   // with IsPCRel and offset 0, so the assembler subtracted the word's own
-  // address.  Convert bytes to words and patch Inst[15:0].
+  // address.  Convert bytes to words and patch the displacement field.
   int64_t Off = static_cast<int64_t>(Value);
   if (Off & 3)
     getContext().reportError(Fixup.getLoc(),
                              "GPUMin: branch target is not 4-byte aligned");
   Off /= 4;
-  if (!isInt<16>(Off))
+
+  if (Fixup.getKind() == gpumin::fixup_gpumin_16_pcrel) {
+    if (!isInt<16>(Off))
+      getContext().reportError(Fixup.getLoc(),
+                               "GPUMin: branch target out of range");
+    Data[0] = static_cast<uint8_t>(Off & 0xff);
+    Data[1] = static_cast<uint8_t>((Off >> 8) & 0xff);
+    return;
+  }
+
+  if (!isInt<21>(Off))
     getContext().reportError(Fixup.getLoc(),
-                             "GPUMin: branch target out of range");
+                             "GPUMin: call target out of range");
   Data[0] = static_cast<uint8_t>(Off & 0xff);
   Data[1] = static_cast<uint8_t>((Off >> 8) & 0xff);
+  Data[2] = static_cast<uint8_t>((Off >> 16) & 0x1f);
 }
 
 MCAsmBackend *llvm::createGPUMinMCAsmBackend(const Target &T,

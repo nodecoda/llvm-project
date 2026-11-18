@@ -18,6 +18,11 @@
 llvm/lib/Target/GPUMin/scripts/check-ch03.sh <llvm-bin-dir>
 ```
 
+> 注：本章的函数都以 `exit` 结束，这是第 03 章的状态。第 07 章引入
+> device function 后，只有带 `"gpumin_kernel"` 属性的函数以 `exit`
+> 结束，普通函数以 `ret` 返回。本章门禁已把示例函数的 kernel 属性
+> 标好，以保持下面的讲解与当时的行为一致。
+
 ## 背景
 
 ### 为什么"函数"要等到第三章

@@ -64,6 +64,22 @@ def simm11imm : ImmLeaf<i32, [{ return isInt<11>(Imm); }]>;
 /// A branch target.  The assembly text is a label (or a word offset); the
 /// encoder turns it into a PC-relative 16-bit displacement, which is why the
 /// operand type is OtherVT: it never becomes a value in a register.
+/// A call target: the assembly text must be a symbol, because the J-format
+/// offset is PC-relative and only the layout step can resolve it.  Unlike a
+/// branch the value never becomes a register, so the operand type is i32 to
+/// let a TargetGlobalAddress flow straight from lowering.
+def CallTargetAsmOperand : GPUMinImmAsmOperand<"CallTarget", "isCallTarget">;
+
+def calltarget21 : Operand<i32> {
+  let PrintMethod = "printOperand";
+  let ParserMatchClass = CallTargetAsmOperand;
+  let EncoderMethod = "getCallTargetOpValue";
+  let DecoderMethod = "DecodeCallTarget21";
+}
+
+/// The range-checked sibling of simm16 for patterns.
+def simm16imm : ImmLeaf<i32, [{ return isInt<16>(Imm); }]>;
+
 def brtarget16 : Operand<OtherVT> {
   let PrintMethod = "printOperand";
   let ParserMatchClass = BranchTargetAsmOperand;
@@ -89,6 +105,15 @@ def MOV : GPUMinR1<OPC_MOV.Value, 0, (outs GPR:$rd), (ins GPR:$rs1),
 // encoding as a whole when the byte-exact tests arrive.
 def MOVI : GPUMinMovI<OPC_MOVI.Value, (outs GPR:$rd), (ins simm16:$imm),
                       "movi $rd, $imm", []>;
+
+// Chapter 07: `addi` is its own opcode rather than an "ALU immediate" bit.
+// The I format spends all 16 low bits on the immediate, so there is no funct
+// field left to say which ALU operation an immediate form means; a separate
+// opcode is the cheapest honest answer.
+def ADDI : GPUMinI<OPC_ADDI.Value, (outs GPR:$rd), (ins GPR:$rs1, simm16:$imm),
+                   "addi $rd, $rs1, $imm", []>;
+
+def : Pat<(add GPR:$rs1, simm16imm:$imm), (ADDI $rs1, simm16imm:$imm)>;
 
 //===----------------------------------------------------------------------===//
 // Integer ALU (opcode 0x02)
@@ -235,6 +260,33 @@ def : Pat<(store GPR:$val, (add GPR:$base, simm11imm:$off)),
 // the narrow types legal and turns these into zextloadi8/sextloadi16 patterns.
 
 //===----------------------------------------------------------------------===//
+// Calls (opcode 0x11)
+//===----------------------------------------------------------------------===//
+//
+// J format: opcode[31:26] | 0[25:21] | offset21[20:0], offset in words.
+//
+// `call` writes the return address into lr (r31) and jumps.  The register is
+// implicit: there is no `call rd, target` form, which is why LR is reserved in
+// GPUMinRegisterInfo rather than allocated.
+def CALL : GPUMinJ<OPC_CALL.Value, (outs), (ins calltarget21:$off),
+                   "call $off", []> {
+  let isCall = 1;
+  let isTerminator = 0;
+  let hasSideEffects = 1;
+  // lr is written by the call itself.  The argument registers and the
+  // call-preserved mask travel as extra operands of the CALL node; the
+  // regmask is what tells the register allocator which registers survive.
+  let Defs = [R31];
+}
+
+def SDT_GPUMinCall : SDTypeProfile<0, -1, [SDTCisVT<0, i32>]>;
+def GPUMinCall : SDNode<"GPUMinISD::CALL", SDT_GPUMinCall,
+                        [SDNPHasChain, SDNPOutGlue, SDNPOptInGlue,
+                         SDNPVariadic]>;
+
+def : Pat<(GPUMinCall tglobaladdr:$dst), (CALL tglobaladdr:$dst)>;
+
+//===----------------------------------------------------------------------===//
 // Control flow (opcode 0x10)
 //===----------------------------------------------------------------------===//
 //
@@ -274,6 +326,8 @@ def BRA : GPUMinBra<OPC_BRA.Value, (ins brtarget16:$off), "bra $off", []> {
 def BRA_P : GPUMinBraP<OPC_BRA.Value, "bra $pd, $off"> {
   let isBranch = 1;
   let isTerminator = 1;
+  // Not a barrier: the false edge is the layout fallthrough, which
+  // analyzeBranch() reports with FBB == nullptr.
 }
 
 //===----------------------------------------------------------------------===//
@@ -286,6 +340,17 @@ def BRA_P : GPUMinBraP<OPC_BRA.Value, "bra $pd, $off"> {
 def EXIT : GPUMinInst<(outs), (ins), "exit", []> {
   let Inst{31-26} = OPC_SYS.Value;
   let Inst{10-0} = 0;
+}
+
+// Chapter 07: a device function returns to lr.  Kernels still `exit`; the
+// choice is made in LowerReturn from the "gpumin_kernel" attribute, which is
+// why there are two return pseudos instead of one.
+def RET : GPUMinInst<(outs), (ins), "ret", []> {
+  let Inst{31-26} = OPC_SYS.Value;
+  let Inst{10-0} = 1;
+  let isReturn = 1;
+  let isBarrier = 1;
+  let isTerminator = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -304,9 +369,18 @@ def : Pat<(GPUMinBrCond i1:$pd, bb:$dst), (BRA_P $pd, brtarget16:$dst)>;
 // return registers by LowerReturn, so the node only carries chain and glue.
 def GPUMinRet : SDNode<"GPUMinISD::RET", SDTNone,
                        [SDNPHasChain, SDNPOptInGlue, SDNPVariadic]>;
+def GPUMinKernelRet : SDNode<"GPUMinISD::KRET", SDTNone,
+                             [SDNPHasChain, SDNPOptInGlue, SDNPVariadic]>;
 
 def PseudoRET : GPUMinPseudo<(outs), (ins), "", [(GPUMinRet)]>,
-                PseudoInstExpansion<(EXIT)> {
+                PseudoInstExpansion<(RET)> {
+  let isReturn = 1;
+  let isBarrier = 1;
+  let isTerminator = 1;
+}
+
+def PseudoEXIT : GPUMinPseudo<(outs), (ins), "", [(GPUMinKernelRet)]>,
+                 PseudoInstExpansion<(EXIT)> {
   let isReturn = 1;
   let isBarrier = 1;
   let isTerminator = 1;

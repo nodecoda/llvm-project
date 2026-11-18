@@ -42,12 +42,16 @@ protected:
                         bool IsPCRel) const override {
     switch (Fixup.getKind()) {
     case FK_Data_4:
-      return IsPCRel ? ELF::R_RISCV_32_PCREL : ELF::R_RISCV_32;
+      return IsPCRel ? ELF::R_GPUMIN_32_PCREL : ELF::R_GPUMIN_32;
     case gpumin::fixup_gpumin_32:
-      return ELF::R_RISCV_32;
+      return ELF::R_GPUMIN_32;
+    case gpumin::fixup_gpumin_16_pcrel:
+      return ELF::R_GPUMIN_16_PCREL;
+    case gpumin::fixup_gpumin_21_pcrel:
+      return ELF::R_GPUMIN_21_PCREL;
     default:
       reportError(Fixup.getLoc(), Twine("GPUMin: unsupported relocation"));
-      return ELF::R_RISCV_NONE;
+      return ELF::R_GPUMIN_NONE;
     }
   }
 };

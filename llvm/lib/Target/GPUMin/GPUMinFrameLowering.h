@@ -16,10 +16,9 @@ namespace llvm {
 
 class GPUMinSubtarget;
 
-/// Chapter 00 has no stack at all: a kernel has no frame, and device-function
-/// calls (chapter 07) are the first thing that needs the private stack.  The
-/// prologue and epilogue are therefore empty; the class exists because every
-/// target must provide one.
+/// Chapter 07 gives GM32 its private stack: an sp-relative frame with no frame
+/// pointer, an explicit lr save in functions that call, and the generic
+/// callee-saved machinery for r20-r27.
 class GPUMinFrameLowering : public TargetFrameLowering {
 public:
   explicit GPUMinFrameLowering(const GPUMinSubtarget &STI);
@@ -28,6 +27,9 @@ public:
                     MachineBasicBlock &MBB) const override;
   void emitEpilogue(MachineFunction &MF,
                     MachineBasicBlock &MBB) const override;
+
+  void determineCalleeSaves(MachineFunction &MF, BitVector &SavedRegs,
+                            RegScavenger *RS = nullptr) const override;
 
 protected:
   bool hasFPImpl(const MachineFunction &MF) const override;

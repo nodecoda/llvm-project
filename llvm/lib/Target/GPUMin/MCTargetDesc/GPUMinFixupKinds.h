@@ -28,6 +28,10 @@ enum FixupKind {
   // reach of a byte offset and stays aligned for free.
   fixup_gpumin_16_pcrel,
 
+  // The J-format call displacement: 21 bits, also counted in instruction
+  // words.  Same reasoning as the branch, with 32x the reach (+-1Mi words).
+  fixup_gpumin_21_pcrel,
+
   // Sentinel, must be last.
   fixup_gpumin_invalid,
   NumTargetFixupKinds = fixup_gpumin_invalid - FirstTargetFixupKind

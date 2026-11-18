@@ -12,7 +12,14 @@
 //
 //   arguments : r4-r11, then the private stack
 //   returns   : r4-r5
-//   callee-saved : r20-r27 and lr (r31)
+//   callee-saved : r20-r27, lr (r31)
+//
+// lr follows the AArch64 model: it is both *reserved* (the register allocator
+// never assigns it) and *callee-saved* (every function that calls saves the
+// incoming return address in its own frame and restores it before ret).
+// Reserving it is what keeps the allocator from holding a value in it across
+// a call; listing it here is what makes PEI allocate the spill slot and the
+// call-preserved mask describe the truth.
 //
 //===----------------------------------------------------------------------===//
 

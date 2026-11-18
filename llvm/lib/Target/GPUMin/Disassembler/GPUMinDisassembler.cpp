@@ -148,6 +148,18 @@ static DecodeStatus DecodeBrTarget16(MCInst &Inst, uint64_t Imm,
   return MCDisassembler::Success;
 }
 
+// J-format call targets are word displacements like branches, but 21 bits.
+static DecodeStatus DecodeCallTarget21(MCInst &Inst, uint64_t Imm,
+                                       int64_t Address,
+                                       const MCDisassembler *Decoder) {
+  const int64_t Words = SignExtend64<21>(Imm);
+  if (!Decoder->tryAddingSymbolicOperand(Inst, Words * 4, Address,
+                                         /*IsBranch=*/true, /*Offset=*/0,
+                                         /*OpSize=*/4, /*InstSize=*/4))
+    Inst.addOperand(MCOperand::createImm(Words));
+  return MCDisassembler::Success;
+}
+
 #include "GPUMinGenDisassemblerTables.inc"
 
 DecodeStatus GPUMinDisassembler::getInstruction(MCInst &MI, uint64_t &Size,

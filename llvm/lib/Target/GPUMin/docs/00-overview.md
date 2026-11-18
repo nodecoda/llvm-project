@@ -8,7 +8,8 @@
 1. `llc --version` 列出 `gpumin`；
 2. `llc -march=gpumin` 选中 GPUMin 的 `TargetMachine`；
 3. 空模块能走完 codegen 流水线并输出汇编列表；
-4. `ret void` 能降到 GM32 的 `exit`（0x48000000）；
+4. `ret void` 能降到 GM32 的 `exit`（0x48000000）；第 07 章起只有带
+   `"gpumin_kernel"` 属性的函数这样返回，普通函数改用 `ret`；
 5. `llvm-mc -triple=gpumin` 能编码 `exit`；
 6. 不改 RVMin、不改 clang、不新建构建目录。
 

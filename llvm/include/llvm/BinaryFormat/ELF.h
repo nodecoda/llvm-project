@@ -515,6 +515,11 @@ enum {
 #include "ELFRelocs/Lanai.def"
 };
 
+// ELF Relocation types for GPUMin (GM32).
+enum {
+#include "ELFRelocs/GPUMin.def"
+};
+
 // RISCV Specific e_flags
 enum : unsigned {
   EF_RISCV_RVC = 0x0001,

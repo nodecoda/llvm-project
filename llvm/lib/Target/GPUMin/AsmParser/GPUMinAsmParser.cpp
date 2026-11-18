@@ -136,6 +136,13 @@ public:
     return true;
   }
 
+  /// A call target must be a symbol for the same reason a branch target must
+  /// be: the J-format displacement is PC-relative and only layout can resolve
+  /// it.  `call r3` is rejected here, not silently treated as a label.
+  bool isCallTarget() const {
+    return Kind == Immediate && !isa<MCConstantExpr>(Imm);
+  }
+
   /// A branch target must be a label: the PC-relative displacement is only
   /// known once the instruction's address is.  A bare number is rejected here
   /// instead of failing later in the relocation path.

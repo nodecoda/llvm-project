@@ -81,6 +81,7 @@ def OPC_ALU  : GPUMinOpcode<0x02>;  // add/sub/and/or/xor/shl/shr/sar
 def OPC_SETP : GPUMinOpcode<0x03>;  // predicate compare
 def OPC_SELP : GPUMinOpcode<0x04>;  // predicated select
 def OPC_MOVI : GPUMinOpcode<0x05>;  // move immediate
+def OPC_ADDI : GPUMinOpcode<0x06>;  // add immediate (chapter 07)
 def OPC_LD   : GPUMinOpcode<0x08>;
 def OPC_ST   : GPUMinOpcode<0x09>;
 def OPC_BRA  : GPUMinOpcode<0x10>;
@@ -161,6 +162,18 @@ class GPUMinMovI<bits<6> op, dag outs, dag ins, string asmstr,
   let Inst{25-21} = rd;
   let Inst{20-16} = 0;
   let Inst{15-0} = imm;
+}
+
+/// J-type: `op offset21`, a PC-relative call or jump.  The offset counts
+/// instruction words (chapter 07), which gives +-1Mi instructions of reach and
+/// keeps the low two bits free.
+class GPUMinJ<bits<6> op, dag outs, dag ins, string asmstr,
+              list<dag> pattern = []>
+    : GPUMinInst<outs, ins, asmstr, pattern> {
+  bits<21> off;
+  let Inst{31-26} = op;
+  let Inst{25-21} = 0;
+  let Inst{20-0} = off;
 }
 
 /// Memory load in the M format: `ld.<space>.<size> rd, imm(base)`.

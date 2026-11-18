@@ -35,6 +35,12 @@ void llvm::LowerGPUMinMachineInstrToMCInst(const MachineInstr *MI,
     case MachineOperand::MO_Immediate:
       OutMI.addOperand(MCOperand::createImm(MO.getImm()));
       break;
+    case MachineOperand::MO_GlobalAddress:
+      // A direct call carries the callee as a symbol, not as a value in a
+      // register: J-format calls are PC-relative.
+      OutMI.addOperand(MCOperand::createExpr(
+          MCSymbolRefExpr::create(AP.getSymbol(MO.getGlobal()), Ctx)));
+      break;
     case MachineOperand::MO_MachineBasicBlock:
       // Branch targets become symbol references; the encoder turns them into
       // PC-relative fixups and the assembler backend patches the offset.
