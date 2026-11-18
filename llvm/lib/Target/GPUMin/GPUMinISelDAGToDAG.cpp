@@ -236,8 +236,42 @@ void GPUMinDAGToDAGISel::Select(SDNode *N) {
       ReplaceNode(N, Shr);
       return;
     }
-    LLVM_DEBUG(dbgs() << "GPUMin: constant " << V
-                      << " needs more than 16 bits (chapter 08)\n");
+    // A general 32-bit constant.  `movi` sign-extends, so the low half is
+    // materialised and then shifted up and logically back down to clear the
+    // ones above bit 15; the high half only needs one shift.
+    //   movi rd, hi; movi rt, 16; shl rd, rd, rt
+    //   movi rt2, lo; shl rt2, rt2, rt; shr rt2, rt2, rt
+    //   or rd, rd, rt2
+    int32_t Hi = static_cast<int16_t>((V >> 16) & 0xffff);
+    int32_t Lo = static_cast<int16_t>(V & 0xffff);
+    SDValue Sixteen = SDValue(
+        CurDAG->getMachineNode(
+            GPUMin::MOVI, DL, MVT::i32,
+            CurDAG->getTargetConstant(16, DL, MVT::i32)),
+        0);
+    SDValue HiMov = SDValue(
+        CurDAG->getMachineNode(
+            GPUMin::MOVI, DL, MVT::i32,
+            CurDAG->getTargetConstant(static_cast<uint32_t>(Hi), DL,
+                                      MVT::i32)),
+        0);
+    SDValue HiShifted = SDValue(
+        CurDAG->getMachineNode(GPUMin::SHL, DL, MVT::i32, HiMov, Sixteen), 0);
+    SDValue LoMov = SDValue(
+        CurDAG->getMachineNode(
+            GPUMin::MOVI, DL, MVT::i32,
+            CurDAG->getTargetConstant(static_cast<uint32_t>(Lo), DL,
+                                      MVT::i32)),
+        0);
+    SDValue LoShifted = SDValue(
+        CurDAG->getMachineNode(GPUMin::SHL, DL, MVT::i32, LoMov, Sixteen), 0);
+    SDValue LoClean = SDValue(
+        CurDAG->getMachineNode(GPUMin::SHR, DL, MVT::i32, LoShifted, Sixteen),
+        0);
+    SDNode *Combined = CurDAG->getMachineNode(GPUMin::OR, DL, MVT::i32,
+                                              HiShifted, LoClean);
+    ReplaceNode(N, Combined);
+    return;
   }
 
   // Sign-extending a promoted i8/i16: the high bits of the i32 register are

@@ -61,8 +61,9 @@ case ISD::SELECT_CC: {
 `Select()` 里落空，报 `Cannot select: ... Constant<...>`。
 
 第 08 章把边界推进到 `[0, 65535]`：`movi` 会符号扩展，所以无符号的 16
-位常量再补一对 `shl/shr` 清零高位。完整的 32 位常量仍然需要"高位
-`movi` + `shl` + 低位 `movi/or`"和一个临时寄存器，留作第 08 章的练习。
+位常量再补一对 `shl/shr` 清零高位。完整的 32 位常量需要"高位 `movi` +
+`shl` + 低位 `movi` + `shl/shr` + `or`"，那个序列后来补上了（见第 08 章
+的常量表和 `demos/02-alu-and-constants.ll`）。
 
 ## 设计
 

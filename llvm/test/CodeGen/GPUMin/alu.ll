@@ -52,3 +52,26 @@ define i32 @bump(i32 %x) {
   %r = add i32 %x, 100
   ret i32 %r
 }
+
+; A constant that needs all 32 bits: high half, shift, low half with its sign
+; extension shifted back out, then or.  `movi` sign-extends, so the low half
+; cannot simply be `or`-ed in.
+define i32 @wide_constant() {
+; CHECK-LABEL: wide_constant:
+; CHECK:       movi {{r[0-9]+}}, 16
+; CHECK:       movi {{r[0-9]+}}, 4660
+; CHECK:       shl {{r[0-9]+}}, {{r[0-9]+}}, {{r[0-9]+}}
+; CHECK:       movi {{r[0-9]+}}, 22136
+; CHECK:       shl {{r[0-9]+}}, {{r[0-9]+}}, {{r[0-9]+}}
+; CHECK:       shr {{r[0-9]+}}, {{r[0-9]+}}, {{r[0-9]+}}
+; CHECK:       or {{r[0-9]+}}, {{r[0-9]+}}, {{r[0-9]+}}
+  ret i32 305419896
+}
+
+; The same path with a negative high half: 0x88776655.
+define i32 @wide_negative() {
+; CHECK-LABEL: wide_negative:
+; CHECK:       movi {{r[0-9]+}}, -30601
+; CHECK:       or {{r[0-9]+}}, {{r[0-9]+}}, {{r[0-9]+}}
+  ret i32 -2005440939
+}
