@@ -381,6 +381,52 @@ void Function::createScfIf(Value *Cond, std::vector<Op> ThenOps,
   Ops.push_back(std::move(O));
 }
 
+Value *Function::createSharedAlloc(Type TensorTy) {
+  Value *V = createValue(TensorTy);
+  V->markShared();
+  Op O;
+  O.Kind = OpKind::SharedAlloc;
+  O.Result = V;
+  O.Ty = TensorTy;
+  Ops.push_back(std::move(O));
+  return V;
+}
+
+void Function::createSharedStore(Value *Handle, Value *Src) {
+  Op O;
+  O.Kind = OpKind::SharedStore;
+  O.Operands = {Handle, Src};
+  Ops.push_back(std::move(O));
+}
+
+static Op makeSharedSlice(OpKind Kind, Value *Handle, int64_t Index) {
+  Op O;
+  O.Kind = Kind;
+  O.Operands = {Handle};
+  O.Imm = Index;
+  llvm::ArrayRef<int64_t> Shape = Handle->getType().getShape();
+  Type Elem = Handle->getType().getElementType();
+  O.Ty = Kind == OpKind::SharedCol ? Type::tensor({Shape[0], 1}, Elem)
+                                   : Type::tensor({1, Shape[1]}, Elem);
+  return O;
+}
+
+Value *Function::createSharedCol(Value *Handle, int64_t Index) {
+  Op O = makeSharedSlice(OpKind::SharedCol, Handle, Index);
+  O.Result = createValue(O.Ty);
+  Value *V = O.Result;
+  Ops.push_back(std::move(O));
+  return V;
+}
+
+Value *Function::createSharedRow(Value *Handle, int64_t Index) {
+  Op O = makeSharedSlice(OpKind::SharedRow, Handle, Index);
+  O.Result = createValue(O.Ty);
+  Value *V = O.Result;
+  Ops.push_back(std::move(O));
+  return V;
+}
+
 void Function::createBarrier() {
   Op O;
   O.Kind = OpKind::Barrier;
@@ -680,6 +726,35 @@ static void printOps(llvm::raw_ostream &OS, llvm::ArrayRef<Op> Ops,
         OS << " : ";
         O.Operands[0]->getType().print(OS);
       }
+      OS << "\n";
+      break;
+    case OpKind::SharedAlloc:
+      O.Result->printName(OS);
+      OS << " = \"gpumin.shared_alloc\"() : () -> ";
+      O.Ty.print(OS);
+      OS << "\n";
+      break;
+    case OpKind::SharedStore:
+      OS << "\"gpumin.shared_store\"(";
+      O.Operands[0]->printName(OS);
+      OS << ", ";
+      O.Operands[1]->printName(OS);
+      OS << ") : (";
+      O.Operands[0]->getType().print(OS);
+      OS << ", ";
+      O.Operands[1]->getType().print(OS);
+      OS << ") -> ()\n";
+      break;
+    case OpKind::SharedCol:
+    case OpKind::SharedRow:
+      O.Result->printName(OS);
+      OS << (O.Kind == OpKind::SharedCol ? " = \"gpumin.shared_col\"("
+                                         : " = \"gpumin.shared_row\"(");
+      O.Operands[0]->printName(OS);
+      OS << ") <{index = " << O.Imm << " : i32}> : (";
+      O.Operands[0]->getType().print(OS);
+      OS << ") -> ";
+      O.Result->getType().print(OS);
       OS << "\n";
       break;
     case OpKind::ScfIf:

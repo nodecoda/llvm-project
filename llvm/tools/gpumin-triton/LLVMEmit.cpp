@@ -38,6 +38,8 @@ constexpr unsigned MaxElementsPerThread = 8;
 struct Lowered {
   std::vector<LlvmValue *> Elts;
   bool IsTensor = false;
+  // Chapter 34: set only for an alloc_shared handle.
+  llvm::GlobalVariable *Shared = nullptr;
 };
 
 class FuncEmitter {
@@ -61,6 +63,9 @@ private:
                               LlvmValue *Rhs);
   Error emitReduce(const Op &O);
   Error emitReduce2D(const Op &O);
+  Error emitSharedStore(const Op &O);
+  Lowered emitSharedSlice(const Op &O);
+  void barrierIfSharedDirty();
   void maskedStore(LlvmValue *Ptr, LlvmValue *Stored, LlvmValue *Mask);
   Error emitOp(const Op &O);
   Error emitOps(llvm::ArrayRef<Op> Ops);
@@ -76,6 +81,8 @@ private:
   LlvmValue *TidCache = nullptr;
   unsigned ReduceCounter = 0;
   unsigned TransCounter = 0;
+  unsigned SharedCounter = 0;
+  bool SharedDirty = false;
 };
 
 Expected<unsigned> FuncEmitter::elementsPerThread(Type Ty) const {
@@ -247,6 +254,66 @@ LlvmValue *FuncEmitter::combineReduction(ReduceKind Kind, Type ElemTy,
   LlvmValue *Greater =
       ElemTy.isF32() ? B.CreateFCmpOGT(Rhs, A) : B.CreateICmpSGT(Rhs, A);
   return B.CreateSelect(Greater, Rhs, A);
+}
+
+void FuncEmitter::barrierIfSharedDirty() {
+  if (!SharedDirty)
+    return;
+  FunctionCallee BarrierFn =
+      M.getOrInsertFunction("llvm.gpumin.barrier", B.getVoidTy());
+  B.CreateCall(BarrierFn);
+  SharedDirty = false;
+}
+
+Error FuncEmitter::emitSharedStore(const Op &O) {
+  auto It = Env.find(O.Operands[0]);
+  if (It == Env.end() || !It->second.Shared)
+    return createStringError(inconvertibleErrorCode(),
+                             "shared_store source is not a shared handle");
+  llvm::GlobalVariable *Window = It->second.Shared;
+  const Lowered &Src = Env.at(O.Operands[1]);
+  Type SrcTy = O.Operands[1]->getType();
+  int64_t Cols = SrcTy.getShape()[1];
+  auto *SlotTy = cast<ArrayType>(Window->getValueType());
+  for (unsigned I = 0; I < Src.Elts.size(); ++I) {
+    LlvmValue *Row = coordValue(SrcTy, I, true);
+    LlvmValue *Col = coordValue(SrcTy, I, false);
+    LlvmValue *Index = B.CreateAdd(B.CreateMul(Row, B.getInt32(Cols)), Col);
+    LlvmValue *Slot = B.CreateGEP(SlotTy, Window, {B.getInt32(0), Index});
+    B.CreateStore(Src.Elts[I], Slot);
+  }
+  SharedDirty = true;
+  return Error::success();
+}
+
+Lowered FuncEmitter::emitSharedSlice(const Op &O) {
+  barrierIfSharedDirty();
+  llvm::GlobalVariable *Window = Env.at(O.Operands[0]).Shared;
+  auto *SlotTy = cast<ArrayType>(Window->getValueType());
+  Type HandleTy = O.Operands[0]->getType();
+  int64_t Cols = HandleTy.getShape()[1];
+  Type ResTy = O.Result->getType();
+  llvm::Type *ElemTy = llvmType(ResTy.getElementType());
+  bool IsCol = O.Kind == OpKind::SharedCol;
+  Expected<unsigned> NumEltsOrErr = elementsPerThread(ResTy);
+  if (!NumEltsOrErr) {
+    consumeError(NumEltsOrErr.takeError());
+    llvm_unreachable("shared slice shape is validated by the frontend");
+  }
+  unsigned NumElts = *NumEltsOrErr;
+
+  Lowered V;
+  V.IsTensor = true;
+  for (unsigned I = 0; I < NumElts; ++I) {
+    LlvmValue *Row = IsCol ? coordValue(ResTy, I, true)
+                           : B.getInt32(static_cast<uint32_t>(O.Imm));
+    LlvmValue *Col = IsCol ? B.getInt32(static_cast<uint32_t>(O.Imm))
+                           : coordValue(ResTy, I, false);
+    LlvmValue *Index = B.CreateAdd(B.CreateMul(Row, B.getInt32(Cols)), Col);
+    LlvmValue *Slot = B.CreateGEP(SlotTy, Window, {B.getInt32(0), Index});
+    V.Elts.push_back(B.CreateLoad(ElemTy, Slot));
+  }
+  return V;
 }
 
 Error FuncEmitter::emitReduce(const Op &O) {
@@ -479,6 +546,33 @@ Error FuncEmitter::emitOp(const Op &O) {
     B.CreateCall(BarrierFn);
     return Error::success();
   }
+
+  case OpKind::SharedAlloc: {
+    Type Ty = O.Result->getType();
+    llvm::ArrayRef<int64_t> Shape = Ty.getShape();
+    llvm::Type *ElemTy = llvmType(Ty.getElementType());
+    auto *SlotTy =
+        ArrayType::get(ElemTy, static_cast<uint64_t>(Shape[0] * Shape[1]));
+    std::string Name =
+        ("__gpumin_sh_" + TF.getName() + "_" + Twine(SharedCounter++)).str();
+    auto *Window =
+        new GlobalVariable(M, SlotTy, false, GlobalValue::InternalLinkage,
+                           Constant::getNullValue(SlotTy), Name, nullptr,
+                           GlobalValue::NotThreadLocal, 2);
+    Window->setAlignment(Align(4));
+    Lowered V;
+    V.Shared = Window;
+    Env[O.Result] = std::move(V);
+    return Error::success();
+  }
+
+  case OpKind::SharedStore:
+    return emitSharedStore(O);
+
+  case OpKind::SharedCol:
+  case OpKind::SharedRow:
+    Env[O.Result] = emitSharedSlice(O);
+    return Error::success();
 
   case OpKind::Exp2: {
     const Lowered &Src = Env.at(O.Operands[0]);

@@ -20,6 +20,12 @@ namespace gpumintriton {
 
 namespace {
 
+// The 4x8 thread layout is the same contract LLVMEmit uses: warpid selects a
+// row group and laneid a column (chapters 24 and 29).
+constexpr unsigned WarpsPerBlock = 4;
+constexpr unsigned LanesPerWarp = 8;
+constexpr unsigned MaxElementsPerThread = 8;
+
 StringRef typeOf(const Object &Node) {
   if (auto S = Node.getString("_type"))
     return *S;
@@ -321,8 +327,12 @@ Error Lowerer::lowerStmt(const Object &Node) {
 
     // Chapter 27 unrolls compile-time loops.  The loop variable is a fresh
     // constant in every iteration, so the SSA environment simply rebinds.
+    // Chapter 34 also records it in ConstValues: shared tile indices must be
+    // compile-time integers, and `k` from tl.static_range is exactly that.
+    std::string TargetName = stringField(*Target, "id").str();
     for (int64_t I = Start; Step > 0 ? I < End : I > End; I += Step) {
       bindName(*Target, F.createConstant(I, gpumintriton::Type::i32()));
+      ConstValues[TargetName] = I;
       for (const json::Value &Stmt : *Body) {
         const Object *StmtObj = Stmt.getAsObject();
         if (!StmtObj)
@@ -587,6 +597,9 @@ Expected<Value *> Lowerer::lowerExpr(const Object &Node) {
 
 Expected<Value *> Lowerer::lowerBinary(const Object &Node, OpKind Kind,
                                        Value *LHS, Value *RHS) {
+  if (LHS->isShared() || RHS->isShared())
+    return errAt(Node, "a shared tile handle cannot be used in arithmetic; "
+                       "read it with tl.load_shared_col/row");
   Type LT = LHS->getType();
   Type RT = RHS->getType();
 
@@ -715,6 +728,8 @@ Expected<Value *> Lowerer::lowerBinary(const Object &Node, OpKind Kind,
 
 Expected<Value *> Lowerer::lowerCompare(const Object &Node, CmpPred Pred,
                                         Value *LHS, Value *RHS) {
+  if (LHS->isShared() || RHS->isShared())
+    return errAt(Node, "a shared tile handle cannot be compared");
   Type LT = LHS->getType();
   Type RT = RHS->getType();
 
@@ -1034,6 +1049,86 @@ Expected<Value *> Lowerer::lowerCall(const Object &Node) {
     return F.createTrans(V);
   }
 
+  if (Name == "alloc_shared") {
+    const json::Value *ShapeNode = GetArg(0);
+    const json::Value *DTypeNode = GetArg(1);
+    if (!ShapeNode || !DTypeNode)
+      return errAt(Node, "tl.alloc_shared expects (shape, dtype)");
+    Expected<std::vector<int64_t>> ShapeOrErr = evalShape(*ShapeNode);
+    if (!ShapeOrErr)
+      return ShapeOrErr.takeError();
+    Expected<Type> DTOrErr = evalDType(*DTypeNode);
+    if (!DTOrErr)
+      return DTOrErr.takeError();
+    if (ShapeOrErr->size() != 2)
+      return errAt(Node, "tl.alloc_shared needs a 2D shape");
+    if (!DTOrErr->isF32())
+      return errAt(Node, "tl.alloc_shared only supports tl.float32 in "
+                         "chapter 34");
+    int64_t R = (*ShapeOrErr)[0], C = (*ShapeOrErr)[1];
+    if (R <= 0 || C <= 0)
+      return errAt(Node, "shared tile dimensions must be positive");
+    int64_t Rows = R == 1 ? 1 : R / WarpsPerBlock;
+    int64_t Cols = C == 1 ? 1 : C / LanesPerWarp;
+    if ((R != 1 && R % WarpsPerBlock) || (C != 1 && C % LanesPerWarp) ||
+        Rows * Cols > MaxElementsPerThread)
+      return errAt(Node, "shared tile layout must be 1-or-multiple of 4 rows "
+                         "and 1-or-multiple of 8 columns, with at most 8 "
+                         "elements per thread");
+    return F.createSharedAlloc(Type::tensor({R, C}, Type::f32()));
+  }
+
+  if (Name == "store_shared") {
+    const json::Value *HandleNode = GetArg(0);
+    const json::Value *ValueNode = GetArg(1);
+    if (!HandleNode || !ValueNode)
+      return errAt(Node, "tl.store_shared expects (handle, tile)");
+    Expected<Value *> HandleOrErr = lowerExpr(*HandleNode);
+    if (!HandleOrErr)
+      return HandleOrErr.takeError();
+    Expected<Value *> SrcOrErr = lowerExpr(*ValueNode);
+    if (!SrcOrErr)
+      return SrcOrErr.takeError();
+    Value *Handle = *HandleOrErr;
+    Value *Src = *SrcOrErr;
+    if (!Handle->isShared())
+      return errAt(Node, "tl.store_shared expects a handle from "
+                         "tl.alloc_shared");
+    if (Src->isShared())
+      return errAt(Node, "tl.store_shared source must be a value tile");
+    if (Src->getType() != Handle->getType())
+      return errAt(Node, "tl.store_shared source shape does not match the "
+                         "shared tile");
+    F.createSharedStore(Handle, Src);
+    return nullptr;
+  }
+
+  if (Name == "load_shared_col" || Name == "load_shared_row") {
+    bool IsCol = Name == "load_shared_col";
+    const json::Value *HandleNode = GetArg(0);
+    const json::Value *IndexNode = GetArg(1);
+    if (!HandleNode || !IndexNode)
+      return errAt(Node, "tl." + Name + " expects (handle, index)");
+    Expected<Value *> HandleOrErr = lowerExpr(*HandleNode);
+    if (!HandleOrErr)
+      return HandleOrErr.takeError();
+    Value *Handle = *HandleOrErr;
+    if (!Handle->isShared())
+      return errAt(Node, "tl." + Name +
+                             " expects a handle from "
+                             "tl.alloc_shared");
+    Expected<int64_t> IndexOrErr = evalInt(*IndexNode);
+    if (!IndexOrErr)
+      return IndexOrErr.takeError();
+    llvm::ArrayRef<int64_t> Shape = Handle->getType().getShape();
+    int64_t Limit = IsCol ? Shape[1] : Shape[0];
+    if (*IndexOrErr < 0 || *IndexOrErr >= Limit)
+      return errAt(Node, "the shared " + Twine(IsCol ? "column" : "row") +
+                             " index is out of range");
+    return IsCol ? F.createSharedCol(Handle, *IndexOrErr)
+                 : F.createSharedRow(Handle, *IndexOrErr);
+  }
+
   if (Name == "debug_barrier") {
     if (Args && !Args->empty())
       return errAt(Node, "tl.debug_barrier takes no arguments");
@@ -1062,6 +1157,9 @@ Expected<Value *> Lowerer::lowerCall(const Object &Node) {
     if (!PtrOrErr)
       return PtrOrErr.takeError();
     Value *Ptr = *PtrOrErr;
+    if (Ptr->isShared())
+      return errAt(Node, "a shared handle cannot be loaded with tl.load; use "
+                         "tl.load_shared_col/row");
     if (!Ptr->getType().isPtr() &&
         !(Ptr->getType().isTensor() &&
           Ptr->getType().getElementType().isPtr()))
@@ -1105,6 +1203,9 @@ Expected<Value *> Lowerer::lowerCall(const Object &Node) {
       return ValueOrErr.takeError();
     Value *Ptr = *PtrOrErr;
     Value *Stored = *ValueOrErr;
+    if (Ptr->isShared() || Stored->isShared())
+      return errAt(Node, "a shared handle cannot be used with tl.store; use "
+                         "tl.store_shared");
     if (!Ptr->getType().isPtr() &&
         !(Ptr->getType().isTensor() &&
           Ptr->getType().getElementType().isPtr()))

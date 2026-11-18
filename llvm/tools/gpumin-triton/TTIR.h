@@ -65,6 +65,11 @@ public:
   Type getType() const { return Ty; }
   llvm::StringRef getName() const { return Name; }
   void setName(llvm::StringRef N) { Name = N.str(); }
+  // Chapter 34: an alloc_shared result is a handle, not a value tile.  The
+  // textual type stays a tensor so the TTIR remains parseable, but the
+  // frontend refuses to use a handle in arithmetic.
+  bool isShared() const { return Shared; }
+  void markShared() { Shared = true; }
   void printName(llvm::raw_ostream &OS) const;
 
 private:
@@ -74,6 +79,7 @@ private:
   unsigned ID;
   Type Ty;
   std::string Name;
+  bool Shared = false;
 };
 
 enum class OpKind {
@@ -109,6 +115,10 @@ enum class OpKind {
   Select,
   Barrier,
   ScfIf,
+  SharedAlloc,
+  SharedStore,
+  SharedCol,
+  SharedRow,
   Return
 };
 
@@ -161,6 +171,10 @@ public:
   void createBarrier();
   void createScfIf(Value *Cond, std::vector<Op> ThenOps,
                    std::vector<Op> ElseOps);
+  Value *createSharedAlloc(Type TensorTy);
+  void createSharedStore(Value *Handle, Value *Src);
+  Value *createSharedCol(Value *Handle, int64_t Index);
+  Value *createSharedRow(Value *Handle, int64_t Index);
   void createReturn(Value *V);
   void setResultType(Type Ty) { ResultTy = Ty; HasResult = true; }
 

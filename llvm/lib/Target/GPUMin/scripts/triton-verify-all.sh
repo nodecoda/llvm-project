@@ -7,10 +7,11 @@
 # T1  AST: the C++ frontend sees all kernels and their arguments.
 # T2  TTIR: every generated module is accepted by triton-opt.
 # T3  Canonical: add_i32, f32_add, reduce_sum, control_flow, elementwise,
-#     layout2d, matmul2d, softmax2d, attention and ifelse match goldens.
+#     layout2d, matmul2d, softmax2d, attention, ifelse and matmul_shared
+#     match goldens.
 # T4  Layout: the Triton layout pass accepts gpumin:1 / 8 threads / 4 warps.
 # T5  CodeGen: every e2e kernel compiles with -verify-machineinstrs.
-# T6  Simulator: the ten e2e programs match their reference JSON.
+# T6  Simulator: the eleven e2e programs match their reference JSON.
 # T7  Diagnostics: seven unsupported forms fail with actionable messages.
 #
 # T2-T4 report SKIP when triton-opt is not available; the rest must pass.
@@ -93,6 +94,9 @@ if [ -n "$TRITON_OPT" ] && [ -x "$TRITON_OPT" ]; then
     -o "$TMP/attention.ttir" || ok=0
   "$TOOL" --emit-ttir --arg-type 'x_ptr=ptr<f32>' --arg-type 'y_ptr=ptr<f32>' \
     --arg-type n=i32 "$TRITON/ifelse.py" -o "$TMP/ifelse.ttir" || ok=0
+  "$TOOL" --emit-ttir --arg-type 'a_ptr=ptr<f32>' --arg-type 'b_ptr=ptr<f32>' \
+    --arg-type 'c_ptr=ptr<f32>' "$TRITON/matmul_shared.py" \
+    -o "$TMP/matmul_shared.ttir" || ok=0
   for f in add_i32 f32_add reduce cf matmul elementwise layout2d matmul2d \
            softmax2d attention ifelse; do
     [ -f "$TMP/$f.ttir" ] || ok=0
@@ -100,8 +104,14 @@ if [ -n "$TRITON_OPT" ] && [ -x "$TRITON_OPT" ]; then
       ok=0
     fi
   done
+  # Chapter 34 is the one module with unregistered gpumin.* ops.
+  if [ -f "$TMP/matmul_shared.ttir" ] &&
+     ! "$TRITON_OPT" --allow-unregistered-dialect \
+           "$TMP/matmul_shared.ttir" -o /dev/null; then
+    ok=0
+  fi
   if [ "$ok" = 1 ]; then
-    pass T2 "triton-opt parses all eleven TTIR modules"
+    pass T2 "triton-opt parses all twelve TTIR modules"
   else
     fail T2 "triton-opt rejected a generated module"
   fi
@@ -114,8 +124,10 @@ if [ -n "$TRITON_OPT" ] && [ -x "$TRITON_OPT" ]; then
   ok=1
   check_golden() {
     local name=$1 ours=$2 golden=$3
-    "$TRITON_OPT" "$ours" --canonicalize -o "$TMP/$name.ours.ttir" || return 1
-    "$TRITON_OPT" "$golden" --canonicalize -o "$TMP/$name.golden.ttir" || return 1
+    shift 3
+    "$TRITON_OPT" "$@" "$ours" --canonicalize -o "$TMP/$name.ours.ttir" || return 1
+    "$TRITON_OPT" "$@" "$golden" --canonicalize -o "$TMP/$name.golden.ttir" ||
+      return 1
     diff -u "$TMP/$name.golden.ttir" "$TMP/$name.ours.ttir" \
       > "$TMP/$name.diff" || return 1
   }
@@ -130,8 +142,10 @@ if [ -n "$TRITON_OPT" ] && [ -x "$TRITON_OPT" ]; then
   check_golden softmax2d "$TMP/softmax2d.ttir" "$TRITON/softmax2d.ttir" || ok=0
   check_golden attention "$TMP/attention.ttir" "$TRITON/attention.ttir" || ok=0
   check_golden ifelse "$TMP/ifelse.ttir" "$TRITON/ifelse.ttir" || ok=0
+  check_golden matmul_shared "$TMP/matmul_shared.ttir" \
+    "$TRITON/matmul_shared.ttir" --allow-unregistered-dialect || ok=0
   if [ "$ok" = 1 ]; then
-    pass T3 "all ten canonical forms match their goldens"
+    pass T3 "all eleven canonical forms match their goldens"
   else
     for d in "$TMP"/*.diff; do
       [ -f "$d" ] && cat "$d" >&2
@@ -197,14 +211,17 @@ fi
   --arg-type 'o_ptr=ptr<f32>' "$TRITON/attention.py" -o "$TMP/attention.ll"
 "$TOOL" --emit-llvm --arg-type 'x_ptr=ptr<f32>' --arg-type 'y_ptr=ptr<f32>' \
   --arg-type n=i32 "$TRITON/ifelse.py" -o "$TMP/ifelse.ll"
+"$TOOL" --emit-llvm --arg-type 'a_ptr=ptr<f32>' --arg-type 'b_ptr=ptr<f32>' \
+  --arg-type 'c_ptr=ptr<f32>' "$TRITON/matmul_shared.py" \
+  -o "$TMP/matmul_shared.ll"
 ok=1
 for f in add_i32 f32_add reduce matmul cf elementwise layout2d matmul2d \
-         softmax2d attention ifelse; do
+         softmax2d attention ifelse matmul_shared; do
   "$LLC" -march=gpumin -O1 -verify-machineinstrs -filetype=obj \
     "$TMP/$f.ll" -o "$TMP/$f.o" || ok=0
 done
 if [ "$ok" = 1 ]; then
-  pass T5 "all eleven kernels compile with -verify-machineinstrs"
+  pass T5 "all twelve kernels compile with -verify-machineinstrs"
 else
   fail T5 "llc rejected a generated kernel"
 fi
@@ -212,12 +229,12 @@ fi
 # --- T6. simulator e2e ---------------------------------------------------
 ok=1
 for prog in add_i32 add_f32 reduce matmul_no_dot elementwise layout2d \
-            matmul2d softmax2d attention ifelse; do
+            matmul2d softmax2d attention ifelse matmul_shared; do
   python3 "$E2E/run_e2e.py" "$E2E/$prog" --bin "$BIN" --sim "$SIM" \
     > "$TMP/e2e-$prog.log" 2>&1 || { cat "$TMP/e2e-$prog.log" >&2; ok=0; }
 done
 if [ "$ok" = 1 ]; then
-  pass T6 "the ten e2e programs match their reference JSON"
+  pass T6 "the eleven e2e programs match their reference JSON"
 else
   fail T6 "an e2e program mismatched"
 fi
