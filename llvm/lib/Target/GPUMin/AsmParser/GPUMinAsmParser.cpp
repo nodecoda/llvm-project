@@ -34,6 +34,7 @@
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/MathExtras.h"
 
 using namespace llvm;
 
@@ -115,8 +116,15 @@ public:
 
   void print(raw_ostream &OS, const MCAsmInfo &MAI) const override {}
 
-  /// Matcher predicates for the register and immediate operand classes.
-  bool isGPR() const { return Kind == Register; }
+  /// A 16-bit displacement.  A symbolic operand is accepted here and resolved
+  /// by the fixup machinery; only a constant can be range-checked now.
+  bool isSImm16() const {
+    if (Kind != Immediate)
+      return false;
+    if (auto *CE = dyn_cast<MCConstantExpr>(Imm))
+      return isInt<16>(CE->getValue());
+    return true;
+  }
 
   void addRegOperands(MCInst &Inst, unsigned N) const {
     assert(N == 1 && "Invalid number of operands!");
