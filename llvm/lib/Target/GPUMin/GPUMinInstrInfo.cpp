@@ -146,7 +146,12 @@ unsigned GPUMinInstrInfo::insertBranch(MachineBasicBlock &MBB,
                                        int *BytesAdded) const {
   int Added = 0;
   if (Cond.empty()) {
-    if (FBB) {
+    // Unconditional branch: TBB is the branch target and FBB is null.  The
+    // original chapter-05 code tested FBB here, so a block that lost its
+    // branch (and later had to get it back during block placement) was left
+    // with a CFG successor and no terminator.  -verify-machineinstrs caught
+    // exactly that shape.
+    if (TBB) {
       BuildMI(MBB, MBB.end(), DL, get(GPUMin::BRA)).addMBB(TBB);
       Added += getInstSizeInBytes(*std::prev(MBB.end()));
     }

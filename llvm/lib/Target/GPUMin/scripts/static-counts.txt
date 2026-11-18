@@ -1,0 +1,9 @@
+# Chapter 10 locks the static surface.  These numbers only move when a chapter
+# deliberately adds coverage; the gate fails on a mismatch so that "it still
+# compiles" cannot silently replace "the tests still exist".
+mc_lit_files=3
+codegen_lit_files=7
+chapter_docs=11
+chapter_gates=10
+e2e_programs=1
+mc_instructions=38
