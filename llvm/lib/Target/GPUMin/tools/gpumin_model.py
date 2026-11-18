@@ -59,6 +59,25 @@ class Model:
         return dict(self.data["scheduling"]["units"])
 
     @property
+    def latency(self):
+        # Chapter 19: cycles a warp cannot issue after a load.  Zero by
+        # default so that the numbers printed by chapters 12-18 stay exactly
+        # reproducible; the chapter 19 gate turns it on explicitly.
+        return dict(self.data["latency"])
+
+    @property
+    def occupancy(self):
+        return dict(self.data["occupancy"])
+
+    def warps_per_sm(self, registers_per_thread=None):
+        # Chapter 19: how many warps fit given the register file.  Two caps
+        # apply at once: the register budget and the hardware warp limit.
+        occ = self.occupancy
+        rpt = registers_per_thread or occ["registers_per_thread"]
+        by_regs = occ["registers_per_sm"] // (rpt * self.warp_size)
+        return min(by_regs, occ["max_warps_per_sm"])
+
+    @property
     def barrier_funct(self):
         # Chapter 17: SYS funct 11, the value the opcode map reserved in
         # chapter 02.  The barrier has no operands, so the whole instruction
@@ -152,6 +171,12 @@ class Model:
         assert self.data["sys_funct"]["ret"] == 1
         assert self.args_funct == 9
         assert self.barrier_funct == 11
+        assert self.latency["global"] >= 0 and self.latency["shared"] >= 0
+        assert self.warps_per_sm(32) == min(
+            self.occupancy["max_warps_per_sm"],
+            self.occupancy["registers_per_sm"] // (32 * self.warp_size))
+        assert self.warps_per_sm(255) < self.warps_per_sm(32) or \
+            self.warps_per_sm(32) == self.occupancy["max_warps_per_sm"]
         assert set(self.issue_units) == {"alu", "lsu", "bar"}
         assert all(w >= 1 for w in self.issue_units.values())
         assert self.data["barrier"]["scope"] == "block"

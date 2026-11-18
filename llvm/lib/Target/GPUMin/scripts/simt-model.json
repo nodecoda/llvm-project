@@ -42,6 +42,17 @@
     "units": { "alu": 1, "lsu": 1, "bar": 1 },
     "note": "issue slots per cycle per unit; no memory latency until chapter 19"
   },
+  "latency": {
+    "global": 0,
+    "shared": 0,
+    "note": "cycles a warp waits after a load; 0 keeps chapters 12-18 unchanged"
+  },
+  "occupancy": {
+    "registers_per_sm": 65536,
+    "max_warps_per_sm": 64,
+    "registers_per_thread": 32,
+    "note": "T4-class SM; registers_per_thread is the knob that matters"
+  },
   "barrier": {
     "name": "bar.sync",
     "funct": 11,

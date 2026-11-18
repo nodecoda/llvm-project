@@ -251,6 +251,7 @@ class Warp:
         self.ur = [0] * 8
         self.ur[0] = ur0            # chapter 13: args pointer
         self.steps = 0              # instructions retired by this warp
+        self.stall = 0              # chapter 19: cycles left before issuing
 
     def _normalize(self):
         # Frames that reached the same instruction can run together: every
@@ -350,7 +351,7 @@ class Simulator:
     def __init__(self, image, *, blocks=1, threads=32, trace=False,
                  max_steps=100000, global_size=1 << 20, private_size=4096,
                  shared_size=49152, strict_uniform=False, schedule="units",
-                 unit_width=None):
+                 unit_width=None, latency=None, regs_per_thread=None):
         if threads % WARP_SIZE or threads > 32:
             raise SimError("--threads must be a multiple of 8 and <= 32")
         self.image = image
@@ -375,6 +376,15 @@ class Simulator:
         self.unit_width = self.model.issue_units
         for name, width in (unit_width or {}).items():
             self.unit_width[name] = width
+        # Chapter 19: a load stalls its warp for a fixed number of cycles.
+        # There is no scoreboard yet, so the whole warp waits even if the
+        # consumer is several instructions away -- that is precisely why
+        # occupancy matters.
+        self.latency = self.model.latency
+        if latency is not None:
+            self.latency = {"global": latency, "shared": latency}
+        # How many warps an SM can hold, given the registers each thread uses.
+        self.warps_per_sm = self.model.warps_per_sm(regs_per_thread)
         self.memory = Memory(global_size, private_size, shared_size)
         self.shared = bytearray(shared_size)
         # Chapter 15: one place that counts what the program made the machine
@@ -393,7 +403,12 @@ class Simulator:
             "alu": 0,
             "lsu": 0,
             "bar": 0,
+            "ld_ops": 0,
+            "st_ops": 0,
+            "stall_cycles": 0,
+            "warps_per_sm": 0,
         }
+        self.stats["warps_per_sm"] = self.warps_per_sm
         self.registers = {}
         self.dumps = []
         self.args_addr = None
@@ -501,6 +516,13 @@ class Simulator:
             for i, warp in enumerate(warps):
                 if done[i] or waiting[i]:
                     continue
+                if warp.stall:
+                    # Chapter 19: the warp cannot issue until the load's
+                    # result lands.  The counter is decremented here because
+                    # this loop runs exactly once per warp per cycle.
+                    warp.stall -= 1
+                    self.stats["stall_cycles"] += 1
+                    continue
                 if self.schedule == "units":
                     unit = self._classify(warp)
                     if slots[unit] == 0:
@@ -555,10 +577,12 @@ class Simulator:
         s = self.stats
         return ("issued=%d lane_instrs=%d loads=%d stores=%d branches=%d "
                 "splits=%d frames_max=%d barriers=%d cycles=%d "
-                "alu=%d lsu=%d bar=%d" %
+                "alu=%d lsu=%d bar=%d ld_ops=%d st_ops=%d stall_cycles=%d "
+                "warps_per_sm=%d" %
                 (s["issued"], s["lane_instrs"], s["loads"], s["stores"],
                  s["branches"], s["splits"], s["frames_max"], s["barriers"],
-                 s["cycles"], s["alu"], s["lsu"], s["bar"]))
+                 s["cycles"], s["alu"], s["lsu"], s["bar"], s["ld_ops"],
+                 s["st_ops"], s["stall_cycles"], s["warps_per_sm"]))
 
     def _run_warp(self, warp, steps=None):
         """Run until the warp finishes ("done"), parks at a barrier, or has
@@ -680,8 +704,10 @@ class Simulator:
                 lanes = warp.active_lanes()
                 if op == 0x08:
                     self.stats["loads"] += len(lanes)
+                    self.stats["ld_ops"] += 1
                 else:
                     self.stats["stores"] += len(lanes)
+                    self.stats["st_ops"] += 1
                 if op == 0x08:
                     for i in lanes:
                         lane = warp.lanes[i]
@@ -696,6 +722,10 @@ class Simulator:
                         self.memory.store(space, lane, self.shared,
                                           lane.read_r(base) + imm, size,
                                           lane.read_r(val_reg))
+                if op == 0x08 and self.schedule == "units":
+                    # Global loads cost more than shared ones in the model.
+                    warp.stall = self.latency[
+                        "global" if space == 0 else "shared"]
                 warp.advance()
                 continue
             if op == 0x10:  # BRA
@@ -789,6 +819,10 @@ def main(argv=None):
     ap.add_argument("--schedule", choices=("units", "interleaved", "greedy"),
                     default="units",
                     help="block issue model (chapters 17-18)")
+    ap.add_argument("--latency", type=parse_int, metavar="N",
+                    help="cycles a load stalls its warp (chapter 19)")
+    ap.add_argument("--regs-per-thread", type=parse_int, metavar="N",
+                    help="registers per thread, for the occupancy report")
     ap.add_argument("--unit-width", action="append", default=[],
                     metavar="NAME=N",
                     help="override issue slots, e.g. alu=2 (repeatable)")
@@ -823,7 +857,8 @@ def main(argv=None):
                         max_steps=args.max_steps,
                         strict_uniform=args.strict_uniform,
                         schedule=args.schedule,
-                        unit_width=overrides)
+                        unit_width=overrides, latency=args.latency,
+                        regs_per_thread=args.regs_per_thread)
         if args.launch:
             try:
                 with open(args.launch, encoding="utf-8") as f:
