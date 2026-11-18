@@ -196,6 +196,8 @@ done
 [ -x "$HERE/check-ch19.sh" ] || { echo "missing gate 19" >&2; ok=0; }
 [ -f "$HERE/../docs/20-"*.md ] || { echo "missing doc 20" >&2; ok=0; }
 [ -x "$HERE/check-ch20.sh" ] || { echo "missing gate 20" >&2; ok=0; }
+[ -f "$HERE/../docs/21-"*.md ] || { echo "missing doc 21" >&2; ok=0; }
+[ -x "$HERE/check-ch21.sh" ] || { echo "missing gate 21" >&2; ok=0; }
 
 missing=$(grep -L '退出条件' "$HERE/../docs"/[0-9][0-9]-*.md || true)
 if [ -n "$missing" ]; then

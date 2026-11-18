@@ -65,6 +65,7 @@ scripts/gpumin-verify-all.sh <llvm-bin-dir>
 | 18 | [scheduling-model](18-scheduling-model.md) | `check-ch18.sh` | ALU/LSU/BAR 发射槽、`cycles` |
 | 19 | [latency-occupancy](19-latency-occupancy.md) | `check-ch19.sh` | 访存延迟、occupancy |
 | 20 | [matmul-acceptance](20-matmul-acceptance.md) | `check-ch20.sh` | tiling 的代价与收益 |
+| 21 | [triton-frontend](21-triton-frontend.md) | `check-ch21.sh` | C++ 前端、CPython AST 桥 |
 
 ## 8 项总门禁
 
