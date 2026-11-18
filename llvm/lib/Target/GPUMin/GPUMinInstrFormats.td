@@ -245,3 +245,23 @@ class GPUMinSetp<bits<6> op, bits<11> funct, string asmstr>
   let Inst{15-11} = rs2;
   let Inst{10-0} = funct;
 }
+
+/// SYS register read: `sr.<name> rd` (chapter 09).
+///
+/// The system opcode already uses funct[10:0] to distinguish `exit` (0) and
+/// `ret` (1).  A special-register read keeps that shape and puts the register
+/// selector in the *funct* field, not in an operand: every read is its own
+/// instruction, so the generated decoder and the assembler match on the same
+/// 11-bit code that the printer shows as a mnemonic.
+///
+///   [31:26] 0x12 | [25:21] rd | [20:16] 0 | [15:11] 0 | [10:0] funct
+class GPUMinSysR1<bits<6> op, bits<11> funct, dag outs, dag ins, string asmstr,
+                  list<dag> pattern = []>
+    : GPUMinInst<outs, ins, asmstr, pattern> {
+  bits<5> rd;
+  let Inst{31-26} = op;
+  let Inst{25-21} = rd;
+  let Inst{20-16} = 0;
+  let Inst{15-11} = 0;
+  let Inst{10-0} = funct;
+}

@@ -381,6 +381,36 @@ def RET : GPUMinInst<(outs), (ins), "ret", []> {
   let isTerminator = 1;
 }
 
+// Special register reads (chapter 09).  Each selector is a distinct funct
+// value, so `sr.laneid r1` and `sr.warpid r1` are different instructions at
+// every layer: encoder, decoder, printer and DAG matcher.
+//
+//   2 laneid   3 warpid   4 blockid   5 tid
+//   6 ntid     7 nwarps   8 activemask
+multiclass GPUMinSR<bits<11> funct, string mnemonic> {
+  def "" : GPUMinSysR1<OPC_SYS.Value, funct, (outs GPR:$rd), (ins),
+                       mnemonic#" $rd", []>;
+}
+
+defm SR_LANEID    : GPUMinSR<0x002, "sr.laneid">;
+defm SR_WARPID    : GPUMinSR<0x003, "sr.warpid">;
+defm SR_BLOCKID   : GPUMinSR<0x004, "sr.blockid">;
+defm SR_TID       : GPUMinSR<0x005, "sr.tid">;
+defm SR_NTID      : GPUMinSR<0x006, "sr.ntid">;
+defm SR_NWARPS    : GPUMinSR<0x007, "sr.nwarps">;
+defm SR_ACTIVEMASK : GPUMinSR<0x008, "sr.activemask">;
+
+// The IR side is a target intrinsic.  Each read is a value with no operands,
+// so the pattern is a direct instruction match; there is no addressing mode
+// or register class to choose.
+def : Pat<(int_gpumin_laneid), (SR_LANEID)>;
+def : Pat<(int_gpumin_warpid), (SR_WARPID)>;
+def : Pat<(int_gpumin_blockid), (SR_BLOCKID)>;
+def : Pat<(int_gpumin_tid), (SR_TID)>;
+def : Pat<(int_gpumin_ntid), (SR_NTID)>;
+def : Pat<(int_gpumin_nwarps), (SR_NWARPS)>;
+def : Pat<(int_gpumin_activemask), (SR_ACTIVEMASK)>;
+
 //===----------------------------------------------------------------------===//
 // Selection DAG nodes
 //===----------------------------------------------------------------------===//
