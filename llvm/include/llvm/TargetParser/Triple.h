@@ -81,6 +81,7 @@ public:
     riscv32be,   // RISC-V (32-bit, big endian): riscv32be
     riscv64be,   // RISC-V (64-bit, big endian): riscv64be
     rvmin,       // RVMin: minimal in-tree RV32I teaching backend
+    gpumin,      // GPUMin: minimal SIMT GPU teaching backend
     sparc,       // Sparc: sparc
     sparcv9,     // Sparcv9: Sparcv9
     sparcel,     // Sparc: (endianness = little). NB: 'Sparcle' is a CPU variant
@@ -1187,6 +1188,7 @@ public:
   /// treated as riscv32 by isRISCV(), because the driver rewrites
   /// riscv32 triples when -march= is present.
   bool isRVMin() const { return getArch() == Triple::rvmin; }
+  bool isGPUMin() const { return getArch() == Triple::gpumin; }
 
   /// Tests whether the target is 32-bit SPARC (little and big endian).
   bool isSPARC32() const {

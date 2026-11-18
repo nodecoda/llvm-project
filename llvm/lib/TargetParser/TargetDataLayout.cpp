@@ -521,6 +521,15 @@ std::string Triple::computeDataLayout(StringRef ABIName) const {
   case Triple::riscv64be:
   case Triple::rvmin:
     return computeRISCVDataLayout(*this, ABIName);
+  case Triple::gpumin:
+    // GPUMin keeps every pointer at 32 bits and gives each GM32 memory space
+    // its own address space (plan section 4.4): 1 global, 2 shared,
+    // 3 private/local, 4 constant.  Declaring them here means the IR
+    // verifier and the type legalizer already agree on their width before
+    // the memory chapters start using them.
+    return "e-p:32:32-p1:32:32-p2:32:32-p3:32:32-p4:32:32-"
+           "i8:8:8-i16:16:16-i32:32:32-f32:32:32-i64:64:64-f64:64:64-"
+           "n8:16:32:64";
   case Triple::sparc:
   case Triple::sparcv9:
   case Triple::sparcel:

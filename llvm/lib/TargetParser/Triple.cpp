@@ -121,6 +121,8 @@ StringRef Triple::getArchTypeName(ArchType Kind) {
     return "riscv64be";
   case rvmin:
     return "rvmin";
+  case gpumin:
+    return "gpumin";
   case shave:
     return "shave";
   case sparc:
@@ -365,6 +367,8 @@ StringRef Triple::getArchTypePrefix(ArchType Kind) {
 
   case rvmin:
     return "rvmin";
+  case gpumin:
+    return "gpumin";
 
   case ve:
     return "ve";
@@ -494,6 +498,7 @@ Triple::ArchType Triple::getArchTypeForLLVMName(StringRef Name) {
       .Case("riscv32be", riscv32be)
       .Case("riscv64be", riscv64be)
       .Case("rvmin", rvmin)
+      .Case("gpumin", gpumin)
       .Case("hexagon", hexagon)
       .Case("sparc", sparc)
       .Case("sparcel", sparcel)
@@ -649,6 +654,7 @@ Triple::ArchType Triple::parseArch(StringRef ArchName) {
           .Case("riscv32be", Triple::riscv32be)
           .Case("riscv64be", Triple::riscv64be)
           .Case("rvmin", Triple::rvmin)
+          .Case("gpumin", Triple::gpumin)
           .Case("hexagon", Triple::hexagon)
           .Cases({"s390x", "systemz"}, Triple::systemz)
           .Case("sparc", Triple::sparc)
@@ -1007,6 +1013,7 @@ static Triple::ObjectFormatType getDefaultFormat(const Triple &T) {
   case Triple::riscv64:
   case Triple::riscv32be:
   case Triple::riscv64be:
+  case Triple::gpumin:
   case Triple::rvmin:
   case Triple::shave:
   case Triple::sparc:
@@ -1776,6 +1783,7 @@ unsigned Triple::getArchPointerBitWidth(llvm::Triple::ArchType Arch) {
   case llvm::Triple::renderscript32:
   case llvm::Triple::riscv32:
   case llvm::Triple::riscv32be:
+  case llvm::Triple::gpumin:
   case llvm::Triple::rvmin:
   case llvm::Triple::shave:
   case llvm::Triple::sparc:
@@ -1888,6 +1896,7 @@ Triple Triple::get32BitArchVariant() const {
   case Triple::renderscript32:
   case Triple::riscv32:
   case Triple::riscv32be:
+  case Triple::gpumin:
   case Triple::rvmin:
   case Triple::shave:
   case Triple::sparc:
@@ -1981,6 +1990,7 @@ Triple Triple::get64BitArchVariant() const {
   case Triple::m68k:
   case Triple::msp430:
   case Triple::r600:
+  case Triple::gpumin:
   case Triple::rvmin:
   case Triple::shave:
   case Triple::sparcel:
@@ -2112,6 +2122,7 @@ Triple Triple::getBigEndianArchVariant() const {
   case Triple::r600:
   case Triple::renderscript32:
   case Triple::renderscript64:
+  case Triple::gpumin:
   case Triple::rvmin:
   case Triple::shave:
   case Triple::spir64:
@@ -2257,6 +2268,7 @@ bool Triple::isLittleEndian() const {
   case Triple::renderscript64:
   case Triple::riscv32:
   case Triple::riscv64:
+  case Triple::gpumin:
   case Triple::rvmin:
   case Triple::shave:
   case Triple::sparcel:
@@ -2518,6 +2530,7 @@ ExceptionHandling Triple::getDefaultExceptionHandling() const {
     return ExceptionHandling::DwarfCFI;
 
   switch (getArch()) {
+  case Triple::gpumin:
   case Triple::rvmin:
   case Triple::arc:
   case Triple::csky:
@@ -2563,7 +2576,8 @@ FloatABI::ABIType Triple::getDefaultFloatABI(StringRef ABIName) const {
   if (isMIPS())
     return isOSFreeBSD() ? FloatABI::Soft : FloatABI::Hard;
 
-  if (isCSKY() || isAVR() || getArch() == msp430 || getArch() == rvmin)
+  if (isCSKY() || isAVR() || getArch() == msp430 || getArch() == rvmin ||
+      getArch() == gpumin)
     return FloatABI::Soft;
 
   // Most targets use hard float unless soft float is explicitly requested.
