@@ -1,0 +1,54 @@
+// Golden canonical TTIR for scripts/triton/softmax2d.py.  The 8x8 f32 tile is
+// reduced along axis 1 twice: first arith.maximumf inside tt.reduce for the
+// row maximum, then arith.addf for the row sum.  Each tt.reduce drops the
+// reduced dimension, and the following tt.expand_dims restores it, which is
+// how keep_dims=True is spelled.  exp2 uses the 1.44269504 = 1/ln(2) rescale
+// so that the SFU only needs one transcendental.  The chapter-31 gate
+// canonicalises both sides before diffing.
+module {
+  tt.func public @softmax_kernel(%x_ptr: !tt.ptr<f32>) {
+    %0 = tt.make_range {start = 0 : i32, end = 8 : i32} : tensor<8xi32>
+    %r = tt.expand_dims %0 {axis = 1 : i32} : tensor<8xi32> -> tensor<8x1xi32>
+    %2 = tt.make_range {start = 0 : i32, end = 8 : i32} : tensor<8xi32>
+    %c = tt.expand_dims %2 {axis = 0 : i32} : tensor<8xi32> -> tensor<1x8xi32>
+    %4 = arith.constant 8 : i32
+    %5 = tt.splat %4 : i32 -> tensor<8x1xi32>
+    %6 = arith.muli %r, %5 : tensor<8x1xi32>
+    %7 = tt.splat %x_ptr : !tt.ptr<f32> -> tensor<8x1x!tt.ptr<f32>>
+    %8 = tt.addptr %7, %6 : tensor<8x1x!tt.ptr<f32>>, tensor<8x1xi32>
+    %9 = tt.broadcast %8 : tensor<8x1x!tt.ptr<f32>> -> tensor<8x8x!tt.ptr<f32>>
+    %10 = tt.broadcast %c : tensor<1x8xi32> -> tensor<8x8xi32>
+    %11 = tt.addptr %9, %10 : tensor<8x8x!tt.ptr<f32>>, tensor<8x8xi32>
+    %x = tt.load %11 : tensor<8x8x!tt.ptr<f32>>
+    %13 = "tt.reduce"(%x) <{axis = 1 : i32}> ({
+      ^bb0(%red13a: f32, %red13b: f32):
+        %red13v = arith.maximumf %red13a, %red13b : f32
+        tt.reduce.return %red13v : f32
+      }) : (tensor<8x8xf32>) -> tensor<8xf32>
+    %m = tt.expand_dims %13 {axis = 1 : i32} : tensor<8xf32> -> tensor<8x1xf32>
+    %15 = tt.broadcast %m : tensor<8x1xf32> -> tensor<8x8xf32>
+    %16 = arith.subf %x, %15 : tensor<8x8xf32>
+    %17 = arith.constant 1.442695e+00 : f32
+    %18 = tt.splat %17 : f32 -> tensor<8x8xf32>
+    %19 = arith.mulf %16, %18 : tensor<8x8xf32>
+    %e = math.exp2 %19 : tensor<8x8xf32>
+    %21 = "tt.reduce"(%e) <{axis = 1 : i32}> ({
+      ^bb0(%red21a: f32, %red21b: f32):
+        %red21v = arith.addf %red21a, %red21b : f32
+        tt.reduce.return %red21v : f32
+      }) : (tensor<8x8xf32>) -> tensor<8xf32>
+    %s = tt.expand_dims %21 {axis = 1 : i32} : tensor<8xf32> -> tensor<8x1xf32>
+    %23 = tt.broadcast %s : tensor<8x1xf32> -> tensor<8x8xf32>
+    %y = arith.divf %e, %23 : tensor<8x8xf32>
+    %25 = arith.constant 8 : i32
+    %26 = tt.splat %25 : i32 -> tensor<8x1xi32>
+    %27 = arith.muli %r, %26 : tensor<8x1xi32>
+    %28 = tt.splat %x_ptr : !tt.ptr<f32> -> tensor<8x1x!tt.ptr<f32>>
+    %29 = tt.addptr %28, %27 : tensor<8x1x!tt.ptr<f32>>, tensor<8x1xi32>
+    %30 = tt.broadcast %29 : tensor<8x1x!tt.ptr<f32>> -> tensor<8x8x!tt.ptr<f32>>
+    %31 = tt.broadcast %c : tensor<1x8xi32> -> tensor<8x8xi32>
+    %32 = tt.addptr %30, %31 : tensor<8x8x!tt.ptr<f32>>, tensor<8x8xi32>
+    tt.store %32, %y : tensor<8x8x!tt.ptr<f32>>
+    tt.return
+  }
+}

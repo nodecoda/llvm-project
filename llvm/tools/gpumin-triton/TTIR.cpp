@@ -302,8 +302,19 @@ Value *Function::createLoad(Value *Ptr, Value *Mask) {
 
 Value *Function::createReduce(ReduceKind Kind, Value *Src, unsigned Axis) {
   assert(Src->getType().isTensor() && "reduce needs a tensor");
-  assert(Src->getType().getShape().size() == 1 && "only 1-D reductions");
-  Type ResultTy = Src->getType().getElementType();
+  llvm::ArrayRef<int64_t> Shape = Src->getType().getShape();
+  assert((Shape.size() == 1 || Shape.size() == 2) &&
+         "only 1-D and 2-D reductions");
+  Type ResultTy;
+  if (Shape.size() == 1) {
+    ResultTy = Src->getType().getElementType();
+  } else {
+    assert(Axis <= 1 && "a 2-D reduction uses axis 0 or 1");
+    // Triton's tt.reduce always drops the reduced dimension; keep_dims=True
+    // is expressed by a following tt.expand_dims (chapter 31).
+    ResultTy = Type::tensor({Shape[Axis == 0 ? 1 : 0]},
+                            Src->getType().getElementType());
+  }
   Value *V = createValue(ResultTy);
   Op O;
   O.Kind = OpKind::Reduce;
@@ -311,6 +322,19 @@ Value *Function::createReduce(ReduceKind Kind, Value *Src, unsigned Axis) {
   O.Operands = {Src};
   O.Axis = Axis;
   O.Red = Kind;
+  O.Ty = Src->getType();
+  Ops.push_back(std::move(O));
+  return V;
+}
+
+Value *Function::createExp2(Value *Src) {
+  assert(Src->getType().isTensor() && "exp2 needs a tensor");
+  assert(Src->getType().getElementType().isF32() && "exp2 needs f32");
+  Value *V = createValue(Src->getType());
+  Op O;
+  O.Kind = OpKind::Exp2;
+  O.Result = V;
+  O.Operands = {Src};
   O.Ty = Src->getType();
   Ops.push_back(std::move(O));
   return V;
@@ -368,6 +392,8 @@ static StringRef binaryName(OpKind Kind) {
     return "arith.subf";
   case OpKind::MulF:
     return "arith.mulf";
+  case OpKind::DivF:
+    return "arith.divf";
   case OpKind::AndI:
     return "arith.andi";
   case OpKind::OrI:
@@ -575,6 +601,14 @@ void Function::print(raw_ostream &OS) const {
       O.Ty.print(OS);
       OS << "\n";
       break;
+    case OpKind::Exp2:
+      O.Result->printName(OS);
+      OS << " = math.exp2 ";
+      O.Operands[0]->printName(OS);
+      OS << " : ";
+      O.Ty.print(OS);
+      OS << "\n";
+      break;
     case OpKind::Reduce: {
       Type SrcTy = O.Operands[0]->getType();
       Type ElemTy = SrcTy.getElementType();
@@ -582,7 +616,8 @@ void Function::print(raw_ostream &OS) const {
       O.Result->printName(OS);
       OS << " = \"tt.reduce\"(";
       O.Operands[0]->printName(OS);
-      OS << ") <{axis = 0 : i32}> ({\n      ^bb0(%red" << ID << "a: ";
+      OS << ") <{axis = " << O.Axis << " : i32}> ({\n      ^bb0(%red" << ID
+         << "a: ";
       ElemTy.print(OS);
       OS << ", %red" << ID << "b: ";
       ElemTy.print(OS);

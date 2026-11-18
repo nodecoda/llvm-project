@@ -167,6 +167,20 @@ def FSUB : GPUMinR2<OPC_FALU.Value, 0x1, (outs GPR:$rd),
                     (ins GPR:$rs1, GPR:$rs2), "fsub $rd, $rs1, $rs2", []>;
 def FMUL : GPUMinR2<OPC_FALU.Value, 0x2, (outs GPR:$rd),
                     (ins GPR:$rs1, GPR:$rs2), "fmul $rd, $rs1, $rs2", []>;
+// Chapter 31: IEEE-754 division.  Softmax divides by the row sum; without
+// this instruction the selector would reach for a libcall the target lacks.
+def FDIV : GPUMinR2<OPC_FALU.Value, 0x3, (outs GPR:$rd),
+                    (ins GPR:$rs1, GPR:$rs2), "fdiv $rd, $rs1, $rs2", []>;
+
+//===----------------------------------------------------------------------===//
+// Special function unit (opcode 0x0B, chapter 31)
+//===----------------------------------------------------------------------===//
+//
+// Unary f32 operations share the R1 shape: rs2 is zero and funct selects the
+// function.  funct 0 is exp2; lg2/rcp are reserved for later.
+
+def EXP2 : GPUMinR1<OPC_SFU.Value, 0x0, (outs GPR:$rd), (ins GPR:$rs1),
+                    "exp2 $rd, $rs1", []>;
 
 //===----------------------------------------------------------------------===//
 // Predicate compare (opcode 0x03)
@@ -262,6 +276,11 @@ def : Pat<(select i1:$pd, f32:$rs1, f32:$rs2), (SELP $pd, $rs1, $rs2)>;
 def : Pat<(f32 (fadd f32:$rs1, f32:$rs2)), (FADD $rs1, $rs2)>;
 def : Pat<(f32 (fsub f32:$rs1, f32:$rs2)), (FSUB $rs1, $rs2)>;
 def : Pat<(f32 (fmul f32:$rs1, f32:$rs2)), (FMUL $rs1, $rs2)>;
+def : Pat<(f32 (fdiv f32:$rs1, f32:$rs2)), (FDIV $rs1, $rs2)>;
+
+// Chapter 31: the SFU is reached only through the intrinsic, so the pattern
+// names it directly instead of matching a generic DAG node.
+def : Pat<(f32 (int_gpumin_exp2 f32:$rs1)), (EXP2 $rs1)>;
 
 def : Pat<(i1 (setoeq f32:$rs1, f32:$rs2)), (FSETP_OEQ $rs1, $rs2)>;
 def : Pat<(i1 (setone f32:$rs1, f32:$rs2)), (FSETP_ONE $rs1, $rs2)>;

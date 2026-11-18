@@ -238,7 +238,8 @@ def : Pat<(mul i32:$rs1, i32:$rs2), (MUL $rs1, $rs2)>;
 | 行/列不是 4/8 的倍数 | `2D tensor rows must be 1 or a multiple of 4` 等 |
 
 2D reduction 需要把“行内 lane 归约”和“跨 warp 行组归约”组合起来，
-还要定义结果形状；它和分块 matmul 一起留到第 30 章。
+还要定义结果形状；第 30 章先用 2D 逐元素运算做分块 matmul，第 31 章再以
+`keep_dims=True` 的窄入口开放 2D 归约（本章的报错文本届时随之更新）。
 
 ## 本章新增文件
 

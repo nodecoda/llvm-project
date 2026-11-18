@@ -84,6 +84,7 @@ def OPC_MOVI : GPUMinOpcode<0x05>;  // move immediate
 def OPC_ADDI : GPUMinOpcode<0x06>;  // add immediate (chapter 07)
 def OPC_FALU : GPUMinOpcode<0x07>;  // f32 add/sub/mul (chapter 25)
 def OPC_FSETP: GPUMinOpcode<0x0A>;  // f32 predicate compare (chapter 25)
+def OPC_SFU  : GPUMinOpcode<0x0B>;  // unary f32 special functions (chapter 31)
 def OPC_LD   : GPUMinOpcode<0x08>;
 def OPC_ST   : GPUMinOpcode<0x09>;
 def OPC_BRA  : GPUMinOpcode<0x10>;

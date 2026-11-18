@@ -60,6 +60,7 @@ private:
   LlvmValue *combineReduction(ReduceKind Kind, Type ElemTy, LlvmValue *A,
                               LlvmValue *Rhs);
   Error emitReduce(const Op &O);
+  Error emitReduce2D(const Op &O);
   void maskedStore(LlvmValue *Ptr, LlvmValue *Stored, LlvmValue *Mask);
   Error emitOp(const Op &O);
   Error emitPrologue();
@@ -248,6 +249,9 @@ LlvmValue *FuncEmitter::combineReduction(ReduceKind Kind, Type ElemTy,
 }
 
 Error FuncEmitter::emitReduce(const Op &O) {
+  if (O.Operands[0]->getType().getShape().size() == 2)
+    return emitReduce2D(O);
+
   const Lowered &Src = Env.at(O.Operands[0]);
   Type ResultTy = O.Result->getType();
   llvm::Type *ElemTy = llvmType(ResultTy);
@@ -306,6 +310,83 @@ Error FuncEmitter::emitReduce(const Op &O) {
   return Error::success();
 }
 
+Error FuncEmitter::emitReduce2D(const Op &O) {
+  const Lowered &Src = Env.at(O.Operands[0]);
+  Type SrcTy = O.Operands[0]->getType();
+  Type ElemTy = SrcTy.getElementType();
+  llvm::ArrayRef<int64_t> Shape = SrcTy.getShape();
+  int64_t R = Shape[0], C = Shape[1];
+  Expected<std::pair<int64_t, int64_t>> LayoutOrErr = threadLayout(SrcTy);
+  if (!LayoutOrErr)
+    return LayoutOrErr.takeError();
+  int64_t Rows = LayoutOrErr->first, Cols = LayoutOrErr->second;
+
+  // The whole tile goes to shared memory, so every output element can read
+  // the values it needs without caring which thread loaded them.
+  llvm::Type *LlvmElemTy = llvmType(ElemTy);
+  auto *SlotTy = ArrayType::get(LlvmElemTy, static_cast<uint64_t>(R * C));
+  std::string Name =
+      ("__gpumin_red2d_" + TF.getName() + "_" + Twine(ReduceCounter++)).str();
+  auto *Window =
+      new GlobalVariable(M, SlotTy, false, GlobalValue::InternalLinkage,
+                         Constant::getNullValue(SlotTy), Name, nullptr,
+                         GlobalValue::NotThreadLocal, 2);
+  Window->setAlignment(Align(4));
+
+  for (unsigned I = 0; I < Src.Elts.size(); ++I) {
+    LlvmValue *Row = coordValue(SrcTy, I, true);
+    LlvmValue *Col = coordValue(SrcTy, I, false);
+    LlvmValue *Index = B.CreateAdd(B.CreateMul(Row, B.getInt32(C)), Col);
+    LlvmValue *Slot = B.CreateGEP(SlotTy, Window, {B.getInt32(0), Index});
+    B.CreateStore(Src.Elts[I], Slot);
+  }
+
+  FunctionCallee BarrierFn =
+      M.getOrInsertFunction("llvm.gpumin.barrier", B.getVoidTy());
+  B.CreateCall(BarrierFn);
+
+  auto LoadShared = [&](LlvmValue *Row, LlvmValue *Col) {
+    LlvmValue *Index = B.CreateAdd(B.CreateMul(Row, B.getInt32(C)), Col);
+    LlvmValue *Slot = B.CreateGEP(SlotTy, Window, {B.getInt32(0), Index});
+    return B.CreateLoad(LlvmElemTy, Slot);
+  };
+
+  Lowered V;
+  V.IsTensor = true;
+  if (O.Axis == 1) {
+    // [R, C] -> [R]: one partial per thread-local row.  Every lane in the
+    // warp computes the same sums, which is exactly what the [R, 1] layout
+    // wants after expand_dims.
+    for (int64_t I = 0; I < Rows; ++I) {
+      LlvmValue *Row =
+          B.CreateAdd(B.CreateMul(rowGroup(), B.getInt32(Rows)), B.getInt32(I));
+      LlvmValue *Acc = LoadShared(Row, B.getInt32(0));
+      for (int64_t Col = 1; Col < C; ++Col)
+        Acc = combineReduction(O.Red, ElemTy, Acc,
+                               LoadShared(Row, B.getInt32(Col)));
+      V.Elts.push_back(Acc);
+    }
+  } else {
+    // [R, C] -> [C]: one partial per thread-local column, replicated across
+    // the four warps.
+    for (int64_t I = 0; I < Cols; ++I) {
+      LlvmValue *Col =
+          B.CreateAdd(B.CreateMul(laneId(), B.getInt32(Cols)), B.getInt32(I));
+      LlvmValue *Acc = LoadShared(B.getInt32(0), Col);
+      for (int64_t Row = 1; Row < R; ++Row)
+        Acc = combineReduction(O.Red, ElemTy, Acc,
+                               LoadShared(B.getInt32(Row), Col));
+      V.Elts.push_back(Acc);
+    }
+  }
+
+  // The second barrier keeps a following reduction from overwriting the
+  // window while a slow warp is still reading it.
+  B.CreateCall(BarrierFn);
+  Env[O.Result] = std::move(V);
+  return Error::success();
+}
+
 Error FuncEmitter::emitPrologue() {
   LF = llvm::Function::Create(llvm::FunctionType::get(B.getVoidTy(), false),
                               llvm::GlobalValue::ExternalLinkage, TF.getName(),
@@ -358,6 +439,18 @@ Error FuncEmitter::emitOp(const Op &O) {
     return Error::success();
   }
 
+  case OpKind::Exp2: {
+    const Lowered &Src = Env.at(O.Operands[0]);
+    FunctionCallee Exp2Fn = M.getOrInsertFunction(
+        "llvm.gpumin.exp2", B.getFloatTy(), B.getFloatTy());
+    Lowered V;
+    V.IsTensor = true;
+    for (LlvmValue *Elt : Src.Elts)
+      V.Elts.push_back(B.CreateCall(Exp2Fn, {Elt}));
+    Env[O.Result] = std::move(V);
+    return Error::success();
+  }
+
   case OpKind::MakeRange: {
     FunctionCallee TidFn = M.getOrInsertFunction("llvm.gpumin.tid",
                                                  B.getInt32Ty());
@@ -394,10 +487,25 @@ Error FuncEmitter::emitOp(const Op &O) {
 
   case OpKind::ExpandDims: {
     auto It = Defs.find(O.Operands[0]);
+    if (It != Defs.end() && It->second->Kind == OpKind::Reduce) {
+      // A 2D reduction produces a rank-1 tt.reduce result that has no 1D
+      // layout of its own.  keep_dims=True expands it right back, and the
+      // per-thread element order is already the expanded order, so this is
+      // an identity on the register vector.
+      const Op &Red = *It->second;
+      llvm::ArrayRef<int64_t> SrcShape = Red.Operands[0]->getType().getShape();
+      llvm::ArrayRef<int64_t> DstShape = O.Ty.getShape();
+      if (SrcShape.size() != 2 || Red.Axis != O.Axis || DstShape.size() != 2)
+        return createStringError(inconvertibleErrorCode(),
+                                 "a deferred 2D reduction must expand on its "
+                                 "reduced axis");
+      Env[O.Result] = Env.at(O.Operands[0]);
+      return Error::success();
+    }
     if (It == Defs.end() || It->second->Kind != OpKind::MakeRange)
       return createStringError(inconvertibleErrorCode(),
-                               "expand_dims only reshapes tl.arange in this "
-                               "chapter");
+                               "expand_dims only reshapes tl.arange or a 2D "
+                               "reduction in this chapter");
     const Op &Range = *It->second;
     int64_t Start = Range.Start, RangeLen = Range.End - Range.Start;
     llvm::ArrayRef<int64_t> Shape = O.Ty.getShape();
@@ -710,6 +818,9 @@ Error FuncEmitter::emitOp(const Op &O) {
       case OpKind::MulF:
         V.Elts.push_back(B.CreateFMul(A, Bv));
         break;
+      case OpKind::DivF:
+        V.Elts.push_back(B.CreateFDiv(A, Bv));
+        break;
       case OpKind::AndI:
         V.Elts.push_back(B.CreateAnd(A, Bv));
         break;
@@ -755,6 +866,18 @@ Error FuncEmitter::emit() {
               inconvertibleErrorCode(),
               "a tl.arange shorter than %u must feed [:, None] or [None, :]",
               ThreadsPerBlock);
+  }
+  for (const Op &O : TF.getOps()) {
+    if (O.Kind != OpKind::Reduce ||
+        O.Operands[0]->getType().getShape().size() != 2)
+      continue;
+    for (const Op &User : TF.getOps())
+      for (const gpumintriton::Value *Operand : User.Operands)
+        if (Operand == O.Result && User.Kind != OpKind::ExpandDims)
+          return createStringError(
+              inconvertibleErrorCode(),
+              "a 2D reduction result must feed expand_dims "
+              "(keep_dims=True)");
   }
   for (const Op &O : TF.getOps()) {
     if (Error E = emitOp(O))

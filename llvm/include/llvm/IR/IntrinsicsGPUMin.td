@@ -65,6 +65,12 @@ let TargetPrefix = "gpumin" in { // All intrinsics start with "llvm.gpumin.".
                                     [IntrNoMem, IntrSpeculatable,
                                      IntrWillReturn]>;
 
+  // Chapter 31: f32 base-2 exponential, the SFU primitive behind softmax.
+  // The instruction is a unary R-type in the 0x0B SFU opcode.
+  def int_gpumin_exp2 : Intrinsic<[llvm_float_ty], [llvm_float_ty],
+                                  [IntrNoMem, IntrSpeculatable,
+                                   IntrWillReturn]>;
+
   // Chapter 17: block-wide barrier.  A call returns only when every warp in
   // the block has reached it, which is what makes shared-memory exchanges
   // across warps well defined.  It has no value, so the node is pure chain.

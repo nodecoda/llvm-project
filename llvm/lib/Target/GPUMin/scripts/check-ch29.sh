@@ -261,7 +261,7 @@ if "$TOOL" --emit-ttir --arg-type p=ptr "$TMP/badreduce.py" \
       > /dev/null 2> "$TMP/badreduce.err"; then
   fail "a 2D reduction was accepted"
 fi
-grep -q 'reductions require a 1D tensor' "$TMP/badreduce.err" ||
+grep -q 'keep_dims=True' "$TMP/badreduce.err" ||
   { cat "$TMP/badreduce.err" >&2; fail "2D-reduction diagnostic is not actionable"; }
 echo "PASS 5/5: bad subscripts, 1D transposes, big tiles and 2D reductions fail"
 

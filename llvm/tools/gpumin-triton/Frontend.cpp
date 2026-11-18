@@ -390,6 +390,8 @@ Expected<Value *> Lowerer::lowerExpr(const Object &Node) {
       Kind = OpKind::SubI;
     else if (OpType == "Mult")
       Kind = OpKind::MulI;
+    else if (OpType == "Div")
+      Kind = OpKind::DivI;
     else if (OpType == "BitAnd")
       Kind = OpKind::AndI;
     else if (OpType == "BitOr")
@@ -573,9 +575,12 @@ Expected<Value *> Lowerer::lowerBinary(const Object &Node, OpKind Kind,
     case OpKind::MulI:
       FloatKind = OpKind::MulF;
       break;
+    case OpKind::DivI:
+      FloatKind = OpKind::DivF;
+      break;
     default:
-      return errAt(Node,
-                   "floating-point operands only support '+', '-' and '*'");
+      return errAt(
+          Node, "floating-point operands only support '+', '-', '*' and '/'");
     }
     if (LT.isF32() && RT.isF32())
       return F.createBinary(FloatKind, LHS, RHS);
@@ -603,6 +608,13 @@ Expected<Value *> Lowerer::lowerBinary(const Object &Node, OpKind Kind,
     }
     return errAt(Node, "mixed float and integer operands are not supported");
   }
+
+  // Python's '/' is true division, so an integer-only '/' would silently
+  // disagree with the source language.  Float operands were handled above;
+  // integer division spells '//' (chapter 28).
+  if (Kind == OpKind::DivI)
+    return errAt(Node, "true division '/' requires f32 operands; use '//' for "
+                       "integer division");
 
   if (LT.isI32() && RT.isI32())
     return F.createBinary(Kind, LHS, RHS);
@@ -946,6 +958,19 @@ Expected<Value *> Lowerer::lowerCall(const Object &Node) {
     return F.createTrans(V);
   }
 
+  if (Name == "exp2") {
+    const json::Value *ValueNode = GetArg(0);
+    if (!ValueNode)
+      return errAt(Node, "tl.exp2 expects one tensor");
+    Expected<Value *> VOrErr = lowerExpr(*ValueNode);
+    if (!VOrErr)
+      return VOrErr.takeError();
+    Value *V = *VOrErr;
+    if (!V->getType().isTensor() || !V->getType().getElementType().isF32())
+      return errAt(Node, "tl.exp2 requires an f32 tensor");
+    return F.createExp2(V);
+  }
+
   if (Name == "load") {
     const json::Value *PtrNode = GetArg(0);
     if (!PtrNode)
@@ -1185,8 +1210,9 @@ Expected<Value *> Lowerer::lowerCall(const Object &Node) {
     Value *Src = *SrcOrErr;
     if (!Src->getType().isTensor())
       return errAt(Node, "tl." + Name + " expects a tensor");
-    if (Src->getType().getShape().size() != 1)
-      return errAt(Node, "reductions require a 1D tensor");
+    llvm::ArrayRef<int64_t> SrcShape = Src->getType().getShape();
+    if (SrcShape.size() != 1 && SrcShape.size() != 2)
+      return errAt(Node, "reductions require a 1D or 2D tensor");
 
     const json::Value *AxisNode = GetArg(1);
     auto AxisIt = Keywords.find("axis");
@@ -1199,15 +1225,40 @@ Expected<Value *> Lowerer::lowerCall(const Object &Node) {
         return AxisOrErr.takeError();
       Axis = *AxisOrErr;
     }
-    if (Axis != 0)
-      return errAt(Node, "chapter 26 only reduces axis 0");
 
     Type ElemTy = Src->getType().getElementType();
     if (!ElemTy.isI32() && !ElemTy.isF32())
       return errAt(Node, "reductions require i32 or f32 elements");
-    if (Name == "max")
-      return F.createReduce(ReduceKind::Max, Src, 0);
-    return F.createReduce(ReduceKind::Sum, Src, 0);
+
+    if (SrcShape.size() == 1) {
+      if (Axis != 0)
+        return errAt(Node, "chapter 26 only reduces axis 0");
+      if (Name == "max")
+        return F.createReduce(ReduceKind::Max, Src, 0);
+      return F.createReduce(ReduceKind::Sum, Src, 0);
+    }
+
+    if (Axis != 0 && Axis != 1)
+      return errAt(Node, "2D reductions reduce axis 0 or 1");
+    auto KeepIt = Keywords.find("keep_dims");
+    bool KeepDims = false;
+    if (KeepIt != Keywords.end()) {
+      const Object *Keep = KeepIt->second->getAsObject();
+      if (!Keep || typeOf(*Keep) != "Constant")
+        return errAt(Node, "keep_dims must be a constant boolean");
+      auto Bool = Keep->getBoolean("value");
+      if (!Bool)
+        return errAt(Node, "keep_dims must be a constant boolean");
+      KeepDims = *Bool;
+    }
+    if (!KeepDims)
+      return errAt(Node, "chapter 31 requires keep_dims=True for 2D "
+                         "reductions");
+    Value *V =
+        Name == "max"
+            ? F.createReduce(ReduceKind::Max, Src, static_cast<unsigned>(Axis))
+            : F.createReduce(ReduceKind::Sum, Src, static_cast<unsigned>(Axis));
+    return F.createExpandDims(V, static_cast<unsigned>(Axis));
   }
 
   if (Name == "dot")

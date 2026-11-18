@@ -89,6 +89,34 @@ def f32_to_bits(value):
     return struct.unpack("<I", struct.pack("<f", value))[0]
 
 
+def fdiv32(a, b):
+    """IEEE-754 single division with the same zero/NaN rules as hardware.
+
+    Python raises ZeroDivisionError where the ISA returns inf or NaN, so the
+    special cases are spelled out before the ordinary division.
+    """
+    if math.isnan(a) or math.isnan(b):
+        return float("nan")
+    if b == 0.0:
+        if a == 0.0:
+            return float("nan")
+        sign = math.copysign(1.0, a) * math.copysign(1.0, b)
+        return math.copysign(float("inf"), sign)
+    return a / b
+
+
+def exp2_32(a):
+    """exp2 in single precision; overflow saturates to +inf like the SFU."""
+    if math.isnan(a):
+        return float("nan")
+    try:
+        # math.exp2 needs Python 3.11; 2.0**a is the same function for the
+        # double-precision reference the simulator rounds to f32.
+        return math.pow(2.0, a)
+    except OverflowError:
+        return float("inf")
+
+
 class SimError(Exception):
     pass
 
@@ -778,8 +806,22 @@ class Simulator:
                         v = a - b
                     elif funct == 2:
                         v = a * b
+                    elif funct == 3:
+                        v = fdiv32(a, b)
                     else:
                         raise SimError("bad FALU funct %d" % funct)
+                    lane.write_r(rd, f32_to_bits(v))
+                warp.advance()
+                continue
+            if op == 0x0B:  # SFU: unary f32 special functions
+                funct = word & 0x7FF
+                for i in warp.active_lanes():
+                    lane = warp.lanes[i]
+                    a = f32_bits_to_float(lane.read_r(rs1))
+                    if funct == 0:
+                        v = exp2_32(a)
+                    else:
+                        raise SimError("bad SFU funct %d" % funct)
                     lane.write_r(rd, f32_to_bits(v))
                 warp.advance()
                 continue
