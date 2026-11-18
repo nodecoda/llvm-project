@@ -18,10 +18,10 @@ class GPUMinSubtarget;
 
 /// The type and operation legalizer for GM32.
 ///
-/// Chapter 00 legalizes exactly one type: i32 in the per-lane register file.
-/// Everything else (i8/i16 promotion, i64 splitting, pointer arithmetic) is
-/// handled by the generic legalizer, which is also why a function that uses
-/// any other type cannot be selected yet.
+/// i32 is the only register-file type.  i1 lives in the predicate file;
+/// i8/i16 are promoted to i32; i64 is expanded into two i32 halves.  Chapter
+/// 08 makes the memory side of those promotions precise: narrow loads and
+/// stores keep their width instead of reading a full word.
 class GPUMinTargetLowering : public TargetLowering {
 public:
   GPUMinTargetLowering(const TargetMachine &TM, const GPUMinSubtarget &STI);
@@ -34,6 +34,8 @@ public:
                       LLVMContext &Context, const Type *RetTy) const override;
 
   SDValue LowerOperation(SDValue Op, SelectionDAG &DAG) const override;
+
+  SDValue PerformDAGCombine(SDNode *N, DAGCombinerInfo &DCI) const override;
 
   SDValue LowerFormalArguments(SDValue Chain, CallingConv::ID CallConv,
                                bool IsVarArg,

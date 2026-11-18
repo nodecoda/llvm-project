@@ -254,10 +254,38 @@ def : Pat<(store GPR:$val, GPR:$base), (ST_GLOBAL_B32 $val, $base, 0)>;
 def : Pat<(store GPR:$val, (add GPR:$base, simm11imm:$off)),
           (ST_GLOBAL_B32 $val, $base, simm11imm:$off)>;
 
-// Bytes and halfwords are encoded here but not selected from IR yet: i8/i16
-// are still promoted to i32 by the type legalizer, and a `ld.global.b32` that
-// stands in for a byte load would read three bytes too many.  Chapter 08 makes
-// the narrow types legal and turns these into zextloadi8/sextloadi16 patterns.
+// Chapter 08: narrow loads and stores.  i8/i16 are promoted to i32, so the
+// memory operations arrive as extloads and truncstores.  Each extension kind
+// has its own opcode: using a 32-bit load plus a shift would read three bytes
+// too many (and fault across a page boundary).
+def : Pat<(zextloadi8 GPR:$base), (LD_GLOBAL_U8 $base, 0)>;
+def : Pat<(sextloadi8 GPR:$base), (LD_GLOBAL_S8 $base, 0)>;
+def : Pat<(extloadi8 GPR:$base),  (LD_GLOBAL_U8 $base, 0)>;
+def : Pat<(zextloadi8 (add GPR:$base, simm11imm:$off)),
+          (LD_GLOBAL_U8 $base, simm11imm:$off)>;
+def : Pat<(sextloadi8 (add GPR:$base, simm11imm:$off)),
+          (LD_GLOBAL_S8 $base, simm11imm:$off)>;
+def : Pat<(extloadi8 (add GPR:$base, simm11imm:$off)),
+          (LD_GLOBAL_U8 $base, simm11imm:$off)>;
+
+def : Pat<(zextloadi16 GPR:$base), (LD_GLOBAL_U16 $base, 0)>;
+def : Pat<(sextloadi16 GPR:$base), (LD_GLOBAL_S16 $base, 0)>;
+def : Pat<(extloadi16 GPR:$base),  (LD_GLOBAL_U16 $base, 0)>;
+def : Pat<(zextloadi16 (add GPR:$base, simm11imm:$off)),
+          (LD_GLOBAL_U16 $base, simm11imm:$off)>;
+def : Pat<(sextloadi16 (add GPR:$base, simm11imm:$off)),
+          (LD_GLOBAL_S16 $base, simm11imm:$off)>;
+def : Pat<(extloadi16 (add GPR:$base, simm11imm:$off)),
+          (LD_GLOBAL_U16 $base, simm11imm:$off)>;
+
+def : Pat<(truncstorei8 GPR:$val, GPR:$base),
+          (ST_GLOBAL_B8 $val, $base, 0)>;
+def : Pat<(truncstorei8 GPR:$val, (add GPR:$base, simm11imm:$off)),
+          (ST_GLOBAL_B8 $val, $base, simm11imm:$off)>;
+def : Pat<(truncstorei16 GPR:$val, GPR:$base),
+          (ST_GLOBAL_B16 $val, $base, 0)>;
+def : Pat<(truncstorei16 GPR:$val, (add GPR:$base, simm11imm:$off)),
+          (ST_GLOBAL_B16 $val, $base, simm11imm:$off)>;
 
 //===----------------------------------------------------------------------===//
 // Calls (opcode 0x11)

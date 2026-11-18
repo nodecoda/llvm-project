@@ -55,22 +55,73 @@ void GPUMinDAGToDAGISel::Select(SDNode *N) {
   // constant and truncate it.  Doing the range check here keeps the failure
   // explicit.  Chapter 04 adds the two-instruction sequence for wide values.
   if (N->getOpcode() == ISD::Constant) {
-    int64_t V = cast<ConstantSDNode>(N)->getSExtValue();
+    auto *C = cast<ConstantSDNode>(N);
+    int64_t V = C->getSExtValue();
+    SDLoc DL(N);
     if (isInt<16>(V)) {
-      SDLoc DL(N);
       SDValue Imm =
           CurDAG->getTargetConstant(static_cast<uint32_t>(V), DL, MVT::i32);
       SDNode *Mov = CurDAG->getMachineNode(GPUMin::MOVI, DL, MVT::i32, Imm);
       ReplaceNode(N, Mov);
       return;
     }
+    // Chapter 08: a 16-bit *unsigned* constant (the 0xff/0xffff masks the
+    // type legalizer inserts for i8/i16 arithmetic) is still reachable.
+    // movi sign-extends, so materialise V and clear the high half:
+    //   movi rd, V; movi rt, 16; shl rd, rd, rt; shr rd, rd, rt
+    if (isUInt<16>(C->getZExtValue())) {
+      // Print/encode the canonical signed 16-bit form (-1 for 0xffff): the
+      // field is simm16 and the assembler rejects 65535.  The low 16 bits are
+      // identical, and the shift pair clears the sign extension afterwards.
+      int32_t SImm = static_cast<int16_t>(V);
+      SDValue Imm =
+          CurDAG->getTargetConstant(static_cast<uint32_t>(SImm), DL, MVT::i32);
+      SDNode *Mov = CurDAG->getMachineNode(GPUMin::MOVI, DL, MVT::i32, Imm);
+      SDValue Sixteen = SDValue(
+          CurDAG->getMachineNode(
+              GPUMin::MOVI, DL, MVT::i32,
+              CurDAG->getTargetConstant(16, DL, MVT::i32)),
+          0);
+      SDValue Shl = SDValue(
+          CurDAG->getMachineNode(GPUMin::SHL, DL, MVT::i32, SDValue(Mov, 0),
+                                 Sixteen),
+          0);
+      SDNode *Shr = CurDAG->getMachineNode(GPUMin::SHR, DL, MVT::i32, Shl,
+                                           Sixteen);
+      ReplaceNode(N, Shr);
+      return;
+    }
     LLVM_DEBUG(dbgs() << "GPUMin: constant " << V
-                      << " needs more than 16 bits (chapter 04)\n");
+                      << " needs more than 16 bits (chapter 08)\n");
+  }
+
+  // Sign-extending a promoted i8/i16: the high bits of the i32 register are
+  // undefined, so the extension is a shift pair (shl by 32-bits, sar back).
+  if (N->getOpcode() == ISD::SIGN_EXTEND_INREG) {
+    EVT InnerVT = cast<VTSDNode>(N->getOperand(1))->getVT();
+    unsigned Bits = InnerVT.getSizeInBits();
+    if (Bits == 8 || Bits == 16) {
+      SDLoc DL(N);
+      SDValue ShiftAmt = SDValue(
+          CurDAG->getMachineNode(
+              GPUMin::MOVI, DL, MVT::i32,
+              CurDAG->getTargetConstant(32 - Bits, DL, MVT::i32)),
+          0);
+      SDValue Shl = SDValue(
+          CurDAG->getMachineNode(GPUMin::SHL, DL, MVT::i32, N->getOperand(0),
+                                 ShiftAmt),
+          0);
+      SDNode *Sar =
+          CurDAG->getMachineNode(GPUMin::SAR, DL, MVT::i32, Shl, ShiftAmt);
+      ReplaceNode(N, Sar);
+      return;
+    }
   }
 
   // i1 -> i32.  A predicate register holds one bit, not a 0/1 value, so the
   // extension is a SELP against constants: 0/1 for zext, 0/-1 for sext.
-  if (N->getOpcode() == ISD::ZERO_EXTEND &&
+  if ((N->getOpcode() == ISD::ZERO_EXTEND ||
+       N->getOpcode() == ISD::ANY_EXTEND) &&
       N->getOperand(0).getValueType() == MVT::i1) {
     SDLoc DL(N);
     SDValue One = SDValue(

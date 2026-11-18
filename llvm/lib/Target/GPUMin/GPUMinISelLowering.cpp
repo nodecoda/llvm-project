@@ -34,9 +34,40 @@ GPUMinTargetLowering::GPUMinTargetLowering(const TargetMachine &TM,
   setBooleanContents(ZeroOrOneBooleanContent);
   setOperationAction(ISD::SELECT, MVT::i32, Legal);
   setOperationAction(ISD::SELECT_CC, MVT::i32, Custom);
-  setOperationAction(ISD::SETCC, MVT::i32, Legal);
+  // A predicate-producing setcc has result type i1 and selects to SETP.
+  // The common `zext (icmp ...)` shape, and the i64 carry expansion, instead
+  // produce a setcc with an i32 result.  That one is rewritten by
+  // PerformDAGCombine into SETP + SELP; there is no single instruction for it.
+  setTargetDAGCombine(ISD::SETCC);
   setOperationAction(ISD::BRCOND, MVT::Other, Custom);
   setOperationAction(ISD::BR_CC, MVT::i32, Custom);
+
+  // Chapter 08: i8 and i16 have no register class of their own, so the type
+  // legalizer promotes every value of those types to i32.  What it cannot
+  // invent is the memory side: a promoted `load i8` becomes `extloadi8`, and
+  // the only correct way to implement that is the narrow M-format opcode
+  // (ld.global.u8/s8/u16/s16), not a 32-bit load plus a truncate.
+  for (MVT VT : {MVT::i8, MVT::i16}) {
+    setLoadExtAction(ISD::EXTLOAD, MVT::i32, VT, Legal);
+    setLoadExtAction(ISD::ZEXTLOAD, MVT::i32, VT, Legal);
+    setLoadExtAction(ISD::SEXTLOAD, MVT::i32, VT, Legal);
+    setTruncStoreAction(MVT::i32, VT, Legal);
+  }
+
+  // `store i1` names an 8-bit location with a predicate value.  Because the
+  // memory type is *wider* than the value, this is a non-truncating store and
+  // the generic legalizer would leave it alone (it only looks at the value
+  // type).  Take it over: zext the predicate into a 0/1 word, then use the
+  // ordinary 32 -> 8 truncstore.
+  setOperationAction(ISD::STORE, MVT::i1, Custom);
+  setTruncStoreAction(MVT::i1, MVT::i8, Custom);
+
+  // `load i1` is a byte load followed by "take bit 0".  The generic legalizer
+  // models it as zextload-from-i1, which no single opcode implements.
+  setLoadExtAction(ISD::EXTLOAD, MVT::i32, MVT::i1, Custom);
+  setLoadExtAction(ISD::ZEXTLOAD, MVT::i32, MVT::i1, Custom);
+  setLoadExtAction(ISD::SEXTLOAD, MVT::i32, MVT::i1, Custom);
+
 
   computeRegisterProperties(STI.getRegisterInfo());
 }
@@ -206,6 +237,116 @@ SDValue GPUMinTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   return Ret.getValue(1);
 }
 
+SDValue GPUMinTargetLowering::PerformDAGCombine(SDNode *N,
+                                                DAGCombinerInfo &DCI) const {
+  SelectionDAG &DAG = DCI.DAG;
+  SDLoc DL(N);
+
+  // 64-bit comparisons.  i64 is expanded into two i32 halves, and the generic
+  // type legalizer cannot expand a setcc whose result type is the legal i1
+  // (it asserts instead).  Rewrite the comparison in terms of i32 compares
+  // before type legalization ever sees it.
+  if (N->getOpcode() == ISD::SETCC &&
+      N->getOperand(0).getValueType() == MVT::i64) {
+    SDValue L = N->getOperand(0), R = N->getOperand(1);
+    ISD::CondCode CC = cast<CondCodeSDNode>(N->getOperand(2))->get();
+
+    auto Half = [&](SDValue V, unsigned Idx) {
+      return DAG.getNode(ISD::EXTRACT_ELEMENT, DL, MVT::i32, V,
+                         DAG.getConstant(Idx, DL, MVT::i64));
+    };
+    auto Cmp = [&](SDValue A, SDValue B, ISD::CondCode C) {
+      return DAG.getSetCC(DL, MVT::i1, A, B, C);
+    };
+    SDValue Zero = DAG.getConstant(0, DL, MVT::i32);
+    SDValue One = DAG.getConstant(1, DL, MVT::i32);
+    // Materialise through SELECT rather than ZERO_EXTEND: the combiner folds
+    // `(and (zext a), (zext b))` back into an i1 AND, and the predicate file
+    // has no boolean ALU.
+    auto ToInt = [&](SDValue P) {
+      return DAG.getSelect(DL, MVT::i32, P, One, Zero);
+    };
+    auto BoolOp = [&](SDValue A, SDValue B, unsigned Opc) {
+      SDValue V = DAG.getNode(Opc, DL, MVT::i32, ToInt(A), ToInt(B));
+      return Cmp(V, Zero, ISD::SETNE);
+    };
+    auto And = [&](SDValue A, SDValue B) { return BoolOp(A, B, ISD::AND); };
+    auto Or = [&](SDValue A, SDValue B) { return BoolOp(A, B, ISD::OR); };
+    auto Eq = [&](SDValue A, SDValue B) {
+      return Cmp(A, B, ISD::SETEQ);
+    };
+    auto Not = [&](SDValue A) { return Eq(ToInt(A), Zero); };
+
+    // Fold the "greater" forms into the "less" forms by swapping operands;
+    // doing the swap before the halves are extracted keeps the two in sync.
+    bool Swap = false;
+    switch (CC) {
+    case ISD::SETUGT: CC = ISD::SETULT; Swap = true; break;
+    case ISD::SETUGE: CC = ISD::SETULE; Swap = true; break;
+    case ISD::SETGT:  CC = ISD::SETLT;  Swap = true; break;
+    case ISD::SETGE:  CC = ISD::SETLE;  Swap = true; break;
+    default: break;
+    }
+    if (Swap)
+      std::swap(L, R);
+
+    SDValue LLo = Half(L, 0), LHi = Half(L, 1);
+    SDValue RLo = Half(R, 0), RHi = Half(R, 1);
+
+    // Unsigned/signed less-than: the high word decides unless it is equal,
+    // in which case the low words are compared unsigned (two's complement).
+    auto LessThan = [&](bool IsSigned) {
+      SDValue HiCmp = Cmp(LHi, RHi, IsSigned ? ISD::SETLT : ISD::SETULT);
+      return Or(HiCmp, And(Eq(LHi, RHi), Cmp(LLo, RLo, ISD::SETULT)));
+    };
+    auto LessEqual = [&](bool IsSigned) {
+      SDValue HiCmp = Cmp(LHi, RHi, IsSigned ? ISD::SETLE : ISD::SETULE);
+      return Or(HiCmp, And(Eq(LHi, RHi), Cmp(LLo, RLo, ISD::SETULE)));
+    };
+
+    SDValue Pred;
+    switch (CC) {
+    case ISD::SETEQ:
+      Pred = And(Eq(LLo, RLo), Eq(LHi, RHi));
+      break;
+    case ISD::SETNE:
+      Pred = Not(And(Eq(LLo, RLo), Eq(LHi, RHi)));
+      break;
+    case ISD::SETULT:
+      Pred = LessThan(/*IsSigned=*/false);
+      break;
+    case ISD::SETULE:
+      Pred = LessEqual(/*IsSigned=*/false);
+      break;
+    case ISD::SETLT:
+      Pred = LessThan(/*IsSigned=*/true);
+      break;
+    case ISD::SETLE:
+      Pred = LessEqual(/*IsSigned=*/true);
+      break;
+    default:
+      return SDValue();
+    }
+
+    if (N->getValueType(0) == MVT::i32)
+      return DAG.getSelect(DL, MVT::i32, Pred, One, Zero);
+    return Pred;
+  }
+
+  // `setcc` with an i32 result: the predicate file has the answer, but the
+  // consumer wants a general register.  Materialising 1/0 through SELP keeps
+  // the compare in SETP and reuses the predicate rather than branching.
+  if (N->getOpcode() == ISD::SETCC && N->getValueType(0) == MVT::i32) {
+    SDValue Cmp = DAG.getSetCC(DL, MVT::i1, N->getOperand(0), N->getOperand(1),
+                               cast<CondCodeSDNode>(N->getOperand(2))->get());
+    return DAG.getSelect(DL, MVT::i32, Cmp,
+                         DAG.getConstant(1, DL, MVT::i32),
+                         DAG.getConstant(0, DL, MVT::i32));
+  }
+
+  return SDValue();
+}
+
 SDValue GPUMinTargetLowering::LowerOperation(SDValue Op,
                                              SelectionDAG &DAG) const {
   switch (Op.getOpcode()) {
@@ -229,6 +370,37 @@ SDValue GPUMinTargetLowering::LowerOperation(SDValue Op,
                                Op.getOperand(3), CC);
     return DAG.getNode(GPUMinISD::BRCOND, SDLoc(Op), MVT::Other, Chain, Cmp,
                        Op.getOperand(4));
+  }
+
+  // `load i1`: read the containing byte, then keep bit 0.  A sign-extending
+  // load (sext i1) is the same value negated, which the SUB against r0-like
+  // zero constant expresses without another opcode.
+  case ISD::LOAD: {
+    auto *LD = cast<LoadSDNode>(Op.getNode());
+    if (LD->getMemoryVT() != MVT::i1)
+      llvm_unreachable("GPUMin: unexpected custom load");
+    SDLoc DL(Op);
+    SDValue Byte = DAG.getExtLoad(ISD::ZEXTLOAD, DL, MVT::i32,
+                                  LD->getChain(), LD->getBasePtr(), MVT::i8,
+                                  LD->getMemOperand());
+    SDValue Bit = DAG.getNode(ISD::AND, DL, MVT::i32, Byte,
+                              DAG.getConstant(1, DL, MVT::i32));
+    if (LD->getExtensionType() == ISD::SEXTLOAD)
+      Bit = DAG.getNode(ISD::SUB, DL, MVT::i32,
+                        DAG.getConstant(0, DL, MVT::i32), Bit);
+    return DAG.getMergeValues({Bit, LD->getChain()}, DL);
+  }
+
+  case ISD::STORE: {
+    auto *ST = cast<StoreSDNode>(Op.getNode());
+    if (ST->getValue().getValueType() != MVT::i1)
+      llvm_unreachable("GPUMin: unexpected custom store");
+    SDLoc DL(Op);
+    SDValue Z = DAG.getNode(ISD::ZERO_EXTEND, DL, MVT::i32, ST->getValue());
+    return DAG.getTruncStore(ST->getChain(), DL, Z, ST->getBasePtr(),
+                             ST->getPointerInfo(), MVT::i8,
+                             ST->getBaseAlign(),
+                             ST->getMemOperand()->getFlags());
   }
 
   case ISD::SELECT_CC: {
