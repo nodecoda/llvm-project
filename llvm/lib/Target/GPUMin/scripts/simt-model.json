@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "warp_size": 8,
+  "warps_per_block": 4,
+  "threads_per_block": 32,
+  "register_file": {
+    "gpr_per_lane": 32,
+    "pred_per_lane": 8,
+    "uniform_per_warp": 8
+  },
+  "sys_funct": {
+    "exit": 0,
+    "ret": 1
+  },
+  "special_registers": [
+    { "name": "laneid", "funct": 2 },
+    { "name": "warpid", "funct": 3 },
+    { "name": "blockid", "funct": 4 },
+    { "name": "tid", "funct": 5 },
+    { "name": "ntid", "funct": 6 },
+    { "name": "nwarps", "funct": 7 },
+    { "name": "activemask", "funct": 8 }
+  ],
+  "active_mask": {
+    "bits": 8,
+    "all_active": 255
+  },
+  "address_spaces": [
+    { "id": 1, "name": "global", "scope": "grid", "readonly": false },
+    { "id": 2, "name": "shared", "scope": "block", "readonly": false },
+    { "id": 3, "name": "private", "scope": "lane", "readonly": false },
+    { "id": 4, "name": "constant", "scope": "grid", "readonly": true }
+  ]
+}

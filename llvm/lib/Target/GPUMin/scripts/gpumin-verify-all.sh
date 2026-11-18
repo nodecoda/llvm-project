@@ -121,6 +121,12 @@ fi
 
 # --- 8. docs / DSL and the locked static counts --------------------------
 ok=1
+if [ -x "$HERE/check-ch11.sh" ]; then
+  if ! "$HERE/check-ch11.sh" "$BIN" > "$TMP/ch11.log" 2>&1; then
+    cat "$TMP/ch11.log" >&2
+    ok=0
+  fi
+fi
 # shellcheck source=/dev/null
 . "$HERE/static-counts.txt"
 
@@ -162,6 +168,8 @@ done
 [ -f "$HERE/../docs/10-"*.md ] || { echo "missing doc 10" >&2; ok=0; }
 [ -x "$HERE/gpumin-verify-all.sh" ] ||
   { echo "missing the chapter-10 harness" >&2; ok=0; }
+[ -f "$HERE/../docs/11-"*.md ] || { echo "missing doc 11" >&2; ok=0; }
+[ -x "$HERE/check-ch11.sh" ] || { echo "missing gate 11" >&2; ok=0; }
 
 missing=$(grep -L '退出条件' "$HERE/../docs"/[0-9][0-9]-*.md || true)
 if [ -n "$missing" ]; then
@@ -170,7 +178,7 @@ if [ -n "$missing" ]; then
 fi
 
 if [ "$ok" = 1 ]; then
-  pass 8 "docs/gates present and static counts locked"
+  pass 8 "docs, SIMT model and static counts agree"
 else
   fail 8 "docs/DSL/counts"
 fi
