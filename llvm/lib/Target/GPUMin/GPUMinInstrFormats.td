@@ -178,6 +178,25 @@ class GPUMinSt<bits<6> op, dag ins, string asmstr, list<dag> pattern = []>
   let Inst{15-0} = imm;
 }
 
+/// Predicated select: `selp rd, pd, rs1, rs2` (rd = pd ? rs1 : rs2).
+/// The predicate occupies bits [10:8] of what is otherwise the R2 funct
+/// field; [7:0] stay zero.  Keeping the three register fields in their usual
+/// slots means the encoder, the printer and the decoder all treat SELP as an
+/// R2 with a 3-bit tail instead of inventing a sixth layout.
+class GPUMinSelp<bits<6> op, string asmstr>
+    : GPUMinInst<(outs GPR:$rd), (ins PRED:$pd, GPR:$rs1, GPR:$rs2), asmstr, []> {
+  bits<5> rd;
+  bits<5> rs1;
+  bits<5> rs2;
+  bits<3> pd;
+  let Inst{31-26} = op;
+  let Inst{25-21} = rd;
+  let Inst{20-16} = rs1;
+  let Inst{15-11} = rs2;
+  let Inst{10-8} = pd;
+  let Inst{7-0} = 0;
+}
+
 /// Predicate compare: `setp.lt pd, rs1, rs2`.
 class GPUMinSetp<bits<6> op, bits<11> funct, string asmstr>
     : GPUMinInst<(outs PRED:$pd), (ins GPR:$rs1, GPR:$rs2), asmstr, []> {

@@ -23,6 +23,7 @@ OPC = {
     "mov": 0x01,   # register form; MOVI has its own opcode
     "alu": 0x02,
     "setp": 0x03,
+    "selp": 0x04,
     "movi": 0x05,
     "ld": 0x08,
     "st": 0x09,
@@ -32,7 +33,9 @@ OPC = {
 ALU = {"add": 0, "sub": 1, "and": 2, "or": 3,
        "xor": 4, "shl": 5, "shr": 6, "sar": 7}
 
-SETP = {"eq": 0, "ne": 1, "lt": 2, "le": 3, "gt": 4, "ge": 5}
+# funct = { unsigned, relation[2:0] }: bit 3 is the unsigned flag.
+SETP = {"eq": 0, "ne": 1, "lt": 2, "le": 3, "gt": 4, "ge": 5,
+        "ueq": 8, "une": 9, "ult": 10, "ule": 11, "ugt": 12, "uge": 13}
 
 REG_RE = re.compile(r"^r(?:[12]?\d|3[01])$")
 UREG_RE = re.compile(r"^ur[0-7]$")
@@ -119,6 +122,17 @@ def encode(text):
                       reg_number(operands[1]), reg_number(operands[2]),
                       ALU[mnemonic])
 
+    if mnemonic == "selp":
+        if len(operands) != 4:
+            raise AsmError("selp needs rd, pd, rs1, rs2")
+        pd = operands[1]
+        if not PREG_RE.match(pd):
+            raise AsmError("not a predicate register: %s" % pd)
+        # opcode 0x04, and the predicate rides in bits [10:8].
+        return (OPC["selp"] << 26) | (reg_number(operands[0]) << 21) | \
+               (reg_number(operands[2]) << 16) | \
+               (reg_number(operands[3]) << 11) | (int(pd[1:]) << 8)
+
     if mnemonic.startswith("setp."):
         cond = mnemonic.split(".", 1)[1]
         if cond not in SETP:
@@ -148,6 +162,8 @@ SELFTEST = [
     ("add r4, r5, r6", "0x00,0x30,0x85,0x08"),
     ("sar r4, r5, r6", "0x07,0x30,0x85,0x08"),
     ("setp.lt p1, r2, r3", "0x02,0x18,0x22,0x0c"),
+    ("setp.ugt p0, r4, r5", "0x0c,0x28,0x04,0x0c"),
+    ("selp r4, p0, r2, r1", "0x00,0x08,0x82,0x10"),
     ("ld r7, 8(r8)", "0x08,0x00,0xe8,0x20"),
     ("st r9, 4(r10)", "0x04,0x00,0x2a,0x25"),
     ("exit", "0x00,0x00,0x00,0x48"),

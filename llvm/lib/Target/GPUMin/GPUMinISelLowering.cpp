@@ -25,6 +25,17 @@ GPUMinTargetLowering::GPUMinTargetLowering(const TargetMachine &TM,
   // must happen before computeRegisterProperties(), which derives the legal
   // type set from the registered classes.
   addRegisterClass(MVT::i32, &GPUMin::GPRRegClass);
+
+  // Chapter 04: a comparison result is one bit per lane, which GM32 keeps in
+  // p0-p7.  Making i1 a legal type is what lets `setcc` produce a predicate
+  // directly instead of materialising 0/1 in a general register.
+  addRegisterClass(MVT::i1, &GPUMin::PREDRegClass);
+
+  setBooleanContents(ZeroOrOneBooleanContent);
+  setOperationAction(ISD::SELECT, MVT::i32, Legal);
+  setOperationAction(ISD::SELECT_CC, MVT::i32, Custom);
+  setOperationAction(ISD::SETCC, MVT::i32, Legal);
+
   computeRegisterProperties(STI.getRegisterInfo());
 }
 
@@ -115,5 +126,22 @@ SDValue GPUMinTargetLowering::LowerReturn(
 
 SDValue GPUMinTargetLowering::LowerOperation(SDValue Op,
                                              SelectionDAG &DAG) const {
-  llvm_unreachable("GPUMin: no custom lowering in chapter 00");
+  switch (Op.getOpcode()) {
+  default:
+    llvm_unreachable("GPUMin: unhandled custom lowering");
+
+  // `select_cc` is what `icmp` + `select` becomes after type legalization.
+  // Splitting it into a predicate compare and a predicate select is the whole
+  // point of having p0-p7: the compare writes a predicate, SELP consumes it.
+  case ISD::SELECT_CC: {
+    SDValue LHS = Op.getOperand(0);
+    SDValue RHS = Op.getOperand(1);
+    SDValue TrueV = Op.getOperand(2);
+    SDValue FalseV = Op.getOperand(3);
+    ISD::CondCode CC = cast<CondCodeSDNode>(Op.getOperand(4))->get();
+    SDLoc DL(Op);
+    SDValue Cmp = DAG.getSetCC(DL, MVT::i1, LHS, RHS, CC);
+    return DAG.getSelect(DL, Op.getValueType(), Cmp, TrueV, FalseV);
+  }
+  }
 }

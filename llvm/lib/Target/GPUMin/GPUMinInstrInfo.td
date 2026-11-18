@@ -86,8 +86,58 @@ defm SAR : GPUMinALU<0x7, "sar">;
 // signed forms are described in chapter 01 — the unsigned and the
 // le/gt/ge relations arrive with the SETP lowering in chapter 04.
 
-def SETP_LT : GPUMinSetp<OPC_SETP.Value, 0x2, "setp.lt $pd, $rs1, $rs2">;
-def SETP_EQ : GPUMinSetp<OPC_SETP.Value, 0x0, "setp.eq $pd, $rs1, $rs2">;
+def SELP : GPUMinSelp<OPC_SELP.Value, "selp $rd, $pd, $rs1, $rs2">;
+
+// funct = { unsigned, relation[2:0] } (GPUMinInstrFormats.td).
+def SETP_EQ  : GPUMinSetp<OPC_SETP.Value, 0x0, "setp.eq $pd, $rs1, $rs2">;
+def SETP_NE  : GPUMinSetp<OPC_SETP.Value, 0x1, "setp.ne $pd, $rs1, $rs2">;
+def SETP_LT  : GPUMinSetp<OPC_SETP.Value, 0x2, "setp.lt $pd, $rs1, $rs2">;
+def SETP_LE  : GPUMinSetp<OPC_SETP.Value, 0x3, "setp.le $pd, $rs1, $rs2">;
+def SETP_GT  : GPUMinSetp<OPC_SETP.Value, 0x4, "setp.gt $pd, $rs1, $rs2">;
+def SETP_GE  : GPUMinSetp<OPC_SETP.Value, 0x5, "setp.ge $pd, $rs1, $rs2">;
+
+// Bit 3 selects unsigned comparison.
+def SETP_UEQ : GPUMinSetp<OPC_SETP.Value, 0x8, "setp.ueq $pd, $rs1, $rs2">;
+def SETP_UNE : GPUMinSetp<OPC_SETP.Value, 0x9, "setp.une $pd, $rs1, $rs2">;
+def SETP_ULT : GPUMinSetp<OPC_SETP.Value, 0xA, "setp.ult $pd, $rs1, $rs2">;
+def SETP_ULE : GPUMinSetp<OPC_SETP.Value, 0xB, "setp.ule $pd, $rs1, $rs2">;
+def SETP_UGT : GPUMinSetp<OPC_SETP.Value, 0xC, "setp.ugt $pd, $rs1, $rs2">;
+def SETP_UGE : GPUMinSetp<OPC_SETP.Value, 0xD, "setp.uge $pd, $rs1, $rs2">;
+
+//===----------------------------------------------------------------------===//
+// SelectionDAG patterns (chapter 04)
+//===----------------------------------------------------------------------===//
+
+// Integer ALU.  The three shifts are three different DAG nodes: `shl`, the
+// logical `srl`, and the arithmetic `sra`.  Mapping them to the right funct
+// value is the whole point of the table in GPUMinInstrFormats.td.
+def : Pat<(add  GPR:$rs1, GPR:$rs2), (ADD $rs1, $rs2)>;
+def : Pat<(sub  GPR:$rs1, GPR:$rs2), (SUB $rs1, $rs2)>;
+def : Pat<(and  GPR:$rs1, GPR:$rs2), (AND $rs1, $rs2)>;
+def : Pat<(or   GPR:$rs1, GPR:$rs2), (OR  $rs1, $rs2)>;
+def : Pat<(xor  GPR:$rs1, GPR:$rs2), (XOR $rs1, $rs2)>;
+def : Pat<(shl  GPR:$rs1, GPR:$rs2), (SHL $rs1, $rs2)>;
+def : Pat<(srl  GPR:$rs1, GPR:$rs2), (SHR $rs1, $rs2)>;
+def : Pat<(sra  GPR:$rs1, GPR:$rs2), (SAR $rs1, $rs2)>;
+
+// Comparisons produce a predicate register, which is why i1 has to be a legal
+// type for this target (see GPUMinISelLowering.cpp).
+def : Pat<(setcc GPR:$rs1, GPR:$rs2, SETEQ), (SETP_EQ $rs1, $rs2)>;
+def : Pat<(setcc GPR:$rs1, GPR:$rs2, SETNE), (SETP_NE $rs1, $rs2)>;
+def : Pat<(setcc GPR:$rs1, GPR:$rs2, SETLT), (SETP_LT $rs1, $rs2)>;
+def : Pat<(setcc GPR:$rs1, GPR:$rs2, SETLE), (SETP_LE $rs1, $rs2)>;
+def : Pat<(setcc GPR:$rs1, GPR:$rs2, SETGT), (SETP_GT $rs1, $rs2)>;
+def : Pat<(setcc GPR:$rs1, GPR:$rs2, SETGE), (SETP_GE $rs1, $rs2)>;
+def : Pat<(setcc GPR:$rs1, GPR:$rs2, SETUEQ), (SETP_UEQ $rs1, $rs2)>;
+def : Pat<(setcc GPR:$rs1, GPR:$rs2, SETUNE), (SETP_UNE $rs1, $rs2)>;
+def : Pat<(setcc GPR:$rs1, GPR:$rs2, SETULT), (SETP_ULT $rs1, $rs2)>;
+def : Pat<(setcc GPR:$rs1, GPR:$rs2, SETULE), (SETP_ULE $rs1, $rs2)>;
+def : Pat<(setcc GPR:$rs1, GPR:$rs2, SETUGT), (SETP_UGT $rs1, $rs2)>;
+def : Pat<(setcc GPR:$rs1, GPR:$rs2, SETUGE), (SETP_UGE $rs1, $rs2)>;
+
+// `select` on a predicate register.  The i1 condition is a real value in the
+// PRED file, which is why chapter 04 makes i1 a legal type.
+def : Pat<(select i1:$pd, GPR:$rs1, GPR:$rs2), (SELP $pd, $rs1, $rs2)>;
 
 //===----------------------------------------------------------------------===//
 // Memory (opcodes 0x08 / 0x09)

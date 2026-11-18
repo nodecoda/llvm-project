@@ -66,6 +66,43 @@ void GPUMinDAGToDAGISel::Select(SDNode *N) {
     LLVM_DEBUG(dbgs() << "GPUMin: constant " << V
                       << " needs more than 16 bits (chapter 04)\n");
   }
+
+  // i1 -> i32.  A predicate register holds one bit, not a 0/1 value, so the
+  // extension is a SELP against constants: 0/1 for zext, 0/-1 for sext.
+  if (N->getOpcode() == ISD::ZERO_EXTEND &&
+      N->getOperand(0).getValueType() == MVT::i1) {
+    SDLoc DL(N);
+    SDValue One = SDValue(
+        CurDAG->getMachineNode(GPUMin::MOVI, DL, MVT::i32,
+                               CurDAG->getTargetConstant(1, DL, MVT::i32)),
+        0);
+    SDValue Zero = SDValue(
+        CurDAG->getMachineNode(GPUMin::MOVI, DL, MVT::i32,
+                               CurDAG->getTargetConstant(0, DL, MVT::i32)),
+        0);
+    SDNode *Sel = CurDAG->getMachineNode(GPUMin::SELP, DL, MVT::i32,
+                                         N->getOperand(0), One, Zero);
+    ReplaceNode(N, Sel);
+    return;
+  }
+
+  if (N->getOpcode() == ISD::SIGN_EXTEND &&
+      N->getOperand(0).getValueType() == MVT::i1) {
+    SDLoc DL(N);
+    SDValue Zero = SDValue(
+        CurDAG->getMachineNode(GPUMin::MOVI, DL, MVT::i32,
+                               CurDAG->getTargetConstant(0, DL, MVT::i32)),
+        0);
+    SDValue MinusOne = SDValue(
+        CurDAG->getMachineNode(GPUMin::MOVI, DL, MVT::i32,
+                               CurDAG->getTargetConstant(-1, DL, MVT::i32)),
+        0);
+    SDNode *Sel = CurDAG->getMachineNode(GPUMin::SELP, DL, MVT::i32,
+                                         N->getOperand(0), MinusOne, Zero);
+    ReplaceNode(N, Sel);
+    return;
+  }
+
   SelectCode(N);
 }
 
