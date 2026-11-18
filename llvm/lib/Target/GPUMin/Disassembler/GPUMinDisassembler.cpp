@@ -126,6 +126,14 @@ static DecodeStatus DecodeSImm16(MCInst &Inst, uint64_t Imm, int64_t Address,
   return MCDisassembler::Success;
 }
 
+// The M-format displacement is 11 bits wide and signed, so a load at
+// `-4(r2)` prints as -4 rather than as 2044.
+static DecodeStatus DecodeSImm11(MCInst &Inst, uint64_t Imm, int64_t Address,
+                                 const MCDisassembler *Decoder) {
+  Inst.addOperand(MCOperand::createImm(SignExtend64<11>(Imm)));
+  return MCDisassembler::Success;
+}
+
 // Branch displacements are stored in instruction words.  The printer and the
 // assembler both think in words (`bra 2`), but the symbolizer needs a byte
 // delta from the branch address, so scale before offering it the target.

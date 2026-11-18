@@ -7,13 +7,16 @@ it is not invisible to a second implementation that was written from the same
 specification.  `scripts/check-ch02.sh` compares this encoder against
 `llvm-mc` instruction by instruction.
 
-Everything below is chapter 01's bit layout:
+Everything below is chapter 06's bit layout:
 
     R      op[31:26] rd[25:21] rs1[20:16] rs2[15:11] funct[10:0]
     MOVI   op[31:26] rd[25:21] 0[20:16]            imm16[15:0]
-    LD     op[31:26] rd[25:21] rs1[20:16]          imm16[15:0]
-    ST     op[31:26] rs2[25:21] rs1[20:16]         imm16[15:0]
+    LD/ST  op[31:26] rd/rs2[25:21] base[20:16]     imm11[15:5]
+           space[4:3] size[2:1] sign[0]
     SETP   op[31:26] pd[25:21] rs1[20:16] rs2[15:11] funct[10:0]
+
+String literals are still chapter 01 strings where the format did not change;
+the memory mnemonics became `ld.<space>.<size>` in chapter 06.
 """
 
 import re
@@ -37,6 +40,20 @@ ALU = {"add": 0, "sub": 1, "and": 2, "or": 3,
 # funct = { unsigned, relation[2:0] }: bit 3 is the unsigned flag.
 SETP = {"eq": 0, "ne": 1, "lt": 2, "le": 3, "gt": 4, "ge": 5,
         "ueq": 8, "une": 9, "ult": 10, "ule": 11, "ugt": 12, "uge": 13}
+
+SPACE = {"global": 0, "shared": 1, "local": 2, "constant": 3}
+
+# size field: 0 = 8 bits, 1 = 16 bits, 2 = 32 bits
+SIZE = {"b8": 0, "b16": 1, "b32": 2}
+
+# load suffixes: the sign bit is part of the mnemonic, not an extra operand
+LOAD_KIND = {
+    "u8": (0, 0), "s8": (0, 1),
+    "u16": (1, 0), "s16": (1, 1),
+    "b32": (2, 0),
+}
+
+STORE_KIND = {"b8": 0, "b16": 1, "b32": 2}
 
 REG_RE = re.compile(r"^r(?:[12]?\d|3[01])$")
 UREG_RE = re.compile(r"^ur[0-7]$")
@@ -63,6 +80,18 @@ def word_i(op, rd, rs1, imm):
     if not -32768 <= imm <= 32767:
         raise AsmError("immediate out of range: %d" % imm)
     return (op << 26) | (rd << 21) | (rs1 << 16) | (imm & 0xFFFF)
+
+
+def word_m(op, reg, base, imm, space, size, sign):
+    """The M format: 11-bit displacement plus three qualifier bits.
+
+    The displacement is a *byte* offset, and it is signed.  Anything outside
+    +-1024 cannot be expressed; refusing here is what keeps a caller from
+    silently loading from the wrong address."""
+    if not -1024 <= imm <= 1023:
+        raise AsmError("memory displacement out of range: %d" % imm)
+    return ((op << 26) | (reg << 21) | (base << 16) |
+            ((imm & 0x7FF) << 5) | (space << 3) | (size << 1) | sign)
 
 
 def parse_imm(text):
@@ -96,25 +125,32 @@ def encode(text):
         return word_i(OPC["movi"], reg_number(operands[0]), 0,
                       parse_imm(operands[1]))
 
-    if mnemonic == "ld":
+    if mnemonic.startswith("ld."):
+        parts = mnemonic.split(".")
+        if len(parts) != 3 or parts[1] not in SPACE or parts[2] not in LOAD_KIND:
+            raise AsmError("bad load mnemonic: %s" % mnemonic)
         if len(operands) != 2:
-            raise AsmError("ld needs rd, imm(rs1)")
+            raise AsmError("ld needs rd, imm(base)")
         m = MEM_RE.match(operands[1])
         if not m:
             raise AsmError("bad load operand: %s" % operands[1])
-        return word_i(OPC["ld"], reg_number(operands[0]),
-                      reg_number(m.group(2)), parse_imm(m.group(1)))
+        size, sign = LOAD_KIND[parts[2]]
+        return word_m(OPC["ld"], reg_number(operands[0]), reg_number(m.group(2)),
+                      parse_imm(m.group(1)), SPACE[parts[1]], size, sign)
 
-    if mnemonic == "st":
+    if mnemonic.startswith("st."):
+        parts = mnemonic.split(".")
+        if len(parts) != 3 or parts[1] not in SPACE or parts[2] not in STORE_KIND:
+            raise AsmError("bad store mnemonic: %s" % mnemonic)
         if len(operands) != 2:
-            raise AsmError("st needs rs2, imm(rs1)")
+            raise AsmError("st needs rs2, imm(base)")
         m = MEM_RE.match(operands[1])
         if not m:
             raise AsmError("bad store operand: %s" % operands[1])
-        # The stored value rides in the rd slot; that is the ST format, not a
-        # relaxed LD.
-        return word_i(OPC["st"], reg_number(operands[0]),
-                      reg_number(m.group(2)), parse_imm(m.group(1)))
+        # The stored value rides in the rd slot; bit 0 is always zero.
+        return word_m(OPC["st"], reg_number(operands[0]), reg_number(m.group(2)),
+                      parse_imm(m.group(1)), SPACE[parts[1]],
+                      STORE_KIND[parts[2]], 0)
 
     if mnemonic in ALU:
         if len(operands) != 3:
@@ -185,8 +221,12 @@ SELFTEST = [
     ("selp r4, p0, r2, r1", "0x00,0x08,0x82,0x10"),
     ("bra 2", "0x02,0x00,0x00,0x40"),
     ("bra p1, 0", "0x00,0x00,0x40,0x42"),
-    ("ld r7, 8(r8)", "0x08,0x00,0xe8,0x20"),
-    ("st r9, 4(r10)", "0x04,0x00,0x2a,0x25"),
+    ("ld.global.b32 r7, 8(r8)", "0x04,0x01,0xe8,0x20"),
+    ("ld.global.s8 r1, -4(r2)", "0x81,0xff,0x22,0x20"),
+    ("ld.shared.u16 r31, 1023(r30)", "0xea,0x7f,0xfe,0x23"),
+    ("st.global.b32 r9, 4(r10)", "0x84,0x00,0x2a,0x25"),
+    ("st.local.b8 r0, 0(r1)", "0x10,0x00,0x01,0x24"),
+    ("st.shared.b16 r31, -1024(r30)", "0x0a,0x80,0xfe,0x27"),
     ("exit", "0x00,0x00,0x00,0x48"),
 ]
 

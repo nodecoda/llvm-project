@@ -126,6 +126,16 @@ public:
     return true;
   }
 
+  /// The 11-bit M-format displacement.  Same rule as simm16: a symbol is
+  /// accepted (the fixup decides later), a constant is range-checked here.
+  bool isSImm11() const {
+    if (Kind != Immediate)
+      return false;
+    if (auto *CE = dyn_cast<MCConstantExpr>(Imm))
+      return isInt<11>(CE->getValue());
+    return true;
+  }
+
   /// A branch target must be a label: the PC-relative displacement is only
   /// known once the instruction's address is.  A bare number is rejected here
   /// instead of failing later in the relocation path.

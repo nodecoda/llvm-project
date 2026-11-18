@@ -21,8 +21,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-include "GPUMinInstrFormats.td"
-
 //===----------------------------------------------------------------------===//
 // Operand classes
 //===----------------------------------------------------------------------===//
@@ -44,6 +42,25 @@ def simm16 : Operand<i32> {
   let DecoderMethod = "DecodeSImm16";
 }
 
+/// The 11-bit displacement of the M format (chapter 06).  Splitting it from
+/// simm16 is what makes the assembler reject `ld.global.b32 r1, 2000(r2)`: the
+/// field is not wide enough, and silently truncating it would be worse than
+/// refusing to assemble.
+def SImm11AsmOperand : GPUMinImmAsmOperand<"SImm11", "isSImm11">;
+
+def simm11 : Operand<i32> {
+  let PrintMethod = "printOperand";
+  let ParserMatchClass = SImm11AsmOperand;
+  let DecoderMethod = "DecodeSImm11";
+}
+
+/// The matching side of simm11: an ImmLeaf is what a *pattern* can range-check,
+/// because by the time SelectionDAG matches, the operand is a constant node
+/// rather than assembly text.  Patterns that fold an immediate into the
+/// displacement use this leaf, so a large offset falls back to a register add
+/// instead of being truncated.
+def simm11imm : ImmLeaf<i32, [{ return isInt<11>(Imm); }]>;
+
 /// A branch target.  The assembly text is a label (or a word offset); the
 /// encoder turns it into a PC-relative 16-bit displacement, which is why the
 /// operand type is OtherVT: it never becomes a value in a register.
@@ -53,6 +70,10 @@ def brtarget16 : Operand<OtherVT> {
   let EncoderMethod = "getBranchTargetOpValue";
   let DecoderMethod = "DecodeBrTarget16";
 }
+
+// The format classes are included here, after the operand classes: their
+// operand lists name `simm11`, and TableGen resolves names in definition order.
+include "GPUMinInstrFormats.td"
 
 //===----------------------------------------------------------------------===//
 // Data movement (opcode 0x01)
@@ -153,12 +174,65 @@ def : Pat<(select i1:$pd, GPR:$rs1, GPR:$rs2), (SELP $pd, $rs1, $rs2)>;
 //===----------------------------------------------------------------------===//
 // Memory (opcodes 0x08 / 0x09)
 //===----------------------------------------------------------------------===//
+//
+// M format (GPUMinInstrFormats.td):
+//
+//   [31:26] opcode | [25:21] rd/rs2 | [20:16] base | [15:5] imm11
+//   [4:3] space | [2:1] size | [0] sign
+//
+// Every space/size combination is a distinct opcode, not a sub-field the
+// assembler parses at run time: that is what lets the generated decoder pick
+// `ld.shared.u16` out of a word without any hand-written bit tests.
+//
+// Only `global` (space 0) is selected from IR in this chapter.  The shared,
+// local and constant forms already encode and decode, so chapter 16 (shared
+// memory) only has to add lowering, not encoding.
 
-def LD : GPUMinLd<OPC_LD.Value, (outs GPR:$rd), (ins GPR:$rs1, simm16:$imm),
-                  "ld $rd, ${imm}(${rs1})", []>;
+multiclass GPUMinMemLoads<string space, bits<2> sp> {
+  def _B32 : GPUMinLdM<OPC_LD.Value, sp, 0b10, 0,
+                       "ld."#space#".b32 $rd, ${imm}(${base})">;
+  def _U8  : GPUMinLdM<OPC_LD.Value, sp, 0b00, 0,
+                       "ld."#space#".u8 $rd, ${imm}(${base})">;
+  def _S8  : GPUMinLdM<OPC_LD.Value, sp, 0b00, 1,
+                       "ld."#space#".s8 $rd, ${imm}(${base})">;
+  def _U16 : GPUMinLdM<OPC_LD.Value, sp, 0b01, 0,
+                       "ld."#space#".u16 $rd, ${imm}(${base})">;
+  def _S16 : GPUMinLdM<OPC_LD.Value, sp, 0b01, 1,
+                       "ld."#space#".s16 $rd, ${imm}(${base})">;
+}
 
-def ST : GPUMinSt<OPC_ST.Value, (ins GPR:$rs2, GPR:$rs1, simm16:$imm),
-                  "st $rs2, ${imm}(${rs1})", []>;
+multiclass GPUMinMemStores<string space, bits<2> sp> {
+  def _B32 : GPUMinStM<OPC_ST.Value, sp, 0b10,
+                       "st."#space#".b32 $rs2, ${imm}(${base})">;
+  def _B8  : GPUMinStM<OPC_ST.Value, sp, 0b00,
+                       "st."#space#".b8 $rs2, ${imm}(${base})">;
+  def _B16 : GPUMinStM<OPC_ST.Value, sp, 0b01,
+                       "st."#space#".b16 $rs2, ${imm}(${base})">;
+}
+
+defm LD_GLOBAL  : GPUMinMemLoads<"global",  0b00>;
+defm LD_SHARED  : GPUMinMemLoads<"shared",  0b01>;
+defm LD_LOCAL   : GPUMinMemLoads<"local",   0b10>;
+defm LD_CONST   : GPUMinMemLoads<"constant", 0b11>;
+defm ST_GLOBAL  : GPUMinMemStores<"global", 0b00>;
+defm ST_SHARED  : GPUMinMemStores<"shared", 0b01>;
+defm ST_LOCAL   : GPUMinMemStores<"local",  0b10>;
+
+// Selecting a 32-bit load: the address is either already in a register (offset
+// zero) or a base plus a displacement that fits the 11-bit field.  Anything
+// else stays a register add and reaches the load through the first pattern.
+def : Pat<(load GPR:$base), (LD_GLOBAL_B32 $base, 0)>;
+def : Pat<(load (add GPR:$base, simm11imm:$off)),
+          (LD_GLOBAL_B32 $base, simm11imm:$off)>;
+
+def : Pat<(store GPR:$val, GPR:$base), (ST_GLOBAL_B32 $val, $base, 0)>;
+def : Pat<(store GPR:$val, (add GPR:$base, simm11imm:$off)),
+          (ST_GLOBAL_B32 $val, $base, simm11imm:$off)>;
+
+// Bytes and halfwords are encoded here but not selected from IR yet: i8/i16
+// are still promoted to i32 by the type legalizer, and a `ld.global.b32` that
+// stands in for a byte load would read three bytes too many.  Chapter 08 makes
+// the narrow types legal and turns these into zextloadi8/sextloadi16 patterns.
 
 //===----------------------------------------------------------------------===//
 // Control flow (opcode 0x10)

@@ -49,12 +49,12 @@ shr r22, r23, r24
 sar r25, r26, r27
 setp.eq p0, r1, r2
 setp.lt p7, r30, r31
-ld r7, 8(r8)
-ld r1, -4(r2)
-ld r31, 32767(r30)
-st r9, 4(r10)
-st r0, 0(r1)
-st r31, -32768(r30)
+ld.global.b32 r7, 8(r8)
+ld.global.s8 r1, -4(r2)
+ld.shared.u16 r31, 1023(r30)
+st.global.b32 r9, 4(r10)
+st.local.b8 r0, 0(r1)
+st.shared.b16 r31, -1024(r30)
 exit
 ASM
 

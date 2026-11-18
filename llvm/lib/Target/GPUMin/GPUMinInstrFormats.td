@@ -27,12 +27,22 @@
 // Chapter 01 defines R, I and M and the instruction classes that use them.  B
 // and J arrive with control flow (chapter 05) and calls (chapter 07).
 //
-// Deliberate simplification: chapter 01 encodes LD/ST in the I format, i.e.
-// with a full 16-bit displacement and no space/size qualifier.  Chapter 06
-// turns them into the M format with a funct field
-// ([10:8] space, [7:6] size, [5] sign-extend), which shrinks the displacement
-// to 11 bits; that is the first time the distinction is observable, and the
-// chapter rewrites these two definitions together with the encoder tests.
+// Chapter 01 deliberately encoded LD/ST in the I format (a full 16-bit
+// displacement, no space/size qualifier).  Chapter 06 turns them into the M
+// format below and rewrites the chapter 01/02 encoder tests with it.
+//
+// The M format has to fit a displacement *and* three qualifiers into the 16
+// bits the I format spends on the immediate alone.  The layout used here is
+//
+//   [15:5] imm11   signed byte displacement
+//   [4:3]  space   0 global, 1 shared, 2 local, 3 constant
+//   [2:1]  size    0 b8, 1 b16, 2 b32
+//   [0]    sign    0 zero-extend, 1 sign-extend (loads; zero for stores)
+//
+// which is 11+2+2+1 = 16 bits exactly.  The plan's draft put the qualifiers in
+// funct[10:5], but funct already overlaps the immediate there; moving them to
+// the low five bits keeps every field contiguous and buys one more bit of
+// reach (11 bits, +-1024 bytes) than the arithmetic allows any other way.
 //
 //===----------------------------------------------------------------------===//
 
@@ -153,29 +163,42 @@ class GPUMinMovI<bits<6> op, dag outs, dag ins, string asmstr,
   let Inst{15-0} = imm;
 }
 
-/// Memory load: `ld rd, imm(rs1)`.
-class GPUMinLd<bits<6> op, dag outs, dag ins, string asmstr,
-               list<dag> pattern = []>
-    : GPUMinInst<outs, ins, asmstr, pattern> {
+/// Memory load in the M format: `ld.<space>.<size> rd, imm(base)`.
+///
+/// `imm` is an 11-bit signed byte displacement, so a load can address
+/// base-1024 .. base+1023 without wasting a register on the offset.
+class GPUMinLdM<bits<6> op, bits<2> space, bits<2> size, bit sign,
+                string asmstr>
+    : GPUMinInst<(outs GPR:$rd), (ins GPR:$base, simm11:$imm), asmstr, []> {
   bits<5> rd;
-  bits<5> rs1;
-  bits<16> imm;
+  bits<5> base;
+  bits<11> imm;
   let Inst{31-26} = op;
   let Inst{25-21} = rd;
-  let Inst{20-16} = rs1;
-  let Inst{15-0} = imm;
+  let Inst{20-16} = base;
+  let Inst{15-5} = imm;
+  let Inst{4-3} = space;
+  let Inst{2-1} = size;
+  let Inst{0} = sign;
+  let mayLoad = 1;
 }
 
-/// Memory store: `st rs2, imm(rs1)`.  The rd slot holds the stored value.
-class GPUMinSt<bits<6> op, dag ins, string asmstr, list<dag> pattern = []>
-    : GPUMinInst<(outs), ins, asmstr, pattern> {
+/// Memory store in the M format: `st.<space>.<size> rs2, imm(base)`.
+/// The stored value rides in the rd slot, as in the chapter 01 I format; bit 0
+/// is always zero because a store never extends anything.
+class GPUMinStM<bits<6> op, bits<2> space, bits<2> size, string asmstr>
+    : GPUMinInst<(outs), (ins GPR:$rs2, GPR:$base, simm11:$imm), asmstr, []> {
   bits<5> rs2;
-  bits<5> rs1;
-  bits<16> imm;
+  bits<5> base;
+  bits<11> imm;
   let Inst{31-26} = op;
   let Inst{25-21} = rs2;
-  let Inst{20-16} = rs1;
-  let Inst{15-0} = imm;
+  let Inst{20-16} = base;
+  let Inst{15-5} = imm;
+  let Inst{4-3} = space;
+  let Inst{2-1} = size;
+  let Inst{0} = 0;
+  let mayStore = 1;
 }
 
 /// Predicated select: `selp rd, pd, rs1, rs2` (rd = pd ? rs1 : rs2).

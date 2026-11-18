@@ -67,16 +67,16 @@ echo "PASS 3/5: MOVI sign-extends its 16-bit immediate"
 # --- 4. SETP / LD / ST ------------------------------------------------------
 expect_enc "setp.lt p1, r2, r3" "0x02,0x18,0x22,0x0c"
 expect_enc "setp.eq p1, r2, r3" "0x00,0x18,0x22,0x0c"
-expect_enc "ld r7, 8(r8)"       "0x08,0x00,0xe8,0x20"
-expect_enc "st r9, 4(r10)"      "0x04,0x00,0x2a,0x25"
+expect_enc "ld.global.b32 r7, 8(r8)"  "0x04,0x01,0xe8,0x20"
+expect_enc "st.global.b32 r9, 4(r10)" "0x84,0x00,0x2a,0x25"
 expect_enc "exit"               "0x00,0x00,0x00,0x48"
 echo "PASS 4/5: SETP compares, LD/ST displacements and EXIT encode as specified"
 
 # --- 5. range checks --------------------------------------------------------
 printf 'movi r1, 70000\n' | "$BIN/llvm-mc" -triple=gpumin > /dev/null 2>&1 \
   && fail "movi accepted an immediate wider than 16 bits"
-printf 'ld r1, 70000(r2)\n' | "$BIN/llvm-mc" -triple=gpumin > /dev/null 2>&1 \
-  && fail "ld accepted a displacement wider than 16 bits"
+printf 'ld.global.b32 r1, 2000(r2)\n' | "$BIN/llvm-mc" -triple=gpumin > /dev/null 2>&1 \
+  && fail "ld accepted a displacement wider than the 11-bit field"
 echo "PASS 5/5: out-of-range immediates are rejected"
 
 echo "OK: chapter 01 gate passed"
