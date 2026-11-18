@@ -34,6 +34,7 @@ issue model -- has a chapter and a gate.
 | `tools/gpumin_sim.py` | ELF loader, executor, block scheduler, statistics |
 | `tools/gpumin_model.py` | model access + self-test |
 | `docs/` | the tutorial, one chapter per file |
+| `demos/` | seven runnable kernels plus `run-demos.sh` and a walkthrough |
 
 ## Build and verify
 
@@ -41,6 +42,7 @@ issue model -- has a chapter and a gate.
 ninja llc llvm-mc llvm-objdump
 scripts/gpumin-verify-all.sh <llvm-bin-dir>     # 8 gates
 scripts/check-ch20.sh <llvm-bin-dir>            # one chapter
+demos/run-demos.sh <llvm-bin-dir>               # seven feature demos
 ```
 
 ## Start reading
