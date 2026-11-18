@@ -98,14 +98,14 @@ import triton.language as tl
 def reduce(x_ptr):
     offs = tl.arange(0, 32)
     x = tl.load(x_ptr + offs)
-    return tl.max(x, axis=0)
+    return tl.max(x, axis=1)
 PY
 if "$TOOL" --emit-ttir --arg-type 'x_ptr=ptr<f32>' "$TMP/boundary.py" \
       > "$TMP/boundary.out" 2> "$TMP/boundary.err"; then
-  fail "tl.max on f32 lowered before f32 select exists"
+  fail "tl.max accepted axis 1"
 fi
 grep -q 'boundary.py:' "$TMP/boundary.err" ||
   fail "the boundary error lacks a location"
-grep -q 'chapter 28' "$TMP/boundary.err" ||
+grep -q 'chapter 26 only reduces axis 0' "$TMP/boundary.err" ||
   { cat "$TMP/boundary.err" >&2; fail "the boundary error is not explicit"; }
-echo "PASS 5/5: tl.max on f32 reports the chapter-28 boundary"
+echo "PASS 5/5: tl.max on axis 1 reports the axis-0 boundary"

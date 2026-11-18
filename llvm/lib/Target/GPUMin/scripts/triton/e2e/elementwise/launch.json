@@ -1,0 +1,9 @@
+{
+  "grid": 1,
+  "block": 32,
+  "args_addr": 4096,
+  "args": [0],
+  "dump": [
+    { "addr": 0, "count": 32 }
+  ]
+}

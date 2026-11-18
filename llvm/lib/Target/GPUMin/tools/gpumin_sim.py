@@ -41,6 +41,39 @@ def sext(value, bits):
     return value - (1 << bits) if value & sign else value
 
 
+# Chapter 28: integer division and remainder.  The ISA defines a result for
+# every input instead of trapping: division by zero yields 0, and the
+# INT_MIN / -1 overflow wraps to INT_MIN (srem gives 0).
+def sdiv32(a, b):
+    a, b = s32(a), s32(b)
+    if b == 0:
+        return 0
+    if a == -(1 << 31) and b == -1:
+        return -(1 << 31)
+    q = abs(a) // abs(b)
+    return -q if (a < 0) != (b < 0) else q
+
+
+def srem32(a, b):
+    a, b = s32(a), s32(b)
+    if b == 0:
+        return 0
+    if a == -(1 << 31) and b == -1:
+        return 0
+    r = abs(a) % abs(b)
+    return -r if a < 0 else r
+
+
+def udiv32(a, b):
+    a, b = a & MASK32, b & MASK32
+    return 0 if b == 0 else a // b
+
+
+def urem32(a, b):
+    a, b = a & MASK32, b & MASK32
+    return 0 if b == 0 else a % b
+
+
 def f32_bits_to_float(bits):
     """Reinterpret a 32-bit register as an IEEE-754 single."""
     return struct.unpack("<f", struct.pack("<I", bits & MASK32))[0]
@@ -658,8 +691,8 @@ class Simulator:
                     lane.write_r(rd, lane.read_r(rs1) + imm)
                 warp.advance()
                 continue
-            if op == 0x02:  # ALU
-                funct = word & 0xF
+            if op == 0x02:  # ALU, including the extended funct space
+                funct = word & 0x7FF
                 for i in warp.active_lanes():
                     lane = warp.lanes[i]
                     a, b = lane.read_r(rs1), lane.read_r(rs2)
@@ -679,6 +712,14 @@ class Simulator:
                         v = a >> (b & 31)
                     elif funct == 7:
                         v = s32(a) >> (b & 31)
+                    elif funct == 0x010:
+                        v = sdiv32(a, b)
+                    elif funct == 0x011:
+                        v = udiv32(a, b)
+                    elif funct == 0x012:
+                        v = srem32(a, b)
+                    elif funct == 0x013:
+                        v = urem32(a, b)
                     else:
                         raise SimError("bad ALU funct %d" % funct)
                     lane.write_r(rd, v)

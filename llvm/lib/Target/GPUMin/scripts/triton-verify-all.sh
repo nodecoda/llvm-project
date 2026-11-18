@@ -6,11 +6,12 @@
 #
 # T1  AST: the C++ frontend sees all kernels and their arguments.
 # T2  TTIR: every generated module is accepted by triton-opt.
-# T3  Canonical: add_i32, f32_add, reduce_sum and control_flow match goldens.
+# T3  Canonical: add_i32, f32_add, reduce_sum, control_flow and elementwise
+#     match goldens.
 # T4  Layout: the Triton layout pass accepts gpumin:1 / 8 threads / 4 warps.
 # T5  CodeGen: every e2e kernel compiles with -verify-machineinstrs.
-# T6  Simulator: the four e2e programs match their reference JSON.
-# T7  Diagnostics: four unsupported forms fail with actionable messages.
+# T6  Simulator: the five e2e programs match their reference JSON.
+# T7  Diagnostics: five unsupported forms fail with actionable messages.
 #
 # T2-T4 report SKIP when triton-opt is not available; the rest must pass.
 #
@@ -75,14 +76,18 @@ if [ -n "$TRITON_OPT" ] && [ -x "$TRITON_OPT" ]; then
     --arg-type 'a_ptr=ptr<f32>' --arg-type 'b_ptr=ptr<f32>' \
     --arg-type 'c_ptr=ptr<f32>' "$E2E/matmul_no_dot/kernel.py" \
     -o "$TMP/matmul.ttir" || ok=0
-  for f in add_i32 f32_add reduce cf matmul; do
+  "$TOOL" --emit-ttir --constexpr BLOCK=32 --arg-type out_ptr=ptr \
+    --arg-type 'fx_ptr=ptr<f32>' --arg-type 'fy_ptr=ptr<f32>' \
+    --arg-type 'fout_ptr=ptr<f32>' "$TRITON/elementwise.py" \
+    -o "$TMP/elementwise.ttir" || ok=0
+  for f in add_i32 f32_add reduce cf matmul elementwise; do
     [ -f "$TMP/$f.ttir" ] || ok=0
     if [ -f "$TMP/$f.ttir" ] && ! "$TRITON_OPT" "$TMP/$f.ttir" -o /dev/null; then
       ok=0
     fi
   done
   if [ "$ok" = 1 ]; then
-    pass T2 "triton-opt parses all five TTIR modules"
+    pass T2 "triton-opt parses all six TTIR modules"
   else
     fail T2 "triton-opt rejected a generated module"
   fi
@@ -104,8 +109,10 @@ if [ -n "$TRITON_OPT" ] && [ -x "$TRITON_OPT" ]; then
   check_golden f32_add "$TMP/f32_add.ttir" "$TRITON/f32_add.ttir" || ok=0
   check_golden reduce "$TMP/reduce.ttir" "$TRITON/reduce_sum.ttir" || ok=0
   check_golden control_flow "$TMP/cf.ttir" "$TRITON/control_flow.ttir" || ok=0
+  check_golden elementwise "$TMP/elementwise.ttir" \
+    "$TRITON/elementwise.ttir" || ok=0
   if [ "$ok" = 1 ]; then
-    pass T3 "all four canonical forms match their goldens"
+    pass T3 "all five canonical forms match their goldens"
   else
     for d in "$TMP"/*.diff; do
       [ -f "$d" ] && cat "$d" >&2
@@ -156,25 +163,29 @@ fi
   --arg-type 'fx_ptr=ptr<f32>' --arg-type 'fy_ptr=ptr<f32>' \
   --arg-type 'fout_ptr=ptr<f32>' --arg-type 'sout_ptr=ptr<f32>' \
   --arg-type uout_ptr=ptr "$TRITON/control_flow.py" -o "$TMP/cf.ll"
+"$TOOL" --emit-llvm --constexpr BLOCK=32 --arg-type out_ptr=ptr \
+  --arg-type 'fx_ptr=ptr<f32>' --arg-type 'fy_ptr=ptr<f32>' \
+  --arg-type 'fout_ptr=ptr<f32>' "$TRITON/elementwise.py" \
+  -o "$TMP/elementwise.ll"
 ok=1
-for f in add_i32 f32_add reduce matmul cf; do
+for f in add_i32 f32_add reduce matmul cf elementwise; do
   "$LLC" -march=gpumin -O1 -verify-machineinstrs -filetype=obj \
     "$TMP/$f.ll" -o "$TMP/$f.o" || ok=0
 done
 if [ "$ok" = 1 ]; then
-  pass T5 "all five kernels compile with -verify-machineinstrs"
+  pass T5 "all six kernels compile with -verify-machineinstrs"
 else
   fail T5 "llc rejected a generated kernel"
 fi
 
 # --- T6. simulator e2e ---------------------------------------------------
 ok=1
-for prog in add_i32 add_f32 reduce matmul_no_dot; do
+for prog in add_i32 add_f32 reduce matmul_no_dot elementwise; do
   python3 "$E2E/run_e2e.py" "$E2E/$prog" --bin "$BIN" --sim "$SIM" \
     > "$TMP/e2e-$prog.log" 2>&1 || { cat "$TMP/e2e-$prog.log" >&2; ok=0; }
 done
 if [ "$ok" = 1 ]; then
-  pass T6 "the four e2e programs match their reference JSON"
+  pass T6 "the five e2e programs match their reference JSON"
 else
   fail T6 "an e2e program mismatched"
 fi
@@ -223,6 +234,17 @@ def k(p):
     v = tl.where(1, 2, 3)
     tl.store(p, v)
 PY
+cat > "$TMP/neg-maxshape.py" <<'PY'
+import triton
+import triton.language as tl
+
+@triton.jit
+def k(p):
+    a = tl.arange(0, 32)
+    b = tl.arange(0, 64)
+    v = tl.maximum(a, b)
+    tl.store(p, v)
+PY
 expect_fail() {
   local what=$1 pattern=$2 file=$3
   if "$TOOL" --emit-ttir --arg-type p=ptr "$file" \
@@ -244,8 +266,10 @@ expect_fail "a 2000-iteration range" \
   'static range is limited to 1024 iterations' "$TMP/neg-long.py" || ok=0
 expect_fail "a non-i1 where condition" \
   'a scalar tl.where needs an i1 condition' "$TMP/neg-where.py" || ok=0
+expect_fail "a shape-mismatched maximum" \
+  'tensor type mismatch' "$TMP/neg-maxshape.py" || ok=0
 if [ "$ok" = 1 ]; then
-  pass T7 "four unsupported forms fail with actionable messages"
+  pass T7 "five unsupported forms fail with actionable messages"
 fi
 
 echo

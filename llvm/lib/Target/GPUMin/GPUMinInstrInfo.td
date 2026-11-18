@@ -135,6 +135,19 @@ defm SHL : GPUMinALU<0x5, "shl">;
 defm SHR : GPUMinALU<0x6, "shr">;
 defm SAR : GPUMinALU<0x7, "sar">;
 
+// Chapter 28: integer division and remainder live in the extended funct
+// space of OPC_ALU (funct[10:4]).  They keep the R2 shape, so the encoder,
+// decoder, printer and register allocation need no new format.  The
+// simulator dispatches on the full 11-bit funct.
+def SDIV : GPUMinR2<OPC_ALU.Value, 0x010, (outs GPR:$rd),
+                    (ins GPR:$rs1, GPR:$rs2), "sdiv $rd, $rs1, $rs2", []>;
+def UDIV : GPUMinR2<OPC_ALU.Value, 0x011, (outs GPR:$rd),
+                    (ins GPR:$rs1, GPR:$rs2), "udiv $rd, $rs1, $rs2", []>;
+def SREM : GPUMinR2<OPC_ALU.Value, 0x012, (outs GPR:$rd),
+                    (ins GPR:$rs1, GPR:$rs2), "srem $rd, $rs1, $rs2", []>;
+def UREM : GPUMinR2<OPC_ALU.Value, 0x013, (outs GPR:$rd),
+                    (ins GPR:$rs1, GPR:$rs2), "urem $rd, $rs1, $rs2", []>;
+
 //===----------------------------------------------------------------------===//
 // Float32 ALU (opcode 0x07, chapter 25)
 //===----------------------------------------------------------------------===//
@@ -206,6 +219,13 @@ def : Pat<(xor  i32:$rs1, i32:$rs2), (XOR $rs1, $rs2)>;
 def : Pat<(shl  i32:$rs1, i32:$rs2), (SHL $rs1, $rs2)>;
 def : Pat<(srl  i32:$rs1, i32:$rs2), (SHR $rs1, $rs2)>;
 def : Pat<(sra  i32:$rs1, i32:$rs2), (SAR $rs1, $rs2)>;
+
+// Chapter 28: the four extended ALU operations.  `sdiv`/`srem` truncate toward
+// zero (LLVM's semantics); the frontend adds the floor correction for Python.
+def : Pat<(sdiv i32:$rs1, i32:$rs2), (SDIV $rs1, $rs2)>;
+def : Pat<(udiv i32:$rs1, i32:$rs2), (UDIV $rs1, $rs2)>;
+def : Pat<(srem i32:$rs1, i32:$rs2), (SREM $rs1, $rs2)>;
+def : Pat<(urem i32:$rs1, i32:$rs2), (UREM $rs1, $rs2)>;
 
 // Comparisons produce a predicate register, which is why i1 has to be a legal
 // type for this target (see GPUMinISelLowering.cpp).

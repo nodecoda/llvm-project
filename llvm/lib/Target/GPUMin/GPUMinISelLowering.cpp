@@ -18,6 +18,12 @@ using namespace llvm;
 #define GET_CALLING_CONV_IMPL
 #include "GPUMinGenCallingConv.inc"
 
+bool GPUMinTargetLowering::isIntDivCheap(EVT VT, AttributeList Attr) const {
+  // The ISA has a real integer divide.  Returning true also stops the
+  // generic "divide by constant" rewrite from introducing i64 mulhi.
+  return true;
+}
+
 GPUMinTargetLowering::FPImmAction
 GPUMinTargetLowering::getFPImmAction(const APFloat &Imm, EVT VT,
                                      bool ForCodeSize) const {

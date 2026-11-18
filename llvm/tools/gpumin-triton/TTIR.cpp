@@ -309,6 +309,10 @@ static StringRef binaryName(OpKind Kind) {
     return "arith.subi";
   case OpKind::MulI:
     return "arith.muli";
+  case OpKind::DivI:
+    return "arith.divsi";
+  case OpKind::RemI:
+    return "arith.remsi";
   case OpKind::AddF:
     return "arith.addf";
   case OpKind::SubF:
@@ -507,7 +511,7 @@ void Function::print(raw_ostream &OS) const {
       if (O.Red == ReduceKind::Sum)
         OS << (ElemTy.isF32() ? "addf" : "addi");
       else
-        OS << "maxsi";
+        OS << (ElemTy.isF32() ? "maximumf" : "maxsi");
       OS << " %red" << ID << "a, %red" << ID << "b : ";
       ElemTy.print(OS);
       OS << "\n        tt.reduce.return %red" << ID << "v : ";

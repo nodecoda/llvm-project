@@ -1,0 +1,85 @@
+// Golden canonical TTIR for scripts/triton/elementwise.py with BLOCK=32 and
+// i32/f32 pointers.  Triton's canonicalizer folds tl.maximum/minimum on i32
+// to arith.maxsi/minsi, folds splat(constant) to dense constants, keeps the
+// f32 maximum/minimum as cmpf+select, and prints the f32 tl.max reduction
+// combiner as arith.maximumf.  The chapter-28 gate canonicalises both sides
+// with triton-opt before diffing.
+module {
+  tt.func public @alu_kernel(%arg0: !tt.ptr<i32>) {
+    %cst = arith.constant dense<7> : tensor<32xi32>
+    %cst_0 = arith.constant dense<1> : tensor<32xi32>
+    %cst_1 = arith.constant dense<0> : tensor<32xi32>
+    %cst_2 = arith.constant dense<3> : tensor<32xi32>
+    %cst_3 = arith.constant dense<16> : tensor<32xi32>
+    %0 = tt.make_range {end = 32 : i32, start = 0 : i32} : tensor<32xi32>
+    %1 = arith.subi %0, %cst_3 : tensor<32xi32>
+    %2 = arith.divsi %1, %cst_2 : tensor<32xi32>
+    %3 = arith.remsi %1, %cst_2 : tensor<32xi32>
+    %4 = arith.cmpi ne, %3, %cst_1 : tensor<32xi32>
+    %5 = arith.subi %2, %cst_0 : tensor<32xi32>
+    %6 = arith.select %4, %5, %2 : tensor<32xi1>, tensor<32xi32>
+    %7 = arith.xori %1, %cst_2 : tensor<32xi32>
+    %8 = arith.cmpi slt, %7, %cst_1 : tensor<32xi32>
+    %9 = arith.select %8, %6, %2 : tensor<32xi1>, tensor<32xi32>
+    %10 = arith.remsi %1, %cst_2 : tensor<32xi32>
+    %11 = arith.cmpi ne, %10, %cst_1 : tensor<32xi32>
+    %12 = arith.xori %1, %cst_2 : tensor<32xi32>
+    %13 = arith.cmpi slt, %12, %cst_1 : tensor<32xi32>
+    %14 = arith.addi %10, %cst_2 : tensor<32xi32>
+    %15 = arith.select %11, %14, %10 : tensor<32xi1>, tensor<32xi32>
+    %16 = arith.select %13, %15, %10 : tensor<32xi1>, tensor<32xi32>
+    %17 = arith.subi %cst_1, %1 : tensor<32xi32>
+    %18 = arith.divsi %17, %cst_2 : tensor<32xi32>
+    %19 = arith.remsi %17, %cst_2 : tensor<32xi32>
+    %20 = arith.cmpi ne, %19, %cst_1 : tensor<32xi32>
+    %21 = arith.subi %18, %cst_0 : tensor<32xi32>
+    %22 = arith.select %20, %21, %18 : tensor<32xi1>, tensor<32xi32>
+    %23 = arith.xori %17, %cst_2 : tensor<32xi32>
+    %24 = arith.cmpi slt, %23, %cst_1 : tensor<32xi32>
+    %25 = arith.select %24, %22, %18 : tensor<32xi1>, tensor<32xi32>
+    %26 = arith.subi %cst_1, %25 : tensor<32xi32>
+    %27 = arith.maxsi %1, %cst_1 : tensor<32xi32>
+    %28 = arith.minsi %1, %cst_1 : tensor<32xi32>
+    %29 = tt.splat %arg0 : !tt.ptr<i32> -> tensor<32x!tt.ptr<i32>>
+    %30 = tt.addptr %29, %0 : tensor<32x!tt.ptr<i32>>, tensor<32xi32>
+    %31 = arith.addi %9, %16 : tensor<32xi32>
+    %32 = arith.addi %31, %26 : tensor<32xi32>
+    %33 = arith.addi %32, %27 : tensor<32xi32>
+    %34 = arith.addi %33, %28 : tensor<32xi32>
+    %35 = arith.addi %34, %cst : tensor<32xi32>
+    tt.store %30, %35 : tensor<32x!tt.ptr<i32>>
+    tt.return
+  }
+  tt.func public @fminmax_kernel(%arg0: !tt.ptr<f32>, %arg1: !tt.ptr<f32>, %arg2: !tt.ptr<f32>) {
+    %0 = tt.make_range {end = 32 : i32, start = 0 : i32} : tensor<32xi32>
+    %1 = tt.splat %arg0 : !tt.ptr<f32> -> tensor<32x!tt.ptr<f32>>
+    %2 = tt.addptr %1, %0 : tensor<32x!tt.ptr<f32>>, tensor<32xi32>
+    %3 = tt.load %2 : tensor<32x!tt.ptr<f32>>
+    %4 = tt.splat %arg1 : !tt.ptr<f32> -> tensor<32x!tt.ptr<f32>>
+    %5 = tt.addptr %4, %0 : tensor<32x!tt.ptr<f32>>, tensor<32xi32>
+    %6 = tt.load %5 : tensor<32x!tt.ptr<f32>>
+    %7 = tt.splat %arg2 : !tt.ptr<f32> -> tensor<32x!tt.ptr<f32>>
+    %8 = tt.addptr %7, %0 : tensor<32x!tt.ptr<f32>>, tensor<32xi32>
+    %9 = arith.cmpf ogt, %3, %6 : tensor<32xf32>
+    %10 = arith.select %9, %3, %6 : tensor<32xi1>, tensor<32xf32>
+    %11 = arith.cmpf olt, %3, %6 : tensor<32xf32>
+    %12 = arith.select %11, %3, %6 : tensor<32xi1>, tensor<32xf32>
+    %13 = arith.subf %10, %12 : tensor<32xf32>
+    tt.store %8, %13 : tensor<32x!tt.ptr<f32>>
+    tt.return
+  }
+  tt.func public @fmax_kernel(%arg0: !tt.ptr<f32>, %arg1: !tt.ptr<f32>) {
+    %0 = tt.make_range {end = 32 : i32, start = 0 : i32} : tensor<32xi32>
+    %1 = tt.splat %arg0 : !tt.ptr<f32> -> tensor<32x!tt.ptr<f32>>
+    %2 = tt.addptr %1, %0 : tensor<32x!tt.ptr<f32>>, tensor<32xi32>
+    %3 = tt.load %2 : tensor<32x!tt.ptr<f32>>
+    %4 = "tt.reduce"(%3) <{axis = 0 : i32}> ({
+    ^bb0(%arg2: f32, %arg3: f32):
+      %5 = arith.maximumf %arg2, %arg3 : f32
+      tt.reduce.return %5 : f32
+    }) : (tensor<32xf32>) -> f32
+    tt.store %arg1, %4 : !tt.ptr<f32>
+    tt.return
+  }
+}
+

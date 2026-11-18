@@ -33,6 +33,11 @@ public:
   FPImmAction getFPImmAction(const APFloat &Imm, EVT VT,
                              bool ForCodeSize) const override;
 
+  /// GM32 has sdiv/udiv/srem/urem.  Telling the DAG combiner that division is
+  /// cheap keeps `x / constant` from being rewritten into a 64-bit magic
+  /// multiply, which this target cannot select.
+  bool isIntDivCheap(EVT VT, AttributeList Attr) const override;
+
   bool CanLowerReturn(CallingConv::ID CallConv, MachineFunction &MF,
                       bool IsVarArg,
                       const SmallVectorImpl<ISD::OutputArg> &Outs,

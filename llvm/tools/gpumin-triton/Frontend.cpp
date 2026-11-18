@@ -121,6 +121,11 @@ private:
                                 Value *RHS);
   Expected<Value *> lowerCompare(const Object &Node, CmpPred Pred, Value *LHS,
                                  Value *RHS);
+  Expected<Value *> lowerFloorDiv(const Object &Node, Value *LHS, Value *RHS,
+                                  bool IsMod);
+  Expected<Type> normalizePair(const Object &Node, Value *&LHS, Value *&RHS);
+  Expected<int64_t> evalShape1(const json::Value &Node);
+  Expected<Type> evalDType(const json::Value &Node);
   Expected<int64_t> evalInt(const json::Value &Node);
   Value *splatTo(Value *V, Type TensorTy);
   void bindName(const Object &Target, Value *V);
@@ -345,6 +350,15 @@ Expected<Value *> Lowerer::lowerExpr(const Object &Node) {
 
     OpKind Kind;
     StringRef OpType = typeOf(*OpObj);
+    if (OpType == "FloorDiv" || OpType == "Mod") {
+      Expected<Value *> LOrErr = lowerExpr(*LHSNode);
+      if (!LOrErr)
+        return LOrErr.takeError();
+      Expected<Value *> ROrErr = lowerExpr(*RHSNode);
+      if (!ROrErr)
+        return ROrErr.takeError();
+      return lowerFloorDiv(Node, *LOrErr, *ROrErr, OpType == "Mod");
+    }
     if (OpType == "Add")
       Kind = OpKind::AddI;
     else if (OpType == "Sub")
@@ -572,6 +586,97 @@ Expected<Value *> Lowerer::lowerCompare(const Object &Node, CmpPred Pred,
   return errAt(Node, "comparisons require i32 or tensor<i32> operands");
 }
 
+Expected<Type> Lowerer::normalizePair(const Object &Node, Value *&LHS,
+                                      Value *&RHS) {
+  Type LT = LHS->getType();
+  Type RT = RHS->getType();
+  if (LT.isTensor() && (RT.isI32() || RT.isF32())) {
+    if (LT.getElementType() != RT)
+      return errAt(Node, "scalar/tensor element types differ");
+    RHS = splatTo(RHS, LT);
+  } else if ((LT.isI32() || LT.isF32()) && RT.isTensor()) {
+    if (RT.getElementType() != LT)
+      return errAt(Node, "scalar/tensor element types differ");
+    LHS = splatTo(LHS, RT);
+  } else if (LT.isTensor() && RT.isTensor()) {
+    if (LT != RT)
+      return errAt(Node, "tensor type mismatch");
+  } else if (LT != RT) {
+    return errAt(Node, "operand type mismatch");
+  }
+  Type Ty = LHS->getType();
+  Type Elem = Ty.isTensor() ? Ty.getElementType() : Ty;
+  if (!Elem.isI32() && !Elem.isF32())
+    return errAt(Node, "operands must be i32 or f32");
+  return Ty;
+}
+
+/// Python's `//` and `%` floor the quotient; C (and arith.divsi/remsi)
+/// truncate.  The correction only needs comparisons and selects, so it
+/// survives without a predicate boolean op:
+///
+///   q1 = select(r != 0, q - 1, q)
+///   qf = select((a ^ b) < 0, q1, q)
+///
+/// and for `%`:  r1 = select(r != 0, r + b, r),
+///               rf = select((a ^ b) < 0, r1, r).
+Expected<Value *> Lowerer::lowerFloorDiv(const Object &Node, Value *LHS,
+                                         Value *RHS, bool IsMod) {
+  Expected<Type> TyOrErr = normalizePair(Node, LHS, RHS);
+  if (!TyOrErr)
+    return TyOrErr.takeError();
+  Type Ty = *TyOrErr;
+  Type Elem = Ty.isTensor() ? Ty.getElementType() : Ty;
+  if (!Elem.isI32())
+    return errAt(Node, "floor division requires integer operands");
+
+  auto ConstLike = [&](int64_t Imm) -> Value * {
+    Value *C = F.createConstant(Imm, Type::i32());
+    return Ty.isTensor() ? F.createSplat(C, Ty) : C;
+  };
+
+  Value *Zero = ConstLike(0);
+  Value *Q = F.createBinary(OpKind::DivI, LHS, RHS);
+  Value *R = F.createBinary(OpKind::RemI, LHS, RHS);
+  Value *NonZero = F.createCmp(CmpPred::Ne, R, Zero);
+  Value *QDown = F.createBinary(OpKind::SubI, Q, ConstLike(1));
+  Value *Q1 = F.createSelect(NonZero, QDown, Q);
+  Value *SignXor = F.createBinary(OpKind::XOrI, LHS, RHS);
+  Value *SignDiff = F.createCmp(CmpPred::Slt, SignXor, Zero);
+  if (!IsMod)
+    return F.createSelect(SignDiff, Q1, Q);
+
+  Value *RUp = F.createBinary(OpKind::AddI, R, RHS);
+  Value *R1 = F.createSelect(NonZero, RUp, R);
+  return F.createSelect(SignDiff, R1, R);
+}
+
+Expected<int64_t> Lowerer::evalShape1(const json::Value &NodeValue) {
+  const Object *Node = NodeValue.getAsObject();
+  if (!Node || typeOf(*Node) != "Tuple")
+    return createStringError(inconvertibleErrorCode(),
+                             "%s: shape must be a 1D tuple",
+                             Ast.sourcePath().str().c_str());
+  const Array *Elts = Node->getArray("elts");
+  if (!Elts || Elts->size() != 1)
+    return errAt(*Node, "only 1D shapes are supported");
+  return evalInt((*Elts)[0]);
+}
+
+Expected<Type> Lowerer::evalDType(const json::Value &NodeValue) {
+  const Object *Node = NodeValue.getAsObject();
+  if (!Node || typeOf(*Node) != "Attribute")
+    return createStringError(inconvertibleErrorCode(),
+                             "%s: dtype must be tl.int32 or tl.float32",
+                             Ast.sourcePath().str().c_str());
+  StringRef Attr = stringField(*Node, "attr");
+  if (Attr == "int32")
+    return Type::i32();
+  if (Attr == "float32")
+    return Type::f32();
+  return errAt(*Node, "only tl.int32 and tl.float32 are supported");
+}
+
 Expected<int64_t> Lowerer::evalInt(const json::Value &NodeValue) {
   const Object *Node = NodeValue.getAsObject();
   if (!Node)
@@ -795,6 +900,95 @@ Expected<Value *> Lowerer::lowerCall(const Object &Node) {
     return F.createSelect(Cond, X, Y);
   }
 
+  if (Name == "cdiv") {
+    const json::Value *ANode = GetArg(0);
+    const json::Value *BNode = GetArg(1);
+    if (!ANode || !BNode)
+      return errAt(Node, "tl.cdiv expects (a, b)");
+    Expected<Value *> AOrErr = lowerExpr(*ANode);
+    if (!AOrErr)
+      return AOrErr.takeError();
+    Expected<Value *> BOrErr = lowerExpr(*BNode);
+    if (!BOrErr)
+      return BOrErr.takeError();
+    Value *A = *AOrErr;
+    Value *Bv = *BOrErr;
+    Expected<Type> TyOrErr = normalizePair(Node, A, Bv);
+    if (!TyOrErr)
+      return TyOrErr.takeError();
+    Type Ty = *TyOrErr;
+    Type Elem = Ty.isTensor() ? Ty.getElementType() : Ty;
+    if (!Elem.isI32())
+      return errAt(Node, "tl.cdiv requires integer operands");
+    auto ConstLike = [&](int64_t Imm) -> Value * {
+      Value *C = F.createConstant(Imm, Type::i32());
+      return Ty.isTensor() ? F.createSplat(C, Ty) : C;
+    };
+    // ceil(a / b) = -floor(-a / b)
+    Value *Zero = ConstLike(0);
+    Value *NegA = F.createBinary(OpKind::SubI, Zero, A);
+    Expected<Value *> QOrErr = lowerFloorDiv(Node, NegA, Bv, false);
+    if (!QOrErr)
+      return QOrErr.takeError();
+    return F.createBinary(OpKind::SubI, Zero, *QOrErr);
+  }
+
+  if (Name == "maximum" || Name == "minimum") {
+    const json::Value *ANode = GetArg(0);
+    const json::Value *BNode = GetArg(1);
+    if (!ANode || !BNode)
+      return errAt(Node, "tl." + Name + " expects (a, b)");
+    Expected<Value *> AOrErr = lowerExpr(*ANode);
+    if (!AOrErr)
+      return AOrErr.takeError();
+    Expected<Value *> BOrErr = lowerExpr(*BNode);
+    if (!BOrErr)
+      return BOrErr.takeError();
+    Value *A = *AOrErr;
+    Value *Bv = *BOrErr;
+    Expected<Type> TyOrErr = normalizePair(Node, A, Bv);
+    if (!TyOrErr)
+      return TyOrErr.takeError();
+    CmpPred Pred = Name == "maximum" ? CmpPred::Sgt : CmpPred::Slt;
+    Value *Cond = F.createCmp(Pred, A, Bv);
+    return F.createSelect(Cond, A, Bv);
+  }
+
+  if (Name == "full" || Name == "zeros") {
+    const json::Value *ShapeNode = GetArg(0);
+    const json::Value *DTypeNode = Name == "full" ? GetArg(2) : GetArg(1);
+    if (!ShapeNode || !DTypeNode)
+      return errAt(Node, Name == "full"
+                             ? "tl.full expects (shape, value, dtype)"
+                             : "tl.zeros expects (shape, dtype)");
+    Expected<int64_t> NOrErr = evalShape1(*ShapeNode);
+    if (!NOrErr)
+      return NOrErr.takeError();
+    Expected<Type> DTOrErr = evalDType(*DTypeNode);
+    if (!DTOrErr)
+      return DTOrErr.takeError();
+    int64_t N = *NOrErr;
+    if (N <= 0 || N % 32 != 0)
+      return errAt(Node, "tensor size must be a positive multiple of 32");
+    Type Ty = *DTOrErr;
+    Value *V;
+    if (Name == "zeros") {
+      V = Ty.isF32() ? F.createConstant(0.0, Ty)
+                     : F.createConstant(int64_t(0), Ty);
+    } else {
+      const json::Value *ValueNode = GetArg(1);
+      if (!ValueNode)
+        return errAt(Node, "tl.full expects (shape, value, dtype)");
+      Expected<Value *> VOrErr = lowerExpr(*ValueNode);
+      if (!VOrErr)
+        return VOrErr.takeError();
+      V = *VOrErr;
+      if (V->getType() != Ty)
+        return errAt(Node, "tl.full value type does not match the dtype");
+    }
+    return F.createSplat(V, Type::tensor({N}, Ty));
+  }
+
   if (Name == "sum" || Name == "max") {
     const json::Value *SrcNode = GetArg(0);
     if (!SrcNode)
@@ -823,12 +1017,8 @@ Expected<Value *> Lowerer::lowerCall(const Object &Node) {
     Type ElemTy = Src->getType().getElementType();
     if (!ElemTy.isI32() && !ElemTy.isF32())
       return errAt(Node, "reductions require i32 or f32 elements");
-    if (Name == "max") {
-      if (ElemTy.isF32())
-        return errAt(Node,
-                     "tl.max on f32 arrives in chapter 28 (no fsel yet)");
+    if (Name == "max")
       return F.createReduce(ReduceKind::Max, Src, 0);
-    }
     return F.createReduce(ReduceKind::Sum, Src, 0);
   }
 

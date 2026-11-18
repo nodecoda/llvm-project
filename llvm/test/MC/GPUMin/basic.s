@@ -17,6 +17,11 @@ movi r3, 42
 # CHECK: shl r19, r20, r21      # encoding: [0x05,0xa8,0x74,0x0a]
 # CHECK: shr r22, r23, r24      # encoding: [0x06,0xc0,0xd7,0x0a]
 # CHECK: sar r25, r26, r27      # encoding: [0x07,0xd8,0x3a,0x0b]
+# Chapter 28: extended ALU funct space (funct[10:4]).
+# CHECK: sdiv r4, r5, r6        # encoding: [0x10,0x30,0x85,0x08]
+# CHECK: udiv r7, r8, r9        # encoding: [0x11,0x48,0xe8,0x08]
+# CHECK: srem r10, r11, r12     # encoding: [0x12,0x60,0x4b,0x09]
+# CHECK: urem r13, r14, r15     # encoding: [0x13,0x78,0xae,0x09]
 add r4, r5, r6
 sub r7, r8, r9
 and r10, r11, r12
@@ -25,6 +30,10 @@ xor r16, r17, r18
 shl r19, r20, r21
 shr r22, r23, r24
 sar r25, r26, r27
+sdiv r4, r5, r6
+udiv r7, r8, r9
+srem r10, r11, r12
+urem r13, r14, r15
 
 # CHECK: setp.eq p0, r1, r2     # encoding: [0x00,0x10,0x01,0x0c]
 # CHECK: setp.lt p7, r30, r31   # encoding: [0x02,0xf8,0xfe,0x0c]
@@ -49,6 +58,10 @@ exit
 # DIS: shl r19, r20, r21
 # DIS: shr r22, r23, r24
 # DIS: sar r25, r26, r27
+# DIS: sdiv r4, r5, r6
+# DIS: udiv r7, r8, r9
+# DIS: srem r10, r11, r12
+# DIS: urem r13, r14, r15
 # DIS: setp.eq p0, r1, r2
 # DIS: setp.lt p7, r30, r31
 # DIS: selp r4, p0, r4, r5

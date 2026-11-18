@@ -130,9 +130,10 @@ LlvmValue *FuncEmitter::combineReduction(ReduceKind Kind, Type ElemTy,
                                          LlvmValue *A, LlvmValue *Rhs) {
   if (Kind == ReduceKind::Sum)
     return ElemTy.isF32() ? B.CreateFAdd(A, Rhs) : B.CreateAdd(A, Rhs);
-  // Chapter 26 only reaches here for integer max: f32 select needs the
-  // bitcast-based lowering that arrives with the elementwise chapter.
-  LlvmValue *Greater = B.CreateICmpSGT(Rhs, A);
+  // Chapter 28 enables f32 max: ch27 gave f32 SELP a pattern, so the ordered
+  // compare plus select lowers without a bitcast.
+  LlvmValue *Greater =
+      ElemTy.isF32() ? B.CreateFCmpOGT(Rhs, A) : B.CreateICmpSGT(Rhs, A);
   return B.CreateSelect(Greater, Rhs, A);
 }
 
@@ -444,6 +445,12 @@ Error FuncEmitter::emitOp(const Op &O) {
         break;
       case OpKind::MulI:
         V.Elts.push_back(B.CreateMul(A, Bv));
+        break;
+      case OpKind::DivI:
+        V.Elts.push_back(B.CreateSDiv(A, Bv));
+        break;
+      case OpKind::RemI:
+        V.Elts.push_back(B.CreateSRem(A, Bv));
         break;
       case OpKind::AddF:
         V.Elts.push_back(B.CreateFAdd(A, Bv));

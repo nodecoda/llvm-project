@@ -99,6 +99,12 @@ def OPC_SYS  : GPUMinOpcode<0x12>;  // ret / exit / bar / special
 
 //
 //   add 0  sub 1  and 2  or 3  xor 4  shl 5  shr 6  sar 7
+//
+// funct[10:4] is the extended-operation namespace.  Chapter 28 spends the
+// first four values on integer division and remainder; the low four bits stay
+// zero so the old decoder (funct < 8) is untouched:
+//
+//   0x010 sdiv  0x011 udiv  0x012 srem  0x013 urem
 
 //===----------------------------------------------------------------------===//
 // SETP condition codes (opcode 0x03)

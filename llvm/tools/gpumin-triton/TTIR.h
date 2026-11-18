@@ -81,6 +81,8 @@ enum class OpKind {
   AddI,
   SubI,
   MulI,
+  DivI,
+  RemI,
   AddF,
   SubF,
   MulF,
