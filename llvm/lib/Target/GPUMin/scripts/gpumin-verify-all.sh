@@ -180,6 +180,8 @@ done
 [ -x "$HERE/check-ch11.sh" ] || { echo "missing gate 11" >&2; ok=0; }
 [ -f "$HERE/../docs/31-"*.md ] || { echo "missing doc 31" >&2; ok=0; }
 [ -x "$HERE/check-ch31.sh" ] || { echo "missing gate 31" >&2; ok=0; }
+[ -f "$HERE/../docs/32-"*.md ] || { echo "missing doc 32" >&2; ok=0; }
+[ -x "$HERE/check-ch32.sh" ] || { echo "missing gate 32" >&2; ok=0; }
 [ -f "$HERE/../docs/12-"*.md ] || { echo "missing doc 12" >&2; ok=0; }
 [ -x "$HERE/check-ch12.sh" ] || { echo "missing gate 12" >&2; ok=0; }
 [ -f "$HERE/../docs/13-"*.md ] || { echo "missing doc 13" >&2; ok=0; }

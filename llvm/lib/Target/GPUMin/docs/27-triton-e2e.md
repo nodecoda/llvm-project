@@ -86,7 +86,8 @@ tt.store %arg0, %c16_i32 : !tt.ptr<i32>
 | 迭代次数 > 1024 | 报错 `static range is limited to 1024 iterations` |
 | `while` | 报错 `unsupported statement 'While'` |
 
-> 边界：运行时 `if/else` 与 `while` 需要先给 TTIR 建 CFG，留到第三课。
+> 边界：运行时 `if/else` 与 `while` 需要先给 TTIR 建 CFG；第三课收束时仍未开放，
+> 这是刻意留下的空白（见第 32 章的“仍然不做”表）。
 > 本章的选择语义由 `tl.where` 覆盖。
 
 ## 四个 e2e 程序

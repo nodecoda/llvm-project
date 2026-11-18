@@ -107,6 +107,7 @@ enum class OpKind {
   Store,
   Reduce,
   Select,
+  Barrier,
   Return
 };
 
@@ -153,6 +154,7 @@ public:
   Value *createExp2(Value *Src);
   Value *createSelect(Value *Cond, Value *TrueV, Value *FalseV);
   void createStore(Value *Ptr, Value *Stored, Value *Mask);
+  void createBarrier();
   void createReturn(Value *V);
   void setResultType(Type Ty) { ResultTy = Ty; HasResult = true; }
 

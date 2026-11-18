@@ -958,6 +958,13 @@ Expected<Value *> Lowerer::lowerCall(const Object &Node) {
     return F.createTrans(V);
   }
 
+  if (Name == "debug_barrier") {
+    if (Args && !Args->empty())
+      return errAt(Node, "tl.debug_barrier takes no arguments");
+    F.createBarrier();
+    return nullptr;
+  }
+
   if (Name == "exp2") {
     const json::Value *ValueNode = GetArg(0);
     if (!ValueNode)

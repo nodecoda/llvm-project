@@ -362,6 +362,12 @@ void Function::createStore(Value *Ptr, Value *Stored, Value *Mask) {
   Ops.push_back(std::move(O));
 }
 
+void Function::createBarrier() {
+  Op O;
+  O.Kind = OpKind::Barrier;
+  Ops.push_back(std::move(O));
+}
+
 void Function::createReturn(Value *V) {
   Op O;
   O.Kind = OpKind::Return;
@@ -566,6 +572,10 @@ void Function::print(raw_ostream &OS) const {
       }
       OS << " : ";
       O.Ty.print(OS);
+      OS << "\n";
+      break;
+    case OpKind::Barrier:
+      OS << "ttg.barrier all";
       OS << "\n";
       break;
     case OpKind::Store:

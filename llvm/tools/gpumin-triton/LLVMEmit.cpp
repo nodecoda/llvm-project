@@ -439,6 +439,13 @@ Error FuncEmitter::emitOp(const Op &O) {
     return Error::success();
   }
 
+  case OpKind::Barrier: {
+    FunctionCallee BarrierFn =
+        M.getOrInsertFunction("llvm.gpumin.barrier", B.getVoidTy());
+    B.CreateCall(BarrierFn);
+    return Error::success();
+  }
+
   case OpKind::Exp2: {
     const Lowered &Src = Env.at(O.Operands[0]);
     FunctionCallee Exp2Fn = M.getOrInsertFunction(

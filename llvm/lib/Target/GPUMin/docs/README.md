@@ -76,6 +76,7 @@ scripts/gpumin-verify-all.sh <llvm-bin-dir>
 | 29 | [layout2d](29-layout2d.md) | `check-ch29.sh` + `triton-verify-all.sh` | 2D tensor、`expand_dims`/`broadcast`/`trans`、2D grid、`mul` |
 | 30 | [matmul2d](30-matmul2d.md) | `check-ch30.sh` + `triton-verify-all.sh` | rank-1 update matmul、4×4 grid、2D zeros、f32 fill |
 | 31 | [softmax2d](31-softmax2d.md) | `check-ch31.sh` + `triton-verify-all.sh` | 2D 归约、`keep_dims`、`exp2`/`fdiv`、逐行 softmax |
+| 32 | [attention](32-attention.md) | `check-ch32.sh` + `triton-verify-all.sh` | QK^T → softmax → PV、`tl.debug_barrier()`、第三课收束 |
 
 ## 8 项总门禁
 
