@@ -98,8 +98,9 @@ active mask 是**整个 warp 共享**的位图。把 0xff 写进 `p0` 只会得�
 | 7 | `sr.nwarps` | block 内 warp 数 |
 | 8 | `sr.activemask` | warp 活跃 lane 位图 |
 | 9 | `sr.args` | launch 参数块指针（第 13 章，读 `ur0`） |
+| 10 | `sr.shared` | block 共享窗口基址（第 16 章） |
 
-备选方案是一条通用 `sr rd, n`，`n` 是 5 位 selector。它少七条指令定义，
+备选方案是一条通用 `sr rd, n`，`n` 是 5 位 selector。它少八条指令定义，
 但需要给汇编器写一个自定义操作数（解析 `laneid`/`warpid` 这些标识符），
 打印器还要反向映射；而且 `n` 和 `funct` 的边界会变得模糊。本章选
 "一 selector 一指令"：汇编、解码、打印、DAG 匹配全部由 TableGen 从同一份

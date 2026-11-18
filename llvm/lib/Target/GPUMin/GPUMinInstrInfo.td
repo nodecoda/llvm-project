@@ -388,6 +388,7 @@ def RET : GPUMinInst<(outs), (ins), "ret", []> {
 //   2 laneid   3 warpid   4 blockid   5 tid
 //   6 ntid     7 nwarps   8 activemask
 //   9 args     launch descriptor pointer (chapter 13, sourced from ur0)
+//  10 shared   base of this block's shared window (chapter 16)
 multiclass GPUMinSR<bits<11> funct, string mnemonic> {
   def "" : GPUMinSysR1<OPC_SYS.Value, funct, (outs GPR:$rd), (ins),
                        mnemonic#" $rd", []>;
@@ -405,6 +406,7 @@ defm SR_NWARPS    : GPUMinSR<0x007, "sr.nwarps">;
 let hasSideEffects = 1 in
 defm SR_ACTIVEMASK : GPUMinSR<0x008, "sr.activemask">;
 defm SR_ARGS     : GPUMinSR<0x009, "sr.args">;
+defm SR_SHARED   : GPUMinSR<0x00A, "sr.shared">;
 
 // The IR side is a target intrinsic.  Each read is a value with no operands,
 // so the pattern is a direct instruction match; there is no addressing mode
@@ -417,6 +419,7 @@ def : Pat<(int_gpumin_ntid), (SR_NTID)>;
 def : Pat<(int_gpumin_nwarps), (SR_NWARPS)>;
 def : Pat<(int_gpumin_activemask), (SR_ACTIVEMASK)>;
 def : Pat<(int_gpumin_args), (SR_ARGS)>;
+def : Pat<(int_gpumin_shared), (SR_SHARED)>;
 
 //===----------------------------------------------------------------------===//
 // Selection DAG nodes

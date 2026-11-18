@@ -63,6 +63,7 @@ declare i32 @llvm.gpumin.tid()
 declare i32 @llvm.gpumin.ntid()
 declare i32 @llvm.gpumin.nwarps()
 declare i32 @llvm.gpumin.activemask()
+declare i32 @llvm.gpumin.shared()
 
 define i32 @laneid() {
   %v = call i32 @llvm.gpumin.laneid()
@@ -90,6 +91,10 @@ define i32 @nwarps() {
 }
 define i32 @activemask() {
   %v = call i32 @llvm.gpumin.activemask()
+  ret i32 %v
+}
+define i32 @shared() {
+  %v = call i32 @llvm.gpumin.shared()
   ret i32 %v
 }
 IR

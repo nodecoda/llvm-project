@@ -473,6 +473,7 @@ class Simulator:
             "ntid": lane.ntid,
             "nwarps": lane.nwarps,
             "activemask": mask,
+            "shared": self.model.shared_base,
         }[name]
 
     def report(self):

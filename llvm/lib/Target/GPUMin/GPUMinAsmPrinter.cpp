@@ -23,6 +23,7 @@
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachinePassManager.h"
 #include "llvm/IR/Analysis.h"
+#include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCInst.h"
@@ -63,6 +64,15 @@ public:
   /// TableGen-generated expansion for instructions declared with
   /// PseudoInstExpansion (PseudoRET in chapter 00).
   bool lowerPseudoInstExpansion(const MachineInstr *MI, MCInst &Inst);
+
+  /// Chapter 16: address space 2 is the block's shared window.  The launch
+  /// runtime allocates it, so it is not part of the object image and must not
+  /// become a `.bss` definition plus a symbol.
+  void emitGlobalVariable(const GlobalVariable *GV) override {
+    if (GV->getAddressSpace() == 2)
+      return;
+    AsmPrinter::emitGlobalVariable(GV);
+  }
 
   static char ID;
 };

@@ -49,6 +49,13 @@ let TargetPrefix = "gpumin" in { // All intrinsics start with "llvm.gpumin.".
                                   [IntrNoMem, IntrSpeculatable,
                                    IntrWillReturn]>;
 
+  // Base address of this block's shared-memory window, in address space 2.
+  // Static shared objects get fixed offsets from it (chapter 16), so a kernel
+  // never hard-codes the window base; the MVP launcher places it at 0.
+  def int_gpumin_shared : Intrinsic<[llvm_i32_ty], [],
+                                    [IntrNoMem, IntrSpeculatable,
+                                     IntrWillReturn]>;
+
   // One bit per lane: bit i is set when lane i is active in the current warp.
   // The value is *not* a function of the operands (there are none): it depends
   // on which lanes are executing, so two reads on either side of a branch can

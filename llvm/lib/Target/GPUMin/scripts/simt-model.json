@@ -19,7 +19,8 @@
     { "name": "tid", "funct": 5 },
     { "name": "ntid", "funct": 6 },
     { "name": "nwarps", "funct": 7 },
-    { "name": "activemask", "funct": 8 }
+    { "name": "activemask", "funct": 8 },
+    { "name": "shared", "funct": 10 }
   ],
   "active_mask": {
     "bits": 8,
@@ -36,6 +37,11 @@
     "args_register": "ur0",
     "grid_dims": 1,
     "max_threads_per_block": 32
+  },
+  "shared": {
+    "window_base": 0,
+    "bytes_per_block": 49152,
+    "bytes_per_warp_scope": "block"
   },
   "divergence": {
     "policy": "min-pc-frame-merge",

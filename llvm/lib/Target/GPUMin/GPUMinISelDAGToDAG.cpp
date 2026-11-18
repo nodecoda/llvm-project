@@ -18,8 +18,12 @@
 #include "GPUMinISelDAGToDAG.h"
 #include "GPUMinSubtarget.h"
 #include "GPUMinTargetMachine.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/CodeGen/SelectionDAGISel.h"
 #include "llvm/CodeGen/SelectionDAGNodes.h"
+#include "llvm/IR/GlobalVariable.h"
+#include "llvm/IR/Module.h"
+#include "llvm/Support/Alignment.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
 
@@ -29,8 +33,77 @@ using namespace llvm;
 
 namespace {
 
+// Address spaces, matching scripts/simt-model.json.
+enum GPUMinAddressSpace : unsigned {
+  AS_GLOBAL = 1,
+  AS_SHARED = 2,
+  AS_LOCAL = 3,
+  AS_CONST = 4,
+};
+
+// Chapter 16: the memory opcode names its address space in bits [4:3], but
+// tablegen patterns cannot look at a load's address space, so AS1 (global)
+// keeps the patterns and the other three spaces are selected by hand here.
+unsigned pickLoadOpcode(unsigned AS, EVT MemVT, ISD::LoadExtType Ext) {
+  bool Signed = Ext == ISD::SEXTLOAD;
+  switch (MemVT.getSimpleVT().SimpleTy) {
+  case MVT::i8:
+    if (AS == AS_SHARED)
+      return Signed ? GPUMin::LD_SHARED_S8 : GPUMin::LD_SHARED_U8;
+    if (AS == AS_LOCAL)
+      return Signed ? GPUMin::LD_LOCAL_S8 : GPUMin::LD_LOCAL_U8;
+    return Signed ? GPUMin::LD_CONST_S8 : GPUMin::LD_CONST_U8;
+  case MVT::i16:
+    if (AS == AS_SHARED)
+      return Signed ? GPUMin::LD_SHARED_S16 : GPUMin::LD_SHARED_U16;
+    if (AS == AS_LOCAL)
+      return Signed ? GPUMin::LD_LOCAL_S16 : GPUMin::LD_LOCAL_U16;
+    return Signed ? GPUMin::LD_CONST_S16 : GPUMin::LD_CONST_U16;
+  case MVT::i32:
+    if (AS == AS_SHARED)
+      return GPUMin::LD_SHARED_B32;
+    if (AS == AS_LOCAL)
+      return GPUMin::LD_LOCAL_B32;
+    return GPUMin::LD_CONST_B32;
+  default:
+    llvm_unreachable("GPUMin: unexpected load width");
+  }
+}
+
+unsigned pickStoreOpcode(unsigned AS, EVT MemVT) {
+  bool Shared = AS == AS_SHARED;
+  switch (MemVT.getSimpleVT().SimpleTy) {
+  case MVT::i8:
+    return Shared ? GPUMin::ST_SHARED_B8 : GPUMin::ST_LOCAL_B8;
+  case MVT::i16:
+    return Shared ? GPUMin::ST_SHARED_B16 : GPUMin::ST_LOCAL_B16;
+  case MVT::i32:
+    return Shared ? GPUMin::ST_SHARED_B32 : GPUMin::ST_LOCAL_B32;
+  default:
+    llvm_unreachable("GPUMin: unexpected store width");
+  }
+}
+
 class GPUMinDAGToDAGISel : public SelectionDAGISel {
   const GPUMinSubtarget *Subtarget = nullptr;
+
+  /// Static offset of every address-space-2 global inside the block's shared
+  /// window.  Chapter 16 assigns them in declaration order, so the layout is
+  /// deterministic for a given module without a separate allocation pass.
+  DenseMap<const GlobalValue *, int64_t> SharedOffsets;
+
+  void assignSharedOffsets(const Module &M) {
+    SharedOffsets.clear();
+    const DataLayout &DL = M.getDataLayout();
+    int64_t Next = 0;
+    for (const GlobalVariable &GV : M.globals()) {
+      if (GV.getAddressSpace() != AS_SHARED || GV.isDeclaration())
+        continue;
+      Next = alignTo(Next, GV.getAlign().valueOrOne());
+      SharedOffsets[&GV] = Next;
+      Next += DL.getTypeAllocSize(GV.getValueType());
+    }
+  }
 
 public:
   GPUMinDAGToDAGISel(TargetMachine &TM, CodeGenOptLevel OptLevel)
@@ -40,6 +113,7 @@ public:
 
   bool runOnMachineFunction(MachineFunction &MF) override {
     Subtarget = &MF.getSubtarget<GPUMinSubtarget>();
+    assignSharedOffsets(*MF.getFunction().getParent());
     return SelectionDAGISel::runOnMachineFunction(MF);
   }
 
@@ -50,6 +124,77 @@ public:
 } // end anonymous namespace
 
 void GPUMinDAGToDAGISel::Select(SDNode *N) {
+  // Chapter 16: a shared global has no symbol in the object file.  Its address
+  // is the block's window base plus a static offset, so it lowers to
+  // `sr.shared` and an add -- the counterpart of a stack slot, but in address
+  // space 2 and shared by every warp of the block.
+  if (N->getOpcode() == ISD::GlobalAddress) {
+    auto *GA = cast<GlobalAddressSDNode>(N);
+    if (GA->getAddressSpace() == AS_SHARED) {
+      auto It = SharedOffsets.find(GA->getGlobal());
+      if (It == SharedOffsets.end())
+        report_fatal_error("GPUMin: shared global has no window offset");
+      SDLoc DL(N);
+      int64_t Off = It->second + GA->getOffset();
+      if (!isInt<16>(Off))
+        report_fatal_error("GPUMin: shared offset does not fit 16 bits");
+      SDValue Base = SDValue(
+          CurDAG->getMachineNode(GPUMin::SR_SHARED, DL, MVT::i32), 0);
+      SDNode *Addr = Base.getNode();
+      if (Off != 0)
+        Addr = CurDAG->getMachineNode(
+            GPUMin::ADDI, DL, MVT::i32, Base,
+            CurDAG->getTargetConstant(Off, DL, MVT::i32));
+      ReplaceNode(N, Addr);
+      return;
+    }
+  }
+
+  // Chapter 16: address-space-aware memory selection.  Global (AS1) stays with
+  // the tablegen patterns; shared, local and constant are picked here so the
+  // opcode's space field matches the IR pointer's address space.
+  if (N->getOpcode() == ISD::LOAD) {
+    auto *LD = cast<LoadSDNode>(N);
+    unsigned AS = LD->getAddressSpace();
+    if (AS != AS_GLOBAL) {
+      SDLoc DL(N);
+      // The displacement stays zero: a static offset is already folded into
+      // the address by the GlobalAddress lowering above, and a dynamic index
+      // is a plain register add.  The 11-bit field is still exercised by the
+      // global patterns, which match `simm11imm` directly.
+      unsigned Opc =
+          pickLoadOpcode(AS, LD->getMemoryVT(), LD->getExtensionType());
+      // The chain goes last: InstrEmitter ignores a trailing MVT::Other
+      // operand when it maps DAG operands onto the instruction.
+      SDValue Ops[] = {LD->getBasePtr(),
+                       CurDAG->getTargetConstant(0, DL, MVT::i32),
+                       LD->getChain()};
+      SDNode *Inst = CurDAG->getMachineNode(
+          Opc, DL, CurDAG->getVTList(MVT::i32, MVT::Other), Ops);
+      CurDAG->setNodeMemRefs(cast<MachineSDNode>(Inst), {LD->getMemOperand()});
+      ReplaceNode(N, Inst);
+      return;
+    }
+  }
+
+  if (N->getOpcode() == ISD::STORE) {
+    auto *ST = cast<StoreSDNode>(N);
+    unsigned AS = ST->getAddressSpace();
+    if (AS != AS_GLOBAL) {
+      if (AS == AS_CONST)
+        report_fatal_error("GPUMin: the constant space is read-only");
+      SDLoc DL(N);
+      unsigned Opc = pickStoreOpcode(AS, ST->getMemoryVT());
+      SDValue Ops[] = {ST->getValue(), ST->getBasePtr(),
+                       CurDAG->getTargetConstant(0, DL, MVT::i32),
+                       ST->getChain()};
+      SDNode *Inst = CurDAG->getMachineNode(Opc, DL, MVT::Other, Ops);
+      CurDAG->setNodeMemRefs(cast<MachineSDNode>(Inst), {ST->getMemOperand()});
+      ReplaceNode(N, Inst);
+      return;
+    }
+  }
+
   // Constants are the one node chapter 03 cannot express as a pattern:
   // `movi` only carries 16 bits, and a pattern would happily match a 32-bit
   // constant and truncate it.  Doing the range check here keeps the failure

@@ -20,8 +20,10 @@ st.global.b8 r1, 0(r2)
 
 # CHECK: sr.laneid r1          # encoding: [0x02,0x00,0x20,0x48]
 # CHECK: sr.activemask r1      # encoding: [0x08,0x00,0x20,0x48]
+# CHECK: sr.shared r1          # encoding: [0x0a,0x00,0x20,0x48]
 sr.laneid r1
 sr.activemask r1
+sr.shared r1
 
 # Branch targets are fixups, so check them after assembly.
 # DIS: bra 2

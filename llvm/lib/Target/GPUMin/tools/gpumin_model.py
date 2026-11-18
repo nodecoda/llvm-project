@@ -52,6 +52,12 @@ class Model:
         return self.data["launch"]["args_funct"]
 
     @property
+    def shared_base(self):
+        # The MVP launcher places every block's shared window at offset 0; the
+        # register exists so kernels never bake that number in.
+        return self.data["shared"]["window_base"]
+
+    @property
     def divergence(self):
         return self.data["divergence"]
 
@@ -92,6 +98,8 @@ class Model:
             return self.warps_per_block if nwarps is None else nwarps
         if name == "activemask":
             return self.activemask(active_lanes)
+        if name == "shared":
+            return self.shared_base
         raise KeyError(name)
 
     # --- checks ----------------------------------------------------------
@@ -124,13 +132,14 @@ class Model:
 
         names = set(self.special_funct)
         assert names == {"laneid", "warpid", "blockid", "tid", "ntid",
-                         "nwarps", "activemask"}
+                         "nwarps", "activemask", "shared"}
         assert self.data["sys_funct"]["exit"] == 0
         assert self.data["sys_funct"]["ret"] == 1
         assert self.args_funct == 9
         assert self.launch["args_register"] == "ur0"
         assert self.launch["grid_dims"] == 1
         assert self.launch["max_threads_per_block"] == self.threads_per_block
+        assert self.shared_base == 0
         assert self.divergence["policy"] == "min-pc-frame-merge"
         assert self.divergence["strict_flag"] == "--strict-uniform"
         return True
