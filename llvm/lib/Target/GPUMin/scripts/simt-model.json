@@ -36,5 +36,10 @@
     "args_register": "ur0",
     "grid_dims": 1,
     "max_threads_per_block": 32
+  },
+  "divergence": {
+    "policy": "min-pc-frame-merge",
+    "strict_flag": "--strict-uniform",
+    "reconverge": "frames at the same pc run together"
   }
 }

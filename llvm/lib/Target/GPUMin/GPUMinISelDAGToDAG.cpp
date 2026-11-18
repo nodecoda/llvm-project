@@ -118,6 +118,91 @@ void GPUMinDAGToDAGISel::Select(SDNode *N) {
     }
   }
 
+  // Boolean algebra on predicates.  GM32 has no predicate ALU and no
+  // predicate NOT, so the only way to combine two 1-bit values is to widen
+  // them to 0/1 in GPRs, use the integer ALU, and narrow back with SETP.
+  // `xor %p, true` is the NOT case: the combiner produces it whenever an i1
+  // comparison is negated, so it is worth the one-instruction shortcut.
+  if (N->getValueType(0) == MVT::i1 && N->getOpcode() == ISD::XOR &&
+      isAllOnesConstant(N->getOperand(1))) {
+    SDLoc DL(N);
+    SDValue Zero = SDValue(
+        CurDAG->getMachineNode(GPUMin::MOVI, DL, MVT::i32,
+                               CurDAG->getTargetConstant(0, DL, MVT::i32)),
+        0);
+    SDValue One = SDValue(
+        CurDAG->getMachineNode(GPUMin::MOVI, DL, MVT::i32,
+                               CurDAG->getTargetConstant(1, DL, MVT::i32)),
+        0);
+    SDValue Bool = SDValue(
+        CurDAG->getMachineNode(GPUMin::SELP, DL, MVT::i32, N->getOperand(0),
+                               One, Zero),
+        0);
+    SDNode *Setp = CurDAG->getMachineNode(GPUMin::SETP_EQ, DL, MVT::i1, Bool,
+                                          Zero);
+    ReplaceNode(N, Setp);
+    return;
+  }
+
+  if (N->getValueType(0) == MVT::i1 &&
+      (N->getOpcode() == ISD::AND || N->getOpcode() == ISD::OR ||
+       N->getOpcode() == ISD::XOR)) {
+    SDLoc DL(N);
+    SDValue Zero = SDValue(
+        CurDAG->getMachineNode(GPUMin::MOVI, DL, MVT::i32,
+                               CurDAG->getTargetConstant(0, DL, MVT::i32)),
+        0);
+    SDValue One = SDValue(
+        CurDAG->getMachineNode(GPUMin::MOVI, DL, MVT::i32,
+                               CurDAG->getTargetConstant(1, DL, MVT::i32)),
+        0);
+    auto ToInt = [&](SDValue Pred) {
+      return SDValue(CurDAG->getMachineNode(GPUMin::SELP, DL, MVT::i32, Pred,
+                                            One, Zero),
+                     0);
+    };
+    unsigned Opc = N->getOpcode() == ISD::AND   ? GPUMin::AND
+                   : N->getOpcode() == ISD::OR  ? GPUMin::OR
+                                                : GPUMin::XOR;
+    SDValue Bits = SDValue(
+        CurDAG->getMachineNode(Opc, DL, MVT::i32, ToInt(N->getOperand(0)),
+                               ToInt(N->getOperand(1))),
+        0);
+    SDNode *Setp =
+        CurDAG->getMachineNode(GPUMin::SETP_NE, DL, MVT::i1, Bits, Zero);
+    ReplaceNode(N, Setp);
+    return;
+  }
+
+  // i32 -> i1 truncation.  A predicate register stores one bit, and GM32 has
+  // neither a bitfield extract nor an immediate AND, so "take bit 0" costs a
+  // mask plus a compare: movi 1; and; movi 0; setp.ne.  The two constants are
+  // identical in every function and get coalesced by machine CSE.
+  //
+  // This shows up more than it looks: `icmp ne (x & 1), 0` is precisely how
+  // C code spells a boolean test, and the DAG combiner canonicalises it to a
+  // truncate before isel sees it.
+  if (N->getOpcode() == ISD::TRUNCATE && N->getValueType(0) == MVT::i1 &&
+      N->getOperand(0).getValueType() == MVT::i32) {
+    SDLoc DL(N);
+    SDValue One = SDValue(
+        CurDAG->getMachineNode(GPUMin::MOVI, DL, MVT::i32,
+                               CurDAG->getTargetConstant(1, DL, MVT::i32)),
+        0);
+    SDValue Zero = SDValue(
+        CurDAG->getMachineNode(GPUMin::MOVI, DL, MVT::i32,
+                               CurDAG->getTargetConstant(0, DL, MVT::i32)),
+        0);
+    SDValue Low = SDValue(
+        CurDAG->getMachineNode(GPUMin::AND, DL, MVT::i32, N->getOperand(0),
+                               One),
+        0);
+    SDNode *Setp =
+        CurDAG->getMachineNode(GPUMin::SETP_NE, DL, MVT::i1, Low, Zero);
+    ReplaceNode(N, Setp);
+    return;
+  }
+
   // i1 -> i32.  A predicate register holds one bit, not a 0/1 value, so the
   // extension is a SELP against constants: 0/1 for zext, 0/-1 for sext.
   if ((N->getOpcode() == ISD::ZERO_EXTEND ||

@@ -41,6 +41,10 @@ GPUMinTargetLowering::GPUMinTargetLowering(const TargetMachine &TM,
   setTargetDAGCombine(ISD::SETCC);
   setOperationAction(ISD::BRCOND, MVT::Other, Custom);
   setOperationAction(ISD::BR_CC, MVT::i32, Custom);
+  // A branch on an i1 condition reaches BR_CC in its own right when the DAG
+  // combiner negates the condition (`br (%p != true)`, the shape a truncated
+  // boolean produces).  That form needs the same widening as the i32 one.
+  setOperationAction(ISD::BR_CC, MVT::i1, Custom);
 
   // Chapter 08: i8 and i16 have no register class of their own, so the type
   // legalizer promotes every value of those types to i32.  What it cannot
@@ -366,9 +370,26 @@ SDValue GPUMinTargetLowering::LowerOperation(SDValue Op,
   case ISD::BR_CC: {
     SDValue Chain = Op.getOperand(0);
     ISD::CondCode CC = cast<CondCodeSDNode>(Op.getOperand(1))->get();
-    SDValue Cmp = DAG.getSetCC(SDLoc(Op), MVT::i1, Op.getOperand(2),
-                               Op.getOperand(3), CC);
-    return DAG.getNode(GPUMinISD::BRCOND, SDLoc(Op), MVT::Other, Chain, Cmp,
+    SDValue LHS = Op.getOperand(2);
+    SDValue RHS = Op.getOperand(3);
+    SDLoc DL(Op);
+
+    // A compare between two i1 values is how the DAG combiner spells "branch
+    // on the negation" (`br (%p != true)`).  SETP compares GPRs, and a
+    // predicate register has no NOT, so widen both sides to 0/1 and compare
+    // those instead.
+    if (LHS.getValueType() == MVT::i1) {
+      auto Widen = [&](SDValue V) {
+        if (auto *C = dyn_cast<ConstantSDNode>(V))
+          return DAG.getConstant(C->getZExtValue() != 0 ? 1 : 0, DL, MVT::i32);
+        return DAG.getNode(ISD::ZERO_EXTEND, DL, MVT::i32, V);
+      };
+      LHS = Widen(LHS);
+      RHS = Widen(RHS);
+    }
+
+    SDValue Cmp = DAG.getSetCC(DL, MVT::i1, LHS, RHS, CC);
+    return DAG.getNode(GPUMinISD::BRCOND, DL, MVT::Other, Chain, Cmp,
                        Op.getOperand(4));
   }
 

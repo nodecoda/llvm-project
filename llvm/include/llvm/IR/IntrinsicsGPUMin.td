@@ -50,10 +50,11 @@ let TargetPrefix = "gpumin" in { // All intrinsics start with "llvm.gpumin.".
                                    IntrWillReturn]>;
 
   // One bit per lane: bit i is set when lane i is active in the current warp.
-  // Deliberately *not* IntrSpeculatable: the mask changes when a warp
-  // diverges (chapter 14), so hoisting the read out of a branch would observe
-  // the pre-divergence mask.  IntrNoMem still lets two reads in the same
-  // region CSE.
+  // The value is *not* a function of the operands (there are none): it depends
+  // on which lanes are executing, so two reads on either side of a branch can
+  // differ.  Chapter 14 therefore marks the read as effectful, which is what
+  // keeps CSE -- at the DAG level as well as the machine level -- from
+  // merging those reads into one that observes the pre-divergence mask.
   def int_gpumin_activemask : Intrinsic<[llvm_i32_ty], [],
-                                        [IntrNoMem, IntrWillReturn]>;
+                                        [IntrHasSideEffects, IntrWillReturn]>;
 }

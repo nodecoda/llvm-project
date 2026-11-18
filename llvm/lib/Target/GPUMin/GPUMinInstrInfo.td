@@ -399,6 +399,10 @@ defm SR_BLOCKID   : GPUMinSR<0x004, "sr.blockid">;
 defm SR_TID       : GPUMinSR<0x005, "sr.tid">;
 defm SR_NTID      : GPUMinSR<0x006, "sr.ntid">;
 defm SR_NWARPS    : GPUMinSR<0x007, "sr.nwarps">;
+// Reading the active mask is effectful: the same instruction returns different
+// bits depending on which lanes of the warp are executing, so neither the DAG
+// combiner nor machine CSE may merge two reads that sit in different frames.
+let hasSideEffects = 1 in
 defm SR_ACTIVEMASK : GPUMinSR<0x008, "sr.activemask">;
 defm SR_ARGS     : GPUMinSR<0x009, "sr.args">;
 

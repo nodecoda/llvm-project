@@ -210,9 +210,12 @@ entry:
 attributes #0 = { "gpumin_kernel" }
 IR
 llc -filetype=obj "$TMP/divergent.ll" -o "$TMP/divergent.o"
-if sim "$TMP/divergent.o" --kernel divergent --arg 0x4000 \
+# The chapter 12 machine keeps one PC per warp, so it cannot run a lane-varying
+# branch at all: --strict-uniform restores that model (chapter 14 makes
+# divergence the default).
+if sim "$TMP/divergent.o" --kernel divergent --arg 0x4000 --strict-uniform \
      > "$TMP/divergent.log" 2>&1; then
-  fail "a divergent warp was executed without a divergence stack"
+  fail "a divergent warp was executed under --strict-uniform"
 fi
 grep -q 'non-uniform branch' "$TMP/divergent.log" ||
   fail "divergence message"

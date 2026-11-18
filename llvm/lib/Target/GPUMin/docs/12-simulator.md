@@ -56,7 +56,8 @@ Python 的代价是慢（附录 A.4 的 GPU 解释器比它快约三个数量级
 本章实现的是 **KMVP**（Kernel Minimum Viable Product）执行模型：
 
 - 一个 block 的 4 个 warp **串行**跑完；barrier 要到第 17 章才有意义；
-- 分支必须 **warp 内一致**；分歧栈是第 14 章的主题；
+- 分支必须 **warp 内一致**；分歧是第 14 章的主题，本章的语义保留在
+  `--strict-uniform` 开关里；
 - 没有 cache、没有流水线、没有 cycle 计数；
 - 参数仍然是临时 ABI：`r4-r11`，最多 8 个；第 13 章换成 launch
   descriptor。
@@ -131,11 +132,13 @@ while mask != 0 and steps < max_steps:
 take[i] = not has_pred or lane[i].p[pred]
 if all(take):     pc += off
 elif not any(take): pc += 1
-else:             error("non-uniform branch")
+else:             error("non-uniform branch")   # 仅 --strict-uniform
 ```
 
 这条 `else` 是第 12 章最重要的断言。它把"分歧"从"结果可能不对"
-变成"立即失败"，第 14 章再把它替换成 SIMT stack。
+变成"立即失败"。第 14 章把 `else` 换成"拆成两帧、各自继续跑"，
+并把这一段原样搬进 `--strict-uniform`：本章的门禁和文档说的仍然是
+这个模型，只是现在要用开关显式要回来。
 
 ### 指令子集
 
@@ -202,6 +205,8 @@ st.shared.b16 4(r1), r2   -> 写 2 个字节
 `loop` 和 `fib` 的 trip count/递归深度在 **warp 内一致**，这是刻意
 设计：第 12 章还没有分歧栈。用 `sum_to(tid)` 会在第一条
 `setp/bra` 就触发 `non-uniform branch`——这正是第 14 章的入口。
+（第 14 章起默认会执行这种程序，门禁里用 `--strict-uniform` 复现
+本章的报错。）
 
 `special.ll` 用 `gid = blockid * 32 + tid` 计算记录地址。32 是本章
 固定 threads/block；如果改 `--threads`，这个程序需要同步改。
@@ -330,8 +335,9 @@ Gates: 7 passed, 0 failed, 1 skipped
    取反分支。
 4. **认为 `call` 的下一条指令是 `pc + 4 字节`**。执行器里 `pc` 是
    字下标，返回地址是 `pc + 1`。
-5. **在分歧 warp 上执行**。本章会直接报错；不要为了"跑通"把检查
-   删掉，那是第 14 章的工作。
+5. **在分歧 warp 上执行**。本章的模型会直接报错；不要为了"跑通"
+   把检查删掉——第 14 章会用帧集合替换它，并把这个检查留在
+   `--strict-uniform` 后面。
 6. **`r0` 写入**。`write_r(0, ...)` 必须无效；否则零寄存器会被
    程序改掉，地址算术全乱。
 7. **`--threads` 不是 8 的倍数**。教学机固定 8 lane/warp，模拟器

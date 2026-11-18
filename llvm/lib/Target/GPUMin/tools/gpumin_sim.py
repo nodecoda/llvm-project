@@ -243,10 +243,48 @@ class Lane:
 class Warp:
     def __init__(self, lanes, pc, ur0=0):
         self.lanes = lanes
+        # A frame is (pc, lane mask).  Chapter 12 kept one PC per warp; chapter
+        # 14 allows several frames once lanes take different branches.
+        self.frames = [(pc, (1 << len(lanes)) - 1)]
         self.pc = pc
-        self.mask = (1 << len(lanes)) - 1
+        self.mask = self.frames[0][1]
         self.ur = [0] * 8
         self.ur[0] = ur0            # chapter 13: args pointer
+
+    def _normalize(self):
+        # Frames that reached the same instruction can run together: every
+        # lane owns its registers, predicates and private stack, so the union
+        # mask has exactly the same effect as running them one after another.
+        # This is the dynamic reconvergence point.
+        merged = {}
+        for pc, mask in self.frames:
+            if mask:
+                merged[pc] = merged.get(pc, 0) | mask
+        self.frames = sorted(merged.items())
+
+    def select(self):
+        # Run the smallest PC first.  A path that reaches the join early waits
+        # there because the other path is still at a smaller PC; when both are
+        # at the join, _normalize() merges them.  No static post-dominator is
+        # required for structured if/else.
+        self._normalize()
+        if not self.frames:
+            return False
+        self.pc, self.mask = self.frames[0]
+        return True
+
+    def set_current(self, frames):
+        self.frames.remove((self.pc, self.mask))
+        self.frames.extend((pc, mask) for pc, mask in frames if mask)
+
+    def advance(self):
+        self.set_current([(self.pc + 1, self.mask)])
+
+    def jump(self, pc):
+        self.set_current([(pc, self.mask)])
+
+    def split(self, groups):
+        self.set_current(list(groups.items()))
 
     def active_lanes(self):
         return [i for i in range(len(self.lanes)) if self.mask & (1 << i)]
@@ -305,7 +343,7 @@ class Memory:
 class Simulator:
     def __init__(self, image, *, blocks=1, threads=32, trace=False,
                  max_steps=100000, global_size=1 << 20, private_size=4096,
-                 shared_size=49152):
+                 shared_size=49152, strict_uniform=False):
         if threads % WARP_SIZE or threads > 32:
             raise SimError("--threads must be a multiple of 8 and <= 32")
         self.image = image
@@ -314,6 +352,7 @@ class Simulator:
         self.nwarps = threads // WARP_SIZE
         self.trace = trace
         self.max_steps = max_steps
+        self.strict_uniform = strict_uniform
         self.memory = Memory(global_size, private_size, shared_size)
         self.shared = bytearray(shared_size)
         self.model = Model()
@@ -426,14 +465,16 @@ class Simulator:
 
     def _run_warp(self, warp):
         steps = 0
-        while warp.mask and steps < self.max_steps:
+        while steps < self.max_steps:
+            if not warp.select():
+                return
             steps += 1
             pc = warp.pc
             word = self.image.word(pc)
             if self.trace:
-                print("warp b%d w%d pc=%d mask=%02x word=%08x" %
+                print("warp b%d w%d pc=%d mask=%02x frames=%d word=%08x" %
                       (warp.lanes[0].blockid, warp.lanes[0].warpid, pc,
-                       warp.mask, word), file=sys.stderr)
+                       warp.mask, len(warp.frames), word), file=sys.stderr)
             op = word >> 26
             rd = (word >> 21) & 31
             rs1 = (word >> 16) & 31
@@ -442,20 +483,20 @@ class Simulator:
             if op == 0x01:  # MOV rd, rs1 (funct 0)
                 for i in warp.active_lanes():
                     warp.lanes[i].write_r(rd, warp.lanes[i].read_r(rs1))
-                warp.pc += 1
+                warp.advance()
                 continue
             if op == 0x05:  # MOVI
                 imm = sext(word & 0xFFFF, 16)
                 for i in warp.active_lanes():
                     warp.lanes[i].write_r(rd, imm)
-                warp.pc += 1
+                warp.advance()
                 continue
             if op == 0x06:  # ADDI
                 imm = sext(word & 0xFFFF, 16)
                 for i in warp.active_lanes():
                     lane = warp.lanes[i]
                     lane.write_r(rd, lane.read_r(rs1) + imm)
-                warp.pc += 1
+                warp.advance()
                 continue
             if op == 0x02:  # ALU
                 funct = word & 0xF
@@ -481,7 +522,7 @@ class Simulator:
                     else:
                         raise SimError("bad ALU funct %d" % funct)
                     lane.write_r(rd, v)
-                warp.pc += 1
+                warp.advance()
                 continue
             if op == 0x03:  # SETP
                 pd = (word >> 21) & 7
@@ -508,7 +549,7 @@ class Simulator:
                     else:
                         raise SimError("bad SETP relation %d" % rel)
                     lane.write_p(pd, 1 if v else 0)
-                warp.pc += 1
+                warp.advance()
                 continue
             if op == 0x04:  # SELP
                 pd = (word >> 8) & 7
@@ -516,7 +557,7 @@ class Simulator:
                     lane = warp.lanes[i]
                     lane.write_r(rd, lane.read_r(rs1) if lane.read_p(pd)
                                  else lane.read_r(rs2))
-                warp.pc += 1
+                warp.advance()
                 continue
             if op in (0x08, 0x09):  # LD / ST
                 imm = sext((word >> 5) & 0x7FF, 11)
@@ -541,46 +582,49 @@ class Simulator:
                         self.memory.store(space, lane, self.shared,
                                           lane.read_r(base) + imm, size,
                                           lane.read_r(val_reg))
-                warp.pc += 1
+                warp.advance()
                 continue
             if op == 0x10:  # BRA
                 has_pred = (word >> 25) & 1
                 pred = (word >> 22) & 7
                 off = sext(word & 0xFFFF, 16)
-                take = []
+                taken = 0
                 for i in warp.active_lanes():
                     lane = warp.lanes[i]
-                    take.append(not has_pred or lane.read_p(pred))
-                if all(take):
-                    warp.pc += off
-                elif not any(take):
-                    warp.pc += 1
+                    if not has_pred or lane.read_p(pred):
+                        taken |= 1 << i
+                not_taken = warp.mask & ~taken
+                if taken and not_taken:
+                    if self.strict_uniform:
+                        raise SimError(
+                            "non-uniform branch at pc=%d; --strict-uniform is "
+                            "the chapter 12 model" % pc)
+                    warp.set_current([(pc + off, taken), (pc + 1, not_taken)])
+                elif taken:
+                    warp.jump(pc + off)
                 else:
-                    raise SimError(
-                        "non-uniform branch at pc=%d; divergence arrives in "
-                        "chapter 14" % pc)
+                    warp.jump(pc + 1)
                 continue
             if op == 0x11:  # CALL
                 off = sext(word & 0x1FFFFF, 21)
                 for i in warp.active_lanes():
                     warp.lanes[i].write_r(31, pc + 1)
-                warp.pc += off
+                warp.jump(pc + off)
                 continue
             if op == 0x12:  # SYS
                 funct = word & 0x7FF
-                if funct == 0:  # EXIT
-                    for i in warp.active_lanes():
-                        warp.mask &= ~(1 << i)
-                    if not warp.mask:
-                        return
-                    warp.pc += 1
+                if funct == 0:  # EXIT: only this frame's lanes end
+                    warp.set_current([])
                     continue
-                if funct == 1:  # RET
+                if funct == 1:  # RET: lanes may return to different PCs
+                    groups = {}
                     for i in warp.active_lanes():
-                        pc_next = warp.lanes[i].read_r(31)
-                        if pc_next == 0:
+                        lane = warp.lanes[i]
+                        target = lane.read_r(31)
+                        if target == 0:
                             raise SimError("ret with lr=0 at pc=%d" % pc)
-                    warp.pc = warp.lanes[warp.active_lanes()[0]].read_r(31)
+                        groups[target] = groups.get(target, 0) | (1 << i)
+                    warp.split(groups)
                     continue
                 names = {v: k for k, v in self.model.special_funct.items()}
                 names[self.model.args_funct] = "args"
@@ -590,12 +634,11 @@ class Simulator:
                         lane = warp.lanes[i]
                         lane.write_r(rd, self._special(warp, lane, name,
                                                        warp.mask))
-                    warp.pc += 1
+                    warp.advance()
                     continue
                 raise SimError("unknown SYS funct %d at pc=%d" % (funct, pc))
             raise SimError("unknown opcode 0x%x at pc=%d" % (op, pc))
-        if steps >= self.max_steps:
-            raise SimError("step limit reached")
+        raise SimError("step limit reached")
 
 
 def parse_int(text):
@@ -620,6 +663,8 @@ def main(argv=None):
     ap.add_argument("--dump-text", action="store_true",
                     help="print the loaded .text words as hex, one per line")
     ap.add_argument("--trace", action="store_true")
+    ap.add_argument("--strict-uniform", action="store_true",
+                    help="chapter 12 model: reject a divergent branch")
     ap.add_argument("--max-steps", type=parse_int, default=100000)
     args = ap.parse_args(argv)
     if not args.dump_text and not args.kernel:
@@ -634,7 +679,8 @@ def main(argv=None):
             ap.error("--launch and --arg describe different kernel ABIs")
         sim = Simulator(image, blocks=args.blocks,
                         threads=args.threads, trace=args.trace,
-                        max_steps=args.max_steps)
+                        max_steps=args.max_steps,
+                        strict_uniform=args.strict_uniform)
         if args.launch:
             try:
                 with open(args.launch, encoding="utf-8") as f:

@@ -90,3 +90,36 @@ define i32 @ld_i1(ptr addrspace(1) %p) {
   %r = zext i1 %v to i32
   ret i32 %r
 }
+
+; Chapter 14: an i1 value that is not itself a compare result.  `trunc i32 to
+; i1` means "take bit 0", and the DAG combiner canonicalises `(x & 1) != 0`
+; (the way C spells a boolean test) into exactly that truncate, so this node
+; has to reach instruction selection with a defined expansion.
+define i32 @trunc_i1(i32 %v) {
+; CHECK-LABEL: trunc_i1:
+; CHECK:       and {{r[0-9]+}}, r4, {{r[0-9]+}}
+; CHECK:       setp.ne
+; CHECK:       selp
+  %b = trunc i32 %v to i1
+  %r = select i1 %b, i32 7, i32 9
+  ret i32 %r
+}
+
+; Branching on a truncated value: the DAG combiner rewrites `br i1 (trunc x)`
+; into a compare against true, which the legalizer then turns into a negated
+; predicate.  Predicates have no NOT, so the branch is "compare 0/1 against
+; zero" -- the four instructions below are the whole expansion.
+define i32 @br_trunc_i1(i32 %v) {
+; CHECK-LABEL: br_trunc_i1:
+; CHECK:       and
+; CHECK:       setp.ne
+; CHECK:       selp
+; CHECK:       setp.eq
+; CHECK:       bra p{{[0-9]+}},
+  %b = trunc i32 %v to i1
+  br i1 %b, label %t, label %f
+t:
+  ret i32 1
+f:
+  ret i32 2
+}

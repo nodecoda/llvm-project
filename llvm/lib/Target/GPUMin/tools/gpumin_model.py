@@ -51,6 +51,10 @@ class Model:
     def args_funct(self):
         return self.data["launch"]["args_funct"]
 
+    @property
+    def divergence(self):
+        return self.data["divergence"]
+
     # --- thread identity -------------------------------------------------
     def laneid(self, tid):
         return tid % self.warp_size
@@ -127,6 +131,8 @@ class Model:
         assert self.launch["args_register"] == "ur0"
         assert self.launch["grid_dims"] == 1
         assert self.launch["max_threads_per_block"] == self.threads_per_block
+        assert self.divergence["policy"] == "min-pc-frame-merge"
+        assert self.divergence["strict_flag"] == "--strict-uniform"
         return True
 
     def check_doc(self, path):
