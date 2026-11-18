@@ -356,6 +356,18 @@ class Simulator:
         self.memory = Memory(global_size, private_size, shared_size)
         self.shared = bytearray(shared_size)
         self.model = Model()
+        # Chapter 15: one place that counts what the program made the machine
+        # do.  The numbers are the acceptance evidence: they must move when the
+        # program changes and stay put when it does not.
+        self.stats = {
+            "issued": 0,
+            "lane_instrs": 0,
+            "loads": 0,
+            "stores": 0,
+            "branches": 0,
+            "splits": 0,
+            "frames_max": 0,
+        }
         self.registers = {}
         self.dumps = []
         self.args_addr = None
@@ -463,6 +475,14 @@ class Simulator:
             "activemask": mask,
         }[name]
 
+    def report(self):
+        """One line of chapter 15 execution statistics."""
+        s = self.stats
+        return ("issued=%d lane_instrs=%d loads=%d stores=%d branches=%d "
+                "splits=%d frames_max=%d" %
+                (s["issued"], s["lane_instrs"], s["loads"], s["stores"],
+                 s["branches"], s["splits"], s["frames_max"]))
+
     def _run_warp(self, warp):
         steps = 0
         while steps < self.max_steps:
@@ -470,6 +490,10 @@ class Simulator:
                 return
             steps += 1
             pc = warp.pc
+            self.stats["issued"] += 1
+            self.stats["lane_instrs"] += bin(warp.mask).count("1")
+            if len(warp.frames) > self.stats["frames_max"]:
+                self.stats["frames_max"] = len(warp.frames)
             word = self.image.word(pc)
             if self.trace:
                 print("warp b%d w%d pc=%d mask=%02x frames=%d word=%08x" %
@@ -568,8 +592,13 @@ class Simulator:
                 if size is None:
                     raise SimError("bad memory size")
                 base = (word >> 16) & 31
+                lanes = warp.active_lanes()
                 if op == 0x08:
-                    for i in warp.active_lanes():
+                    self.stats["loads"] += len(lanes)
+                else:
+                    self.stats["stores"] += len(lanes)
+                if op == 0x08:
+                    for i in lanes:
                         lane = warp.lanes[i]
                         value = self.memory.load(space, lane, self.shared,
                                                  lane.read_r(base) + imm,
@@ -577,7 +606,7 @@ class Simulator:
                         lane.write_r(rd, value)
                 else:
                     val_reg = (word >> 21) & 31
-                    for i in warp.active_lanes():
+                    for i in lanes:
                         lane = warp.lanes[i]
                         self.memory.store(space, lane, self.shared,
                                           lane.read_r(base) + imm, size,
@@ -594,7 +623,9 @@ class Simulator:
                     if not has_pred or lane.read_p(pred):
                         taken |= 1 << i
                 not_taken = warp.mask & ~taken
+                self.stats["branches"] += 1
                 if taken and not_taken:
+                    self.stats["splits"] += 1
                     if self.strict_uniform:
                         raise SimError(
                             "non-uniform branch at pc=%d; --strict-uniform is "
@@ -665,6 +696,8 @@ def main(argv=None):
     ap.add_argument("--trace", action="store_true")
     ap.add_argument("--strict-uniform", action="store_true",
                     help="chapter 12 model: reject a divergent branch")
+    ap.add_argument("--stats", action="store_true",
+                    help="print execution statistics to stderr")
     ap.add_argument("--max-steps", type=parse_int, default=100000)
     args = ap.parse_args(argv)
     if not args.dump_text and not args.kernel:
@@ -702,6 +735,8 @@ def main(argv=None):
             words = sim.dump(parse_int(addr_text), parse_int(count))
             print(" ".join("%d" % w if w < 2**31 else "%d" % s32(w)
                            for w in words))
+        if args.stats and args.kernel:
+            print(sim.report(), file=sys.stderr)
     except (SimError, OSError, ValueError) as e:
         print("simulator error: %s" % e, file=sys.stderr)
         return 1
