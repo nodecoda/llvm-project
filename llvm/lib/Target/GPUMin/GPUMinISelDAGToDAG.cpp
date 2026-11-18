@@ -58,7 +58,8 @@ void GPUMinDAGToDAGISel::Select(SDNode *N) {
     int64_t V = cast<ConstantSDNode>(N)->getSExtValue();
     if (isInt<16>(V)) {
       SDLoc DL(N);
-      SDValue Imm = CurDAG->getTargetConstant(V, DL, MVT::i32);
+      SDValue Imm =
+          CurDAG->getTargetConstant(static_cast<uint32_t>(V), DL, MVT::i32);
       SDNode *Mov = CurDAG->getMachineNode(GPUMin::MOVI, DL, MVT::i32, Imm);
       ReplaceNode(N, Mov);
       return;
@@ -95,7 +96,7 @@ void GPUMinDAGToDAGISel::Select(SDNode *N) {
         0);
     SDValue MinusOne = SDValue(
         CurDAG->getMachineNode(GPUMin::MOVI, DL, MVT::i32,
-                               CurDAG->getTargetConstant(-1, DL, MVT::i32)),
+                               CurDAG->getTargetConstant(0xffffffffu, DL, MVT::i32)),
         0);
     SDNode *Sel = CurDAG->getMachineNode(GPUMin::SELP, DL, MVT::i32,
                                          N->getOperand(0), MinusOne, Zero);

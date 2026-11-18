@@ -50,6 +50,10 @@ public:
   uint64_t getMachineOpValue(const MCInst &MI, const MCOperand &MO,
                              SmallVectorImpl<MCFixup> &Fixups,
                              const MCSubtargetInfo &STI) const;
+
+  uint64_t getBranchTargetOpValue(const MCInst &MI, unsigned OpNo,
+                                  SmallVectorImpl<MCFixup> &Fixups,
+                                  const MCSubtargetInfo &STI) const;
 };
 
 } // end anonymous namespace
@@ -85,6 +89,21 @@ uint64_t GPUMinMCCodeEmitter::getMachineOpValue(
   Fixups.push_back(MCFixup::create(/*Offset=*/0, MO.getExpr(),
                                    (MCFixupKind)gpumin::fixup_gpumin_32,
                                    /*IsPCRel=*/false));
+  return 0;
+}
+
+uint64_t GPUMinMCCodeEmitter::getBranchTargetOpValue(
+    const MCInst &MI, unsigned OpNo, SmallVectorImpl<MCFixup> &Fixups,
+    const MCSubtargetInfo &STI) const {
+  const MCOperand &MO = MI.getOperand(OpNo);
+  // The displacement depends on where the word ends up, so it always goes
+  // through a PC-relative fixup against a label.  The parser rejects numeric
+  // operands precisely because they would need the address here.
+  assert(MO.isExpr() && "branch target must be a symbol");
+
+  Fixups.push_back(MCFixup::create(/*Offset=*/0, MO.getExpr(),
+                                   (MCFixupKind)gpumin::fixup_gpumin_16_pcrel,
+                                   /*IsPCRel=*/true));
   return 0;
 }
 

@@ -36,11 +36,22 @@ class GPUMinImmAsmOperand<string name, string predicate> : AsmOperandClass {
 }
 
 def SImm16AsmOperand : GPUMinImmAsmOperand<"SImm16", "isSImm16">;
+def BranchTargetAsmOperand : GPUMinImmAsmOperand<"BranchTarget", "isBranchTarget">;
 
 def simm16 : Operand<i32> {
   let PrintMethod = "printOperand";
   let ParserMatchClass = SImm16AsmOperand;
   let DecoderMethod = "DecodeSImm16";
+}
+
+/// A branch target.  The assembly text is a label (or a word offset); the
+/// encoder turns it into a PC-relative 16-bit displacement, which is why the
+/// operand type is OtherVT: it never becomes a value in a register.
+def brtarget16 : Operand<OtherVT> {
+  let PrintMethod = "printOperand";
+  let ParserMatchClass = BranchTargetAsmOperand;
+  let EncoderMethod = "getBranchTargetOpValue";
+  let DecoderMethod = "DecodeBrTarget16";
 }
 
 //===----------------------------------------------------------------------===//
@@ -150,6 +161,48 @@ def ST : GPUMinSt<OPC_ST.Value, (ins GPR:$rs2, GPR:$rs1, simm16:$imm),
                   "st $rs2, ${imm}(${rs1})", []>;
 
 //===----------------------------------------------------------------------===//
+// Control flow (opcode 0x10)
+//===----------------------------------------------------------------------===//
+//
+// B format: opcode[31:26] | hasPred[25] | pred[24:22] | 0[21:16] | off16[15:0]
+//
+// The offset counts instruction words, not bytes: every GM32 word is four
+// bytes, so a word offset reaches +-32Ki instructions and can never be
+// misaligned.  Bit 25 distinguishes `bra target` from `bra pN, target`;
+// without it p0 and "always" would encode identically.
+
+class GPUMinBra<bits<6> op, dag ins, string asmstr, list<dag> pattern = []>
+    : GPUMinInst<(outs), ins, asmstr, pattern> {
+  bits<16> off;
+  let Inst{31-26} = op;
+  let Inst{25-21} = 0;
+  let Inst{20-16} = 0;
+  let Inst{15-0} = off;
+}
+
+class GPUMinBraP<bits<6> op, string asmstr, list<dag> pattern = []>
+    : GPUMinInst<(outs), (ins PRED:$pd, brtarget16:$off), asmstr, pattern> {
+  bits<3> pd;
+  bits<16> off;
+  let Inst{31-26} = op;
+  let Inst{25} = 1;
+  let Inst{24-22} = pd;
+  let Inst{21-16} = 0;
+  let Inst{15-0} = off;
+}
+
+def BRA : GPUMinBra<OPC_BRA.Value, (ins brtarget16:$off), "bra $off", []> {
+  let isBranch = 1;
+  let isTerminator = 1;
+  let isBarrier = 1;
+}
+
+def BRA_P : GPUMinBraP<OPC_BRA.Value, "bra $pd, $off"> {
+  let isBranch = 1;
+  let isTerminator = 1;
+}
+
+//===----------------------------------------------------------------------===//
 // System (opcode 0x12)
 //===----------------------------------------------------------------------===//
 
@@ -164,6 +217,14 @@ def EXIT : GPUMinInst<(outs), (ins), "exit", []> {
 //===----------------------------------------------------------------------===//
 // Selection DAG nodes
 //===----------------------------------------------------------------------===//
+
+// Conditional branch: (chain, i1 predicate, target).  Lowered to BRA_P.
+def SDT_GPUMinBrCond : SDTypeProfile<0, 2, [SDTCisVT<0, i1>]>;
+def GPUMinBrCond : SDNode<"GPUMinISD::BRCOND", SDT_GPUMinBrCond,
+                          [SDNPHasChain]>;
+
+def : Pat<(br bb:$dst), (BRA brtarget16:$dst)>;
+def : Pat<(GPUMinBrCond i1:$pd, bb:$dst), (BRA_P $pd, brtarget16:$dst)>;
 
 // Return from the current function.  Values have already been moved to the
 // return registers by LowerReturn, so the node only carries chain and glue.

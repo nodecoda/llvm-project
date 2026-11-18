@@ -27,6 +27,7 @@ OPC = {
     "movi": 0x05,
     "ld": 0x08,
     "st": 0x09,
+    "bra": 0x10,
     "exit": 0x12,
 }
 
@@ -122,6 +123,24 @@ def encode(text):
                       reg_number(operands[1]), reg_number(operands[2]),
                       ALU[mnemonic])
 
+    if mnemonic == "bra":
+        # Only numeric word offsets: resolving labels is the assembler's job.
+        if len(operands) == 1:
+            pd, off_text = None, operands[0]
+        elif len(operands) == 2:
+            pd, off_text = operands[0], operands[1]
+            if not PREG_RE.match(pd):
+                raise AsmError("not a predicate register: %s" % pd)
+        else:
+            raise AsmError("bra needs [pd,] offset")
+        off = parse_imm(off_text)
+        if not -32768 <= off <= 32767:
+            raise AsmError("branch offset out of range: %d" % off)
+        word = (OPC["bra"] << 26) | (off & 0xFFFF)
+        if pd:
+            word |= (1 << 25) | (int(pd[1:]) << 22)
+        return word
+
     if mnemonic == "selp":
         if len(operands) != 4:
             raise AsmError("selp needs rd, pd, rs1, rs2")
@@ -164,6 +183,8 @@ SELFTEST = [
     ("setp.lt p1, r2, r3", "0x02,0x18,0x22,0x0c"),
     ("setp.ugt p0, r4, r5", "0x0c,0x28,0x04,0x0c"),
     ("selp r4, p0, r2, r1", "0x00,0x08,0x82,0x10"),
+    ("bra 2", "0x02,0x00,0x00,0x40"),
+    ("bra p1, 0", "0x00,0x00,0x40,0x42"),
     ("ld r7, 8(r8)", "0x08,0x00,0xe8,0x20"),
     ("st r9, 4(r10)", "0x04,0x00,0x2a,0x25"),
     ("exit", "0x00,0x00,0x00,0x48"),

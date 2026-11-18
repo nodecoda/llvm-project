@@ -23,6 +23,11 @@ enum FixupKind {
   // A plain 32-bit absolute value, used for symbolic data operands.
   fixup_gpumin_32 = FirstTargetFixupKind,
 
+  // A 16-bit PC-relative branch displacement, counted in instruction words.
+  // GM32 has no 16-bit instructions, so a word offset gets four times the
+  // reach of a byte offset and stays aligned for free.
+  fixup_gpumin_16_pcrel,
+
   // Sentinel, must be last.
   fixup_gpumin_invalid,
   NumTargetFixupKinds = fixup_gpumin_invalid - FirstTargetFixupKind

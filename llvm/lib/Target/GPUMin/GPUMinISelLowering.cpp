@@ -35,6 +35,8 @@ GPUMinTargetLowering::GPUMinTargetLowering(const TargetMachine &TM,
   setOperationAction(ISD::SELECT, MVT::i32, Legal);
   setOperationAction(ISD::SELECT_CC, MVT::i32, Custom);
   setOperationAction(ISD::SETCC, MVT::i32, Legal);
+  setOperationAction(ISD::BRCOND, MVT::Other, Custom);
+  setOperationAction(ISD::BR_CC, MVT::i32, Custom);
 
   computeRegisterProperties(STI.getRegisterInfo());
 }
@@ -43,6 +45,8 @@ const char *GPUMinTargetLowering::getTargetNodeName(unsigned Opcode) const {
   switch (Opcode) {
   case GPUMinISD::RET:
     return "GPUMinISD::RET";
+  case GPUMinISD::BRCOND:
+    return "GPUMinISD::BRCOND";
   default:
     return nullptr;
   }
@@ -133,6 +137,22 @@ SDValue GPUMinTargetLowering::LowerOperation(SDValue Op,
   // `select_cc` is what `icmp` + `select` becomes after type legalization.
   // Splitting it into a predicate compare and a predicate select is the whole
   // point of having p0-p7: the compare writes a predicate, SELP consumes it.
+  // Both forms end up as GPUMinISD::BRCOND, whose only condition source is a
+  // predicate register.  `br_cc` therefore materialises the comparison with
+  // setcc first: same split as SELECT_CC, one node earlier.
+  case ISD::BRCOND:
+    return DAG.getNode(GPUMinISD::BRCOND, SDLoc(Op), MVT::Other,
+                       Op.getOperand(0), Op.getOperand(1), Op.getOperand(2));
+
+  case ISD::BR_CC: {
+    SDValue Chain = Op.getOperand(0);
+    ISD::CondCode CC = cast<CondCodeSDNode>(Op.getOperand(1))->get();
+    SDValue Cmp = DAG.getSetCC(SDLoc(Op), MVT::i1, Op.getOperand(2),
+                               Op.getOperand(3), CC);
+    return DAG.getNode(GPUMinISD::BRCOND, SDLoc(Op), MVT::Other, Chain, Cmp,
+                       Op.getOperand(4));
+  }
+
   case ISD::SELECT_CC: {
     SDValue LHS = Op.getOperand(0);
     SDValue RHS = Op.getOperand(1);

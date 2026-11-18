@@ -29,6 +29,7 @@
 #include "llvm/MC/MCTargetOptions.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/MathExtras.h"
 
 using namespace llvm;
 
@@ -67,7 +68,8 @@ public:
     // clang-format off
     const static MCFixupKindInfo Infos[gpumin::NumTargetFixupKinds] = {
       // name                  offset bits flags
-      {"fixup_gpumin_32",         0,  32, 0},
+      {"fixup_gpumin_32",          0, 32, 0},
+      {"fixup_gpumin_16_pcrel",    0, 16, 0},
     };
     // clang-format on
     static_assert(std::size(Infos) == gpumin::NumTargetFixupKinds,
@@ -98,10 +100,28 @@ void GPUMinAsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
     return;
   }
 
-  assert(Fixup.getKind() == gpumin::fixup_gpumin_32 &&
+  if (Fixup.getKind() == gpumin::fixup_gpumin_32) {
+    for (unsigned I = 0; I != 4; ++I)
+      Data[I] = static_cast<uint8_t>(Value >> (8 * I));
+    return;
+  }
+
+  assert(Fixup.getKind() == gpumin::fixup_gpumin_16_pcrel &&
          "unknown GPUMin fixup kind");
-  for (unsigned I = 0; I != 4; ++I)
-    Data[I] = static_cast<uint8_t>(Value >> (8 * I));
+
+  // `Value` is already (target - instruction address): the fixup is created
+  // with IsPCRel and offset 0, so the assembler subtracted the word's own
+  // address.  Convert bytes to words and patch Inst[15:0].
+  int64_t Off = static_cast<int64_t>(Value);
+  if (Off & 3)
+    getContext().reportError(Fixup.getLoc(),
+                             "GPUMin: branch target is not 4-byte aligned");
+  Off /= 4;
+  if (!isInt<16>(Off))
+    getContext().reportError(Fixup.getLoc(),
+                             "GPUMin: branch target out of range");
+  Data[0] = static_cast<uint8_t>(Off & 0xff);
+  Data[1] = static_cast<uint8_t>((Off >> 8) & 0xff);
 }
 
 MCAsmBackend *llvm::createGPUMinMCAsmBackend(const Target &T,

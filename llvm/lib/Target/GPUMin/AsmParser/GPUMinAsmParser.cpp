@@ -126,6 +126,13 @@ public:
     return true;
   }
 
+  /// A branch target must be a label: the PC-relative displacement is only
+  /// known once the instruction's address is.  A bare number is rejected here
+  /// instead of failing later in the relocation path.
+  bool isBranchTarget() const {
+    return Kind == Immediate && !isa<MCConstantExpr>(Imm);
+  }
+
   void addRegOperands(MCInst &Inst, unsigned N) const {
     assert(N == 1 && "Invalid number of operands!");
     Inst.addOperand(MCOperand::createReg(getReg()));

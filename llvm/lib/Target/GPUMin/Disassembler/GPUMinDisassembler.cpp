@@ -126,6 +126,20 @@ static DecodeStatus DecodeSImm16(MCInst &Inst, uint64_t Imm, int64_t Address,
   return MCDisassembler::Success;
 }
 
+// Branch displacements are stored in instruction words.  The printer and the
+// assembler both think in words (`bra 2`), but the symbolizer needs a byte
+// delta from the branch address, so scale before offering it the target.
+static DecodeStatus DecodeBrTarget16(MCInst &Inst, uint64_t Imm,
+                                     int64_t Address,
+                                     const MCDisassembler *Decoder) {
+  const int64_t Words = SignExtend64<16>(Imm);
+  if (!Decoder->tryAddingSymbolicOperand(Inst, Words * 4, Address,
+                                         /*IsBranch=*/true, /*Offset=*/0,
+                                         /*OpSize=*/4, /*InstSize=*/4))
+    Inst.addOperand(MCOperand::createImm(Words));
+  return MCDisassembler::Success;
+}
+
 #include "GPUMinGenDisassemblerTables.inc"
 
 DecodeStatus GPUMinDisassembler::getInstruction(MCInst &MI, uint64_t &Size,
