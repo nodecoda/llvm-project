@@ -531,8 +531,20 @@ class Simulator:
 
         for spec in desc.get("fill", []):
             try:
-                self.fill(int(spec["addr"]), int(spec["start"]),
-                          int(spec["step"]), int(spec["count"]))
+                addr = int(spec["addr"])
+                start = spec["start"]
+                step = spec["step"]
+                count = int(spec["count"])
+                fmt = spec.get("format", "i32")
+                if fmt == "i32":
+                    self.fill(addr, int(start), int(step), count)
+                elif fmt == "f32":
+                    # The launch file can describe a float sequence without
+                    # spelling out every bit pattern: each word is
+                    # f32(start + i*step).
+                    self.fill_f32(addr, float(start), float(step), count)
+                else:
+                    raise SimError("launch fill format must be i32 or f32")
             except (KeyError, TypeError, ValueError):
                 raise SimError("launch fill entries need addr/start/step/count")
         for spec in desc.get("dump", []):
@@ -545,6 +557,12 @@ class Simulator:
         for i in range(count):
             self.memory.global_mem[addr + i * 4:addr + i * 4 + 4] = \
                 ((start + i * step) & MASK32).to_bytes(4, "little")
+
+    def fill_f32(self, addr, start, step, count):
+        for i in range(count):
+            bits = f32_to_bits(start + i * step)
+            self.memory.global_mem[addr + i * 4:addr + i * 4 + 4] = \
+                bits.to_bytes(4, "little")
 
     def dump(self, addr, count):
         return [int.from_bytes(self.memory.global_mem[addr + i * 4:

@@ -62,8 +62,12 @@ fi
   done
 } > "$TMP/special.s"
 "$BIN/llvm-mc" -triple=gpumin -filetype=obj "$TMP/special.s" -o "$TMP/special.o"
+# Disassemble once into a file.  Piping objdump into `grep -q` under pipefail
+# is racy: grep can exit before objdump finishes, objdump then gets SIGPIPE
+# (status 141) and the pipeline fails even though the match was found.
+"$BIN/llvm-objdump" -d "$TMP/special.o" > "$TMP/special.dump"
 for i in laneid warpid blockid tid ntid nwarps activemask; do
-  "$BIN/llvm-objdump" -d "$TMP/special.o" | grep -q "sr.$i r1" \
+  grep -q "sr.$i r1" "$TMP/special.dump" \
     || fail "sr.$i did not survive the object/disassemble round trip"
 done
 echo "PASS 1/4: seven SYS funct values encode, decode and reject typos"

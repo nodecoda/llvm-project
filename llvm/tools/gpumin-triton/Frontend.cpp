@@ -11,6 +11,7 @@
 #include "llvm/Support/Error.h"
 #include <algorithm>
 #include <map>
+#include <vector>
 
 using namespace llvm;
 using namespace llvm::json;
@@ -148,7 +149,7 @@ private:
   Expected<Value *> lowerFloorDiv(const Object &Node, Value *LHS, Value *RHS,
                                   bool IsMod);
   Expected<Type> normalizePair(const Object &Node, Value *&LHS, Value *&RHS);
-  Expected<int64_t> evalShape1(const json::Value &Node);
+  Expected<std::vector<int64_t>> evalShape(const json::Value &Node);
   Expected<Type> evalDType(const json::Value &Node);
   Expected<int64_t> evalInt(const json::Value &Node);
   Value *splatTo(Value *V, Type TensorTy);
@@ -805,16 +806,24 @@ Expected<Value *> Lowerer::lowerFloorDiv(const Object &Node, Value *LHS,
   return F.createSelect(SignDiff, R1, R);
 }
 
-Expected<int64_t> Lowerer::evalShape1(const json::Value &NodeValue) {
+Expected<std::vector<int64_t>>
+Lowerer::evalShape(const json::Value &NodeValue) {
   const Object *Node = NodeValue.getAsObject();
   if (!Node || typeOf(*Node) != "Tuple")
     return createStringError(inconvertibleErrorCode(),
-                             "%s: shape must be a 1D tuple",
+                             "%s: shape must be a tuple",
                              Ast.sourcePath().str().c_str());
   const Array *Elts = Node->getArray("elts");
-  if (!Elts || Elts->size() != 1)
-    return errAt(*Node, "only 1D shapes are supported");
-  return evalInt((*Elts)[0]);
+  if (!Elts || Elts->empty() || Elts->size() > 2)
+    return errAt(*Node, "only 1D and 2D shapes are supported");
+  std::vector<int64_t> Dims;
+  for (const json::Value &Elt : *Elts) {
+    Expected<int64_t> DimOrErr = evalInt(Elt);
+    if (!DimOrErr)
+      return DimOrErr.takeError();
+    Dims.push_back(*DimOrErr);
+  }
+  return Dims;
 }
 
 Expected<Type> Lowerer::evalDType(const json::Value &NodeValue) {
@@ -1129,16 +1138,25 @@ Expected<Value *> Lowerer::lowerCall(const Object &Node) {
       return errAt(Node, Name == "full"
                              ? "tl.full expects (shape, value, dtype)"
                              : "tl.zeros expects (shape, dtype)");
-    Expected<int64_t> NOrErr = evalShape1(*ShapeNode);
-    if (!NOrErr)
-      return NOrErr.takeError();
+    Expected<std::vector<int64_t>> ShapeOrErr = evalShape(*ShapeNode);
+    if (!ShapeOrErr)
+      return ShapeOrErr.takeError();
     Expected<Type> DTOrErr = evalDType(*DTypeNode);
     if (!DTOrErr)
       return DTOrErr.takeError();
-    int64_t N = *NOrErr;
-    if (N <= 0 || N % 32 != 0)
-      return errAt(Node, "tensor size must be a positive multiple of 32");
     Type Ty = *DTOrErr;
+    Type TensorTy;
+    if (ShapeOrErr->size() == 1) {
+      int64_t N = (*ShapeOrErr)[0];
+      if (N <= 0 || N % 32 != 0)
+        return errAt(Node, "tensor size must be a positive multiple of 32");
+      TensorTy = Type::tensor({N}, Ty);
+    } else {
+      int64_t Rows = (*ShapeOrErr)[0], Cols = (*ShapeOrErr)[1];
+      if (Rows <= 0 || Cols <= 0)
+        return errAt(Node, "2D shapes must be positive");
+      TensorTy = Type::tensor({Rows, Cols}, Ty);
+    }
     Value *V;
     if (Name == "zeros") {
       V = Ty.isF32() ? F.createConstant(0.0, Ty)
@@ -1154,7 +1172,7 @@ Expected<Value *> Lowerer::lowerCall(const Object &Node) {
       if (V->getType() != Ty)
         return errAt(Node, "tl.full value type does not match the dtype");
     }
-    return F.createSplat(V, Type::tensor({N}, Ty));
+    return F.createSplat(V, TensorTy);
   }
 
   if (Name == "sum" || Name == "max") {
@@ -1191,6 +1209,11 @@ Expected<Value *> Lowerer::lowerCall(const Object &Node) {
       return F.createReduce(ReduceKind::Max, Src, 0);
     return F.createReduce(ReduceKind::Sum, Src, 0);
   }
+
+  if (Name == "dot")
+    return errAt(Node,
+                 "tl.dot is not supported; chapter 30 uses a rank-1 update "
+                 "loop instead");
 
   return errAt(Node, ("unsupported tl function '" + Name + "'").str());
 }
