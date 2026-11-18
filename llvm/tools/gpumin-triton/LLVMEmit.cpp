@@ -58,7 +58,8 @@ private:
   LlvmValue *coordValue(Type Ty, unsigned I, bool WantRow);
   llvm::Type *llvmType(Type Ty);
   LlvmValue *elementAt(const Lowered &V, unsigned R) const;
-  LlvmValue *maskedLoad(LlvmValue *Ptr, LlvmValue *Mask, llvm::Type *ElemTy);
+  LlvmValue *maskedLoad(LlvmValue *Ptr, LlvmValue *Mask, LlvmValue *Other,
+                        llvm::Type *ElemTy);
   LlvmValue *combineReduction(ReduceKind Kind, Type ElemTy, LlvmValue *A,
                               LlvmValue *Rhs);
   Error emitReduce(const Op &O);
@@ -220,7 +221,7 @@ LlvmValue *FuncEmitter::elementAt(const Lowered &V, unsigned R) const {
 }
 
 LlvmValue *FuncEmitter::maskedLoad(LlvmValue *Ptr, LlvmValue *Mask,
-                                   llvm::Type *ElemTy) {
+                                   LlvmValue *Other, llvm::Type *ElemTy) {
   if (!Mask)
     return B.CreateLoad(ElemTy, Ptr);
   BasicBlock *Before = B.GetInsertBlock();
@@ -233,7 +234,7 @@ LlvmValue *FuncEmitter::maskedLoad(LlvmValue *Ptr, LlvmValue *Mask,
   B.SetInsertPoint(MergeBB);
   PHINode *Phi = B.CreatePHI(ElemTy, 2);
   Phi->addIncoming(Loaded, LoadBB);
-  Phi->addIncoming(Constant::getNullValue(ElemTy), Before);
+  Phi->addIncoming(Other ? Other : Constant::getNullValue(ElemTy), Before);
   return Phi;
 }
 
@@ -865,6 +866,8 @@ Error FuncEmitter::emitOp(const Op &O) {
     const Lowered &Ptr = Env.at(O.Operands[0]);
     const Lowered *Mask =
         O.Operands.size() > 1 ? &Env.at(O.Operands[1]) : nullptr;
+    const Lowered *Other =
+        O.Operands.size() > 2 ? &Env.at(O.Operands[2]) : nullptr;
     Type ResultTy = O.Result->getType();
     Type ElemTy = ResultTy.isTensor() ? ResultTy.getElementType() : ResultTy;
     llvm::Type *ElemLlvmTy = llvmType(ElemTy);
@@ -872,7 +875,8 @@ Error FuncEmitter::emitOp(const Op &O) {
     V.IsTensor = Ptr.IsTensor;
     for (unsigned R = 0; R < Ptr.Elts.size(); ++R) {
       LlvmValue *MaskElt = Mask ? elementAt(*Mask, R) : nullptr;
-      V.Elts.push_back(maskedLoad(Ptr.Elts[R], MaskElt, ElemLlvmTy));
+      LlvmValue *OtherElt = Other ? elementAt(*Other, R) : nullptr;
+      V.Elts.push_back(maskedLoad(Ptr.Elts[R], MaskElt, OtherElt, ElemLlvmTy));
     }
     Env[O.Result] = std::move(V);
     return Error::success();

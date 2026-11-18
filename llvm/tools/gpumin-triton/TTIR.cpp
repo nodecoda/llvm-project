@@ -278,7 +278,7 @@ Value *Function::createAddPtr(Value *Ptr, Value *Offset) {
   return V;
 }
 
-Value *Function::createLoad(Value *Ptr, Value *Mask) {
+Value *Function::createLoad(Value *Ptr, Value *Mask, Value *Other) {
   Type PtrTy = Ptr->getType();
   assert((PtrTy.isPtr() || PtrTy.isTensor()) && "load needs a pointer");
   Type ElemTy;
@@ -295,6 +295,10 @@ Value *Function::createLoad(Value *Ptr, Value *Mask) {
   O.Operands = {Ptr};
   if (Mask)
     O.Operands.push_back(Mask);
+  if (Other) {
+    assert(Mask && "tt.load only takes other with a mask");
+    O.Operands.push_back(Other);
+  }
   O.Ty = PtrTy;
   Ops.push_back(std::move(O));
   return V;
@@ -638,6 +642,10 @@ static void printOps(llvm::raw_ostream &OS, llvm::ArrayRef<Op> Ops,
       if (O.Operands.size() > 1) {
         OS << ", ";
         O.Operands[1]->printName(OS);
+      }
+      if (O.Operands.size() > 2) {
+        OS << ", ";
+        O.Operands[2]->printName(OS);
       }
       OS << " : ";
       O.Ty.print(OS);

@@ -7,11 +7,11 @@
 # T1  AST: the C++ frontend sees all kernels and their arguments.
 # T2  TTIR: every generated module is accepted by triton-opt.
 # T3  Canonical: add_i32, f32_add, reduce_sum, control_flow, elementwise,
-#     layout2d, matmul2d, softmax2d, attention, ifelse, matmul_shared and
-#     dot2d match goldens.
+#     layout2d, matmul2d, softmax2d, attention, ifelse, matmul_shared,
+#     dot2d, causal and mask_broadcast match goldens.
 # T4  Layout: the Triton layout pass accepts gpumin:1 / 8 threads / 4 warps.
 # T5  CodeGen: every e2e kernel compiles with -verify-machineinstrs.
-# T6  Simulator: the twelve e2e programs match their reference JSON.
+# T6  Simulator: the fourteen e2e programs match their reference JSON.
 # T7  Diagnostics: seven unsupported forms (including a 1D tl.dot) fail
 #     with actionable messages.
 #
@@ -100,8 +100,13 @@ if [ -n "$TRITON_OPT" ] && [ -x "$TRITON_OPT" ]; then
     -o "$TMP/matmul_shared.ttir" || ok=0
   "$TOOL" --emit-ttir --arg-type 'a_ptr=ptr<f32>' --arg-type 'b_ptr=ptr<f32>' \
     --arg-type 'c_ptr=ptr<f32>' "$TRITON/dot2d.py" -o "$TMP/dot2d.ttir" || ok=0
+  "$TOOL" --emit-ttir --arg-type 'q_ptr=ptr<f32>' --arg-type 'k_ptr=ptr<f32>' \
+    --arg-type 'v_ptr=ptr<f32>' --arg-type 'p_ptr=ptr<f32>' \
+    --arg-type 'o_ptr=ptr<f32>' "$TRITON/causal.py" -o "$TMP/causal.ttir" || ok=0
+  "$TOOL" --emit-ttir --arg-type 'x_ptr=ptr<f32>' --arg-type 'out_ptr=ptr<f32>' \
+    "$TRITON/mask_broadcast.py" -o "$TMP/broadcast.ttir" || ok=0
   for f in add_i32 f32_add reduce cf matmul elementwise layout2d matmul2d \
-           softmax2d attention ifelse dot2d; do
+           softmax2d attention ifelse dot2d causal broadcast; do
     [ -f "$TMP/$f.ttir" ] || ok=0
     if [ -f "$TMP/$f.ttir" ] && ! "$TRITON_OPT" "$TMP/$f.ttir" -o /dev/null; then
       ok=0
@@ -114,7 +119,7 @@ if [ -n "$TRITON_OPT" ] && [ -x "$TRITON_OPT" ]; then
     ok=0
   fi
   if [ "$ok" = 1 ]; then
-    pass T2 "triton-opt parses all thirteen TTIR modules"
+    pass T2 "triton-opt parses all fifteen TTIR modules"
   else
     fail T2 "triton-opt rejected a generated module"
   fi
@@ -148,8 +153,11 @@ if [ -n "$TRITON_OPT" ] && [ -x "$TRITON_OPT" ]; then
   check_golden matmul_shared "$TMP/matmul_shared.ttir" \
     "$TRITON/matmul_shared.ttir" --allow-unregistered-dialect || ok=0
   check_golden dot2d "$TMP/dot2d.ttir" "$TRITON/dot2d.ttir" || ok=0
+  check_golden causal "$TMP/causal.ttir" "$TRITON/causal.ttir" || ok=0
+  check_golden broadcast "$TMP/broadcast.ttir" \
+    "$TRITON/mask_broadcast.ttir" || ok=0
   if [ "$ok" = 1 ]; then
-    pass T3 "all twelve canonical forms match their goldens"
+    pass T3 "all fourteen canonical forms match their goldens"
   else
     for d in "$TMP"/*.diff; do
       [ -f "$d" ] && cat "$d" >&2
@@ -220,14 +228,19 @@ fi
   -o "$TMP/matmul_shared.ll"
 "$TOOL" --emit-llvm --arg-type 'a_ptr=ptr<f32>' --arg-type 'b_ptr=ptr<f32>' \
   --arg-type 'c_ptr=ptr<f32>' "$TRITON/dot2d.py" -o "$TMP/dot2d.ll"
+"$TOOL" --emit-llvm --arg-type 'q_ptr=ptr<f32>' --arg-type 'k_ptr=ptr<f32>' \
+  --arg-type 'v_ptr=ptr<f32>' --arg-type 'p_ptr=ptr<f32>' \
+  --arg-type 'o_ptr=ptr<f32>' "$TRITON/causal.py" -o "$TMP/causal.ll"
+"$TOOL" --emit-llvm --arg-type 'x_ptr=ptr<f32>' --arg-type 'out_ptr=ptr<f32>' \
+  "$TRITON/mask_broadcast.py" -o "$TMP/broadcast.ll"
 ok=1
 for f in add_i32 f32_add reduce matmul cf elementwise layout2d matmul2d \
-         softmax2d attention ifelse matmul_shared dot2d; do
+         softmax2d attention ifelse matmul_shared dot2d causal broadcast; do
   "$LLC" -march=gpumin -O1 -verify-machineinstrs -filetype=obj \
     "$TMP/$f.ll" -o "$TMP/$f.o" || ok=0
 done
 if [ "$ok" = 1 ]; then
-  pass T5 "all thirteen kernels compile with -verify-machineinstrs"
+  pass T5 "all fifteen kernels compile with -verify-machineinstrs"
 else
   fail T5 "llc rejected a generated kernel"
 fi
@@ -235,12 +248,13 @@ fi
 # --- T6. simulator e2e ---------------------------------------------------
 ok=1
 for prog in add_i32 add_f32 reduce matmul_no_dot elementwise layout2d \
-            matmul2d softmax2d attention ifelse matmul_shared dot2d; do
+            matmul2d softmax2d attention ifelse matmul_shared dot2d causal \
+            mask_broadcast; do
   python3 "$E2E/run_e2e.py" "$E2E/$prog" --bin "$BIN" --sim "$SIM" \
     > "$TMP/e2e-$prog.log" 2>&1 || { cat "$TMP/e2e-$prog.log" >&2; ok=0; }
 done
 if [ "$ok" = 1 ]; then
-  pass T6 "the twelve e2e programs match their reference JSON"
+  pass T6 "the fourteen e2e programs match their reference JSON"
 else
   fail T6 "an e2e program mismatched"
 fi

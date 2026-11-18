@@ -152,6 +152,8 @@ private:
   Expected<Value *> lowerSubscript(const Object &Node);
   Expected<Type> broadcastType(const Object &Node, Type A, Type B);
   Expected<Value *> broadcastTo(const Object &Node, Value *V, Type Dst);
+  Expected<Value *> normalizeMask(const Object &Node, Value *Mask, Type PtrTy,
+                                  StringRef What);
   Expected<Value *> lowerFloorDiv(const Object &Node, Value *LHS, Value *RHS,
                                   bool IsMod);
   Expected<Type> normalizePair(const Object &Node, Value *&LHS, Value *&RHS);
@@ -835,6 +837,41 @@ Expected<Value *> Lowerer::broadcastTo(const Object &Node, Value *V, Type Dst) {
   return F.createBroadcast(V, Dst);
 }
 
+// A mask may be a scalar i1 (splatted over the tile), a tensor with the
+// pointer's shape, or a 2D tensor that broadcasts up to the pointer's shape.
+// The pointer shape never grows: a load returns exactly the tile it indexed.
+Expected<Value *> Lowerer::normalizeMask(const Object &Node, Value *Mask,
+                                         Type PtrTy, StringRef What) {
+  if (PtrTy.isPtr()) {
+    if (!Mask->getType().isI1())
+      return errAt(Node, "a scalar " + Twine(What) + " needs a scalar i1 mask");
+    return Mask;
+  }
+  Type MaskTy = Mask->getType();
+  if (MaskTy.isI1())
+    return F.createSplat(Mask, Type::tensor(PtrTy.getShape(), Type::i1()));
+  if (!MaskTy.isTensor() || !MaskTy.getElementType().isI1())
+    return errAt(Node, "tl." + Twine(What) + " mask must be i1 or tensor<i1>");
+  Type Dst = Type::tensor(PtrTy.getShape(), Type::i1());
+  if (MaskTy == Dst)
+    return Mask;
+  Expected<Type> DstOrErr = broadcastType(Node, MaskTy, Dst);
+  if (!DstOrErr) {
+    consumeError(DstOrErr.takeError());
+    return errAt(Node, "tl." + Twine(What) +
+                           " mask shape is not broadcast-compatible with the "
+                           "pointer");
+  }
+  if (*DstOrErr != Dst)
+    return errAt(Node, "tl." + Twine(What) +
+                           " mask shape is not broadcast-compatible with the "
+                           "pointer");
+  Expected<Value *> BroadcastOrErr = broadcastTo(Node, Mask, Dst);
+  if (!BroadcastOrErr)
+    return BroadcastOrErr.takeError();
+  return *BroadcastOrErr;
+}
+
 Expected<Type> Lowerer::normalizePair(const Object &Node, Value *&LHS,
                                       Value *&RHS) {
   Type LT = LHS->getType();
@@ -1165,30 +1202,42 @@ Expected<Value *> Lowerer::lowerCall(const Object &Node) {
         !(Ptr->getType().isTensor() &&
           Ptr->getType().getElementType().isPtr()))
       return errAt(Node, "tl.load expects a pointer or pointer tensor");
-    if (Keywords.count("other"))
-      return errAt(Node, "tl.load(other=...) arrives in a later chapter");
-
+    Type PtrTy = Ptr->getType();
     Value *Mask = nullptr;
     auto MaskIt = Keywords.find("mask");
     if (MaskIt != Keywords.end()) {
       Expected<Value *> MaskOrErr = lowerExpr(*MaskIt->second);
       if (!MaskOrErr)
         return MaskOrErr.takeError();
-      Mask = *MaskOrErr;
-      if (Ptr->getType().isPtr()) {
-        if (!Mask->getType().isI1())
-          return errAt(Node, "a scalar load needs a scalar i1 mask");
-      } else if (Mask->getType().isI1()) {
-        Mask = F.createSplat(
-            Mask, Type::tensor(Ptr->getType().getShape(), Type::i1()));
-      } else if (!Mask->getType().isTensor() ||
-                 !Mask->getType().getElementType().isI1()) {
-        return errAt(Node, "tl.load mask must be i1 or tensor<i1>");
-      } else if (Mask->getType().getShape() != Ptr->getType().getShape()) {
-        return errAt(Node, "tl.load mask shape does not match the pointer");
+      Expected<Value *> NormOrErr =
+          normalizeMask(Node, *MaskOrErr, PtrTy, "load");
+      if (!NormOrErr)
+        return NormOrErr.takeError();
+      Mask = *NormOrErr;
+    }
+
+    Value *Other = nullptr;
+    auto OtherIt = Keywords.find("other");
+    if (OtherIt != Keywords.end()) {
+      if (!Mask)
+        return errAt(Node, "tl.load(other=...) needs a mask");
+      Expected<Value *> OtherOrErr = lowerExpr(*OtherIt->second);
+      if (!OtherOrErr)
+        return OtherOrErr.takeError();
+      Other = *OtherOrErr;
+      Type ResultTy = PtrTy.isTensor()
+                          ? Type::tensor(PtrTy.getShape(),
+                                         PtrTy.getElementType().getPointee())
+                          : PtrTy.getPointee();
+      if (Other->getType() != ResultTy) {
+        if (!ResultTy.isTensor() ||
+            Other->getType() != ResultTy.getElementType())
+          return errAt(Node, "tl.load other's element type does not match the "
+                             "pointer element type");
+        Other = F.createSplat(Other, ResultTy);
       }
     }
-    return F.createLoad(Ptr, Mask);
+    return F.createLoad(Ptr, Mask, Other);
   }
 
   if (Name == "store") {
@@ -1218,19 +1267,11 @@ Expected<Value *> Lowerer::lowerCall(const Object &Node) {
       Expected<Value *> MaskOrErr = lowerExpr(*MaskIt->second);
       if (!MaskOrErr)
         return MaskOrErr.takeError();
-      Mask = *MaskOrErr;
-      if (Ptr->getType().isPtr()) {
-        if (!Mask->getType().isI1())
-          return errAt(Node, "a scalar store needs a scalar i1 mask");
-      } else if (Mask->getType().isI1()) {
-        Mask = F.createSplat(
-            Mask, Type::tensor(Ptr->getType().getShape(), Type::i1()));
-      } else if (!Mask->getType().isTensor() ||
-                 !Mask->getType().getElementType().isI1()) {
-        return errAt(Node, "tl.store mask must be i1 or tensor<i1>");
-      } else if (Mask->getType().getShape() != Ptr->getType().getShape()) {
-        return errAt(Node, "tl.store mask shape does not match the pointer");
-      }
+      Expected<Value *> NormOrErr =
+          normalizeMask(Node, *MaskOrErr, Ptr->getType(), "store");
+      if (!NormOrErr)
+        return NormOrErr.takeError();
+      Mask = *NormOrErr;
     }
     F.createStore(Ptr, Stored, Mask);
     return nullptr;

@@ -164,7 +164,7 @@ public:
   Value *createTrans(Value *Src);
   Value *createSplat(Value *Scalar, Type TensorTy);
   Value *createAddPtr(Value *Ptr, Value *Offset);
-  Value *createLoad(Value *Ptr, Value *Mask);
+  Value *createLoad(Value *Ptr, Value *Mask, Value *Other = nullptr);
   Value *createReduce(ReduceKind Kind, Value *Src, unsigned Axis);
   Value *createExp2(Value *Src);
   Value *createSelect(Value *Cond, Value *TrueV, Value *FalseV);
