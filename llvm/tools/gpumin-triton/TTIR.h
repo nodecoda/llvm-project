@@ -108,6 +108,7 @@ enum class OpKind {
   Reduce,
   Select,
   Barrier,
+  ScfIf,
   Return
 };
 
@@ -127,6 +128,9 @@ struct Op {
   ReduceKind Red = ReduceKind::Sum;
   CmpPred Pred = CmpPred::Eq;
   Type Ty;
+  // Chapter 33: scf.if carries one or two nested op lists.
+  std::vector<Op> ThenOps;
+  std::vector<Op> ElseOps;
 };
 
 class Function {
@@ -155,6 +159,8 @@ public:
   Value *createSelect(Value *Cond, Value *TrueV, Value *FalseV);
   void createStore(Value *Ptr, Value *Stored, Value *Mask);
   void createBarrier();
+  void createScfIf(Value *Cond, std::vector<Op> ThenOps,
+                   std::vector<Op> ElseOps);
   void createReturn(Value *V);
   void setResultType(Type Ty) { ResultTy = Ty; HasResult = true; }
 
@@ -163,6 +169,8 @@ public:
   Type getResultType() const { return ResultTy; }
   llvm::ArrayRef<Value *> getArgs() const { return Args; }
   llvm::ArrayRef<Op> getOps() const { return Ops; }
+  size_t getOpCount() const { return Ops.size(); }
+  std::vector<Op> takeOpsFrom(size_t Mark);
 
   void print(llvm::raw_ostream &OS) const;
 

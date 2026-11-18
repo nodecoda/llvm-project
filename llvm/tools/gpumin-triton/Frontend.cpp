@@ -162,6 +162,7 @@ private:
   std::map<std::string, int64_t> ConstValues;
   std::map<std::string, unsigned> NameCount;
   bool SawReturn = false;
+  unsigned BranchDepth = 0;
 };
 
 Error Lowerer::errAt(const Object &Node, const Twine &Msg) const {
@@ -216,6 +217,9 @@ Error Lowerer::lowerStmt(const Object &Node) {
   }
 
   if (Type == "Return") {
+    if (BranchDepth > 0)
+      return errAt(Node,
+                   "return inside if/else is not supported in chapter 33");
     if (const json::Value *ValueNode = Node.get("value")) {
       Expected<Value *> ValueOrErr = lowerExpr(*ValueNode);
       if (!ValueOrErr)
@@ -327,6 +331,78 @@ Error Lowerer::lowerStmt(const Object &Node) {
           return E;
       }
     }
+    return Error::success();
+  }
+
+  if (Type == "If") {
+    const json::Value *TestNode = Node.get("test");
+    const Array *Body = Node.getArray("body");
+    const Array *OrElse = Node.getArray("orelse");
+    if (!TestNode || !Body)
+      return errAt(Node, "malformed If");
+
+    Expected<Value *> CondOrErr = lowerExpr(*TestNode);
+    if (!CondOrErr)
+      return CondOrErr.takeError();
+    Value *Cond = *CondOrErr;
+    if (!Cond || Cond->getType().isTensor() || !Cond->getType().isI1())
+      return errAt(Node, "the if condition must be a scalar i1 in chapter 33");
+
+    const std::map<std::string, Value *> SavedEnv = Env;
+    const std::map<std::string, int64_t> SavedConst = ConstValues;
+
+    auto LowerBody = [&](const Array &Stmts, std::vector<Op> &Out) -> Error {
+      size_t Mark = F.getOpCount();
+      ++BranchDepth;
+      for (const json::Value &Stmt : Stmts) {
+        const Object *StmtObj = Stmt.getAsObject();
+        if (!StmtObj) {
+          --BranchDepth;
+          return errAt(Node, "malformed statement in if body");
+        }
+        if (Error E = lowerStmt(*StmtObj)) {
+          --BranchDepth;
+          return E;
+        }
+      }
+      --BranchDepth;
+      Out = F.takeOpsFrom(Mark);
+      return Error::success();
+    };
+
+    // Chapter 33 keeps the branch bodies structured: a name that existed
+    // before the if cannot be reassigned (that would need an scf.if result
+    // and a PHI), and names created inside a branch do not escape.
+    auto RejectOuterAssign = [&](const Object &At) -> Error {
+      for (const auto &KV : Env) {
+        auto It = SavedEnv.find(KV.first);
+        if (It != SavedEnv.end() && It->second != KV.second)
+          return errAt(At, Twine("assignment to '") + KV.first +
+                               "' inside if is not supported in chapter 33");
+      }
+      return Error::success();
+    };
+
+    std::vector<Op> ThenOps;
+    if (Error E = LowerBody(*Body, ThenOps))
+      return E;
+    if (Error E = RejectOuterAssign(Node))
+      return E;
+
+    Env = SavedEnv;
+    ConstValues = SavedConst;
+
+    std::vector<Op> ElseOps;
+    if (OrElse && !OrElse->empty()) {
+      if (Error E = LowerBody(*OrElse, ElseOps))
+        return E;
+      if (Error E = RejectOuterAssign(Node))
+        return E;
+    }
+
+    Env = SavedEnv;
+    ConstValues = SavedConst;
+    F.createScfIf(Cond, std::move(ThenOps), std::move(ElseOps));
     return Error::success();
   }
 

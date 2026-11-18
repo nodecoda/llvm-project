@@ -63,6 +63,7 @@ private:
   Error emitReduce2D(const Op &O);
   void maskedStore(LlvmValue *Ptr, LlvmValue *Stored, LlvmValue *Mask);
   Error emitOp(const Op &O);
+  Error emitOps(llvm::ArrayRef<Op> Ops);
   Error emitPrologue();
 
   llvm::Module &M;
@@ -436,6 +437,39 @@ Error FuncEmitter::emitOp(const Op &O) {
         O.Axis == 0 ? "llvm.gpumin.blockidx" : "llvm.gpumin.blockidy";
     FunctionCallee BlockIdFn = M.getOrInsertFunction(Name, B.getInt32Ty());
     Env[O.Result] = {{B.CreateCall(BlockIdFn)}, false};
+    return Error::success();
+  }
+
+  case OpKind::ScfIf: {
+    const Lowered &Cond = Env.at(O.Operands[0]);
+    if (Cond.IsTensor || Cond.Elts.size() != 1)
+      return createStringError(inconvertibleErrorCode(),
+                               "an if condition must be a scalar i1");
+    llvm::BasicBlock *ThenBB = BasicBlock::Create(Ctx, "if.then", LF);
+    llvm::BasicBlock *ElseBB =
+        O.ElseOps.empty() ? nullptr : BasicBlock::Create(Ctx, "if.else", LF);
+    llvm::BasicBlock *MergeBB = BasicBlock::Create(Ctx, "if.merge", LF);
+    B.CreateCondBr(Cond.Elts[0], ThenBB, ElseBB ? ElseBB : MergeBB);
+
+    // Branch-local values must not leak into the merge block; the frontend
+    // already refused assignments to names that existed before the if.
+    const std::map<const gpumintriton::Value *, Lowered> SavedEnv = Env;
+    B.SetInsertPoint(ThenBB);
+    if (Error E = emitOps(O.ThenOps))
+      return E;
+    if (!B.GetInsertBlock()->hasTerminator())
+      B.CreateBr(MergeBB);
+
+    if (ElseBB) {
+      B.SetInsertPoint(ElseBB);
+      if (Error E = emitOps(O.ElseOps))
+        return E;
+      if (!B.GetInsertBlock()->hasTerminator())
+        B.CreateBr(MergeBB);
+    }
+
+    Env = SavedEnv;
+    B.SetInsertPoint(MergeBB);
     return Error::success();
   }
 
@@ -856,42 +890,58 @@ Error FuncEmitter::emitOp(const Op &O) {
   }
 }
 
+/// Depth-first walk over top-level ops and scf.if regions.
+static void collectOps(llvm::ArrayRef<Op> Ops, std::vector<const Op *> &Out) {
+  for (const Op &O : Ops) {
+    Out.push_back(&O);
+    collectOps(O.ThenOps, Out);
+    collectOps(O.ElseOps, Out);
+  }
+}
+
+Error FuncEmitter::emitOps(llvm::ArrayRef<Op> Ops) {
+  for (const Op &O : Ops)
+    if (Error E = emitOp(O))
+      return E;
+  return Error::success();
+}
+
 Error FuncEmitter::emit() {
   if (Error E = emitPrologue())
     return E;
-  for (const Op &O : TF.getOps())
-    if (O.Result)
-      Defs[O.Result] = &O;
-  for (const Op &O : TF.getOps()) {
-    if (O.Kind != OpKind::MakeRange ||
-        (O.End - O.Start) >= static_cast<int64_t>(ThreadsPerBlock))
+  std::vector<const Op *> AllOps;
+  collectOps(TF.getOps(), AllOps);
+  for (const Op *O : AllOps)
+    if (O->Result)
+      Defs[O->Result] = O;
+  for (const Op *O : AllOps) {
+    if (O->Kind != OpKind::MakeRange ||
+        (O->End - O->Start) >= static_cast<int64_t>(ThreadsPerBlock))
       continue;
-    for (const Op &User : TF.getOps())
-      for (const gpumintriton::Value *Operand : User.Operands)
-        if (Operand == O.Result && User.Kind != OpKind::ExpandDims)
+    for (const Op *User : AllOps)
+      for (const gpumintriton::Value *Operand : User->Operands)
+        if (Operand == O->Result && User->Kind != OpKind::ExpandDims)
           return createStringError(
               inconvertibleErrorCode(),
               "a tl.arange shorter than %u must feed [:, None] or [None, :]",
               ThreadsPerBlock);
   }
-  for (const Op &O : TF.getOps()) {
-    if (O.Kind != OpKind::Reduce ||
-        O.Operands[0]->getType().getShape().size() != 2)
+  for (const Op *O : AllOps) {
+    if (O->Kind != OpKind::Reduce ||
+        O->Operands[0]->getType().getShape().size() != 2)
       continue;
-    for (const Op &User : TF.getOps())
-      for (const gpumintriton::Value *Operand : User.Operands)
-        if (Operand == O.Result && User.Kind != OpKind::ExpandDims)
+    for (const Op *User : AllOps)
+      for (const gpumintriton::Value *Operand : User->Operands)
+        if (Operand == O->Result && User->Kind != OpKind::ExpandDims)
           return createStringError(
               inconvertibleErrorCode(),
               "a 2D reduction result must feed expand_dims "
               "(keep_dims=True)");
   }
-  for (const Op &O : TF.getOps()) {
-    if (Error E = emitOp(O))
-      return E;
-  }
+  if (Error E = emitOps(TF.getOps()))
+    return E;
   // A TTIR function without an explicit return still needs a terminator.
-  if (!B.GetInsertBlock()->getTerminator())
+  if (!B.GetInsertBlock()->hasTerminator())
     B.CreateRetVoid();
   return Error::success();
 }

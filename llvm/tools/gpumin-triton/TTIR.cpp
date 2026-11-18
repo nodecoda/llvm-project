@@ -362,6 +362,25 @@ void Function::createStore(Value *Ptr, Value *Stored, Value *Mask) {
   Ops.push_back(std::move(O));
 }
 
+std::vector<Op> Function::takeOpsFrom(size_t Mark) {
+  std::vector<Op> Out;
+  Out.reserve(Ops.size() - Mark);
+  for (size_t I = Mark; I < Ops.size(); ++I)
+    Out.push_back(std::move(Ops[I]));
+  Ops.resize(Mark);
+  return Out;
+}
+
+void Function::createScfIf(Value *Cond, std::vector<Op> ThenOps,
+                           std::vector<Op> ElseOps) {
+  Op O;
+  O.Kind = OpKind::ScfIf;
+  O.Operands = {Cond};
+  O.ThenOps = std::move(ThenOps);
+  O.ElseOps = std::move(ElseOps);
+  Ops.push_back(std::move(O));
+}
+
 void Function::createBarrier() {
   Op O;
   O.Kind = OpKind::Barrier;
@@ -466,24 +485,11 @@ static StringRef cmpfName(CmpPred Pred) {
   llvm_unreachable("unknown cmp predicate");
 }
 
-void Function::print(raw_ostream &OS) const {
-  OS << "  tt.func public @" << Name << "(";
-  for (size_t I = 0; I < Args.size(); ++I) {
-    if (I)
-      OS << ", ";
-    Args[I]->printName(OS);
-    OS << ": ";
-    Args[I]->getType().print(OS);
-  }
-  OS << ")";
-  if (HasResult) {
-    OS << " -> ";
-    ResultTy.print(OS);
-  }
-  OS << " {\n";
-
+static void printOps(llvm::raw_ostream &OS, llvm::ArrayRef<Op> Ops,
+                     unsigned Indent) {
+  const std::string Pad(Indent, ' ');
   for (const Op &O : Ops) {
-    OS << "    ";
+    OS << Pad;
     switch (O.Kind) {
     case OpKind::Constant:
       O.Result->printName(OS);
@@ -676,6 +682,17 @@ void Function::print(raw_ostream &OS) const {
       }
       OS << "\n";
       break;
+    case OpKind::ScfIf:
+      OS << "scf.if ";
+      O.Operands[0]->printName(OS);
+      OS << " {\n";
+      printOps(OS, O.ThenOps, Indent + 2);
+      if (!O.ElseOps.empty()) {
+        OS << Pad << "} else {\n";
+        printOps(OS, O.ElseOps, Indent + 2);
+      }
+      OS << Pad << "}\n";
+      break;
     default:
       O.Result->printName(OS);
       OS << " = " << binaryName(O.Kind) << " ";
@@ -688,7 +705,24 @@ void Function::print(raw_ostream &OS) const {
       break;
     }
   }
+}
 
+void Function::print(raw_ostream &OS) const {
+  OS << "  tt.func public @" << Name << "(";
+  for (size_t I = 0; I < Args.size(); ++I) {
+    if (I)
+      OS << ", ";
+    Args[I]->printName(OS);
+    OS << ": ";
+    Args[I]->getType().print(OS);
+  }
+  OS << ")";
+  if (HasResult) {
+    OS << " -> ";
+    ResultTy.print(OS);
+  }
+  OS << " {\n";
+  printOps(OS, Ops, 4);
   OS << "  }\n";
 }
 

@@ -1,0 +1,41 @@
+// Golden canonical TTIR for scripts/triton/ifelse.py.  The branch condition is
+// arith.cmpi slt on the scalar program id and the scalar n argument, so the
+// choice is made at run time.  The two tt.store ops live in the then and else
+// regions of a real scf.if; the tile %v loaded before the branch stays visible
+// inside both regions.  The chapter-33 gate canonicalises both sides before
+// diffing.
+module {
+  tt.func public @ifelse_kernel(%x_ptr: !tt.ptr<f32>, %y_ptr: !tt.ptr<f32>, %n: i32) {
+    %pid = tt.get_program_id x : i32
+    %i = tt.make_range {start = 0 : i32, end = 32 : i32} : tensor<32xi32>
+    %2 = arith.constant 32 : i32
+    %3 = arith.muli %pid, %2 : i32
+    %4 = tt.addptr %x_ptr, %3 : !tt.ptr<f32>, i32
+    %5 = tt.splat %4 : !tt.ptr<f32> -> tensor<32x!tt.ptr<f32>>
+    %6 = tt.addptr %5, %i : tensor<32x!tt.ptr<f32>>, tensor<32xi32>
+    %v = tt.load %6 : tensor<32x!tt.ptr<f32>>
+    %8 = arith.cmpi slt, %pid, %n : i32
+    scf.if %8 {
+      %9 = arith.constant 32 : i32
+      %10 = arith.muli %pid, %9 : i32
+      %11 = tt.addptr %y_ptr, %10 : !tt.ptr<f32>, i32
+      %12 = tt.splat %11 : !tt.ptr<f32> -> tensor<32x!tt.ptr<f32>>
+      %13 = tt.addptr %12, %i : tensor<32x!tt.ptr<f32>>, tensor<32xi32>
+      %14 = arith.constant 1.000000e+00 : f32
+      %15 = tt.splat %14 : f32 -> tensor<32xf32>
+      %16 = arith.addf %v, %15 : tensor<32xf32>
+      tt.store %13, %16 : tensor<32x!tt.ptr<f32>>
+    } else {
+      %17 = arith.constant 32 : i32
+      %18 = arith.muli %pid, %17 : i32
+      %19 = tt.addptr %y_ptr, %18 : !tt.ptr<f32>, i32
+      %20 = tt.splat %19 : !tt.ptr<f32> -> tensor<32x!tt.ptr<f32>>
+      %21 = tt.addptr %20, %i : tensor<32x!tt.ptr<f32>>, tensor<32xi32>
+      %22 = arith.constant 2.000000e+00 : f32
+      %23 = tt.splat %22 : f32 -> tensor<32xf32>
+      %24 = arith.mulf %v, %23 : tensor<32xf32>
+      tt.store %21, %24 : tensor<32x!tt.ptr<f32>>
+    }
+    tt.return
+  }
+}
