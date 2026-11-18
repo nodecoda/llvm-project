@@ -1,0 +1,15 @@
+# Chapter 37 benchmark baseline (tag gpumin-ch37).
+#
+# Regenerate with:
+#   scripts/bench-gpumin.sh <llvm-bin-dir> --write-baseline /tmp/bench.raw
+#
+# The simulator is deterministic; check-ch37.sh asserts "current <= baseline"
+# for every metric so a later optimization is allowed but a regression is not.
+# loc_st is the local-store count and doubles as the spill proxy.
+vecadd issued=92 cycles=61 glb_ld=224 shm_ld=0 loc_st=0
+reduce issued=406 cycles=340 glb_ld=192 shm_ld=128 loc_st=0
+matmul-rank1 issued=23936 cycles=14880 glb_ld=68608 shm_ld=0 loc_st=8192
+matmul-dot issued=54528 cycles=41088 glb_ld=9728 shm_ld=49152 loc_st=74240
+softmax issued=756 cycles=602 glb_ld=96 shm_ld=1024 loc_st=160
+attention issued=1236 cycles=938 glb_ld=1696 shm_ld=1024 loc_st=32
+causal issued=1468 cycles=1132 glb_ld=1732 shm_ld=1024 loc_st=288

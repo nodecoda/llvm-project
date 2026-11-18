@@ -81,6 +81,7 @@ scripts/gpumin-verify-all.sh <llvm-bin-dir>
 | 34 | [shared-tile](34-shared-tile.md) | `check-ch34.sh` + `triton-verify-all.sh` | shared staging、列/行切片、自动 barrier、`glb_ld` 5× |
 | 35 | [tl-dot](35-tl-dot.md) | `check-ch35.sh` + `triton-verify-all.sh` | `tt.dot`、`inputPrecision = tf32`、无 MMA 展开 |
 | 36 | [causal-mask](36-causal-mask.md) | `check-ch36.sh` + `triton-verify-all.sh` | mask 广播、`other=`、加性 causal mask |
+| 37 | [course4-wrap](37-course4-wrap.md) | `check-ch37.sh` + `bench-gpumin.sh` | 七内核基准表、上限门禁、第四课收束 |
 
 ## 8 项总门禁
 
