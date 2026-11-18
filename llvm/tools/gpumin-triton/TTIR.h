@@ -99,6 +99,7 @@ enum class OpKind {
   Load,
   Store,
   Reduce,
+  Select,
   Return
 };
 
@@ -139,6 +140,7 @@ public:
   Value *createAddPtr(Value *Ptr, Value *Offset);
   Value *createLoad(Value *Ptr, Value *Mask);
   Value *createReduce(ReduceKind Kind, Value *Src, unsigned Axis);
+  Value *createSelect(Value *Cond, Value *TrueV, Value *FalseV);
   void createStore(Value *Ptr, Value *Stored, Value *Mask);
   void createReturn(Value *V);
   void setResultType(Type Ty) { ResultTy = Ty; HasResult = true; }

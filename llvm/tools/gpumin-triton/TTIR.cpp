@@ -267,6 +267,18 @@ Value *Function::createReduce(ReduceKind Kind, Value *Src, unsigned Axis) {
   return V;
 }
 
+Value *Function::createSelect(Value *Cond, Value *TrueV, Value *FalseV) {
+  assert(TrueV->getType() == FalseV->getType() && "select type mismatch");
+  Value *V = createValue(TrueV->getType());
+  Op O;
+  O.Kind = OpKind::Select;
+  O.Result = V;
+  O.Operands = {Cond, TrueV, FalseV};
+  O.Ty = TrueV->getType();
+  Ops.push_back(std::move(O));
+  return V;
+}
+
 void Function::createStore(Value *Ptr, Value *Stored, Value *Mask) {
   Op O;
   O.Kind = OpKind::Store;
@@ -507,6 +519,25 @@ void Function::print(raw_ostream &OS) const {
       OS << "\n";
       break;
     }
+    case OpKind::Select:
+      O.Result->printName(OS);
+      OS << " = arith.select ";
+      O.Operands[0]->printName(OS);
+      OS << ", ";
+      O.Operands[1]->printName(OS);
+      OS << ", ";
+      O.Operands[2]->printName(OS);
+      OS << " : ";
+      // arith.select infers a scalar i1 condition from the result type.
+      // A tensor/vector condition must be spelled out as
+      // `: tensor<...xi1>, result-type` (ArithOps.cpp SelectOp::parse).
+      if (!O.Operands[0]->getType().isI1()) {
+        O.Operands[0]->getType().print(OS);
+        OS << ", ";
+      }
+      O.Result->getType().print(OS);
+      OS << "\n";
+      break;
     case OpKind::Return:
       OS << "tt.return";
       if (!O.Operands.empty()) {

@@ -1,0 +1,15 @@
+{
+  "kernel": "reduce_sum",
+  "constexpr": {
+    "BLOCK": 32
+  },
+  "arg_types": {
+    "x_ptr": "ptr",
+    "out_ptr": "ptr"
+  },
+  "format": "i32",
+  "values": [
+    32,
+    64
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "grid": 1,
+  "block": 32,
+  "args_addr": 4096,
+  "args": [
+    0,
+    8192,
+    16384,
+    256
+  ],
+  "fill": [
+    {
+      "addr": 0,
+      "start": 0,
+      "step": 1,
+      "count": 256
+    },
+    {
+      "addr": 8192,
+      "start": 1000,
+      "step": 1,
+      "count": 256
+    }
+  ],
+  "dump": [
+    {
+      "addr": 16384,
+      "count": 8
+    }
+  ]
+}

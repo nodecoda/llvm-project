@@ -371,6 +371,20 @@ Error FuncEmitter::emitOp(const Op &O) {
   case OpKind::Reduce:
     return emitReduce(O);
 
+  case OpKind::Select: {
+    const Lowered &Cond = Env.at(O.Operands[0]);
+    const Lowered &TrueV = Env.at(O.Operands[1]);
+    const Lowered &FalseV = Env.at(O.Operands[2]);
+    Lowered V;
+    V.IsTensor = TrueV.IsTensor;
+    for (unsigned I = 0; I < TrueV.Elts.size(); ++I)
+      V.Elts.push_back(B.CreateSelect(elementAt(Cond, I),
+                                      elementAt(TrueV, I),
+                                      elementAt(FalseV, I)));
+    Env[O.Result] = std::move(V);
+    return Error::success();
+  }
+
   case OpKind::CmpF: {
     const Lowered &L = Env.at(O.Operands[0]);
     const Lowered &RHS = Env.at(O.Operands[1]);

@@ -226,6 +226,10 @@ def : Pat<(setcc i32:$rs1, i32:$rs2, SETUGE), (SETP_UGE $rs1, $rs2)>;
 // PRED file, which is why chapter 04 makes i1 a legal type.
 def : Pat<(select i1:$pd, i32:$rs1, i32:$rs2), (SELP $pd, $rs1, $rs2)>;
 
+// Chapter 27: the same SELP also selects f32 bit patterns.  One register file
+// means no conversion is needed; the predicate file is type-agnostic.
+def : Pat<(select i1:$pd, f32:$rs1, f32:$rs2), (SELP $pd, $rs1, $rs2)>;
+
 // Chapter 25: f32 lives in GPR, so the three arithmetic nodes are one line
 // each.  The leading `f32` is what tells TableGen which type of the
 // multi-type GPR class this pattern means.

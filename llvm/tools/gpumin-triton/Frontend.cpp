@@ -220,6 +220,86 @@ Error Lowerer::lowerStmt(const Object &Node) {
     return Error::success();
   }
 
+  if (Type == "For") {
+    const Object *Target = Node.getObject("target");
+    const json::Value *IterNode = Node.get("iter");
+    const Array *Body = Node.getArray("body");
+    const Array *OrElse = Node.getArray("orelse");
+    if (!Target || typeOf(*Target) != "Name")
+      return errAt(Node, "only simple loop variables are supported");
+    if (!IterNode || !Body)
+      return errAt(Node, "malformed For");
+    if (OrElse && !OrElse->empty())
+      return errAt(Node, "for/else is not supported");
+
+    const Object *Call = IterNode->getAsObject();
+    const Object *Func = Call ? Call->getObject("func") : nullptr;
+    bool IsRange = false;
+    if (Func) {
+      if (typeOf(*Func) == "Name" && stringField(*Func, "id") == "range") {
+        IsRange = true;
+      } else if (typeOf(*Func) == "Attribute" &&
+                 stringField(*Func, "attr") == "static_range") {
+        const Object *Recv = Func->getObject("value");
+        IsRange = Recv && typeOf(*Recv) == "Name" &&
+                  stringField(*Recv, "id") == "tl";
+      }
+    }
+    if (!IsRange)
+      return errAt(Node, "only tl.static_range(...) and range(...) loops "
+                         "are supported in chapter 27");
+
+    const Array *Args = Call->getArray("args");
+    if (!Args || Args->empty() || Args->size() > 3)
+      return errAt(*Call, "range expects one to three arguments");
+    int64_t Start = 0;
+    int64_t End = 0;
+    int64_t Step = 1;
+    if (Args->size() == 1) {
+      Expected<int64_t> EndOrErr = evalInt((*Args)[0]);
+      if (!EndOrErr)
+        return EndOrErr.takeError();
+      End = *EndOrErr;
+    } else {
+      Expected<int64_t> StartOrErr = evalInt((*Args)[0]);
+      if (!StartOrErr)
+        return StartOrErr.takeError();
+      Expected<int64_t> EndOrErr = evalInt((*Args)[1]);
+      if (!EndOrErr)
+        return EndOrErr.takeError();
+      Start = *StartOrErr;
+      End = *EndOrErr;
+      if (Args->size() == 3) {
+        Expected<int64_t> StepOrErr = evalInt((*Args)[2]);
+        if (!StepOrErr)
+          return StepOrErr.takeError();
+        Step = *StepOrErr;
+      }
+    }
+    if (Step == 0)
+      return errAt(*Call, "range step must not be zero");
+
+    int64_t Count = 0;
+    for (int64_t I = Start; Step > 0 ? I < End : I > End; I += Step)
+      ++Count;
+    if (Count > 1024)
+      return errAt(Node, "static range is limited to 1024 iterations");
+
+    // Chapter 27 unrolls compile-time loops.  The loop variable is a fresh
+    // constant in every iteration, so the SSA environment simply rebinds.
+    for (int64_t I = Start; Step > 0 ? I < End : I > End; I += Step) {
+      bindName(*Target, F.createConstant(I, gpumintriton::Type::i32()));
+      for (const json::Value &Stmt : *Body) {
+        const Object *StmtObj = Stmt.getAsObject();
+        if (!StmtObj)
+          return errAt(Node, "malformed statement in loop body");
+        if (Error E = lowerStmt(*StmtObj))
+          return E;
+      }
+    }
+    return Error::success();
+  }
+
   return errAt(Node, ("unsupported statement '" + Type + "'").str());
 }
 
@@ -662,6 +742,57 @@ Expected<Value *> Lowerer::lowerCall(const Object &Node) {
     }
     F.createStore(Ptr, Stored, Mask);
     return nullptr;
+  }
+
+  if (Name == "where") {
+    const json::Value *CondNode = GetArg(0);
+    const json::Value *XNode = GetArg(1);
+    const json::Value *YNode = GetArg(2);
+    if (!CondNode || !XNode || !YNode)
+      return errAt(Node, "tl.where expects (condition, x, y)");
+    Expected<Value *> CondOrErr = lowerExpr(*CondNode);
+    if (!CondOrErr)
+      return CondOrErr.takeError();
+    Expected<Value *> XOrErr = lowerExpr(*XNode);
+    if (!XOrErr)
+      return XOrErr.takeError();
+    Expected<Value *> YOrErr = lowerExpr(*YNode);
+    if (!YOrErr)
+      return YOrErr.takeError();
+    Value *Cond = *CondOrErr;
+    Value *X = *XOrErr;
+    Value *Y = *YOrErr;
+
+    Type XT = X->getType();
+    Type YT = Y->getType();
+    if (XT.isTensor() && YT.isI32())
+      Y = splatTo(Y, XT);
+    else if (XT.isI32() && YT.isTensor())
+      X = splatTo(X, YT);
+    else if (XT.isTensor() && YT.isTensor()) {
+      if (XT != YT)
+        return errAt(Node, "tl.where value shapes differ");
+    }
+    Type VT = X->getType();
+    if (X->getType() != Y->getType())
+      return errAt(Node, "tl.where values have different types");
+    if (!(VT.isI32() || VT.isF32() ||
+          (VT.isTensor() && (VT.getElementType().isI32() ||
+                             VT.getElementType().isF32()))))
+      return errAt(Node, "tl.where values must be i32 or f32");
+
+    Type CT = Cond->getType();
+    if (VT.isTensor()) {
+      if (CT.isI1()) {
+        Cond = splatTo(Cond, Type::tensor(VT.getShape(), Type::i1()));
+      } else if (!(CT.isTensor() && CT.getElementType().isI1() &&
+                   CT.getShape() == VT.getShape())) {
+        return errAt(Node, "tl.where condition shape does not match the values");
+      }
+    } else if (!CT.isI1()) {
+      return errAt(Node, "a scalar tl.where needs an i1 condition");
+    }
+    return F.createSelect(Cond, X, Y);
   }
 
   if (Name == "sum" || Name == "max") {

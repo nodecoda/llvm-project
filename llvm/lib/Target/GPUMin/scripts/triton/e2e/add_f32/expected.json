@@ -1,0 +1,18 @@
+{
+  "kernel": "f32_add",
+  "constexpr": {
+    "BLOCK": 64
+  },
+  "arg_types": {
+    "x_ptr": "ptr<f32>",
+    "y_ptr": "ptr<f32>",
+    "out_ptr": "ptr<f32>"
+  },
+  "format": "f32",
+  "values": [
+    3.75,
+    3.75,
+    3.75,
+    3.75
+  ]
+}

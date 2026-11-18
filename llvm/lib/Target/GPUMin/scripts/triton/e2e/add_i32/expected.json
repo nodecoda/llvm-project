@@ -1,0 +1,22 @@
+{
+  "kernel": "add_kernel",
+  "constexpr": {
+    "BLOCK": 256
+  },
+  "arg_types": {
+    "x_ptr": "ptr",
+    "y_ptr": "ptr",
+    "out_ptr": "ptr"
+  },
+  "format": "i32",
+  "values": [
+    1000,
+    1002,
+    1004,
+    1006,
+    1008,
+    1010,
+    1012,
+    1014
+  ]
+}
