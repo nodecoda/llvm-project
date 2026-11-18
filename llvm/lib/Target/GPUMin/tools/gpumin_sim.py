@@ -381,8 +381,10 @@ class Simulator:
         # consumer is several instructions away -- that is precisely why
         # occupancy matters.
         self.latency = self.model.latency
-        if latency is not None:
-            self.latency = {"global": latency, "shared": latency}
+        if isinstance(latency, int):
+            latency = {"global": latency, "shared": latency}
+        for name, cycles in (latency or {}).items():
+            self.latency[name] = cycles
         # How many warps an SM can hold, given the registers each thread uses.
         self.warps_per_sm = self.model.warps_per_sm(regs_per_thread)
         self.memory = Memory(global_size, private_size, shared_size)
@@ -403,6 +405,12 @@ class Simulator:
             "alu": 0,
             "lsu": 0,
             "bar": 0,
+            "glb_ld": 0,
+            "shm_ld": 0,
+            "loc_ld": 0,
+            "glb_st": 0,
+            "shm_st": 0,
+            "loc_st": 0,
             "ld_ops": 0,
             "st_ops": 0,
             "stall_cycles": 0,
@@ -578,11 +586,14 @@ class Simulator:
         return ("issued=%d lane_instrs=%d loads=%d stores=%d branches=%d "
                 "splits=%d frames_max=%d barriers=%d cycles=%d "
                 "alu=%d lsu=%d bar=%d ld_ops=%d st_ops=%d stall_cycles=%d "
-                "warps_per_sm=%d" %
+                "warps_per_sm=%d glb_ld=%d shm_ld=%d loc_ld=%d "
+                "glb_st=%d shm_st=%d loc_st=%d" %
                 (s["issued"], s["lane_instrs"], s["loads"], s["stores"],
                  s["branches"], s["splits"], s["frames_max"], s["barriers"],
                  s["cycles"], s["alu"], s["lsu"], s["bar"], s["ld_ops"],
-                 s["st_ops"], s["stall_cycles"], s["warps_per_sm"]))
+                 s["st_ops"], s["stall_cycles"], s["warps_per_sm"],
+                 s["glb_ld"], s["shm_ld"], s["loc_ld"], s["glb_st"],
+                 s["shm_st"], s["loc_st"]))
 
     def _run_warp(self, warp, steps=None):
         """Run until the warp finishes ("done"), parks at a barrier, or has
@@ -705,9 +716,15 @@ class Simulator:
                 if op == 0x08:
                     self.stats["loads"] += len(lanes)
                     self.stats["ld_ops"] += 1
+                    self.stats[{0: "glb_ld", 1: "shm_ld"}.get(space,
+                                                               "loc_ld")] += \
+                        len(lanes)
                 else:
                     self.stats["stores"] += len(lanes)
                     self.stats["st_ops"] += 1
+                    self.stats[{0: "glb_st", 1: "shm_st"}.get(space,
+                                                               "loc_st")] += \
+                        len(lanes)
                 if op == 0x08:
                     for i in lanes:
                         lane = warp.lanes[i]
@@ -722,8 +739,12 @@ class Simulator:
                         self.memory.store(space, lane, self.shared,
                                           lane.read_r(base) + imm, size,
                                           lane.read_r(val_reg))
-                if op == 0x08 and self.schedule == "units":
-                    # Global loads cost more than shared ones in the model.
+                if op == 0x08 and self.schedule == "units" and space < 2:
+                    # Global loads cost more than shared ones.  Private
+                    # (stack) accesses are modelled as zero-latency scratch:
+                    # they exist only because @mul spills, and charging them
+                    # memory latency would bury the effect this chapter is
+                    # about.
                     warp.stall = self.latency[
                         "global" if space == 0 else "shared"]
                 warp.advance()
@@ -819,7 +840,7 @@ def main(argv=None):
     ap.add_argument("--schedule", choices=("units", "interleaved", "greedy"),
                     default="units",
                     help="block issue model (chapters 17-18)")
-    ap.add_argument("--latency", type=parse_int, metavar="N",
+    ap.add_argument("--latency", metavar="N|global=N,shared=N",
                     help="cycles a load stalls its warp (chapter 19)")
     ap.add_argument("--regs-per-thread", type=parse_int, metavar="N",
                     help="registers per thread, for the occupancy report")
@@ -832,6 +853,23 @@ def main(argv=None):
                     help="print execution statistics to stderr")
     ap.add_argument("--max-steps", type=parse_int, default=100000)
     args = ap.parse_args(argv)
+    latency = None
+    if args.latency:
+        try:
+            if "=" in args.latency:
+                latency = {}
+                for part in args.latency.split(","):
+                    name, value = part.split("=", 1)
+                    if name not in ("global", "shared"):
+                        raise ValueError
+                    latency[name] = parse_int(value)
+            else:
+                latency = parse_int(args.latency)
+        except ValueError:
+            ap.error("--latency expects N or global=N,shared=N")
+        if isinstance(latency, dict) and any(v < 0 for v in latency.values()):
+            ap.error("--latency must not be negative")
+
     overrides = {}
     for spec in args.unit_width:
         try:
@@ -857,7 +895,7 @@ def main(argv=None):
                         max_steps=args.max_steps,
                         strict_uniform=args.strict_uniform,
                         schedule=args.schedule,
-                        unit_width=overrides, latency=args.latency,
+                        unit_width=overrides, latency=latency,
                         regs_per_thread=args.regs_per_thread)
         if args.launch:
             try:
