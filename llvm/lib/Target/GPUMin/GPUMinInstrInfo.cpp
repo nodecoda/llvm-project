@@ -87,14 +87,24 @@ bool GPUMinInstrInfo::analyzeBranch(MachineBasicBlock &MBB,
     --I;
 
   if (I->getOpcode() == GPUMin::BRA) {
-    TBB = I->getOperand(0).getMBB();
-    if (I == MBB.begin())
+    // `BRA_P pred, T` falls through to the following `BRA F`: T is taken when
+    // the predicate is true, F when it is false.  Reporting them the other way
+    // round makes block placement believe the false edge is the true edge and
+    // re-lay the blocks without negating the predicate, which silently
+    // inverts the branch (the chapter 12 simulator caught it).
+    MachineBasicBlock *Fallthrough = I->getOperand(0).getMBB();
+    if (I == MBB.begin()) {
+      TBB = Fallthrough;
       return false;
+    }
     --I;
     if (I->getOpcode() == GPUMin::BRA_P) {
       Cond.push_back(MachineOperand::CreateReg(I->getOperand(0).getReg(),
                                                /*isDef=*/false));
-      FBB = I->getOperand(1).getMBB();
+      TBB = I->getOperand(1).getMBB();
+      FBB = Fallthrough;
+    } else {
+      TBB = Fallthrough;
     }
     return false;
   }

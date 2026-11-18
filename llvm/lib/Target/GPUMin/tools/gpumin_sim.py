@@ -1,0 +1,596 @@
+#!/usr/bin/env python3
+"""A small GM32 simulator for the GPUMin tutorial.
+
+The simulator is deliberately a *model*, not a cycle-accurate machine.  It
+reads the ELF32 that llc writes, decodes the 32-bit words, and runs one warp
+at a time with the state ownership frozen in chapter 11:
+
+    PC + active mask     per warp
+    r0-r31, p0-p7        per lane
+    ur0-ur7              per warp
+    shared memory        per block
+    private memory       per lane
+    global / constant    per grid
+
+Chapter 12 uses it to run vecadd and the chapter 05/06/07/09 samples.  The
+kernel launch ABI is still the temporary "arguments in r4-r11" form; chapter
+13 replaces it with the launch descriptor.
+"""
+
+import argparse
+import struct
+import sys
+
+from gpumin_model import Model
+
+MASK32 = 0xFFFFFFFF
+WARP_SIZE = 8
+
+
+def s32(value):
+    value &= MASK32
+    return value - (1 << 32) if value & 0x80000000 else value
+
+
+def sext(value, bits):
+    sign = 1 << (bits - 1)
+    value &= (1 << bits) - 1
+    return value - (1 << bits) if value & sign else value
+
+
+class SimError(Exception):
+    pass
+
+
+class ELFImage:
+    """The bits of ELF32 the simulator needs: sections and symbols."""
+
+    def __init__(self, path):
+        with open(path, "rb") as f:
+            self.data = f.read()
+        if self.data[:4] != b"\x7fELF":
+            raise SimError("not an ELF file")
+        if self.data[4] != 1 or self.data[5] != 1:
+            raise SimError("expected ELF32 little-endian")
+
+        (self.e_shoff,) = struct.unpack_from("<I", self.data, 0x20)
+        (self.e_shentsize,) = struct.unpack_from("<H", self.data, 0x2E)
+        (self.e_shnum,) = struct.unpack_from("<H", self.data, 0x30)
+        (self.e_shstrndx,) = struct.unpack_from("<H", self.data, 0x32)
+
+        self.sections = []
+        for i in range(self.e_shnum):
+            off = self.e_shoff + i * self.e_shentsize
+            name, typ, flags, addr, offset, size, link, info, align, entsize = \
+                struct.unpack_from("<IIIIIIIIII", self.data, off)
+            self.sections.append({
+                "name_off": name, "type": typ, "flags": flags, "addr": addr,
+                "offset": offset, "size": size, "link": link, "info": info,
+                "align": align, "entsize": entsize,
+            })
+
+        shstr = self.sections[self.e_shstrndx]
+        self.shstr = self.data[shstr["offset"]:shstr["offset"] + shstr["size"]]
+        for sec in self.sections:
+            sec["name"] = self._string(sec["name_off"], self.shstr)
+
+        self.text = self._section(".text")
+        if self.text is None:
+            raise SimError("no .text section")
+        self.text_addr = self.text["addr"]
+        self.text_bytes = bytearray(
+            self.data[self.text["offset"]:
+                      self.text["offset"] + self.text["size"]])
+        if len(self.text_bytes) % 4:
+            raise SimError(".text is not a multiple of four bytes")
+
+        self.symbols = {}
+        self.symbol_list = []
+        self._parse_symbols()
+
+        # An object file is not a program yet: `call` leaves an
+        # R_GPUMIN_21_PCREL relocation behind because the callee address is not
+        # known until link time.  KMVP has no linker, so the loader is a tiny
+        # static linker: resolve relocations that target .text against the
+        # symbol table.  Relocations against .eh_frame are unwind metadata and
+        # do not affect execution.
+        self._apply_relocations()
+
+    def _string(self, off, table):
+        end = table.find(b"\0", off)
+        if end < 0:
+            end = len(table)
+        return table[off:end].decode("utf-8", "replace")
+
+    def _section(self, name):
+        for sec in self.sections:
+            if sec["name"] == name and sec["type"] == 1:  # PROGBITS
+                return sec
+        return None
+
+    def _parse_symbols(self):
+        symtab = None
+        strtab = None
+        for sec in self.sections:
+            if sec["name"] == ".symtab":
+                symtab = sec
+            elif sec["name"] == ".strtab":
+                strtab = sec
+        if not symtab or not strtab:
+            return
+        strings = self.data[strtab["offset"]:strtab["offset"] + strtab["size"]]
+        entsize = symtab["entsize"] or 16
+        count = symtab["size"] // entsize
+        self.symbol_list = [None] * count
+        for i in range(count):
+            off = symtab["offset"] + i * entsize
+            name, value, size, info, other, shndx = struct.unpack_from(
+                "<IIIBBH", self.data, off)
+            name = self._string(name, strings)
+            sym = {"name": name, "value": value, "size": size, "info": info,
+                   "shndx": shndx}
+            self.symbol_list[i] = sym
+            if name:
+                self.symbols[name] = sym
+
+    def _resolve_symbol(self, index):
+        if index <= 0 or index >= len(self.symbol_list):
+            raise SimError("relocation against invalid symbol %d" % index)
+        sym = self.symbol_list[index]
+        if sym is None:
+            raise SimError("relocation against a null symbol")
+        # Section-relative symbols carry an offset in st_value; absolute
+        # symbols already carry the final address (SHN_ABS = 0xfff1).
+        if sym["shndx"] == 0:
+            raise SimError("relocation against undefined symbol %r" %
+                           sym["name"])
+        if sym["shndx"] == 0xFFF1:
+            return sym["value"]
+        if sym["shndx"] >= len(self.sections):
+            raise SimError("symbol %r has a bad section index" % sym["name"])
+        return self.sections[sym["shndx"]]["addr"] + sym["value"]
+
+    def _apply_relocations(self):
+        text_index = self.sections.index(self.text)
+        for sec in self.sections:
+            if sec["type"] != 4 or sec["info"] != text_index:  # SHT_RELA
+                continue
+            entsize = sec["entsize"] or 12
+            count = sec["size"] // entsize
+            for i in range(count):
+                off = sec["offset"] + i * entsize
+                r_offset, r_info, addend = struct.unpack_from(
+                    "<IIi", self.data, off)
+                sym_index = r_info >> 8
+                rtype = r_info & 0xFF
+                if rtype == 0:  # R_GPUMIN_NONE
+                    continue
+                if r_offset % 4 or r_offset + 4 > len(self.text_bytes):
+                    raise SimError("bad relocation offset 0x%x" % r_offset)
+                S = self._resolve_symbol(sym_index)
+                P = self.text_addr + r_offset
+                if rtype == 1:      # R_GPUMIN_32
+                    value = S + addend
+                elif rtype == 2:    # R_GPUMIN_32_PCREL
+                    value = S + addend - P
+                elif rtype in (3, 4):  # 16/21-bit PC-relative, in words
+                    delta = S + addend - P
+                    if delta & 3:
+                        raise SimError(
+                            "unaligned branch target at 0x%x" % r_offset)
+                    value = delta // 4
+                    if rtype == 3:
+                        if not -(1 << 15) <= value < (1 << 15):
+                            raise SimError(
+                                "16-bit branch target out of range at 0x%x" %
+                                r_offset)
+                        word = struct.unpack_from("<I", self.text_bytes,
+                                                  r_offset)[0]
+                        word = (word & ~0xFFFF) | (value & 0xFFFF)
+                        struct.pack_into("<I", self.text_bytes, r_offset, word)
+                    else:
+                        if not -(1 << 20) <= value < (1 << 20):
+                            raise SimError(
+                                "21-bit call target out of range at 0x%x" %
+                                r_offset)
+                        word = struct.unpack_from("<I", self.text_bytes,
+                                                  r_offset)[0]
+                        word = (word & ~0x1FFFFF) | (value & 0x1FFFFF)
+                        struct.pack_into("<I", self.text_bytes, r_offset, word)
+                    continue
+                else:
+                    raise SimError("unsupported relocation type %d at 0x%x" %
+                                   (rtype, r_offset))
+                struct.pack_into("<I", self.text_bytes, r_offset,
+                                 value & MASK32)
+
+    def word(self, pc):
+        if pc < 0 or pc * 4 + 4 > len(self.text_bytes):
+            raise SimError("PC %d outside .text" % pc)
+        return struct.unpack_from("<I", self.text_bytes, pc * 4)[0]
+
+
+class Lane:
+    def __init__(self, laneid, warpid, blockid, threads, nwarps, private_size):
+        self.laneid = laneid
+        self.warpid = warpid
+        self.blockid = blockid
+        self.tid = warpid * WARP_SIZE + laneid
+        self.ntid = threads
+        self.nwarps = nwarps
+        self.r = [0] * 32
+        self.p = [0] * 8
+        self.private = bytearray(private_size)
+        self.r[30] = private_size          # chapter 07: r30 = sp
+        self.r[31] = 0                      # lr; a call overwrites it
+
+    def read_r(self, idx):
+        return 0 if idx == 0 else self.r[idx]
+
+    def write_r(self, idx, value):
+        if idx != 0:
+            self.r[idx] = value & MASK32
+
+    def read_p(self, idx):
+        return self.p[idx] & 1
+
+    def write_p(self, idx, value):
+        self.p[idx] = value & 1
+
+
+class Warp:
+    def __init__(self, lanes, pc):
+        self.lanes = lanes
+        self.pc = pc
+        self.mask = (1 << len(lanes)) - 1
+        self.ur = [0] * 8
+
+    def active_lanes(self):
+        return [i for i in range(len(self.lanes)) if self.mask & (1 << i)]
+
+
+class Memory:
+    def __init__(self, global_size, private_size, shared_size):
+        self.global_mem = bytearray(global_size)
+        self.constant = bytearray(global_size)
+        self.private_size = private_size
+        self.shared_size = shared_size
+
+    def load(self, space, lane, shared, addr, size, signed):
+        if addr < 0:
+            raise SimError("negative address 0x%x" % addr)
+        if space == 0:  # global
+            buf = self.global_mem
+        elif space == 1:  # shared
+            buf = shared
+        elif space == 2:  # local / private
+            buf = lane.private
+        elif space == 3:  # constant
+            buf = self.constant
+        else:
+            raise SimError("bad address space %d" % space)
+        if addr + size > len(buf):
+            raise SimError("load out of range: space=%d addr=0x%x size=%d" %
+                           (space, addr, size))
+        value = int.from_bytes(buf[addr:addr + size], "little")
+        if signed and size < 4:
+            value = sext(value, size * 8)
+        return value & MASK32
+
+    def store(self, space, lane, shared, addr, size, value):
+        if addr < 0:
+            raise SimError("negative address 0x%x" % addr)
+        if space == 0:
+            buf = self.global_mem
+        elif space == 1:
+            buf = shared
+        elif space == 2:
+            buf = lane.private
+        elif space == 3:
+            cur = self.load(3, lane, shared, addr, size, False)
+            # constant is read-only; stores are ignored rather than faulting
+            return cur
+        else:
+            raise SimError("bad address space %d" % space)
+        if addr + size > len(buf):
+            raise SimError("store out of range: space=%d addr=0x%x size=%d" %
+                           (space, addr, size))
+        buf[addr:addr + size] = (value & ((1 << (8 * size)) - 1)).to_bytes(
+            size, "little")
+
+
+class Simulator:
+    def __init__(self, image, *, blocks=1, threads=32, trace=False,
+                 max_steps=100000, global_size=1 << 20, private_size=4096,
+                 shared_size=49152):
+        if threads % WARP_SIZE or threads > 32:
+            raise SimError("--threads must be a multiple of 8 and <= 32")
+        self.image = image
+        self.blocks = blocks
+        self.threads = threads
+        self.nwarps = threads // WARP_SIZE
+        self.trace = trace
+        self.max_steps = max_steps
+        self.memory = Memory(global_size, private_size, shared_size)
+        self.shared = bytearray(shared_size)
+        self.model = Model()
+        self.registers = {}
+        self.dumps = []
+
+    def find(self, name):
+        if name not in self.image.symbols:
+            raise SimError("symbol %s not found" % name)
+        sym = self.image.symbols[name]
+        if sym["value"] < self.image.text_addr:
+            raise SimError("symbol %s is not in .text" % name)
+        return (sym["value"] - self.image.text_addr) // 4
+
+    def fill(self, addr, start, step, count):
+        for i in range(count):
+            self.memory.global_mem[addr + i * 4:addr + i * 4 + 4] = \
+                ((start + i * step) & MASK32).to_bytes(4, "little")
+
+    def dump(self, addr, count):
+        return [int.from_bytes(self.memory.global_mem[addr + i * 4:
+                                                     addr + i * 4 + 4],
+                               "little")
+                for i in range(count)]
+
+    def run(self, kernel, args=()):
+        entry = self.find(kernel)
+        for blockid in range(self.blocks):
+            self.shared = bytearray(self.memory.shared_size)
+            warps = []
+            for w in range(self.nwarps):
+                lanes = [Lane(i, w, blockid, self.threads, self.nwarps,
+                              self.memory.private_size)
+                         for i in range(WARP_SIZE)]
+                if len(args) > 8:
+                    raise SimError("at most 8 arguments fit r4-r11")
+                for i, value in enumerate(args):
+                    for lane in lanes:
+                        lane.write_r(4 + i, value)
+                warps.append(Warp(lanes, entry))
+            self._run_block(warps)
+
+    def _run_block(self, warps):
+        # MVP: warps run to completion one after another.  The barrier chapter
+        # (17) replaces this with a block-wide scheduler.
+        for warp in warps:
+            self._run_warp(warp)
+
+    def _special(self, lane, name, mask):
+        return {
+            "laneid": lane.laneid,
+            "warpid": lane.warpid,
+            "blockid": lane.blockid,
+            "tid": lane.tid,
+            "ntid": lane.ntid,
+            "nwarps": lane.nwarps,
+            "activemask": mask,
+        }[name]
+
+    def _run_warp(self, warp):
+        steps = 0
+        while warp.mask and steps < self.max_steps:
+            steps += 1
+            pc = warp.pc
+            word = self.image.word(pc)
+            if self.trace:
+                print("warp b%d w%d pc=%d mask=%02x word=%08x" %
+                      (warp.lanes[0].blockid, warp.lanes[0].warpid, pc,
+                       warp.mask, word), file=sys.stderr)
+            op = word >> 26
+            rd = (word >> 21) & 31
+            rs1 = (word >> 16) & 31
+            rs2 = (word >> 11) & 31
+
+            if op == 0x01:  # MOV rd, rs1 (funct 0)
+                for i in warp.active_lanes():
+                    warp.lanes[i].write_r(rd, warp.lanes[i].read_r(rs1))
+                warp.pc += 1
+                continue
+            if op == 0x05:  # MOVI
+                imm = sext(word & 0xFFFF, 16)
+                for i in warp.active_lanes():
+                    warp.lanes[i].write_r(rd, imm)
+                warp.pc += 1
+                continue
+            if op == 0x06:  # ADDI
+                imm = sext(word & 0xFFFF, 16)
+                for i in warp.active_lanes():
+                    lane = warp.lanes[i]
+                    lane.write_r(rd, lane.read_r(rs1) + imm)
+                warp.pc += 1
+                continue
+            if op == 0x02:  # ALU
+                funct = word & 0xF
+                for i in warp.active_lanes():
+                    lane = warp.lanes[i]
+                    a, b = lane.read_r(rs1), lane.read_r(rs2)
+                    if funct == 0:
+                        v = a + b
+                    elif funct == 1:
+                        v = a - b
+                    elif funct == 2:
+                        v = a & b
+                    elif funct == 3:
+                        v = a | b
+                    elif funct == 4:
+                        v = a ^ b
+                    elif funct == 5:
+                        v = a << (b & 31)
+                    elif funct == 6:
+                        v = a >> (b & 31)
+                    elif funct == 7:
+                        v = s32(a) >> (b & 31)
+                    else:
+                        raise SimError("bad ALU funct %d" % funct)
+                    lane.write_r(rd, v)
+                warp.pc += 1
+                continue
+            if op == 0x03:  # SETP
+                pd = (word >> 21) & 7
+                funct = word & 0x7FF
+                unsigned = bool(funct & 8)
+                rel = funct & 7
+                for i in warp.active_lanes():
+                    lane = warp.lanes[i]
+                    a, b = lane.read_r(rs1), lane.read_r(rs2)
+                    if not unsigned:
+                        a, b = s32(a), s32(b)
+                    if rel == 0:
+                        v = a == b
+                    elif rel == 1:
+                        v = a != b
+                    elif rel == 2:
+                        v = a < b
+                    elif rel == 3:
+                        v = a <= b
+                    elif rel == 4:
+                        v = a > b
+                    elif rel == 5:
+                        v = a >= b
+                    else:
+                        raise SimError("bad SETP relation %d" % rel)
+                    lane.write_p(pd, 1 if v else 0)
+                warp.pc += 1
+                continue
+            if op == 0x04:  # SELP
+                pd = (word >> 8) & 7
+                for i in warp.active_lanes():
+                    lane = warp.lanes[i]
+                    lane.write_r(rd, lane.read_r(rs1) if lane.read_p(pd)
+                                 else lane.read_r(rs2))
+                warp.pc += 1
+                continue
+            if op in (0x08, 0x09):  # LD / ST
+                imm = sext((word >> 5) & 0x7FF, 11)
+                space = (word >> 3) & 3
+                size_code = (word >> 1) & 3
+                sign = word & 1
+                size = {0: 1, 1: 2, 2: 4}.get(size_code)
+                if size is None:
+                    raise SimError("bad memory size")
+                base = (word >> 16) & 31
+                if op == 0x08:
+                    for i in warp.active_lanes():
+                        lane = warp.lanes[i]
+                        value = self.memory.load(space, lane, self.shared,
+                                                 lane.read_r(base) + imm,
+                                                 size, bool(sign))
+                        lane.write_r(rd, value)
+                else:
+                    val_reg = (word >> 21) & 31
+                    for i in warp.active_lanes():
+                        lane = warp.lanes[i]
+                        self.memory.store(space, lane, self.shared,
+                                          lane.read_r(base) + imm, size,
+                                          lane.read_r(val_reg))
+                warp.pc += 1
+                continue
+            if op == 0x10:  # BRA
+                has_pred = (word >> 25) & 1
+                pred = (word >> 22) & 7
+                off = sext(word & 0xFFFF, 16)
+                take = []
+                for i in warp.active_lanes():
+                    lane = warp.lanes[i]
+                    take.append(not has_pred or lane.read_p(pred))
+                if all(take):
+                    warp.pc += off
+                elif not any(take):
+                    warp.pc += 1
+                else:
+                    raise SimError(
+                        "non-uniform branch at pc=%d; divergence arrives in "
+                        "chapter 14" % pc)
+                continue
+            if op == 0x11:  # CALL
+                off = sext(word & 0x1FFFFF, 21)
+                for i in warp.active_lanes():
+                    warp.lanes[i].write_r(31, pc + 1)
+                warp.pc += off
+                continue
+            if op == 0x12:  # SYS
+                funct = word & 0x7FF
+                if funct == 0:  # EXIT
+                    for i in warp.active_lanes():
+                        warp.mask &= ~(1 << i)
+                    if not warp.mask:
+                        return
+                    warp.pc += 1
+                    continue
+                if funct == 1:  # RET
+                    for i in warp.active_lanes():
+                        pc_next = warp.lanes[i].read_r(31)
+                        if pc_next == 0:
+                            raise SimError("ret with lr=0 at pc=%d" % pc)
+                    warp.pc = warp.lanes[warp.active_lanes()[0]].read_r(31)
+                    continue
+                names = {v: k for k, v in Model().special_funct.items()}
+                if funct in names:
+                    name = names[funct]
+                    for i in warp.active_lanes():
+                        lane = warp.lanes[i]
+                        lane.write_r(rd, self._special(lane, name, warp.mask))
+                    warp.pc += 1
+                    continue
+                raise SimError("unknown SYS funct %d at pc=%d" % (funct, pc))
+            raise SimError("unknown opcode 0x%x at pc=%d" % (op, pc))
+        if steps >= self.max_steps:
+            raise SimError("step limit reached")
+
+
+def parse_int(text):
+    return int(text, 0)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="GM32 simulator (teaching model)")
+    ap.add_argument("elf", help="ELF32 object produced by llc")
+    ap.add_argument("--kernel", help="kernel symbol")
+    ap.add_argument("--blocks", type=parse_int, default=1)
+    ap.add_argument("--threads", type=parse_int, default=32)
+    ap.add_argument("--arg", action="append", type=parse_int, default=[],
+                    help="kernel argument for r4, r5, ... (repeatable)")
+    ap.add_argument("--fill", action="append", default=[],
+                    metavar="ADDR=START,STEP,COUNT",
+                    help="fill COUNT words at byte ADDR with START + i*STEP")
+    ap.add_argument("--dump", action="append", default=[],
+                    metavar="ADDR=COUNT", help="dump COUNT words after the run")
+    ap.add_argument("--dump-text", action="store_true",
+                    help="print the loaded .text words as hex, one per line")
+    ap.add_argument("--trace", action="store_true")
+    ap.add_argument("--max-steps", type=parse_int, default=100000)
+    args = ap.parse_args(argv)
+    if not args.dump_text and not args.kernel:
+        ap.error("--kernel is required unless --dump-text is used")
+
+    try:
+        image = ELFImage(args.elf)
+        if args.dump_text:
+            for i in range(len(image.text_bytes) // 4):
+                print("%08x" % image.word(i))
+        sim = Simulator(image, blocks=args.blocks,
+                        threads=args.threads, trace=args.trace,
+                        max_steps=args.max_steps)
+        for spec in args.fill:
+            addr_text, rest = spec.split("=", 1)
+            start, step, count = (parse_int(x) for x in rest.split(","))
+            sim.fill(parse_int(addr_text), start, step, count)
+        if args.kernel:
+            sim.run(args.kernel, args.arg)
+        for spec in args.dump:
+            addr_text, count = spec.split("=", 1)
+            words = sim.dump(parse_int(addr_text), parse_int(count))
+            print(" ".join("%d" % w if w < 2**31 else "%d" % s32(w)
+                           for w in words))
+    except (SimError, OSError, ValueError) as e:
+        print("simulator error: %s" % e, file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

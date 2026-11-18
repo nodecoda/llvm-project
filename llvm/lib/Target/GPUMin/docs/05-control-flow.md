@@ -236,26 +236,25 @@ loop:
 
 ```asm
 sum:
-	movi r2, 0
-	mov  r1, r2
-.LBB0_1:
-	setp.ge p0, r2, r4
+	mov  r1, r4
+	movi r4, 0
+	mov  r2, r4
+	setp.ge p0, r2, r1
+	bra  p0, .LBB0_3
+.LBB0_2:
+	add  r4, r4, r2
+	addi r2, r2, 1
+	setp.ge p0, r2, r1
 	bra  p0, .LBB0_3
 	bra  .LBB0_2
-.LBB0_2:
-	movi r3, 1
-	add  r3, r2, r3
-	add  r1, r1, r2
-	mov  r2, r3
-	bra  .LBB0_1
 .LBB0_3:
-	mov  r4, r1
-	exit
+	ret
 ```
 
 注意 `setp.ge` 是 `icmp slt` 取反后的结果：`br i1 %c, %body, %exit` 在
-机器层是"条件不成立时跳到 exit"，所以比较关系被反过来。`phi` 边上的
-拷贝变成了 `mov`，回边 `bra .LBB0_1` 的位移是负数。
+机器层是"条件不成立时跳到 exit"，所以比较关系被反过来。block placement
+还把循环**旋转**了一次：entry 直接落入 body，条件测试被复制到回边之前，
+回边 `bra .LBB0_2` 的位移是负数。
 
 ## 验证
 

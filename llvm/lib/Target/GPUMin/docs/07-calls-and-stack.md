@@ -313,7 +313,9 @@ fib:
 	st.local.b32 r21, 4(r30)
 	movi r1, 1
 	setp.gt p0, r4, r1
-	bra p0, .LBB0_1
+	bra p0, .LBB0_2           # n > 1 -> 递归分支
+	bra .LBB0_1               # 否则落到 base
+.LBB0_2:
 	addi r1, r4, -1
 	mov r21, r4               # 第一次递归的参数暂存
 	mov r4, r1

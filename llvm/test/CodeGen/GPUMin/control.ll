@@ -16,8 +16,6 @@ nonpos:
 ; CHECK:       movi r1, 1
 ; CHECK:       setp.lt p0, r4, r1
 ; CHECK:       bra p0, [[NONPOS:.LBB[0-9_]+]]
-; CHECK:       bra [[POS:.LBB[0-9_]+]]
-; CHECK: [[POS]]:
 ; CHECK:       movi r4, 1
 ; CHECK:       ret
 ; CHECK: [[NONPOS]]:
@@ -42,14 +40,39 @@ done:
 ; CHECK-LABEL: loop:
 ; CHECK:       mov r1, r4
 ; CHECK:       movi r4, 0
-; CHECK: [[HEAD:.LBB[0-9_]+]]:
 ; CHECK:       setp.ge p0, r2, r1
 ; CHECK:       bra p0, [[DONE:.LBB[0-9_]+]]
-; CHECK:       bra [[BODY:.LBB[0-9_]+]]
-; CHECK: [[BODY]]:
+; CHECK: [[BODY:.LBB[0-9_]+]]:
 ; CHECK:       add r4, r4, r2
-; CHECK:       addi r2, r2, 1
-; CHECK:       bra [[HEAD]]
+; CHECK-NEXT:  addi r2, r2, 1
+; CHECK:       setp.ge p0, r2, r1
+; CHECK:       bra p0, [[DONE]]
+; CHECK:       bra [[BODY]]
 ; CHECK: [[DONE]]:
+; CHECK:       ret
+}
+
+; Regression for chapter 12: analyzeBranch() must report the BRA_P target as
+; TBB and the following BRA target as FBB.  With those swapped, block
+; placement keeps the predicate but exchanges the two targets, which inverts
+; the branch without changing the assembly's shape.
+define i32 @recur(i32 %n) {
+entry:
+  %c = icmp slt i32 %n, 2
+  br i1 %c, label %base, label %rec
+base:
+  ret i32 %n
+rec:
+  %n1 = sub i32 %n, 1
+  %r = call i32 @recur(i32 %n1)
+  %s = add i32 %r, 1
+  ret i32 %s
+; CHECK-LABEL: recur:
+; CHECK:       setp.gt p0, r4, r1
+; CHECK:       bra p0, [[REC:.LBB[0-9_]+]]
+; CHECK:       bra [[BASE:.LBB[0-9_]+]]
+; CHECK: [[REC]]:
+; CHECK:       call recur
+; CHECK: [[BASE]]:
 ; CHECK:       ret
 }

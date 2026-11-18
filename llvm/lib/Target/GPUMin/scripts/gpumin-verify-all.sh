@@ -170,6 +170,8 @@ done
   { echo "missing the chapter-10 harness" >&2; ok=0; }
 [ -f "$HERE/../docs/11-"*.md ] || { echo "missing doc 11" >&2; ok=0; }
 [ -x "$HERE/check-ch11.sh" ] || { echo "missing gate 11" >&2; ok=0; }
+[ -f "$HERE/../docs/12-"*.md ] || { echo "missing doc 12" >&2; ok=0; }
+[ -x "$HERE/check-ch12.sh" ] || { echo "missing gate 12" >&2; ok=0; }
 
 missing=$(grep -L '退出条件' "$HERE/../docs"/[0-9][0-9]-*.md || true)
 if [ -n "$missing" ]; then

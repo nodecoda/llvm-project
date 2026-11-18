@@ -66,7 +66,14 @@ IR
 "$BIN/llc" -march=gpumin -verify-machineinstrs "$TMP/br.ll" -o "$TMP/br.s" \
   || fail "llc rejected the control-flow module"
 grep -q '	bra p0, ' "$TMP/br.s" || fail "the conditional branch is not predicated"
-grep -q '	bra \.L'  "$TMP/br.s" || fail "the fallthrough branch is missing"
+# With analyzeBranch() reporting TBB/FBB correctly, block placement can make
+# one successor the layout fallthrough, so an unconditional BRA is not
+# required.  What must hold: the conditional target has a label, and both
+# successors still return.
+tgt=$(grep -o 'bra p0, [.]LBB[0-9_]*' "$TMP/br.s" | head -1 | awk '{print $3}')
+[ -n "$tgt" ] || fail "the conditional branch has no local label target"
+grep -q "^$tgt:" "$TMP/br.s" || fail "the conditional branch target has no label"
+[ "$(grep -c $'^	ret$' "$TMP/br.s")" -eq 2 ] || fail "both successors must return"
 
 "$BIN/llc" -march=gpumin -filetype=obj "$TMP/br.ll" -o "$TMP/br.o"
 "$BIN/llvm-mc" -triple=gpumin -filetype=obj "$TMP/br.s" -o "$TMP/br_mc.o"
