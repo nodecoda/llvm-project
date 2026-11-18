@@ -88,6 +88,12 @@ enum class OpKind {
   ShrI,
   AShrI,
   CmpI,
+  GetProgramId,
+  MakeRange,
+  Splat,
+  AddPtr,
+  Load,
+  Store,
   Return
 };
 
@@ -98,6 +104,9 @@ struct Op {
   Value *Result = nullptr;
   llvm::SmallVector<Value *, 2> Operands;
   int64_t Imm = 0;
+  int64_t Start = 0;
+  int64_t End = 0;
+  unsigned Axis = 0;
   CmpPred Pred = CmpPred::Eq;
   Type Ty;
 };
@@ -114,6 +123,12 @@ public:
   Value *createConstant(int64_t Imm, Type Ty);
   Value *createBinary(OpKind Kind, Value *LHS, Value *RHS);
   Value *createCmp(CmpPred Pred, Value *LHS, Value *RHS);
+  Value *createGetProgramId(unsigned Axis);
+  Value *createMakeRange(int64_t Start, int64_t End);
+  Value *createSplat(Value *Scalar, Type TensorTy);
+  Value *createAddPtr(Value *Ptr, Value *Offset);
+  Value *createLoad(Value *Ptr, Value *Mask);
+  void createStore(Value *Ptr, Value *Stored, Value *Mask);
   void createReturn(Value *V);
   void setResultType(Type Ty) { ResultTy = Ty; HasResult = true; }
 

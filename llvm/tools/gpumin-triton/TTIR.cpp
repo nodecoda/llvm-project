@@ -146,7 +146,10 @@ Value *Function::createBinary(OpKind Kind, Value *LHS, Value *RHS) {
 
 Value *Function::createCmp(CmpPred Pred, Value *LHS, Value *RHS) {
   assert(LHS->getType() == RHS->getType() && "cmp operand type mismatch");
-  Value *V = createValue(Type::i1());
+  Type ResultTy = Type::i1();
+  if (LHS->getType().isTensor())
+    ResultTy = Type::tensor(LHS->getType().getShape(), Type::i1());
+  Value *V = createValue(ResultTy);
   Op O;
   O.Kind = OpKind::CmpI;
   O.Result = V;
@@ -155,6 +158,92 @@ Value *Function::createCmp(CmpPred Pred, Value *LHS, Value *RHS) {
   O.Ty = LHS->getType();
   Ops.push_back(std::move(O));
   return V;
+}
+
+Value *Function::createGetProgramId(unsigned Axis) {
+  Value *V = createValue(Type::i32());
+  Op O;
+  O.Kind = OpKind::GetProgramId;
+  O.Result = V;
+  O.Axis = Axis;
+  O.Ty = Type::i32();
+  Ops.push_back(std::move(O));
+  return V;
+}
+
+Value *Function::createMakeRange(int64_t Start, int64_t End) {
+  assert(End >= Start && "make_range with end < start");
+  Type ResultTy = Type::tensor({End - Start}, Type::i32());
+  Value *V = createValue(ResultTy);
+  Op O;
+  O.Kind = OpKind::MakeRange;
+  O.Result = V;
+  O.Start = Start;
+  O.End = End;
+  O.Ty = ResultTy;
+  Ops.push_back(std::move(O));
+  return V;
+}
+
+Value *Function::createSplat(Value *Scalar, Type TensorTy) {
+  assert(TensorTy.isTensor() && "splat result must be a tensor");
+  assert(TensorTy.getElementType() == Scalar->getType() &&
+         "splat element type mismatch");
+  Value *V = createValue(TensorTy);
+  Op O;
+  O.Kind = OpKind::Splat;
+  O.Result = V;
+  O.Operands = {Scalar};
+  O.Ty = TensorTy;
+  Ops.push_back(std::move(O));
+  return V;
+}
+
+Value *Function::createAddPtr(Value *Ptr, Value *Offset) {
+  Type PtrTy = Ptr->getType();
+  assert((PtrTy.isPtr() || PtrTy.isTensor()) && "addptr needs a pointer");
+  if (PtrTy.isTensor())
+    assert(PtrTy.getElementType().isPtr() && "addptr needs pointer elements");
+  Value *V = createValue(PtrTy);
+  Op O;
+  O.Kind = OpKind::AddPtr;
+  O.Result = V;
+  O.Operands = {Ptr, Offset};
+  O.Ty = PtrTy;
+  Ops.push_back(std::move(O));
+  return V;
+}
+
+Value *Function::createLoad(Value *Ptr, Value *Mask) {
+  Type PtrTy = Ptr->getType();
+  assert((PtrTy.isPtr() || PtrTy.isTensor()) && "load needs a pointer");
+  Type ElemTy;
+  if (PtrTy.isTensor()) {
+    assert(PtrTy.getElementType().isPtr() && "load needs pointer elements");
+    ElemTy = Type::tensor(PtrTy.getShape(), PtrTy.getElementType().getPointee());
+  } else {
+    ElemTy = PtrTy.getPointee();
+  }
+  Value *V = createValue(ElemTy);
+  Op O;
+  O.Kind = OpKind::Load;
+  O.Result = V;
+  O.Operands = {Ptr};
+  if (Mask)
+    O.Operands.push_back(Mask);
+  O.Ty = PtrTy;
+  Ops.push_back(std::move(O));
+  return V;
+}
+
+void Function::createStore(Value *Ptr, Value *Stored, Value *Mask) {
+  Op O;
+  O.Kind = OpKind::Store;
+  O.Operands = {Ptr, Stored};
+  if (Mask)
+    O.Operands.push_back(Mask);
+  O.Ty = Ptr->getType();
+  Ops.push_back(std::move(O));
 }
 
 void Function::createReturn(Value *V) {
@@ -242,6 +331,67 @@ void Function::print(raw_ostream &OS) const {
     case OpKind::Constant:
       O.Result->printName(OS);
       OS << " = arith.constant " << O.Imm << " : ";
+      O.Ty.print(OS);
+      OS << "\n";
+      break;
+    case OpKind::GetProgramId: {
+      O.Result->printName(OS);
+      OS << " = tt.get_program_id ";
+      OS << (O.Axis == 0 ? "x" : O.Axis == 1 ? "y" : "z");
+      OS << " : i32\n";
+      break;
+    }
+    case OpKind::MakeRange:
+      O.Result->printName(OS);
+      OS << " = tt.make_range {start = " << O.Start << " : i32, end = "
+         << O.End << " : i32} : ";
+      O.Ty.print(OS);
+      OS << "\n";
+      break;
+    case OpKind::Splat:
+      O.Result->printName(OS);
+      OS << " = tt.splat ";
+      O.Operands[0]->printName(OS);
+      OS << " : ";
+      O.Operands[0]->getType().print(OS);
+      OS << " -> ";
+      O.Ty.print(OS);
+      OS << "\n";
+      break;
+    case OpKind::AddPtr:
+      O.Result->printName(OS);
+      OS << " = tt.addptr ";
+      O.Operands[0]->printName(OS);
+      OS << ", ";
+      O.Operands[1]->printName(OS);
+      OS << " : ";
+      O.Operands[0]->getType().print(OS);
+      OS << ", ";
+      O.Operands[1]->getType().print(OS);
+      OS << "\n";
+      break;
+    case OpKind::Load:
+      O.Result->printName(OS);
+      OS << " = tt.load ";
+      O.Operands[0]->printName(OS);
+      if (O.Operands.size() > 1) {
+        OS << ", ";
+        O.Operands[1]->printName(OS);
+      }
+      OS << " : ";
+      O.Ty.print(OS);
+      OS << "\n";
+      break;
+    case OpKind::Store:
+      OS << "tt.store ";
+      O.Operands[0]->printName(OS);
+      OS << ", ";
+      O.Operands[1]->printName(OS);
+      if (O.Operands.size() > 2) {
+        OS << ", ";
+        O.Operands[2]->printName(OS);
+      }
+      OS << " : ";
       O.Ty.print(OS);
       OS << "\n";
       break;

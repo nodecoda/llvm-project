@@ -1,0 +1,29 @@
+// Golden canonical TTIR for scripts/triton/add_i32.py with BLOCK=1024 and
+// i32 pointers.  This is the same op sequence as Triton 3.9's Python
+// frontend (program_id -> muli -> make_range -> splat -> addi -> cmpi ->
+// splat/addptr -> load -> addi -> store); the chapter-23 gate canonicalises
+// both sides with triton-opt before comparing.
+module {
+  tt.func public @add_kernel(%arg0: !tt.ptr<i32>, %arg1: !tt.ptr<i32>, %arg2: !tt.ptr<i32>, %arg3: i32) {
+    %c1024_i32 = arith.constant 1024 : i32
+    %0 = tt.get_program_id x : i32
+    %1 = arith.muli %0, %c1024_i32 : i32
+    %2 = tt.make_range {end = 1024 : i32, start = 0 : i32} : tensor<1024xi32>
+    %3 = tt.splat %1 : i32 -> tensor<1024xi32>
+    %4 = arith.addi %3, %2 : tensor<1024xi32>
+    %5 = tt.splat %arg3 : i32 -> tensor<1024xi32>
+    %6 = arith.cmpi slt, %4, %5 : tensor<1024xi32>
+    %7 = tt.splat %arg0 : !tt.ptr<i32> -> tensor<1024x!tt.ptr<i32>>
+    %8 = tt.addptr %7, %4 : tensor<1024x!tt.ptr<i32>>, tensor<1024xi32>
+    %9 = tt.load %8, %6 : tensor<1024x!tt.ptr<i32>>
+    %10 = tt.splat %arg1 : !tt.ptr<i32> -> tensor<1024x!tt.ptr<i32>>
+    %11 = tt.addptr %10, %4 : tensor<1024x!tt.ptr<i32>>, tensor<1024xi32>
+    %12 = tt.load %11, %6 : tensor<1024x!tt.ptr<i32>>
+    %13 = tt.splat %arg2 : !tt.ptr<i32> -> tensor<1024x!tt.ptr<i32>>
+    %14 = tt.addptr %13, %4 : tensor<1024x!tt.ptr<i32>>, tensor<1024xi32>
+    %15 = arith.addi %9, %12 : tensor<1024xi32>
+    tt.store %14, %15, %6 : tensor<1024x!tt.ptr<i32>>
+    tt.return
+  }
+}
+

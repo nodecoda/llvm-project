@@ -84,14 +84,22 @@ unsigned columnOf(const Object &Node) {
   return static_cast<unsigned>(Node.getInteger("col_offset").value_or(0));
 }
 
+bool isPtrLike(const Type &T) {
+  return T.isPtr() || (T.isTensor() && T.getElementType().isPtr());
+}
+
+bool isI32Tensor(const Type &T) {
+  return T.isTensor() && T.getElementType().isI32();
+}
+
 /// Lowers one kernel body into one TTIR function.
 ///
-/// Chapter 22 is deliberately scalar-only: every runtime argument is i32 and
-/// every expression must be an integer literal, a name, or a pure integer
-/// operation.  Calls (tl.program_id, tl.load, ...) are chapter 23.
+/// Chapter 22 handled scalars; chapter 23 adds the tensor and pointer
+/// semantics needed by tl.program_id / tl.arange / tl.load / tl.store.
 class Lowerer {
 public:
-  Lowerer(const PyAst &Ast, Function &F) : Ast(Ast), F(F) {}
+  Lowerer(const PyAst &Ast, Function &F, const KernelBindings &Bindings)
+      : Ast(Ast), F(F), Bindings(Bindings) {}
 
   Error lower(const Object &Fn);
 
@@ -100,10 +108,21 @@ private:
   Error lowerStmt(const Object &Node);
   Expected<Value *> lowerExpr(const json::Value &Node);
   Expected<Value *> lowerExpr(const Object &Node);
+  Expected<Value *> lowerCall(const Object &Node);
+  Expected<Value *> lowerBinary(const Object &Node, OpKind Kind, Value *LHS,
+                                Value *RHS);
+  Expected<Value *> lowerCompare(const Object &Node, CmpPred Pred, Value *LHS,
+                                 Value *RHS);
+  Expected<int64_t> evalInt(const json::Value &Node);
+  Value *splatTo(Value *V, Type TensorTy);
+  void bindName(const Object &Target, Value *V);
 
   const PyAst &Ast;
   Function &F;
+  const KernelBindings &Bindings;
   std::map<std::string, Value *> Env;
+  std::map<std::string, int64_t> ConstValues;
+  std::map<std::string, unsigned> NameCount;
   bool SawReturn = false;
 };
 
@@ -111,6 +130,24 @@ Error Lowerer::errAt(const Object &Node, const Twine &Msg) const {
   return createStringError(inconvertibleErrorCode(), "%s:%u:%u: %s",
                            Ast.sourcePath().str().c_str(), lineOf(Node),
                            columnOf(Node), Msg.str().c_str());
+}
+
+Value *Lowerer::splatTo(Value *V, Type TensorTy) {
+  if (V->getType() == TensorTy)
+    return V;
+  return F.createSplat(V, TensorTy);
+}
+
+void Lowerer::bindName(const Object &Target, Value *V) {
+  std::string Name = stringField(Target, "id").str();
+  Env[Name] = V;
+  if (V->getName().empty()) {
+    unsigned Count = NameCount[Name]++;
+    if (Count == 0)
+      V->setName(Name);
+    else
+      V->setName(Name + "_" + std::to_string(Count));
+  }
 }
 
 Error Lowerer::lowerStmt(const Object &Node) {
@@ -125,19 +162,18 @@ Error Lowerer::lowerStmt(const Object &Node) {
     const json::Value *ValueNode = Node.get("value");
     if (!Targets || !ValueNode)
       return errAt(Node, "malformed Assign");
-    if (Targets->size() != 1) {
-      return errAt(Node, "multiple assignment targets are not supported "
-                         "in chapter 22");
-    }
+    if (Targets->size() != 1)
+      return errAt(Node, "multiple assignment targets are not supported");
     const Object *Target = (*Targets)[0].getAsObject();
     if (!Target || typeOf(*Target) != "Name")
-      return errAt(Node, "only simple name assignment is supported in "
-                         "chapter 22 (tuple targets arrive in chapter 23)");
+      return errAt(Node, "only simple name assignment is supported");
 
     Expected<Value *> ValueOrErr = lowerExpr(*ValueNode);
     if (!ValueOrErr)
       return ValueOrErr.takeError();
-    Env[stringField(*Target, "id").str()] = *ValueOrErr;
+    if (!*ValueOrErr)
+      return errAt(Node, "the right-hand side does not produce a value");
+    bindName(*Target, *ValueOrErr);
     return Error::success();
   }
 
@@ -147,6 +183,8 @@ Error Lowerer::lowerStmt(const Object &Node) {
       if (!ValueOrErr)
         return ValueOrErr.takeError();
       Value *V = *ValueOrErr;
+      if (!V)
+        return errAt(Node, "the returned expression does not produce a value");
       if (SawReturn && F.getResultType() != V->getType())
         return errAt(Node, "return type mismatch: earlier return had a "
                            "different type");
@@ -174,8 +212,7 @@ Error Lowerer::lowerStmt(const Object &Node) {
     return Error::success();
   }
 
-  return errAt(Node, ("unsupported statement '" + Type + "' in chapter 22")
-                         .str());
+  return errAt(Node, ("unsupported statement '" + Type + "'").str());
 }
 
 Expected<Value *> Lowerer::lowerExpr(const json::Value &Node) {
@@ -193,7 +230,7 @@ Expected<Value *> Lowerer::lowerExpr(const Object &Node) {
   if (Type == "Constant") {
     if (auto Imm = Node.getInteger("value"))
       return F.createConstant(*Imm, Type::i32());
-    return errAt(Node, "only integer constants are supported in chapter 22");
+    return errAt(Node, "only integer constants are supported");
   }
 
   if (Type == "Name") {
@@ -230,8 +267,8 @@ Expected<Value *> Lowerer::lowerExpr(const Object &Node) {
     else if (OpType == "RShift")
       Kind = OpKind::AShrI; // Python's >> is arithmetic for signed ints.
     else
-      return errAt(Node, ("unsupported binary operator '" + OpType + "'")
-                             .str());
+      return errAt(Node,
+                   ("unsupported binary operator '" + OpType + "'").str());
 
     Expected<Value *> LHSOrErr = lowerExpr(*LHSNode);
     if (!LHSOrErr)
@@ -239,11 +276,7 @@ Expected<Value *> Lowerer::lowerExpr(const Object &Node) {
     Expected<Value *> RHSOrErr = lowerExpr(*RHSNode);
     if (!RHSOrErr)
       return RHSOrErr.takeError();
-    Value *LHS = *LHSOrErr;
-    Value *RHS = *RHSOrErr;
-    if (!LHS->getType().isI32() || !RHS->getType().isI32())
-      return errAt(Node, "chapter 22 only supports i32 operands");
-    return F.createBinary(Kind, LHS, RHS);
+    return lowerBinary(Node, Kind, *LHSOrErr, *RHSOrErr);
   }
 
   if (Type == "Compare") {
@@ -252,7 +285,7 @@ Expected<Value *> Lowerer::lowerExpr(const Object &Node) {
     const Array *Comparators = Node.getArray("comparators");
     if (!Ops || Ops->size() != 1 || !LHSNode || !Comparators ||
         Comparators->size() != 1)
-      return errAt(Node, "chained comparisons are not supported in chapter 22");
+      return errAt(Node, "chained comparisons are not supported");
 
     const Object *OpObj = (*Ops)[0].getAsObject();
     if (!OpObj)
@@ -280,11 +313,7 @@ Expected<Value *> Lowerer::lowerExpr(const Object &Node) {
     Expected<Value *> RHSOrErr = lowerExpr((*Comparators)[0]);
     if (!RHSOrErr)
       return RHSOrErr.takeError();
-    Value *LHS = *LHSOrErr;
-    Value *RHS = *RHSOrErr;
-    if (!LHS->getType().isI32() || !RHS->getType().isI32())
-      return errAt(Node, "chapter 22 only compares i32 operands");
-    return F.createCmp(Pred, LHS, RHS);
+    return lowerCompare(Node, Pred, *LHSOrErr, *RHSOrErr);
   }
 
   if (Type == "UnaryOp") {
@@ -308,12 +337,243 @@ Expected<Value *> Lowerer::lowerExpr(const Object &Node) {
     return errAt(Node, ("unsupported unary operator '" + OpType + "'").str());
   }
 
-  if (Type == "Call") {
-    return errAt(Node, "unsupported expression 'Call' in chapter 22 "
-                       "(tl.program_id/tl.load/tl.store arrive in chapter 23)");
-  }
+  if (Type == "Call")
+    return lowerCall(Node);
 
   return errAt(Node, ("unsupported expression '" + Type + "'").str());
+}
+
+Expected<Value *> Lowerer::lowerBinary(const Object &Node, OpKind Kind,
+                                       Value *LHS, Value *RHS) {
+  Type LT = LHS->getType();
+  Type RT = RHS->getType();
+
+  if (isPtrLike(LT) || isPtrLike(RT)) {
+    if (Kind != OpKind::AddI)
+      return errAt(Node, "pointer arithmetic only supports '+'");
+    Value *Ptr = LHS;
+    Value *Offset = RHS;
+    Type PtrTy = LT;
+    Type OffsetTy = RT;
+    if (isPtrLike(RT)) {
+      if (isPtrLike(LT))
+        return errAt(Node, "cannot add two pointers");
+      std::swap(Ptr, Offset);
+      std::swap(PtrTy, OffsetTy);
+    }
+    if (!(OffsetTy.isI32() || isI32Tensor(OffsetTy)))
+      return errAt(Node, "pointer offset must be i32 or tensor<i32>");
+    if (PtrTy.isTensor() && OffsetTy.isI32()) {
+      Offset = F.createSplat(
+          Offset, Type::tensor(PtrTy.getShape(), Type::i32()));
+    } else if (PtrTy.isPtr() && OffsetTy.isTensor()) {
+      Ptr = F.createSplat(Ptr, Type::tensor(OffsetTy.getShape(), PtrTy));
+    } else if (PtrTy.isTensor() && OffsetTy.isTensor()) {
+      if (PtrTy.getShape() != OffsetTy.getShape())
+        return errAt(Node, "pointer/offset tensor shapes differ");
+    }
+    return F.createAddPtr(Ptr, Offset);
+  }
+
+  if (LT.isI32() && RT.isI32())
+    return F.createBinary(Kind, LHS, RHS);
+  if (LT.isTensor() && RT.isI32())
+    return F.createBinary(Kind, LHS, splatTo(RHS, LT));
+  if (LT.isI32() && RT.isTensor())
+    return F.createBinary(Kind, splatTo(LHS, RT), RHS);
+  if (LT.isTensor() && RT.isTensor()) {
+    if (LT != RT)
+      return errAt(Node, "tensor type mismatch");
+    return F.createBinary(Kind, LHS, RHS);
+  }
+  return errAt(Node, "unsupported operand types for this operator");
+}
+
+Expected<Value *> Lowerer::lowerCompare(const Object &Node, CmpPred Pred,
+                                        Value *LHS, Value *RHS) {
+  Type LT = LHS->getType();
+  Type RT = RHS->getType();
+
+  if (LT.isI32() && RT.isI32())
+    return F.createCmp(Pred, LHS, RHS);
+  if (LT.isTensor() && RT.isI32())
+    return F.createCmp(Pred, LHS, splatTo(RHS, LT));
+  if (LT.isI32() && RT.isTensor())
+    return F.createCmp(Pred, splatTo(LHS, RT), RHS);
+  if (LT.isTensor() && RT.isTensor()) {
+    if (LT != RT)
+      return errAt(Node, "tensor type mismatch in comparison");
+    return F.createCmp(Pred, LHS, RHS);
+  }
+  return errAt(Node, "comparisons require i32 or tensor<i32> operands");
+}
+
+Expected<int64_t> Lowerer::evalInt(const json::Value &NodeValue) {
+  const Object *Node = NodeValue.getAsObject();
+  if (!Node)
+    return createStringError(inconvertibleErrorCode(),
+                             "%s: malformed constant expression",
+                             Ast.sourcePath().str().c_str());
+  StringRef Type = typeOf(*Node);
+  if (Type == "Constant") {
+    if (auto Imm = Node->getInteger("value"))
+      return *Imm;
+    return errAt(*Node, "expected an integer constant");
+  }
+  if (Type == "Name") {
+    std::string Name = stringField(*Node, "id").str();
+    auto It = ConstValues.find(Name);
+    if (It != ConstValues.end())
+      return It->second;
+    return errAt(*Node, "'" + Name + "' is not a compile-time integer");
+  }
+  if (Type == "UnaryOp") {
+    const Object *Op = Node->getObject("op");
+    const json::Value *Operand = Node->get("operand");
+    if (Op && Operand && typeOf(*Op) == "USub") {
+      auto VOrErr = evalInt(*Operand);
+      if (!VOrErr)
+        return VOrErr.takeError();
+      return -*VOrErr;
+    }
+  }
+  return errAt(*Node, "expected a compile-time integer");
+}
+
+Expected<Value *> Lowerer::lowerCall(const Object &Node) {
+  const Object *Func = Node.getObject("func");
+  if (!Func || typeOf(*Func) != "Attribute")
+    return errAt(Node, "only tl.* calls are supported in chapter 23");
+
+  const Object *Receiver = Func->getObject("value");
+  bool IsTL = Receiver && typeOf(*Receiver) == "Name" &&
+              stringField(*Receiver, "id") == "tl";
+  if (!IsTL)
+    return errAt(Node, "only tl.* calls are supported in chapter 23");
+
+  StringRef Name = stringField(*Func, "attr");
+  const Array *Args = Node.getArray("args");
+  std::map<std::string, const json::Value *> Keywords;
+  if (const Array *KeywordNodes = Node.getArray("keywords")) {
+    for (const json::Value &Item : *KeywordNodes) {
+      const Object *Keyword = Item.getAsObject();
+      if (!Keyword)
+        return errAt(Node, "malformed keyword argument");
+      auto ArgName = Keyword->getString("arg");
+      if (!ArgName)
+        return errAt(*Keyword, "**kwargs are not supported");
+      Keywords[ArgName->str()] = Keyword->get("value");
+    }
+  }
+
+  auto GetArg = [&](size_t I) -> const json::Value * {
+    if (!Args || I >= Args->size())
+      return nullptr;
+    return &(*Args)[I];
+  };
+
+  if (Name == "program_id") {
+    const json::Value *AxisNode = GetArg(0);
+    if (!AxisNode)
+      return errAt(Node, "tl.program_id expects one argument");
+    Expected<int64_t> AxisOrErr = evalInt(*AxisNode);
+    if (!AxisOrErr)
+      return AxisOrErr.takeError();
+    if (*AxisOrErr != 0)
+      return errAt(Node, "chapter 23 only supports tl.program_id(0)");
+    return F.createGetProgramId(0);
+  }
+
+  if (Name == "arange") {
+    const json::Value *StartNode = GetArg(0);
+    const json::Value *EndNode = GetArg(1);
+    if (!StartNode || !EndNode)
+      return errAt(Node, "tl.arange expects (start, end)");
+    Expected<int64_t> StartOrErr = evalInt(*StartNode);
+    if (!StartOrErr)
+      return StartOrErr.takeError();
+    Expected<int64_t> EndOrErr = evalInt(*EndNode);
+    if (!EndOrErr)
+      return EndOrErr.takeError();
+    if (*EndOrErr <= *StartOrErr)
+      return errAt(Node, "tl.arange requires end > start");
+    return F.createMakeRange(*StartOrErr, *EndOrErr);
+  }
+
+  if (Name == "load") {
+    const json::Value *PtrNode = GetArg(0);
+    if (!PtrNode)
+      return errAt(Node, "tl.load expects a pointer");
+    Expected<Value *> PtrOrErr = lowerExpr(*PtrNode);
+    if (!PtrOrErr)
+      return PtrOrErr.takeError();
+    Value *Ptr = *PtrOrErr;
+    if (!Ptr->getType().isTensor() ||
+        !Ptr->getType().getElementType().isPtr())
+      return errAt(Node, "chapter 23 tl.load expects a pointer tensor");
+    if (Keywords.count("other"))
+      return errAt(Node, "tl.load(other=...) arrives in a later chapter");
+
+    Value *Mask = nullptr;
+    auto MaskIt = Keywords.find("mask");
+    if (MaskIt != Keywords.end()) {
+      Expected<Value *> MaskOrErr = lowerExpr(*MaskIt->second);
+      if (!MaskOrErr)
+        return MaskOrErr.takeError();
+      Mask = *MaskOrErr;
+      if (Mask->getType().isI1())
+        Mask = F.createSplat(
+            Mask, Type::tensor(Ptr->getType().getShape(), Type::i1()));
+      else if (!Mask->getType().isTensor() ||
+               !Mask->getType().getElementType().isI1())
+        return errAt(Node, "tl.load mask must be i1 or tensor<i1>");
+      if (Mask->getType().getShape() != Ptr->getType().getShape())
+        return errAt(Node, "tl.load mask shape does not match the pointer");
+    }
+    return F.createLoad(Ptr, Mask);
+  }
+
+  if (Name == "store") {
+    const json::Value *PtrNode = GetArg(0);
+    const json::Value *ValueNode = GetArg(1);
+    if (!PtrNode || !ValueNode)
+      return errAt(Node, "tl.store expects (pointer, value)");
+    Expected<Value *> PtrOrErr = lowerExpr(*PtrNode);
+    if (!PtrOrErr)
+      return PtrOrErr.takeError();
+    Expected<Value *> ValueOrErr = lowerExpr(*ValueNode);
+    if (!ValueOrErr)
+      return ValueOrErr.takeError();
+    Value *Ptr = *PtrOrErr;
+    Value *Stored = *ValueOrErr;
+    if (!Ptr->getType().isTensor() ||
+        !Ptr->getType().getElementType().isPtr())
+      return errAt(Node, "chapter 23 tl.store expects a pointer tensor");
+
+    Value *Mask = nullptr;
+    auto MaskIt = Keywords.find("mask");
+    if (MaskIt != Keywords.end()) {
+      Expected<Value *> MaskOrErr = lowerExpr(*MaskIt->second);
+      if (!MaskOrErr)
+        return MaskOrErr.takeError();
+      Mask = *MaskOrErr;
+      if (Mask->getType().isI1())
+        Mask = F.createSplat(
+            Mask, Type::tensor(Ptr->getType().getShape(), Type::i1()));
+      else if (!Mask->getType().isTensor() ||
+               !Mask->getType().getElementType().isI1())
+        return errAt(Node, "tl.store mask must be i1 or tensor<i1>");
+      if (Mask->getType().getShape() != Ptr->getType().getShape())
+        return errAt(Node, "tl.store mask shape does not match the pointer");
+    }
+    F.createStore(Ptr, Stored, Mask);
+    return nullptr;
+  }
+
+  if (Name == "sum" || Name == "max")
+    return errAt(Node, "tl." + Name + " arrives in chapter 26");
+
+  return errAt(Node, ("unsupported tl function '" + Name + "'").str());
 }
 
 Error Lowerer::lower(const Object &Fn) {
@@ -327,13 +587,26 @@ Error Lowerer::lower(const Object &Fn) {
   appendArgList(*ArgsObj, "kwonlyargs", ParsedArgs);
 
   for (const KernelArg &Arg : ParsedArgs) {
-    // tl.constexpr parameters are compile-time values, not runtime arguments.
-    if (Arg.IsConstexpr)
+    NameCount[Arg.Name] = 1; // arguments already occupy the base name
+    if (Arg.IsConstexpr) {
+      auto It = Bindings.Constexprs.find(Arg.Name);
+      if (It == Bindings.Constexprs.end())
+        return errAt(Fn, "constexpr argument '" + Arg.Name +
+                             "' has no value; pass --constexpr " + Arg.Name +
+                             "=<int>");
+      ConstValues[Arg.Name] = It->second;
+      // Triton materialises constexpr parameters at function entry.
+      Env[Arg.Name] = F.createConstant(It->second, Type::i32());
       continue;
-    Env[Arg.Name] = F.addArg(Arg.Name, Type::i32());
+    }
+    Type Ty = Type::i32();
+    auto It = Bindings.ArgTypes.find(Arg.Name);
+    if (It != Bindings.ArgTypes.end())
+      Ty = It->second;
+    Env[Arg.Name] = F.addArg(Arg.Name, Ty);
   }
   if (ArgsObj->getObject("vararg") || ArgsObj->getObject("kwarg"))
-    return errAt(Fn, "*args/**kwargs are not supported in chapter 22");
+    return errAt(Fn, "*args/**kwargs are not supported");
 
   const Array *Body = Fn.getArray("body");
   if (!Body)
@@ -417,7 +690,7 @@ llvm::Expected<std::vector<KernelInfo>> Frontend::parseKernels() {
   return Kernels;
 }
 
-llvm::Expected<Module> Frontend::lowerKernels() {
+llvm::Expected<Module> Frontend::lowerKernels(const KernelBindings &Bindings) {
   const Object &Root = Ast.root();
   const Array *Body = Root.getArray("body");
   if (!Body)
@@ -445,7 +718,7 @@ llvm::Expected<Module> Frontend::lowerKernels() {
       continue;
 
     Function &F = M.createFunction(stringField(*Fn, "name"));
-    Lowerer L(Ast, F);
+    Lowerer L(Ast, F, Bindings);
     if (Error E = L.lower(*Fn))
       return std::move(E);
     ++NumKernels;

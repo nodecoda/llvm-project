@@ -21,7 +21,6 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 TOOL="$BIN/gpumin-triton"
 SCALAR="$HERE/triton/scalar_add.py"
 GOLDEN="$HERE/triton/scalar_add.ttir"
-ADD="$HERE/triton/add_i32.py"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 export PYTHONDONTWRITEBYTECODE=1
@@ -90,12 +89,21 @@ grep -qi 'ListComp' "$TMP/bad.err" ||
   fail "error does not name the unsupported node"
 echo "PASS 4/5: unsupported nodes report file:line:col"
 
-# --- 5. tensor calls stop at the chapter-23 boundary ---------------------
-if "$TOOL" --emit-ttir "$ADD" > "$TMP/add.out" 2> "$TMP/add.err"; then
-  fail "add_i32.py lowered before tensor semantics exist"
+# --- 5. reductions stop at the chapter-26 boundary ----------------------
+cat > "$TMP/reduce.py" <<'PY'
+import triton
+import triton.language as tl
+
+@triton.jit
+def reduce(n):
+    x = tl.arange(0, 32)
+    return tl.sum(x)
+PY
+if "$TOOL" --emit-ttir "$TMP/reduce.py" > "$TMP/reduce.out" 2> "$TMP/reduce.err"; then
+  fail "tl.sum lowered before reduction semantics exist"
 fi
-grep -q 'add_i32.py:' "$TMP/add.err" ||
-  fail "chapter-23 boundary error lacks a location"
-grep -q 'chapter 23' "$TMP/add.err" ||
-  { cat "$TMP/add.err" >&2; fail "chapter-23 boundary error is not explicit"; }
-echo "PASS 5/5: tl.* calls report the chapter-23 boundary"
+grep -q 'reduce.py:' "$TMP/reduce.err" ||
+  fail "reduction boundary error lacks a location"
+grep -q 'chapter 26' "$TMP/reduce.err" ||
+  { cat "$TMP/reduce.err" >&2; fail "reduction boundary error is not explicit"; }
+echo "PASS 5/5: tl.sum reports the chapter-26 boundary"

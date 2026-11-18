@@ -12,6 +12,8 @@
 #include "PyAst.h"
 #include "TTIR.h"
 #include "llvm/Support/Error.h"
+#include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -29,6 +31,16 @@ struct KernelInfo {
   std::vector<KernelArg> Args;
 };
 
+/// Triton gets argument types and tl.constexpr values from the launch
+/// specialization.  A standalone compiler has no launch, so the driver passes
+/// them explicitly:
+///
+///   --constexpr BLOCK=1024 --arg-type x_ptr=ptr --arg-type n=i32
+struct KernelBindings {
+  std::map<std::string, int64_t> Constexprs;
+  std::map<std::string, Type> ArgTypes;
+};
+
 /// The frontend has two layers:
 ///
 ///   * parseKernels(): chapter 21's recognition pass.  It answers "which
@@ -42,7 +54,7 @@ public:
   explicit Frontend(const PyAst &Ast) : Ast(Ast) {}
 
   llvm::Expected<std::vector<KernelInfo>> parseKernels();
-  llvm::Expected<Module> lowerKernels();
+  llvm::Expected<Module> lowerKernels(const KernelBindings &Bindings = {});
 
 private:
   const PyAst &Ast;

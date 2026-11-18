@@ -49,12 +49,53 @@ static cl::opt<bool> DumpAstJson("dump-ast-json",
 static cl::opt<bool> EmitTTIR("emit-ttir",
                               cl::desc("Print the TTIR-min module"),
                               cl::init(false));
+static cl::list<std::string> ConstexprBindings(
+    "constexpr", cl::desc("Bind a tl.constexpr argument: NAME=INT"),
+    cl::value_desc("NAME=INT"));
+static cl::list<std::string> ArgTypeBindings(
+    "arg-type", cl::desc("Type a runtime argument: NAME=i32|ptr"),
+    cl::value_desc("NAME=TYPE"));
 static cl::opt<std::string> Output("o", cl::desc("Write output to <file>"),
                                    cl::value_desc("file"), cl::init("-"));
 
 static int reportError(Error E) {
   errs() << "gpumin-triton: " << toString(std::move(E)) << "\n";
   return 1;
+}
+
+static Expected<KernelBindings> parseBindings() {
+  KernelBindings B;
+  for (StringRef Spec : ConstexprBindings) {
+    auto [Name, ValueText] = Spec.split('=');
+    if (Name.empty() || ValueText.empty())
+      return createStringError(inconvertibleErrorCode(),
+                               "expected --constexpr NAME=INT, got '%s'",
+                               Spec.str().c_str());
+    int64_t Value = 0;
+    if (ValueText.getAsInteger(10, Value))
+      return createStringError(inconvertibleErrorCode(),
+                               "constexpr value is not an integer: '%s'",
+                               ValueText.str().c_str());
+    B.Constexprs[Name.str()] = Value;
+  }
+  for (StringRef Spec : ArgTypeBindings) {
+    auto [Name, TypeText] = Spec.split('=');
+    if (Name.empty() || TypeText.empty())
+      return createStringError(inconvertibleErrorCode(),
+                               "expected --arg-type NAME=TYPE, got '%s'",
+                               Spec.str().c_str());
+    Type Ty;
+    if (TypeText == "i32")
+      Ty = Type::i32();
+    else if (TypeText == "ptr" || TypeText == "ptr<i32>")
+      Ty = Type::ptr(Type::i32());
+    else
+      return createStringError(inconvertibleErrorCode(),
+                               "unsupported argument type '%s' (use i32 or ptr)",
+                               TypeText.str().c_str());
+    B.ArgTypes[Name.str()] = Ty;
+  }
+  return B;
 }
 
 static void printKernels(ArrayRef<KernelInfo> Kernels, raw_ostream &OS) {
@@ -73,7 +114,7 @@ int main(int argc, char **argv) {
   InitLLVM X(argc, argv);
   cl::ParseCommandLineOptions(
       argc, argv,
-      "GPUMin Triton frontend (chapter 22: scalar TTIR lowering)\n");
+      "GPUMin Triton frontend (chapter 23: tensor and pointer semantics)\n");
 
   if (Input.empty() && AstJson.empty()) {
     errs() << "gpumin-triton: expected a kernel.py or --ast-json <file>\n";
@@ -113,7 +154,10 @@ int main(int argc, char **argv) {
   Frontend F(Ast);
 
   if (EmitTTIR) {
-    Expected<Module> ModuleOrErr = F.lowerKernels();
+    Expected<KernelBindings> BindingsOrErr = parseBindings();
+    if (!BindingsOrErr)
+      return reportError(BindingsOrErr.takeError());
+    Expected<Module> ModuleOrErr = F.lowerKernels(*BindingsOrErr);
     if (!ModuleOrErr)
       return reportError(ModuleOrErr.takeError());
     ModuleOrErr->print(*OS);
