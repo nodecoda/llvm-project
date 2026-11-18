@@ -68,6 +68,7 @@ scripts/gpumin-verify-all.sh <llvm-bin-dir>
 | 21 | [triton-frontend](21-triton-frontend.md) | `check-ch21.sh` | C++ 前端、CPython AST 桥 |
 | 22 | [ttir-min](22-ttir-min.md) | `check-ch22.sh` | TTIR-min、SSA、标量 lowering |
 | 23 | [tensor-semantics](23-tensor-semantics.md) | `check-ch23.sh` | tensor、指针、mask、`tt.addptr` |
+| 24 | [fixed-layout-llvm](24-fixed-layout-llvm.md) | `check-ch24.sh` | 固定布局、标量化、`sr.args` ABI |
 
 ## 8 项总门禁
 

@@ -1,0 +1,343 @@
+//===-- LLVMEmit.cpp - TTIR-min to GPUMin LLVM IR -------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+#include "LLVMEmit.h"
+
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/raw_ostream.h"
+#include <map>
+#include "llvm/TargetParser/Triple.h"
+
+using namespace llvm;
+
+namespace gpumintriton {
+
+namespace {
+
+using LlvmValue = llvm::Value;
+
+constexpr unsigned ThreadsPerBlock = 32;
+
+struct Lowered {
+  std::vector<LlvmValue *> Elts;
+  bool IsTensor = false;
+};
+
+class FuncEmitter {
+public:
+  FuncEmitter(llvm::Module &M, const Function &TF)
+      : M(M), TF(TF), Ctx(M.getContext()), B(Ctx) {}
+  Error emit();
+
+private:
+  Expected<unsigned> elementsPerThread(Type Ty) const;
+  LlvmValue *elementAt(const Lowered &V, unsigned R) const;
+  LlvmValue *maskedLoad(LlvmValue *Ptr, LlvmValue *Mask);
+  void maskedStore(LlvmValue *Ptr, LlvmValue *Stored, LlvmValue *Mask);
+  Error emitOp(const Op &O);
+  Error emitPrologue();
+
+  llvm::Module &M;
+  const Function &TF;
+  LLVMContext &Ctx;
+  IRBuilder<> B;
+  llvm::Function *LF = nullptr;
+  std::map<const gpumintriton::Value *, Lowered> Env;
+};
+
+Expected<unsigned> FuncEmitter::elementsPerThread(Type Ty) const {
+  if (!Ty.isTensor())
+    return 1;
+  int64_t N = Ty.getShape()[0];
+  if (Ty.getShape().size() != 1 || N <= 0 || N % ThreadsPerBlock != 0)
+    return createStringError(inconvertibleErrorCode(),
+                             "tensor size must be a positive multiple of %u, "
+                             "got %lld",
+                             ThreadsPerBlock, static_cast<long long>(N));
+  return static_cast<unsigned>(N / ThreadsPerBlock);
+}
+
+LlvmValue *FuncEmitter::elementAt(const Lowered &V, unsigned R) const {
+  return V.IsTensor ? V.Elts[R] : V.Elts[0];
+}
+
+LlvmValue *FuncEmitter::maskedLoad(LlvmValue *Ptr, LlvmValue *Mask) {
+  if (!Mask)
+    return B.CreateLoad(B.getInt32Ty(), Ptr);
+  BasicBlock *Before = B.GetInsertBlock();
+  BasicBlock *LoadBB = BasicBlock::Create(Ctx, "load", LF);
+  BasicBlock *MergeBB = BasicBlock::Create(Ctx, "merge", LF);
+  B.CreateCondBr(Mask, LoadBB, MergeBB);
+  B.SetInsertPoint(LoadBB);
+  LlvmValue *Loaded = B.CreateLoad(B.getInt32Ty(), Ptr);
+  B.CreateBr(MergeBB);
+  B.SetInsertPoint(MergeBB);
+  PHINode *Phi = B.CreatePHI(B.getInt32Ty(), 2);
+  Phi->addIncoming(Loaded, LoadBB);
+  Phi->addIncoming(B.getInt32(0), Before);
+  return Phi;
+}
+
+void FuncEmitter::maskedStore(LlvmValue *Ptr, LlvmValue *Stored, LlvmValue *Mask) {
+  if (!Mask) {
+    B.CreateStore(Stored, Ptr);
+    return;
+  }
+  BasicBlock *StoreBB = BasicBlock::Create(Ctx, "store", LF);
+  BasicBlock *ContBB = BasicBlock::Create(Ctx, "cont", LF);
+  B.CreateCondBr(Mask, StoreBB, ContBB);
+  B.SetInsertPoint(StoreBB);
+  B.CreateStore(Stored, Ptr);
+  B.CreateBr(ContBB);
+  B.SetInsertPoint(ContBB);
+}
+
+Error FuncEmitter::emitPrologue() {
+  LF = llvm::Function::Create(llvm::FunctionType::get(B.getVoidTy(), false),
+                              llvm::GlobalValue::ExternalLinkage, TF.getName(),
+                              M);
+  LF->addFnAttr("gpumin_kernel");
+
+  BasicBlock *Entry = BasicBlock::Create(Ctx, "entry", LF);
+  B.SetInsertPoint(Entry);
+
+  FunctionCallee ArgsFn = M.getOrInsertFunction("llvm.gpumin.args",
+                                                B.getInt32Ty());
+  LlvmValue *ArgsAddr = B.CreateCall(ArgsFn);
+  llvm::Type *PtrTy = PointerType::get(Ctx, 1);
+  LlvmValue *ArgsPtr = B.CreateIntToPtr(ArgsAddr, PtrTy);
+
+  unsigned Index = 0;
+  for (gpumintriton::Value *Arg : TF.getArgs()) {
+    LlvmValue *Slot = Index == 0
+                      ? ArgsPtr
+                      : B.CreateGEP(B.getInt32Ty(), ArgsPtr, B.getInt32(Index));
+    LlvmValue *Raw = B.CreateLoad(B.getInt32Ty(), Slot);
+    if (Arg->getType().isPtr())
+      Env[Arg] = {{B.CreateIntToPtr(Raw, PtrTy)}, false};
+    else
+      Env[Arg] = {{Raw}, false};
+    ++Index;
+  }
+  return Error::success();
+}
+
+Error FuncEmitter::emitOp(const Op &O) {
+  switch (O.Kind) {
+  case OpKind::Constant:
+    Env[O.Result] = {{B.getInt32(static_cast<uint32_t>(O.Imm))}, false};
+    return Error::success();
+
+  case OpKind::GetProgramId: {
+    FunctionCallee BlockIdFn = M.getOrInsertFunction(
+        "llvm.gpumin.blockid", B.getInt32Ty());
+    Env[O.Result] = {{B.CreateCall(BlockIdFn)}, false};
+    return Error::success();
+  }
+
+  case OpKind::MakeRange: {
+    FunctionCallee TidFn = M.getOrInsertFunction("llvm.gpumin.tid",
+                                                 B.getInt32Ty());
+    LlvmValue *Tid = B.CreateCall(TidFn);
+    int64_t Range = O.End - O.Start;
+    if (Range <= 0 || Range % ThreadsPerBlock != 0)
+      return createStringError(inconvertibleErrorCode(),
+                               "tl.arange range must be a positive multiple "
+                               "of %u, got %lld",
+                               ThreadsPerBlock,
+                               static_cast<long long>(Range));
+    unsigned Count = static_cast<unsigned>(Range / ThreadsPerBlock);
+    Lowered V;
+    V.IsTensor = true;
+    for (unsigned R = 0; R < Count; ++R) {
+      LlvmValue *Base = B.getInt32(static_cast<uint32_t>(O.Start + R * ThreadsPerBlock));
+      V.Elts.push_back(B.CreateAdd(Base, Tid));
+    }
+    Env[O.Result] = std::move(V);
+    return Error::success();
+  }
+
+  case OpKind::Splat: {
+    LlvmValue *Scalar = elementAt(Env.at(O.Operands[0]), 0);
+    Expected<unsigned> CountOrErr = elementsPerThread(O.Ty);
+    if (!CountOrErr)
+      return CountOrErr.takeError();
+    unsigned Count = *CountOrErr;
+    Lowered V;
+    V.IsTensor = true;
+    V.Elts.assign(Count, Scalar);
+    Env[O.Result] = std::move(V);
+    return Error::success();
+  }
+
+  case OpKind::AddPtr: {
+    const Lowered &Ptr = Env.at(O.Operands[0]);
+    const Lowered &Off = Env.at(O.Operands[1]);
+    unsigned Count = std::max(Ptr.Elts.size(), Off.Elts.size());
+    Lowered V;
+    V.IsTensor = Ptr.IsTensor || Off.IsTensor;
+    for (unsigned R = 0; R < Count; ++R)
+      V.Elts.push_back(B.CreateGEP(B.getInt32Ty(), elementAt(Ptr, R),
+                                   elementAt(Off, R)));
+    Env[O.Result] = std::move(V);
+    return Error::success();
+  }
+
+  case OpKind::Load: {
+    const Lowered &Ptr = Env.at(O.Operands[0]);
+    const Lowered *Mask =
+        O.Operands.size() > 1 ? &Env.at(O.Operands[1]) : nullptr;
+    Lowered V;
+    V.IsTensor = Ptr.IsTensor;
+    for (unsigned R = 0; R < Ptr.Elts.size(); ++R) {
+      LlvmValue *MaskElt = Mask ? elementAt(*Mask, R) : nullptr;
+      V.Elts.push_back(maskedLoad(Ptr.Elts[R], MaskElt));
+    }
+    Env[O.Result] = std::move(V);
+    return Error::success();
+  }
+
+  case OpKind::Store: {
+    const Lowered &Ptr = Env.at(O.Operands[0]);
+    const Lowered &Stored = Env.at(O.Operands[1]);
+    const Lowered *Mask =
+        O.Operands.size() > 2 ? &Env.at(O.Operands[2]) : nullptr;
+    for (unsigned R = 0; R < Ptr.Elts.size(); ++R) {
+      LlvmValue *MaskElt = Mask ? elementAt(*Mask, R) : nullptr;
+      maskedStore(Ptr.Elts[R], elementAt(Stored, R), MaskElt);
+    }
+    return Error::success();
+  }
+
+  case OpKind::CmpI: {
+    const Lowered &L = Env.at(O.Operands[0]);
+    const Lowered &RHS = Env.at(O.Operands[1]);
+    CmpInst::Predicate Pred;
+    switch (O.Pred) {
+    case CmpPred::Eq:
+      Pred = CmpInst::ICMP_EQ;
+      break;
+    case CmpPred::Ne:
+      Pred = CmpInst::ICMP_NE;
+      break;
+    case CmpPred::Slt:
+      Pred = CmpInst::ICMP_SLT;
+      break;
+    case CmpPred::Sle:
+      Pred = CmpInst::ICMP_SLE;
+      break;
+    case CmpPred::Sgt:
+      Pred = CmpInst::ICMP_SGT;
+      break;
+    case CmpPred::Sge:
+      Pred = CmpInst::ICMP_SGE;
+      break;
+    case CmpPred::Ult:
+      Pred = CmpInst::ICMP_ULT;
+      break;
+    case CmpPred::Ule:
+      Pred = CmpInst::ICMP_ULE;
+      break;
+    case CmpPred::Ugt:
+      Pred = CmpInst::ICMP_UGT;
+      break;
+    case CmpPred::Uge:
+      Pred = CmpInst::ICMP_UGE;
+      break;
+    }
+    Lowered V;
+    V.IsTensor = L.IsTensor;
+    for (unsigned I = 0; I < L.Elts.size(); ++I)
+      V.Elts.push_back(B.CreateICmp(Pred, elementAt(L, I),
+                                    elementAt(RHS, I)));
+    Env[O.Result] = std::move(V);
+    return Error::success();
+  }
+
+  case OpKind::Return:
+    B.CreateRetVoid();
+    return Error::success();
+
+  default: {
+    const Lowered &L = Env.at(O.Operands[0]);
+    const Lowered &RHS = Env.at(O.Operands[1]);
+    Lowered V;
+    V.IsTensor = L.IsTensor;
+    for (unsigned I = 0; I < L.Elts.size(); ++I) {
+      LlvmValue *A = elementAt(L, I);
+      LlvmValue *Bv = elementAt(RHS, I);
+      switch (O.Kind) {
+      case OpKind::AddI:
+        V.Elts.push_back(B.CreateAdd(A, Bv));
+        break;
+      case OpKind::SubI:
+        V.Elts.push_back(B.CreateSub(A, Bv));
+        break;
+      case OpKind::MulI:
+        V.Elts.push_back(B.CreateMul(A, Bv));
+        break;
+      case OpKind::AndI:
+        V.Elts.push_back(B.CreateAnd(A, Bv));
+        break;
+      case OpKind::OrI:
+        V.Elts.push_back(B.CreateOr(A, Bv));
+        break;
+      case OpKind::XOrI:
+        V.Elts.push_back(B.CreateXor(A, Bv));
+        break;
+      case OpKind::ShlI:
+        V.Elts.push_back(B.CreateShl(A, Bv));
+        break;
+      case OpKind::ShrI:
+        V.Elts.push_back(B.CreateLShr(A, Bv));
+        break;
+      case OpKind::AShrI:
+        V.Elts.push_back(B.CreateAShr(A, Bv));
+        break;
+      default:
+        llvm_unreachable("LLVMEmit: unknown binary op");
+      }
+    }
+    Env[O.Result] = std::move(V);
+    return Error::success();
+  }
+  }
+}
+
+Error FuncEmitter::emit() {
+  if (Error E = emitPrologue())
+    return E;
+  for (const Op &O : TF.getOps()) {
+    if (Error E = emitOp(O))
+      return E;
+  }
+  // A TTIR function without an explicit return still needs a terminator.
+  if (!B.GetInsertBlock()->getTerminator())
+    B.CreateRetVoid();
+  return Error::success();
+}
+
+} // namespace
+
+llvm::Expected<std::unique_ptr<llvm::Module>>
+emitLLVM(const Module &TTIRModule, LLVMContext &Ctx) {
+  auto M = std::make_unique<llvm::Module>("gpumin-triton", Ctx);
+  M->setTargetTriple(Triple("gpumin-unknown-elf"));
+  for (const Function &F : TTIRModule.getFunctions()) {
+    FuncEmitter E(*M, F);
+    if (Error Err = E.emit())
+      return std::move(Err);
+  }
+  return std::move(M);
+}
+
+} // namespace gpumintriton

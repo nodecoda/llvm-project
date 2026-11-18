@@ -18,6 +18,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Frontend.h"
+#include "LLVMEmit.h"
 #include "PyAst.h"
 #include "TTIR.h"
 
@@ -49,6 +50,9 @@ static cl::opt<bool> DumpAstJson("dump-ast-json",
 static cl::opt<bool> EmitTTIR("emit-ttir",
                               cl::desc("Print the TTIR-min module"),
                               cl::init(false));
+static cl::opt<bool> EmitLLVMIR("emit-llvm",
+                                cl::desc("Print GPUMin LLVM IR"),
+                                cl::init(false));
 static cl::list<std::string> ConstexprBindings(
     "constexpr", cl::desc("Bind a tl.constexpr argument: NAME=INT"),
     cl::value_desc("NAME=INT"));
@@ -84,11 +88,11 @@ static Expected<KernelBindings> parseBindings() {
       return createStringError(inconvertibleErrorCode(),
                                "expected --arg-type NAME=TYPE, got '%s'",
                                Spec.str().c_str());
-    Type Ty;
+    gpumintriton::Type Ty;
     if (TypeText == "i32")
-      Ty = Type::i32();
+      Ty = gpumintriton::Type::i32();
     else if (TypeText == "ptr" || TypeText == "ptr<i32>")
-      Ty = Type::ptr(Type::i32());
+      Ty = gpumintriton::Type::ptr(gpumintriton::Type::i32());
     else
       return createStringError(inconvertibleErrorCode(),
                                "unsupported argument type '%s' (use i32 or ptr)",
@@ -114,7 +118,7 @@ int main(int argc, char **argv) {
   InitLLVM X(argc, argv);
   cl::ParseCommandLineOptions(
       argc, argv,
-      "GPUMin Triton frontend (chapter 23: tensor and pointer semantics)\n");
+      "GPUMin Triton frontend (chapter 24: TTIR to GPUMin LLVM IR)\n");
 
   if (Input.empty() && AstJson.empty()) {
     errs() << "gpumin-triton: expected a kernel.py or --ast-json <file>\n";
@@ -128,7 +132,7 @@ int main(int argc, char **argv) {
     return reportError(AstOrErr.takeError());
   PyAst Ast = std::move(*AstOrErr);
 
-  if (!DumpAst && !DumpAstJson && !EmitTTIR)
+  if (!DumpAst && !DumpAstJson && !EmitTTIR && !EmitLLVMIR)
     DumpAst = true;
 
   std::error_code EC;
@@ -153,14 +157,24 @@ int main(int argc, char **argv) {
 
   Frontend F(Ast);
 
-  if (EmitTTIR) {
+  if (EmitTTIR || EmitLLVMIR) {
     Expected<KernelBindings> BindingsOrErr = parseBindings();
     if (!BindingsOrErr)
       return reportError(BindingsOrErr.takeError());
-    Expected<Module> ModuleOrErr = F.lowerKernels(*BindingsOrErr);
+    Expected<gpumintriton::Module> ModuleOrErr =
+        F.lowerKernels(*BindingsOrErr);
     if (!ModuleOrErr)
       return reportError(ModuleOrErr.takeError());
-    ModuleOrErr->print(*OS);
+    if (EmitTTIR) {
+      ModuleOrErr->print(*OS);
+      return 0;
+    }
+    LLVMContext Ctx;
+    Expected<std::unique_ptr<llvm::Module>> LLVMOrErr =
+        emitLLVM(*ModuleOrErr, Ctx);
+    if (!LLVMOrErr)
+      return reportError(LLVMOrErr.takeError());
+    (*LLVMOrErr)->print(*OS, nullptr);
     return 0;
   }
 
