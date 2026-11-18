@@ -8,11 +8,11 @@
 //
 // GM32 objects are 32-bit little-endian ELF relocatables.
 //
-// Chapter 00 reuses EM_RISCV as the machine number so that the existing
-// llvm-objdump build can still open the file while the tutorial has no
-// disassembler of its own.  Chapter 03 revisits this: a distinct machine
-// number (and the matching objdump wiring) is what keeps `llvm-objdump -d`
-// from decoding GM32 bytes as RISC-V.
+// Chapter 00 borrowed EM_RISCV so that objdump could open the file at all.
+// Chapter 03 gives GM32 its own machine number (EM_GPUMIN, an unofficial
+// value above the assigned range) and maps it to Triple::gpumin in
+// ELFObjectFile.h.  Without that mapping objdump would still open the file as
+// RISC-V and decode every GM32 word as garbage.
 //
 //===----------------------------------------------------------------------===//
 
@@ -33,7 +33,7 @@ namespace {
 class GPUMinELFObjectWriter : public MCELFObjectTargetWriter {
 public:
   explicit GPUMinELFObjectWriter(uint8_t OSABI)
-      : MCELFObjectTargetWriter(/*Is64Bit=*/false, OSABI, ELF::EM_RISCV,
+      : MCELFObjectTargetWriter(/*Is64Bit=*/false, OSABI, ELF::EM_GPUMIN,
                                 /*HasRelocationAddend=*/true) {}
   ~GPUMinELFObjectWriter() override = default;
 

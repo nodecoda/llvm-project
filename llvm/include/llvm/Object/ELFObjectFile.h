@@ -1312,6 +1312,8 @@ StringRef ELFObjectFile<ELFT>::getFileFormatName() const {
       return (IsLittleEndian ? "elf32-powerpcle" : "elf32-powerpc");
     case ELF::EM_RISCV:
       return (IsLittleEndian ? "elf32-littleriscv" : "elf32-bigriscv");
+    case ELF::EM_GPUMIN:
+      return "elf32-gpumin";
     case ELF::EM_CSKY:
       return "elf32-csky";
     case ELF::EM_SPARC:
@@ -1442,6 +1444,9 @@ template <class ELFT> Triple::ArchType ELFObjectFile<ELFT>::getArch() const {
     return Triple::ve;
   case ELF::EM_CSKY:
     return Triple::csky;
+
+  case ELF::EM_GPUMIN:
+    return Triple::gpumin;
 
   case ELF::EM_LOONGARCH:
     switch (EF.getHeader().e_ident[ELF::EI_CLASS]) {

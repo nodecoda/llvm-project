@@ -227,5 +227,8 @@ ELF_MACHINE(EM_AIECTRLCODE,   269, "aiectrlcode", "AMD/Xilinx AIEngine ctrlcode"
 ELF_MACHINE(EM_PPU,           270, "ppu", "T-Head PPU")
 ELF_MACHINE(EM_LST,           271, "lst", "Lisuan Technology LST")
 ELF_MACHINE(EM_CHILI,         272, "chili", "OpenAI Chili architecture")
+// Unofficial: the GM32 teaching target.  0xfe00 sits above the assigned range
+// so it can never collide with a future EM_* value.
+ELF_MACHINE(EM_GPUMIN,        0xfe00, "gpumin", "GPUMin teaching GPU")
 #undef ELF_MACHINE
 #endif

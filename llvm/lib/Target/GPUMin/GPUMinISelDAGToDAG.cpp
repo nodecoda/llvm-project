@@ -21,6 +21,7 @@
 #include "llvm/CodeGen/SelectionDAGISel.h"
 #include "llvm/CodeGen/SelectionDAGNodes.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/MathExtras.h"
 
 using namespace llvm;
 
@@ -49,6 +50,22 @@ public:
 } // end anonymous namespace
 
 void GPUMinDAGToDAGISel::Select(SDNode *N) {
+  // Constants are the one node chapter 03 cannot express as a pattern:
+  // `movi` only carries 16 bits, and a pattern would happily match a 32-bit
+  // constant and truncate it.  Doing the range check here keeps the failure
+  // explicit.  Chapter 04 adds the two-instruction sequence for wide values.
+  if (N->getOpcode() == ISD::Constant) {
+    int64_t V = cast<ConstantSDNode>(N)->getSExtValue();
+    if (isInt<16>(V)) {
+      SDLoc DL(N);
+      SDValue Imm = CurDAG->getTargetConstant(V, DL, MVT::i32);
+      SDNode *Mov = CurDAG->getMachineNode(GPUMin::MOVI, DL, MVT::i32, Imm);
+      ReplaceNode(N, Mov);
+      return;
+    }
+    LLVM_DEBUG(dbgs() << "GPUMin: constant " << V
+                      << " needs more than 16 bits (chapter 04)\n");
+  }
   SelectCode(N);
 }
 

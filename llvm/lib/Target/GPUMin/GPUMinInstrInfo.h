@@ -27,6 +27,11 @@ public:
   explicit GPUMinInstrInfo(const GPUMinSubtarget &STI);
 
   const GPUMinRegisterInfo &getRegisterInfo() const { return RI; }
+
+  void copyPhysReg(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
+                   const DebugLoc &DL, Register DestReg, Register SrcReg,
+                   bool KillSrc, bool RenamableDest,
+                   bool RenamableSrc) const override;
 };
 
 } // namespace llvm
