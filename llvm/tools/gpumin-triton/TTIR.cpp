@@ -251,6 +251,22 @@ Value *Function::createLoad(Value *Ptr, Value *Mask) {
   return V;
 }
 
+Value *Function::createReduce(ReduceKind Kind, Value *Src, unsigned Axis) {
+  assert(Src->getType().isTensor() && "reduce needs a tensor");
+  assert(Src->getType().getShape().size() == 1 && "only 1-D reductions");
+  Type ResultTy = Src->getType().getElementType();
+  Value *V = createValue(ResultTy);
+  Op O;
+  O.Kind = OpKind::Reduce;
+  O.Result = V;
+  O.Operands = {Src};
+  O.Axis = Axis;
+  O.Red = Kind;
+  O.Ty = Src->getType();
+  Ops.push_back(std::move(O));
+  return V;
+}
+
 void Function::createStore(Value *Ptr, Value *Stored, Value *Mask) {
   Op O;
   O.Kind = OpKind::Store;
@@ -464,6 +480,33 @@ void Function::print(raw_ostream &OS) const {
       O.Ty.print(OS);
       OS << "\n";
       break;
+    case OpKind::Reduce: {
+      Type SrcTy = O.Operands[0]->getType();
+      Type ElemTy = SrcTy.getElementType();
+      unsigned ID = O.Result->getID();
+      O.Result->printName(OS);
+      OS << " = \"tt.reduce\"(";
+      O.Operands[0]->printName(OS);
+      OS << ") <{axis = 0 : i32}> ({\n      ^bb0(%red" << ID << "a: ";
+      ElemTy.print(OS);
+      OS << ", %red" << ID << "b: ";
+      ElemTy.print(OS);
+      OS << "):\n        %red" << ID << "v = arith.";
+      if (O.Red == ReduceKind::Sum)
+        OS << (ElemTy.isF32() ? "addf" : "addi");
+      else
+        OS << "maxsi";
+      OS << " %red" << ID << "a, %red" << ID << "b : ";
+      ElemTy.print(OS);
+      OS << "\n        tt.reduce.return %red" << ID << "v : ";
+      ElemTy.print(OS);
+      OS << "\n      }) : (";
+      SrcTy.print(OS);
+      OS << ") -> ";
+      O.Result->getType().print(OS);
+      OS << "\n";
+      break;
+    }
     case OpKind::Return:
       OS << "tt.return";
       if (!O.Operands.empty()) {

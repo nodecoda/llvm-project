@@ -98,8 +98,11 @@ enum class OpKind {
   AddPtr,
   Load,
   Store,
+  Reduce,
   Return
 };
+
+enum class ReduceKind { Sum, Max };
 
 enum class CmpPred { Eq, Ne, Slt, Sle, Sgt, Sge, Ult, Ule, Ugt, Uge };
 
@@ -112,6 +115,7 @@ struct Op {
   int64_t Start = 0;
   int64_t End = 0;
   unsigned Axis = 0;
+  ReduceKind Red = ReduceKind::Sum;
   CmpPred Pred = CmpPred::Eq;
   Type Ty;
 };
@@ -134,6 +138,7 @@ public:
   Value *createSplat(Value *Scalar, Type TensorTy);
   Value *createAddPtr(Value *Ptr, Value *Offset);
   Value *createLoad(Value *Ptr, Value *Mask);
+  Value *createReduce(ReduceKind Kind, Value *Src, unsigned Axis);
   void createStore(Value *Ptr, Value *Stored, Value *Mask);
   void createReturn(Value *V);
   void setResultType(Type Ty) { ResultTy = Ty; HasResult = true; }

@@ -592,9 +592,10 @@ Expected<Value *> Lowerer::lowerCall(const Object &Node) {
     if (!PtrOrErr)
       return PtrOrErr.takeError();
     Value *Ptr = *PtrOrErr;
-    if (!Ptr->getType().isTensor() ||
-        !Ptr->getType().getElementType().isPtr())
-      return errAt(Node, "chapter 23 tl.load expects a pointer tensor");
+    if (!Ptr->getType().isPtr() &&
+        !(Ptr->getType().isTensor() &&
+          Ptr->getType().getElementType().isPtr()))
+      return errAt(Node, "tl.load expects a pointer or pointer tensor");
     if (Keywords.count("other"))
       return errAt(Node, "tl.load(other=...) arrives in a later chapter");
 
@@ -605,14 +606,18 @@ Expected<Value *> Lowerer::lowerCall(const Object &Node) {
       if (!MaskOrErr)
         return MaskOrErr.takeError();
       Mask = *MaskOrErr;
-      if (Mask->getType().isI1())
+      if (Ptr->getType().isPtr()) {
+        if (!Mask->getType().isI1())
+          return errAt(Node, "a scalar load needs a scalar i1 mask");
+      } else if (Mask->getType().isI1()) {
         Mask = F.createSplat(
             Mask, Type::tensor(Ptr->getType().getShape(), Type::i1()));
-      else if (!Mask->getType().isTensor() ||
-               !Mask->getType().getElementType().isI1())
+      } else if (!Mask->getType().isTensor() ||
+                 !Mask->getType().getElementType().isI1()) {
         return errAt(Node, "tl.load mask must be i1 or tensor<i1>");
-      if (Mask->getType().getShape() != Ptr->getType().getShape())
+      } else if (Mask->getType().getShape() != Ptr->getType().getShape()) {
         return errAt(Node, "tl.load mask shape does not match the pointer");
+      }
     }
     return F.createLoad(Ptr, Mask);
   }
@@ -630,9 +635,10 @@ Expected<Value *> Lowerer::lowerCall(const Object &Node) {
       return ValueOrErr.takeError();
     Value *Ptr = *PtrOrErr;
     Value *Stored = *ValueOrErr;
-    if (!Ptr->getType().isTensor() ||
-        !Ptr->getType().getElementType().isPtr())
-      return errAt(Node, "chapter 23 tl.store expects a pointer tensor");
+    if (!Ptr->getType().isPtr() &&
+        !(Ptr->getType().isTensor() &&
+          Ptr->getType().getElementType().isPtr()))
+      return errAt(Node, "tl.store expects a pointer or pointer tensor");
 
     Value *Mask = nullptr;
     auto MaskIt = Keywords.find("mask");
@@ -641,21 +647,59 @@ Expected<Value *> Lowerer::lowerCall(const Object &Node) {
       if (!MaskOrErr)
         return MaskOrErr.takeError();
       Mask = *MaskOrErr;
-      if (Mask->getType().isI1())
+      if (Ptr->getType().isPtr()) {
+        if (!Mask->getType().isI1())
+          return errAt(Node, "a scalar store needs a scalar i1 mask");
+      } else if (Mask->getType().isI1()) {
         Mask = F.createSplat(
             Mask, Type::tensor(Ptr->getType().getShape(), Type::i1()));
-      else if (!Mask->getType().isTensor() ||
-               !Mask->getType().getElementType().isI1())
+      } else if (!Mask->getType().isTensor() ||
+                 !Mask->getType().getElementType().isI1()) {
         return errAt(Node, "tl.store mask must be i1 or tensor<i1>");
-      if (Mask->getType().getShape() != Ptr->getType().getShape())
+      } else if (Mask->getType().getShape() != Ptr->getType().getShape()) {
         return errAt(Node, "tl.store mask shape does not match the pointer");
+      }
     }
     F.createStore(Ptr, Stored, Mask);
     return nullptr;
   }
 
-  if (Name == "sum" || Name == "max")
-    return errAt(Node, "tl." + Name + " arrives in chapter 26");
+  if (Name == "sum" || Name == "max") {
+    const json::Value *SrcNode = GetArg(0);
+    if (!SrcNode)
+      return errAt(Node, "tl." + Name + " expects a tensor");
+    Expected<Value *> SrcOrErr = lowerExpr(*SrcNode);
+    if (!SrcOrErr)
+      return SrcOrErr.takeError();
+    Value *Src = *SrcOrErr;
+    if (!Src->getType().isTensor())
+      return errAt(Node, "tl." + Name + " expects a tensor");
+
+    const json::Value *AxisNode = GetArg(1);
+    auto AxisIt = Keywords.find("axis");
+    if (AxisIt != Keywords.end())
+      AxisNode = AxisIt->second;
+    int64_t Axis = 0;
+    if (AxisNode) {
+      Expected<int64_t> AxisOrErr = evalInt(*AxisNode);
+      if (!AxisOrErr)
+        return AxisOrErr.takeError();
+      Axis = *AxisOrErr;
+    }
+    if (Axis != 0)
+      return errAt(Node, "chapter 26 only reduces axis 0");
+
+    Type ElemTy = Src->getType().getElementType();
+    if (!ElemTy.isI32() && !ElemTy.isF32())
+      return errAt(Node, "reductions require i32 or f32 elements");
+    if (Name == "max") {
+      if (ElemTy.isF32())
+        return errAt(Node,
+                     "tl.max on f32 arrives in chapter 28 (no fsel yet)");
+      return F.createReduce(ReduceKind::Max, Src, 0);
+    }
+    return F.createReduce(ReduceKind::Sum, Src, 0);
+  }
 
   return errAt(Node, ("unsupported tl function '" + Name + "'").str());
 }

@@ -10,6 +10,8 @@
 
 #include "llvm/ADT/APFloat.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
@@ -44,6 +46,9 @@ private:
   llvm::Type *llvmType(Type Ty);
   LlvmValue *elementAt(const Lowered &V, unsigned R) const;
   LlvmValue *maskedLoad(LlvmValue *Ptr, LlvmValue *Mask, llvm::Type *ElemTy);
+  LlvmValue *combineReduction(ReduceKind Kind, Type ElemTy, LlvmValue *A,
+                              LlvmValue *Rhs);
+  Error emitReduce(const Op &O);
   void maskedStore(LlvmValue *Ptr, LlvmValue *Stored, LlvmValue *Mask);
   Error emitOp(const Op &O);
   Error emitPrologue();
@@ -54,6 +59,7 @@ private:
   IRBuilder<> B;
   llvm::Function *LF = nullptr;
   std::map<const gpumintriton::Value *, Lowered> Env;
+  unsigned ReduceCounter = 0;
 };
 
 Expected<unsigned> FuncEmitter::elementsPerThread(Type Ty) const {
@@ -118,6 +124,75 @@ void FuncEmitter::maskedStore(LlvmValue *Ptr, LlvmValue *Stored, LlvmValue *Mask
   B.CreateStore(Stored, Ptr);
   B.CreateBr(ContBB);
   B.SetInsertPoint(ContBB);
+}
+
+LlvmValue *FuncEmitter::combineReduction(ReduceKind Kind, Type ElemTy,
+                                         LlvmValue *A, LlvmValue *Rhs) {
+  if (Kind == ReduceKind::Sum)
+    return ElemTy.isF32() ? B.CreateFAdd(A, Rhs) : B.CreateAdd(A, Rhs);
+  // Chapter 26 only reaches here for integer max: f32 select needs the
+  // bitcast-based lowering that arrives with the elementwise chapter.
+  LlvmValue *Greater = B.CreateICmpSGT(Rhs, A);
+  return B.CreateSelect(Greater, Rhs, A);
+}
+
+Error FuncEmitter::emitReduce(const Op &O) {
+  const Lowered &Src = Env.at(O.Operands[0]);
+  Type ResultTy = O.Result->getType();
+  llvm::Type *ElemTy = llvmType(ResultTy);
+
+  // Every thread reduces its own elements first, so the shared round trip
+  // only has one value per thread.
+  LlvmValue *Partial = Src.Elts[0];
+  for (unsigned I = 1; I < Src.Elts.size(); ++I)
+    Partial = combineReduction(O.Red, ResultTy, Partial, Src.Elts[I]);
+
+  // One 32-slot window per reduction.  Address space 2 is the block's
+  // shared memory, and the backend assigns this global a static offset.
+  auto *SlotTy = ArrayType::get(ElemTy, ThreadsPerBlock);
+  std::string Name = ("__gpumin_red_" + TF.getName() + "_" +
+                      Twine(ReduceCounter++))
+                         .str();
+  auto *Window = new GlobalVariable(
+      M, SlotTy, false, GlobalValue::InternalLinkage,
+      Constant::getNullValue(SlotTy), Name, nullptr,
+      GlobalValue::NotThreadLocal, 2);
+  Window->setAlignment(Align(4));
+
+  FunctionCallee TidFn = M.getOrInsertFunction("llvm.gpumin.tid",
+                                               B.getInt32Ty());
+  LlvmValue *Tid = B.CreateCall(TidFn);
+  LlvmValue *Slot = B.CreateGEP(SlotTy, Window,
+                                {B.getInt32(0), Tid});
+  B.CreateStore(Partial, Slot);
+
+  FunctionCallee BarrierFn =
+      M.getOrInsertFunction("llvm.gpumin.barrier", B.getVoidTy());
+  B.CreateCall(BarrierFn);
+
+  BasicBlock *SumBB = BasicBlock::Create(Ctx, "red.sum", LF);
+  BasicBlock *MergeBB = BasicBlock::Create(Ctx, "red.merge", LF);
+  B.CreateCondBr(B.CreateICmpEQ(Tid, B.getInt32(0)), SumBB, MergeBB);
+
+  B.SetInsertPoint(SumBB);
+  LlvmValue *Base = B.CreateGEP(SlotTy, Window, {B.getInt32(0), B.getInt32(0)});
+  LlvmValue *Acc = B.CreateLoad(ElemTy, Base);
+  for (unsigned I = 1; I < ThreadsPerBlock; ++I) {
+    LlvmValue *SlotI =
+        B.CreateGEP(SlotTy, Window, {B.getInt32(0), B.getInt32(I)});
+    Acc = combineReduction(O.Red, ResultTy, Acc,
+                           B.CreateLoad(ElemTy, SlotI));
+  }
+  B.CreateStore(Acc, Base);
+  B.CreateBr(MergeBB);
+
+  B.SetInsertPoint(MergeBB);
+  // The second barrier makes the lane-0 result visible to every thread, so
+  // a reduction scalar behaves like any other SSA value.
+  B.CreateCall(BarrierFn);
+  LlvmValue *Result = B.CreateLoad(ElemTy, Base);
+  Env[O.Result] = {{Result}, false};
+  return Error::success();
 }
 
 Error FuncEmitter::emitPrologue() {
@@ -292,6 +367,9 @@ Error FuncEmitter::emitOp(const Op &O) {
     Env[O.Result] = std::move(V);
     return Error::success();
   }
+
+  case OpKind::Reduce:
+    return emitReduce(O);
 
   case OpKind::CmpF: {
     const Lowered &L = Env.at(O.Operands[0]);

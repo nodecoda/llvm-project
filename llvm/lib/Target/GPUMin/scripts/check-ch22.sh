@@ -89,21 +89,23 @@ grep -qi 'ListComp' "$TMP/bad.err" ||
   fail "error does not name the unsupported node"
 echo "PASS 4/5: unsupported nodes report file:line:col"
 
-# --- 5. reductions stop at the chapter-26 boundary ----------------------
-cat > "$TMP/reduce.py" <<'PY'
+# --- 5. later-chapter boundaries stay explicit -------------------------
+cat > "$TMP/boundary.py" <<'PY'
 import triton
 import triton.language as tl
 
 @triton.jit
-def reduce(n):
-    x = tl.arange(0, 32)
-    return tl.sum(x)
+def reduce(x_ptr):
+    offs = tl.arange(0, 32)
+    x = tl.load(x_ptr + offs)
+    return tl.max(x, axis=0)
 PY
-if "$TOOL" --emit-ttir "$TMP/reduce.py" > "$TMP/reduce.out" 2> "$TMP/reduce.err"; then
-  fail "tl.sum lowered before reduction semantics exist"
+if "$TOOL" --emit-ttir --arg-type 'x_ptr=ptr<f32>' "$TMP/boundary.py" \
+      > "$TMP/boundary.out" 2> "$TMP/boundary.err"; then
+  fail "tl.max on f32 lowered before f32 select exists"
 fi
-grep -q 'reduce.py:' "$TMP/reduce.err" ||
-  fail "reduction boundary error lacks a location"
-grep -q 'chapter 26' "$TMP/reduce.err" ||
-  { cat "$TMP/reduce.err" >&2; fail "reduction boundary error is not explicit"; }
-echo "PASS 5/5: tl.sum reports the chapter-26 boundary"
+grep -q 'boundary.py:' "$TMP/boundary.err" ||
+  fail "the boundary error lacks a location"
+grep -q 'chapter 28' "$TMP/boundary.err" ||
+  { cat "$TMP/boundary.err" >&2; fail "the boundary error is not explicit"; }
+echo "PASS 5/5: tl.max on f32 reports the chapter-28 boundary"

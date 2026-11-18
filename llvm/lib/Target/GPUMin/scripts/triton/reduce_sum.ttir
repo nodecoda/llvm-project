@@ -1,0 +1,25 @@
+// Golden canonical TTIR for scripts/triton/reduce_sum.py with BLOCK=32
+// and i32 pointers: one tt.reduce over axis 0 followed by a scalar store.
+// The chapter-26 gate canonicalises both sides with triton-opt.
+module {
+  tt.func public @reduce_sum(%arg0: !tt.ptr<i32>, %arg1: !tt.ptr<i32>) {
+    %c32_i32 = arith.constant 32 : i32
+    %0 = tt.get_program_id x : i32
+    %1 = arith.muli %0, %c32_i32 : i32
+    %2 = tt.make_range {end = 32 : i32, start = 0 : i32} : tensor<32xi32>
+    %3 = tt.splat %1 : i32 -> tensor<32xi32>
+    %4 = arith.addi %3, %2 : tensor<32xi32>
+    %5 = tt.splat %arg0 : !tt.ptr<i32> -> tensor<32x!tt.ptr<i32>>
+    %6 = tt.addptr %5, %4 : tensor<32x!tt.ptr<i32>>, tensor<32xi32>
+    %7 = tt.load %6 : tensor<32x!tt.ptr<i32>>
+    %8 = "tt.reduce"(%7) <{axis = 0 : i32}> ({
+    ^bb0(%arg2: i32, %arg3: i32):
+      %10 = arith.addi %arg2, %arg3 : i32
+      tt.reduce.return %10 : i32
+    }) : (tensor<32xi32>) -> i32
+    %9 = tt.addptr %arg1, %0 : !tt.ptr<i32>, i32
+    tt.store %9, %8 : !tt.ptr<i32>
+    tt.return
+  }
+}
+
