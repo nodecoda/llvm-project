@@ -52,6 +52,13 @@ class Model:
         return self.data["launch"]["args_funct"]
 
     @property
+    def issue_units(self):
+        # Chapter 18: how many instructions of each class a cycle can issue.
+        # Three classes are enough to make occupancy matter: ALU work, memory
+        # work and barriers contend for different slots.
+        return dict(self.data["scheduling"]["units"])
+
+    @property
     def barrier_funct(self):
         # Chapter 17: SYS funct 11, the value the opcode map reserved in
         # chapter 02.  The barrier has no operands, so the whole instruction
@@ -145,6 +152,8 @@ class Model:
         assert self.data["sys_funct"]["ret"] == 1
         assert self.args_funct == 9
         assert self.barrier_funct == 11
+        assert set(self.issue_units) == {"alu", "lsu", "bar"}
+        assert all(w >= 1 for w in self.issue_units.values())
         assert self.data["barrier"]["scope"] == "block"
         assert self.launch["args_register"] == "ur0"
         assert self.launch["grid_dims"] == 1

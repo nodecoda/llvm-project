@@ -38,6 +38,10 @@
     "grid_dims": 1,
     "max_threads_per_block": 32
   },
+  "scheduling": {
+    "units": { "alu": 1, "lsu": 1, "bar": 1 },
+    "note": "issue slots per cycle per unit; no memory latency until chapter 19"
+  },
   "barrier": {
     "name": "bar.sync",
     "funct": 11,

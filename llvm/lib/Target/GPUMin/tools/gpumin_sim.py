@@ -263,6 +263,11 @@ class Warp:
                 merged[pc] = merged.get(pc, 0) | mask
         self.frames = sorted(merged.items())
 
+    def peek(self):
+        """The frame that would run next, without moving the warp."""
+        self._normalize()
+        return self.frames[0] if self.frames else None
+
     def select(self):
         # Run the smallest PC first.  A path that reaches the join early waits
         # there because the other path is still at a smaller PC; when both are
@@ -344,7 +349,8 @@ class Memory:
 class Simulator:
     def __init__(self, image, *, blocks=1, threads=32, trace=False,
                  max_steps=100000, global_size=1 << 20, private_size=4096,
-                 shared_size=49152, strict_uniform=False, schedule="interleaved"):
+                 shared_size=49152, strict_uniform=False, schedule="units",
+                 unit_width=None):
         if threads % WARP_SIZE or threads > 32:
             raise SimError("--threads must be a multiple of 8 and <= 32")
         self.image = image
@@ -359,12 +365,18 @@ class Simulator:
         # until it finishes or parks at a barrier.  Both are valid schedules,
         # which is exactly why a program that only works under one of them is
         # a race, not a program.
-        if schedule not in ("interleaved", "greedy"):
-            raise SimError("--schedule must be interleaved or greedy")
+        if schedule not in ("units", "interleaved", "greedy"):
+            raise SimError("--schedule must be units, interleaved or greedy")
         self.schedule = schedule
+        self.model = Model()
+        # Chapter 18: issue slots per cycle per unit.  "units" is the
+        # quantitative model; the two chapter 17 modes stay available because
+        # they are the extreme schedules a race has to survive.
+        self.unit_width = self.model.issue_units
+        for name, width in (unit_width or {}).items():
+            self.unit_width[name] = width
         self.memory = Memory(global_size, private_size, shared_size)
         self.shared = bytearray(shared_size)
-        self.model = Model()
         # Chapter 15: one place that counts what the program made the machine
         # do.  The numbers are the acceptance evidence: they must move when the
         # program changes and stay put when it does not.
@@ -377,6 +389,10 @@ class Simulator:
             "splits": 0,
             "frames_max": 0,
             "barriers": 0,
+            "cycles": 0,
+            "alu": 0,
+            "lsu": 0,
+            "bar": 0,
         }
         self.registers = {}
         self.dumps = []
@@ -476,32 +492,47 @@ class Simulator:
         n = len(warps)
         done = [False] * n
         waiting = [False] * n
-        while True:
-            runnable = False
+        while not all(done):
+            if self.schedule == "units":
+                # A cycle is one issue round.  A warp may take at most one
+                # slot, and each unit has a fixed number of slots.
+                self.stats["cycles"] += 1
+                slots = dict(self.unit_width)
             for i, warp in enumerate(warps):
                 if done[i] or waiting[i]:
                     continue
-                runnable = True
-                steps = 1 if self.schedule == "interleaved" else None
+                if self.schedule == "units":
+                    unit = self._classify(warp)
+                    if slots[unit] == 0:
+                        # The warp is ready but the unit is busy.  Not a
+                        # barrier: it will try again next cycle.
+                        continue
+                    slots[unit] -= 1
+                steps = None if self.schedule == "greedy" else 1
                 status = self._run_warp(warp, steps=steps)
                 if status == "done":
                     done[i] = True
                 elif status == "barrier":
                     waiting[i] = True
-            if not runnable:
-                if any(waiting):
-                    self.stats["barriers"] += 1
-                    waiting = [False] * n
-                    continue
-                return
-            # A round with nothing parked is a round where every warp either
-            # finished or ran; loop again.
-            if all(done[i] or waiting[i] for i in range(n)):
-                if any(waiting):
-                    self.stats["barriers"] += 1
-                    waiting = [False] * n
-                    continue
-                return
+            if any(waiting) and all(done[i] or waiting[i]
+                                    for i in range(n)):
+                self.stats["barriers"] += 1
+                waiting = [False] * n
+
+    def _unit(self, word):
+        """Chapter 18: which execution unit a word belongs to."""
+        op = word >> 26
+        if op in (0x08, 0x09):
+            return "lsu"
+        if op == 0x12 and (word & 0x7FF) == self.model.barrier_funct:
+            return "bar"
+        return "alu"
+
+    def _classify(self, warp):
+        frame = warp.peek()
+        if frame is None:
+            return "alu"
+        return self._unit(self.image.word(frame[0]))
 
     def _special(self, warp, lane, name, mask):
         if name == "args":
@@ -523,10 +554,11 @@ class Simulator:
         """One line of chapter 15 execution statistics."""
         s = self.stats
         return ("issued=%d lane_instrs=%d loads=%d stores=%d branches=%d "
-                "splits=%d frames_max=%d barriers=%d" %
+                "splits=%d frames_max=%d barriers=%d cycles=%d "
+                "alu=%d lsu=%d bar=%d" %
                 (s["issued"], s["lane_instrs"], s["loads"], s["stores"],
-                 s["branches"], s["splits"], s["frames_max"],
-                 s["barriers"]))
+                 s["branches"], s["splits"], s["frames_max"], s["barriers"],
+                 s["cycles"], s["alu"], s["lsu"], s["bar"]))
 
     def _run_warp(self, warp, steps=None):
         """Run until the warp finishes ("done"), parks at a barrier, or has
@@ -547,6 +579,7 @@ class Simulator:
             if len(warp.frames) > self.stats["frames_max"]:
                 self.stats["frames_max"] = len(warp.frames)
             word = self.image.word(pc)
+            self.stats[self._unit(word)] += 1
             if self.trace:
                 print("warp b%d w%d pc=%d mask=%02x frames=%d word=%08x" %
                       (warp.lanes[0].blockid, warp.lanes[0].warpid, pc,
@@ -698,6 +731,8 @@ class Simulator:
                 funct = word & 0x7FF
                 if funct == 0:  # EXIT: only this frame's lanes end
                     warp.set_current([])
+                    if not warp.frames:
+                        return "done"
                     continue
                 if funct == self.model.barrier_funct:  # BAR.SYNC
                     # Every lane of the warp arrives together, so the park is
@@ -751,15 +786,28 @@ def main(argv=None):
     ap.add_argument("--dump-text", action="store_true",
                     help="print the loaded .text words as hex, one per line")
     ap.add_argument("--trace", action="store_true")
-    ap.add_argument("--schedule", choices=("interleaved", "greedy"),
-                    default="interleaved",
-                    help="block issue order (chapter 17)")
+    ap.add_argument("--schedule", choices=("units", "interleaved", "greedy"),
+                    default="units",
+                    help="block issue model (chapters 17-18)")
+    ap.add_argument("--unit-width", action="append", default=[],
+                    metavar="NAME=N",
+                    help="override issue slots, e.g. alu=2 (repeatable)")
     ap.add_argument("--strict-uniform", action="store_true",
                     help="chapter 12 model: reject a divergent branch")
     ap.add_argument("--stats", action="store_true",
                     help="print execution statistics to stderr")
     ap.add_argument("--max-steps", type=parse_int, default=100000)
     args = ap.parse_args(argv)
+    overrides = {}
+    for spec in args.unit_width:
+        try:
+            name, value = spec.split("=", 1)
+            if name not in ("alu", "lsu", "bar") or int(value) < 1:
+                raise ValueError
+        except ValueError:
+            ap.error("--unit-width expects alu=N, lsu=N or bar=N with N >= 1")
+        overrides[name] = int(value)
+
     if not args.dump_text and not args.kernel:
         ap.error("--kernel is required unless --dump-text is used")
 
@@ -774,7 +822,8 @@ def main(argv=None):
                         threads=args.threads, trace=args.trace,
                         max_steps=args.max_steps,
                         strict_uniform=args.strict_uniform,
-                        schedule=args.schedule)
+                        schedule=args.schedule,
+                        unit_width=overrides)
         if args.launch:
             try:
                 with open(args.launch, encoding="utf-8") as f:
