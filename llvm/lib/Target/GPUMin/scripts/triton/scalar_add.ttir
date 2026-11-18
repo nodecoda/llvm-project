@@ -1,0 +1,14 @@
+// Golden scalar TTIR in canonical form.
+//
+// Triton's Python frontend emits this function after its own AST -> TTIR
+// pass; `triton-opt --canonicalize` renames arguments to %argN and constants
+// to %cN_i32, which is the form below.  Keeping the canonical form here makes
+// the chapter-22 gate a real diff: both the golden file and our output go
+// through triton-opt before they are compared.
+module {
+  tt.func public @scalar_add(%arg0: i32) -> i32 {
+    %c1_i32 = arith.constant 1 : i32
+    %0 = arith.addi %arg0, %c1_i32 : i32
+    tt.return %0 : i32
+  }
+}

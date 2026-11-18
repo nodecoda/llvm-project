@@ -10,6 +10,7 @@
 #define LLVM_TOOLS_GPUMIN_TRITON_FRONTEND_H
 
 #include "PyAst.h"
+#include "TTIR.h"
 #include "llvm/Support/Error.h"
 #include <string>
 #include <vector>
@@ -28,14 +29,20 @@ struct KernelInfo {
   std::vector<KernelArg> Args;
 };
 
-/// Chapter 21 only recognises kernels and their signatures.  The TTIR
-/// lowering starts in chapter 22; keeping the recognition pass separate makes
-/// that boundary explicit and testable.
+/// The frontend has two layers:
+///
+///   * parseKernels(): chapter 21's recognition pass.  It answers "which
+///     functions are Triton kernels and what are their parameters?".
+///   * lowerKernels(): chapter 22's semantic pass.  It turns the statement
+///     and expression nodes of those kernels into TTIR-min.
+///
+/// Both consume the same CPython AST; neither links against Triton or MLIR.
 class Frontend {
 public:
   explicit Frontend(const PyAst &Ast) : Ast(Ast) {}
 
   llvm::Expected<std::vector<KernelInfo>> parseKernels();
+  llvm::Expected<Module> lowerKernels();
 
 private:
   const PyAst &Ast;

@@ -73,7 +73,7 @@ int main(int argc, char **argv) {
   InitLLVM X(argc, argv);
   cl::ParseCommandLineOptions(
       argc, argv,
-      "GPUMin Triton frontend (chapter 21: AST boundary and kernel discovery)\n");
+      "GPUMin Triton frontend (chapter 22: scalar TTIR lowering)\n");
 
   if (Input.empty() && AstJson.empty()) {
     errs() << "gpumin-triton: expected a kernel.py or --ast-json <file>\n";
@@ -110,13 +110,16 @@ int main(int argc, char **argv) {
     return 0;
   }
 
+  Frontend F(Ast);
+
   if (EmitTTIR) {
-    Module M;
-    M.print(*OS);
+    Expected<Module> ModuleOrErr = F.lowerKernels();
+    if (!ModuleOrErr)
+      return reportError(ModuleOrErr.takeError());
+    ModuleOrErr->print(*OS);
     return 0;
   }
 
-  Frontend F(Ast);
   Expected<std::vector<KernelInfo>> KernelsOrErr = F.parseKernels();
   if (!KernelsOrErr)
     return reportError(KernelsOrErr.takeError());

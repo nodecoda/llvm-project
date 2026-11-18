@@ -70,7 +70,17 @@ grep -q 'no @triton.jit kernel found' "$TMP/plain.err" ||
 echo "PASS 4/5: a file without a kernel is rejected"
 
 # --- 5. the TTIR shell is present ---------------------------------------
-"$TOOL" --emit-ttir "$KERNEL" > "$TMP/kernel.ttir"
+# Chapter 22 replaces the empty shell with real lowering, so feed a scalar
+# kernel here; the check is that --emit-ttir always prints a module.
+cat > "$TMP/scalar.py" <<'PY'
+import triton
+import triton.language as tl
+
+@triton.jit
+def scalar_add(n):
+    return n + 1
+PY
+"$TOOL" --emit-ttir "$TMP/scalar.py" > "$TMP/kernel.ttir"
 grep -q '^module {$' "$TMP/kernel.ttir" ||
   fail "--emit-ttir did not print a module"
-echo "PASS 5/5: --emit-ttir prints the chapter-21 module shell"
+echo "PASS 5/5: --emit-ttir prints a TTIR module"
