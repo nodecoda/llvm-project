@@ -40,6 +40,7 @@ def SImm16AsmOperand : GPUMinImmAsmOperand<"SImm16", "isSImm16">;
 def simm16 : Operand<i32> {
   let PrintMethod = "printOperand";
   let ParserMatchClass = SImm16AsmOperand;
+  let DecoderMethod = "DecodeSImm16";
 }
 
 //===----------------------------------------------------------------------===//

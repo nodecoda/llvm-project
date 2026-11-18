@@ -39,7 +39,9 @@ def GPR : RegisterClass<"GPUMin", [i32], 32,
        (sequence "R%u", 4, 11),
        (sequence "R%u", 12, 19),
        (sequence "R%u", 20, 27),
-       R28, R29, R0, R30, R31)>;
+       R28, R29, R0, R30, R31)> {
+  let DecoderMethod = "DecodeGPRRegisterClass";
+}
 
 // A single-register class for the stack pointer; frame lowering and the
 // register scavenger ask for it by name.
@@ -65,7 +67,9 @@ foreach i = 0-7 in {
   def UR#i : GPUMinUReg<i, "ur"#i>;
 }
 
-def UGPR : RegisterClass<"GPUMin", [i32], 32, (sequence "UR%u", 0, 7)>;
+def UGPR : RegisterClass<"GPUMin", [i32], 32, (sequence "UR%u", 0, 7)> {
+  let DecoderMethod = "DecodeUGPRRegisterClass";
+}
 
 //===----------------------------------------------------------------------===//
 // Predicate registers (chapter 01)
@@ -84,4 +88,6 @@ foreach i = 0-7 in {
   def P#i : GPUMinPReg<i, "p"#i>;
 }
 
-def PRED : RegisterClass<"GPUMin", [i1], 1, (sequence "P%u", 0, 7)>;
+def PRED : RegisterClass<"GPUMin", [i1], 1, (sequence "P%u", 0, 7)> {
+  let DecoderMethod = "DecodePREDRegisterClass";
+}
