@@ -172,6 +172,8 @@ fi
 if build matmul2d "$ROOT/kernels/matmul2d.py" \
       --arg-type a_ptr=ptr --arg-type b_ptr=ptr --arg-type c_ptr=ptr &&
    grep -q 'tinyttg.get_program_id <axis = 1>' "$TMP/matmul2d.ttgir" &&
+   ! grep -qiE 'tinytt[g]?\.dot|llvm\.(vector\.)?dot' \
+      "$TMP/matmul2d.ttir" "$TMP/matmul2d.ttgir" "$TMP/matmul2d.llir" &&
    diff -u "$ROOT/tests/passes/matmul2d.llir" "$TMP/matmul2d.llir" \
       >"$TMP/mm.diff"; then
   cat > "$TMP/matmul2d.launch" <<'JSON'
