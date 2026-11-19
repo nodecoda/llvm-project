@@ -1,27 +1,26 @@
 // vecadd TTIR golden: c[i] = a[i] + b[i] over one 1024-element block.
-// This is what `tiny-triton --emit ttir` must produce in chapter 2.
-// Property dictionaries (`<axis = 0>`) are MLIR's canonical property syntax.
+// Produced by `tiny-triton kernels/vecadd.py --emit ttir --arg-type ...`
+// (chapter 2); chapter 1's hand-written version used tensor-typed pointer
+// arguments, this one is Triton-faithful: scalar `!tinytt.ptr<f32>` args that
+// `tinytt.splat` broadcasts before `tinytt.addptr`.
 module {
-  func.func @vecadd(%a: tensor<1024x!tinytt.ptr<f32>>,
-                    %b: tensor<1024x!tinytt.ptr<f32>>,
-                    %c: tensor<1024x!tinytt.ptr<f32>>) {
-    %block = arith.constant 1024 : i32
-    %pid = tinytt.get_program_id <axis = 0> : i32
-    %lanes = tinytt.make_range <axis = 0> : tensor<1024xi32>
-    %pidT = tinytt.splat %pid : i32 -> tensor<1024xi32>
-    %blockT = tinytt.splat %block : i32 -> tensor<1024xi32>
-    %base = arith.muli %pidT, %blockT : tensor<1024xi32>
-    %idx = arith.addi %lanes, %base : tensor<1024xi32>
-    %pa = tinytt.addptr %a, %idx
-        : tensor<1024x!tinytt.ptr<f32>>, tensor<1024xi32> -> tensor<1024x!tinytt.ptr<f32>>
-    %pb = tinytt.addptr %b, %idx
-        : tensor<1024x!tinytt.ptr<f32>>, tensor<1024xi32> -> tensor<1024x!tinytt.ptr<f32>>
-    %pc = tinytt.addptr %c, %idx
-        : tensor<1024x!tinytt.ptr<f32>>, tensor<1024xi32> -> tensor<1024x!tinytt.ptr<f32>>
-    %va = tinytt.load %pa : tensor<1024x!tinytt.ptr<f32>>, tensor<1024xf32>
-    %vb = tinytt.load %pb : tensor<1024x!tinytt.ptr<f32>>, tensor<1024xf32>
-    %sum = arith.addf %va, %vb : tensor<1024xf32>
-    tinytt.store %pc, %sum : tensor<1024x!tinytt.ptr<f32>>, tensor<1024xf32>
+  func.func @vecadd(%arg0: !tinytt.ptr<f32>, %arg1: !tinytt.ptr<f32>, %arg2: !tinytt.ptr<f32>) {
+    %0 = tinytt.get_program_id <axis = 0> : i32
+    %c1024_i32 = arith.constant 1024 : i32
+    %1 = arith.muli %0, %c1024_i32 : i32
+    %2 = tinytt.make_range <axis = 0> : tensor<1024xi32>
+    %3 = tinytt.splat %1 : i32 -> tensor<1024xi32>
+    %4 = arith.addi %3, %2 : tensor<1024xi32>
+    %5 = tinytt.splat %arg0 : !tinytt.ptr<f32> -> tensor<1024x!tinytt.ptr<f32>>
+    %6 = tinytt.addptr %5, %4 : tensor<1024x!tinytt.ptr<f32>>, tensor<1024xi32> -> tensor<1024x!tinytt.ptr<f32>>
+    %7 = tinytt.load %6 : tensor<1024x!tinytt.ptr<f32>>, tensor<1024xf32>
+    %8 = tinytt.splat %arg1 : !tinytt.ptr<f32> -> tensor<1024x!tinytt.ptr<f32>>
+    %9 = tinytt.addptr %8, %4 : tensor<1024x!tinytt.ptr<f32>>, tensor<1024xi32> -> tensor<1024x!tinytt.ptr<f32>>
+    %10 = tinytt.load %9 : tensor<1024x!tinytt.ptr<f32>>, tensor<1024xf32>
+    %11 = tinytt.splat %arg2 : !tinytt.ptr<f32> -> tensor<1024x!tinytt.ptr<f32>>
+    %12 = tinytt.addptr %11, %4 : tensor<1024x!tinytt.ptr<f32>>, tensor<1024xi32> -> tensor<1024x!tinytt.ptr<f32>>
+    %13 = arith.addf %7, %10 : tensor<1024xf32>
+    tinytt.store %12, %13 : tensor<1024x!tinytt.ptr<f32>>, tensor<1024xf32>
     return
   }
 }
