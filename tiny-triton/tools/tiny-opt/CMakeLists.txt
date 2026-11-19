@@ -2,10 +2,12 @@ set(LIBS
   MLIRArithDialect
   MLIRFuncDialect
   MLIRIR
+  MLIRLLVMDialect
   MLIROptLib
   MLIRRegisterAllPasses
   MLIRSCFDialect
   TinyTTGIR
+  TinyTTGToLLVM
   TinyTTToTinyTTG
   TinyTTIR
   )
