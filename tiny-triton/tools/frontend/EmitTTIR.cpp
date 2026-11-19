@@ -94,6 +94,21 @@ bool isKernelDef(const Object &Node) {
   return false;
 }
 
+const JsonValue *keywordValue(const Object &Call, StringRef Name) {
+  const json::Array *Keywords = nullptr;
+  if (const JsonValue *V = Call.get("keywords"))
+    Keywords = V->getAsArray();
+  if (!Keywords)
+    return nullptr;
+  for (const JsonValue &Item : *Keywords) {
+    const Object *Keyword = asObject(Item);
+    if (!Keyword || stringField(*Keyword, "arg") != Name)
+      continue;
+    return Keyword->get("value");
+  }
+  return nullptr;
+}
+
 std::optional<int64_t> constantInt(const JsonValue &V) {
   const Object *Node = asObject(V);
   if (!Node || typeOf(*Node) != "Constant")
@@ -102,6 +117,16 @@ std::optional<int64_t> constantInt(const JsonValue &V) {
   if (!Value)
     return std::nullopt;
   return Value->getAsInteger();
+}
+
+std::optional<bool> constantBool(const JsonValue &V) {
+  const Object *Node = asObject(V);
+  if (!Node || typeOf(*Node) != "Constant")
+    return std::nullopt;
+  const JsonValue *Value = Node->get("value");
+  if (!Value)
+    return std::nullopt;
+  return Value->getAsBoolean();
 }
 
 bool isTensorType(Type T) { return isa<RankedTensorType>(T); }
@@ -183,12 +208,17 @@ private:
   Expected<Value> lowerUnary(StringRef OpName, const JsonValue &Operand,
                              unsigned Line);
   Expected<Value> splatTo(Value Scalar, RankedTensorType Target, unsigned Line);
-  Expected<RankedTensorType> broadcastShape(RankedTensorType Lhs,
-                                            RankedTensorType Rhs,
-                                            unsigned Line);
+  Expected<SmallVector<int64_t>> broadcastShape(ArrayRef<int64_t> Lhs,
+                                                ArrayRef<int64_t> Rhs,
+                                                unsigned Line);
   Expected<Value> broadcastTo(Value Value, RankedTensorType Target,
                               unsigned Line);
   Expected<Value> lowerSubscript(const Object &Node, unsigned Line);
+  Expected<Value> transpose(Value Input, unsigned Line);
+  Expected<Value> reduce2D(Value Input, StringRef Combine, int64_t Axis,
+                           bool KeepDims, unsigned Line);
+  Expected<Value> splatConstant(RankedTensorType Type, Attribute Value,
+                                unsigned Line);
   Error lowerStmt(const Object &Stmt);
   Expected<Value> lowerConstant(const Object &ConstNode, unsigned Line);
   Expected<Value> lowerAttribute(const Object &AttrNode, unsigned Line);
@@ -235,6 +265,15 @@ Expected<Value> Emitter::lowerAttribute(const Object &Node, unsigned Line) {
   StringRef Attr = stringField(Node, "attr");
   const Object *Base = fieldObject(Node, "value");
   StringRef BaseName = Base ? stringField(*Base, "id") : StringRef();
+  if (Attr == "T") {
+    // `x.T` is `tl.trans(x)`: it is a value, not a call target.
+    if (const JsonValue *BaseValue = Node.get("value")) {
+      auto Lowered = lowerExpr(*BaseValue);
+      if (!Lowered)
+        return Lowered.takeError();
+      return transpose(*Lowered, Line);
+    }
+  }
   return frontendError(Line, "'" + BaseName + "." + Attr +
                                  "' is only valid as a call target");
 }
@@ -249,20 +288,21 @@ Expected<Value> Emitter::splatTo(Value Scalar, RankedTensorType Target,
       .getResult();
 }
 
-Expected<RankedTensorType> Emitter::broadcastShape(RankedTensorType Lhs,
-                                                   RankedTensorType Rhs,
-                                                   unsigned Line) {
-  if (Lhs.getRank() != Rhs.getRank())
+/// The common shape of two operands, or the first dimension that cannot be
+/// reconciled.  Element types are the caller's business: `ptr + offset` mixes
+/// two element types on purpose.
+Expected<SmallVector<int64_t>>
+Emitter::broadcastShape(ArrayRef<int64_t> Lhs, ArrayRef<int64_t> Rhs,
+                        unsigned Line) {
+  if (Lhs.size() != Rhs.size())
     return frontendError(Line, "cannot broadcast tensors of rank " +
-                                   Twine(Lhs.getRank()) + " and " +
-                                   Twine(Rhs.getRank()));
-  if (Lhs.getElementType() != Rhs.getElementType())
-    return frontendError(Line, "tensor element types differ");
+                                   Twine(Lhs.size()) + " and " +
+                                   Twine(Rhs.size()));
   SmallVector<int64_t> Shape;
-  Shape.reserve(Lhs.getRank());
-  for (int64_t Dim = 0; Dim < Lhs.getRank(); ++Dim) {
-    int64_t L = Lhs.getShape()[Dim];
-    int64_t R = Rhs.getShape()[Dim];
+  Shape.reserve(Lhs.size());
+  for (int64_t Dim = 0; Dim < static_cast<int64_t>(Lhs.size()); ++Dim) {
+    int64_t L = Lhs[Dim];
+    int64_t R = Rhs[Dim];
     if (L == R)
       Shape.push_back(L);
     else if (L == 1)
@@ -274,7 +314,7 @@ Expected<RankedTensorType> Emitter::broadcastShape(RankedTensorType Lhs,
                                      ": " + Twine(L) + " against " +
                                      Twine(R));
   }
-  return RankedTensorType::get(Shape, Lhs.getElementType());
+  return Shape;
 }
 
 Expected<Value> Emitter::broadcastTo(Value Value, RankedTensorType Target,
@@ -306,14 +346,14 @@ Expected<Value> Emitter::lowerBinary(StringRef OpName, Value Lhs, Value Rhs,
       if (LhsTensor.getShape() != RhsTensor.getShape()) {
         // The pointer and its offset may differ in a size-1 dimension: an
         // 8x8 tile is addressed with a row vector and a column vector.
-        Expected<RankedTensorType> Common =
-            broadcastShape(LhsTensor, RhsTensor, Line);
+        Expected<SmallVector<int64_t>> Common =
+            broadcastShape(LhsTensor.getShape(), RhsTensor.getShape(), Line);
         if (!Common)
           return Common.takeError();
         auto PtrTarget =
-            RankedTensorType::get(Common->getShape(), LhsTensor.getElementType());
+            RankedTensorType::get(*Common, LhsTensor.getElementType());
         auto OffTarget =
-            RankedTensorType::get(Common->getShape(), RhsTensor.getElementType());
+            RankedTensorType::get(*Common, RhsTensor.getElementType());
         Expected<Value> BroadcastPtr = broadcastTo(Lhs, PtrTarget, Line);
         if (!BroadcastPtr)
           return BroadcastPtr.takeError();
@@ -369,14 +409,17 @@ Expected<Value> Emitter::lowerBinary(StringRef OpName, Value Lhs, Value Rhs,
       // `r * 8 + c` with r : tensor<8x1> and c : tensor<1x8> is the chapter 7
       // spelling of an 8x8 index tile.  Both sides are grown to the common
       // shape first, so the arithmetic itself stays elementwise.
-      Expected<RankedTensorType> Common =
-          broadcastShape(LhsTensor, RhsTensor, Line);
+      if (LhsTensor.getElementType() != RhsTensor.getElementType())
+        return frontendError(Line, "tensor element types differ");
+      Expected<SmallVector<int64_t>> Common =
+          broadcastShape(LhsTensor.getShape(), RhsTensor.getShape(), Line);
       if (!Common)
         return Common.takeError();
-      Expected<Value> BroadcastLhs = broadcastTo(Lhs, *Common, Line);
+      auto Target = RankedTensorType::get(*Common, LhsTensor.getElementType());
+      Expected<Value> BroadcastLhs = broadcastTo(Lhs, Target, Line);
       if (!BroadcastLhs)
         return BroadcastLhs.takeError();
-      Expected<Value> BroadcastRhs = broadcastTo(Rhs, *Common, Line);
+      Expected<Value> BroadcastRhs = broadcastTo(Rhs, Target, Line);
       if (!BroadcastRhs)
         return BroadcastRhs.takeError();
       Lhs = *BroadcastLhs;
@@ -481,6 +524,73 @@ Expected<Value> Emitter::lowerCall(const Object &Call, unsigned Line) {
         .getResult();
   }
 
+  if (Attr == "zeros" || Attr == "full") {
+    // The shape and dtype are compile-time descriptors, not values, so they
+    // are read straight from the AST instead of going through lowerExpr.
+    size_t Wanted = Attr == "zeros" ? 2 : 3;
+    if (!RawArgs || RawArgs->size() != Wanted)
+      return frontendError(Line, Attr == "zeros"
+                                     ? "tl.zeros takes (shape, dtype)"
+                                     : "tl.full takes (shape, value, dtype)");
+
+    const Object *Tuple = asObject((*RawArgs)[0]);
+    const json::Array *Extents = nullptr;
+    if (Tuple && typeOf(*Tuple) == "Tuple")
+      Extents = fieldArray(*Tuple, "elts");
+    if (!Extents || Extents->empty())
+      return frontendError(Line, "the shape must be a tuple of constants");
+
+    SmallVector<int64_t> Shape;
+    Shape.reserve(Extents->size());
+    for (const JsonValue &Extent : *Extents) {
+      auto Const = constantInt(Extent);
+      if (!Const)
+        return frontendError(Line, "every shape entry must be a constant");
+      Shape.push_back(*Const);
+    }
+
+    const Object *DtypeNode = asObject((*RawArgs)[Wanted - 1]);
+    if (!DtypeNode || typeOf(*DtypeNode) != "Attribute")
+      return frontendError(Line, "the element type must be tl.float32 or "
+                                 "tl.int32");
+    StringRef Dtype = stringField(*DtypeNode, "attr");
+    Type ElementType;
+    if (Dtype == "float32")
+      ElementType = Builder.getF32Type();
+    else if (Dtype == "int32")
+      ElementType = Builder.getI32Type();
+    else
+      return frontendError(Line, "tiny knows tl.float32 and tl.int32, not tl." +
+                                     Dtype);
+    auto ResultTy = RankedTensorType::get(Shape, ElementType);
+
+    Attribute Fill;
+    if (Attr == "zeros") {
+      if (ElementType.isF32())
+        Fill = Builder.getF32FloatAttr(0.0f);
+      else
+        Fill = Builder.getI32IntegerAttr(0);
+    }
+    else {
+      const Object *ValueNode = asObject((*RawArgs)[1]);
+      const JsonValue *Raw = ValueNode ? ValueNode->get("value") : nullptr;
+      if (!Raw)
+        return frontendError(Line, "tl.full needs a constant fill value");
+      if (ElementType.isF32()) {
+        auto AsDouble = Raw->getAsNumber();
+        if (!AsDouble)
+          return frontendError(Line, "tl.full fill value must be numeric");
+        Fill = Builder.getF32FloatAttr(static_cast<float>(*AsDouble));
+      } else {
+        auto AsInt = Raw->getAsInteger();
+        if (!AsInt)
+          return frontendError(Line, "tl.full fill value must be an integer");
+        Fill = Builder.getI32IntegerAttr(static_cast<int32_t>(*AsInt));
+      }
+    }
+    return splatConstant(ResultTy, Fill, Line);
+  }
+
   SmallVector<Value, 4> Args;
   if (RawArgs)
     for (const JsonValue &ArgValue : *RawArgs) {
@@ -490,26 +600,46 @@ Expected<Value> Emitter::lowerCall(const Object &Call, unsigned Line) {
       Args.push_back(*LoweredArg);
     }
 
-  if (Attr == "sum") {
+  if (Attr == "sum" || Attr == "max" || Attr == "min") {
     if (Args.empty() || Args.size() > 2)
-      return frontendError(Line, "tl.sum takes a tensor and an optional axis");
-    auto InputTy = dyn_cast<RankedTensorType>(Args[0].getType());
-    if (!InputTy || InputTy.getRank() != 1)
-      return frontendError(Line, "tiny only reduces 1-D tensors");
+      return frontendError(Line, "tl." + Attr +
+                                     " takes a tensor and an optional axis");
+    StringRef Combine = Attr == "sum" ? "add" : Attr;
+
     int64_t Axis = 0;
-    if (Args.size() == 2) {
-      auto Const = constantInt((*RawArgs)[1]);
+    const JsonValue *AxisNode = Args.size() == 2 ? &(*RawArgs)[1]
+                                                 : keywordValue(Call, "axis");
+    if (AxisNode) {
+      auto Const = constantInt(*AxisNode);
       if (!Const)
-        return frontendError(Line, "tl.sum axis must be a constant");
+        return frontendError(Line, "the reduction axis must be a constant");
       Axis = *Const;
     }
-    if (Axis != 0)
-      return frontendError(Line, "tiny only reduces axis 0");
-    return Builder
-        .create<tiny::tt::ReduceOp>(loc(Line), InputTy.getElementType(),
-                                    Args[0], Builder.getI32IntegerAttr(0),
-                                    Builder.getStringAttr("add"))
-        .getResult();
+
+    bool KeepDims = false;
+    if (const JsonValue *Keep = keywordValue(Call, "keep_dims")) {
+      auto AsBool = constantBool(*Keep);
+      if (!AsBool)
+        return frontendError(Line, "keep_dims must be True or False");
+      KeepDims = *AsBool;
+    }
+
+    return reduce2D(Args[0], Combine, Axis, KeepDims, Line);
+  }
+
+  if (Attr == "exp2") {
+    if (Args.size() != 1)
+      return frontendError(Line, "tl.exp2 takes exactly one tensor");
+    Type Ty = Args[0].getType();
+    if (!elementOf(Ty).isF32())
+      return frontendError(Line, "tl.exp2 works on f32 values only");
+    return Builder.create<tiny::tt::Exp2Op>(loc(Line), Ty, Args[0]).getResult();
+  }
+
+  if (Attr == "trans") {
+    if (Args.size() != 1)
+      return frontendError(Line, "tl.trans takes exactly one tensor");
+    return transpose(Args[0], Line);
   }
 
   if (Attr == "load") {
@@ -557,6 +687,70 @@ Expected<Value> Emitter::lowerCall(const Object &Call, unsigned Line) {
   return frontendError(Line, "unsupported tl API '" + Attr +
                                  "' (chapter 2 knows program_id, arange, "
                                  "load, store; chapter 6 adds sum)");
+}
+
+Expected<Value> Emitter::transpose(Value Input, unsigned Line) {
+  auto Ty = dyn_cast<RankedTensorType>(Input.getType());
+  if (!Ty || Ty.getRank() != 2)
+    return frontendError(Line, "chapter 7 transposes rank-2 tensors only");
+  SmallVector<int32_t> Order = {1, 0};
+  SmallVector<int64_t> Shape = {Ty.getShape()[1], Ty.getShape()[0]};
+  auto ResultTy = RankedTensorType::get(Shape, Ty.getElementType());
+  return Builder
+      .create<tiny::tt::TransOp>(loc(Line), ResultTy, Input,
+                                 Builder.getDenseI32ArrayAttr(Order))
+      .getResult();
+}
+
+Expected<Value> Emitter::reduce2D(Value Input, StringRef Combine, int64_t Axis,
+                                  bool KeepDims, unsigned Line) {
+  auto Ty = dyn_cast<RankedTensorType>(Input.getType());
+  if (!Ty)
+    return frontendError(Line, "a reduction needs a tensor");
+
+  if (Ty.getRank() == 1) {
+    if (Axis != 0)
+      return frontendError(Line, "a 1-D reduction only has axis 0");
+    if (KeepDims)
+      return frontendError(Line,
+                           "chapter 6 drops the only dimension of a 1-D "
+                           "reduction; keep_dims is for 2-D tensors");
+    return Builder
+        .create<tiny::tt::ReduceOp>(loc(Line), Ty.getElementType(), Input,
+                                    Builder.getI32IntegerAttr(0),
+                                    Builder.getStringAttr(Combine))
+        .getResult();
+  }
+
+  if (Ty.getRank() == 2) {
+    if (Axis != 1)
+      return frontendError(Line,
+                           "chapter 7 reduces axis 1 (the row direction); "
+                           "axis 0 needs a cross-warp transpose first");
+    if (!KeepDims)
+      return frontendError(Line,
+                           "chapter 7 keeps the reduced dimension: pass "
+                           "keep_dims=True");
+    SmallVector<int64_t> Shape = {Ty.getShape()[0], 1};
+    auto ResultTy = RankedTensorType::get(Shape, Ty.getElementType());
+    return Builder
+        .create<tiny::tt::ReduceOp>(loc(Line), ResultTy, Input,
+                                    Builder.getI32IntegerAttr(1),
+                                    Builder.getStringAttr(Combine))
+        .getResult();
+  }
+
+  return frontendError(Line, "tiny reduces rank-1 and rank-2 tensors only");
+}
+
+Expected<Value> Emitter::splatConstant(RankedTensorType Type, Attribute Fill,
+                                       unsigned Line) {
+  auto TypedFill = cast<TypedAttr>(Fill);
+  if (TypedFill.getType() != Type.getElementType())
+    return frontendError(Line, "constant type does not match the requested "
+                               "element type");
+  Value Scalar = Builder.create<arith::ConstantOp>(loc(Line), TypedFill);
+  return Builder.create<tiny::tt::SplatOp>(loc(Line), Type, Scalar).getResult();
 }
 
 Expected<Value> Emitter::lowerSubscript(const Object &Node, unsigned Line) {
@@ -713,9 +907,101 @@ Error Emitter::lowerStmt(const Object &Stmt) {
   if (Type == "Pass")
     return Error::success();
 
-  if (Type == "If" || Type == "For" || Type == "While")
-    return frontendError(Line, "control flow arrives in chapter 6; chapter 2 "
-                               "handles straight-line kernels only");
+  if (Type == "AugAssign") {
+    const Object *Target = fieldObject(Stmt, "target");
+    const Object *Op = fieldObject(Stmt, "op");
+    const JsonValue *ValueNode = Stmt.get("value");
+    if (!Target || typeOf(*Target) != "Name" || !Op || !ValueNode)
+      return frontendError(Line, "chapter 7 only supports `name op= expr`");
+    StringRef Name = stringField(*Target, "id");
+    auto It = Env.find(Name);
+    if (It == Env.end())
+      return frontendError(Line, "unknown name '" + Name + "'");
+    Value Current = It->second;
+    auto Rhs = lowerExpr(*ValueNode);
+    if (!Rhs)
+      return Rhs.takeError();
+    Expected<Value> Updated = lowerBinary(typeOf(*Op), Current, *Rhs, Line);
+    if (!Updated)
+      return Updated.takeError();
+    Env[Name] = *Updated;
+    return Error::success();
+  }
+
+  if (Type == "For") {
+    // GPUMin has no loop instruction at this point in the course, so only
+    // loops whose trip count is a compile-time constant are accepted, and
+    // they are unrolled here.  `tl.static_range` is Triton's spelling for
+    // "I want this unrolled"; plain `range` is accepted when it is constant.
+    const Object *Target = fieldObject(Stmt, "target");
+    const JsonValue *IterNode = Stmt.get("iter");
+    const json::Array *Body = fieldArray(Stmt, "body");
+    if (!Target || typeOf(*Target) != "Name" || !IterNode || !Body)
+      return frontendError(Line, "malformed For");
+
+    const Object *Call = asObject(*IterNode);
+    if (!Call || typeOf(*Call) != "Call")
+      return frontendError(Line, "chapter 7 only unrolls constant loops");
+    const Object *Func = fieldObject(*Call, "func");
+    StringRef Callee;
+    if (Func && typeOf(*Func) == "Name")
+      Callee = stringField(*Func, "id");
+    else if (Func && typeOf(*Func) == "Attribute")
+      Callee = stringField(*Func, "attr");
+    if (Callee != "range" && Callee != "static_range")
+      return frontendError(Line,
+                           "chapter 7 only unrolls tl.static_range and a "
+                           "constant range()");
+
+    const json::Array *Bounds = fieldArray(*Call, "args");
+    if (!Bounds || Bounds->empty() || Bounds->size() > 2)
+      return frontendError(Line, "the loop needs one or two constant bounds");
+    std::optional<int64_t> Start = 0;
+    std::optional<int64_t> Stop;
+    if (Bounds->size() == 1)
+      Stop = constantInt((*Bounds)[0]);
+    else {
+      Start = constantInt((*Bounds)[0]);
+      Stop = constantInt((*Bounds)[1]);
+    }
+    if (!Start || !Stop)
+      return frontendError(Line,
+                           "chapter 7 only unrolls loops with constant bounds");
+    if (*Stop < *Start)
+      return frontendError(Line, "the loop trip count is negative");
+    if (*Stop - *Start > 64)
+      return frontendError(Line, "unrolling more than 64 iterations is not a "
+                                 "tiny kernel; use a real loop in chapter 8");
+
+    StringRef Name = stringField(*Target, "id");
+    std::optional<Value> Saved;
+    if (auto It = Env.find(Name); It != Env.end())
+      Saved = It->second;
+    for (int64_t Value = *Start; Value < *Stop; ++Value) {
+      Env[Name] = Builder
+                      .create<arith::ConstantOp>(
+                          loc(Line),
+                          Builder.getI32IntegerAttr(static_cast<int32_t>(Value)))
+                      .getResult();
+      for (const JsonValue &BodyStmt : *Body) {
+        const Object *BodyObj = asObject(BodyStmt);
+        if (!BodyObj)
+          return frontendError(Line, "malformed statement in the loop body");
+        if (Error E = lowerStmt(*BodyObj))
+          return std::move(E);
+      }
+    }
+    if (Saved)
+      Env[Name] = *Saved;
+    else
+      Env.erase(Name);
+    return Error::success();
+  }
+
+  if (Type == "If" || Type == "While")
+    return frontendError(Line, "GPUMin has no divergent control flow in "
+                               "chapter 7; use tl.static_range for fixed "
+                               "trip counts");
 
   return frontendError(Line, "unsupported statement '" + Type + "'");
 }

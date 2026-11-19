@@ -124,10 +124,12 @@ p    = inttoptr addr
 ## 7. 已知边界（第 6、7 章补齐）
 
 - `masked_load/masked_store`：需要谓词化与 select 的 CFG；
-- `reduce`：第 6 章已补齐 1-D reduce；2-D reduce 与 `trans` 在第 7b 补齐；
-- `expand_dims/broadcast`：第 7a 已补齐（`arange` 展开与寄存器内广播）；
-- `convert_layout/local_alloc/local_store/local_load/barrier`：第 7b 补齐；
-- 2D 布局：第 7a 起有端到端用例（`kernels/copy2d.py`）。
+- `masked_load/masked_store` 之外的 op 都已补齐：1-D reduce（第 6 章）、
+  `expand_dims/broadcast`（第 7a）、`trans`、`convert_layout`、2-D reduce、
+  `exp2`、`local_*`、`barrier`（第 7b）；
+- 2D 布局：`kernels/copy2d.py`（7a）与 `transpose2d/softmax2d/matmul2d`（7b）
+  都是端到端用例；
+- `masked_load/masked_store` 仍需要谓词化与 select 的 CFG。
 
 遇到这些 op，pass 报
 `no LLVM lowering for this operation in chapter 5` 并失败，不静默跳过。

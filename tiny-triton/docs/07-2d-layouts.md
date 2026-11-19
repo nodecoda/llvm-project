@@ -231,6 +231,8 @@ tiny-triton/scripts/check-t7a.sh /home/ubuntu/llvm/builds/pr-ctpop/bin
 
 ## 9. 下一节（7b）
 
+`docs/07b-transpose-softmax-matmul.md` 继续：
+
 - `tl.trans` / `.T`、`convert_layout`：经 shared memory 往返；
 - `tl.exp2`、`tl.zeros/full`、2-D `tl.sum/max`（axis 1 + `keep_dims`）；
 - `tl.static_range` 展开、`program_id(1)`；

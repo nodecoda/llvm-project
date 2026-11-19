@@ -83,8 +83,37 @@ private:
   LogicalResult lowerStore(tiny::ttg::StoreOp op);
   LogicalResult lowerStoreScalar(tiny::ttg::StoreScalarOp op);
   LogicalResult lowerReduce(tiny::ttg::ReduceOp op);
+  LogicalResult lowerRowReduce(tiny::ttg::ReduceOp op,
+                               RankedTensorType inputType);
+  Value combine(Value lhs, Value rhs, StringRef combine, Type elementType,
+                Location loc);
   LogicalResult lowerExpandDims(tiny::ttg::ExpandDimsOp op);
   LogicalResult lowerBroadcast(tiny::ttg::BroadcastOp op);
+  LogicalResult lowerExp2(tiny::ttg::Exp2Op op);
+  LogicalResult lowerTrans(tiny::ttg::TransOp op);
+  LogicalResult lowerConvertLayout(tiny::ttg::ConvertLayoutOp op);
+  LogicalResult lowerLocalAlloc(tiny::ttg::LocalAllocOp op);
+  LogicalResult lowerLocalStore(tiny::ttg::LocalStoreOp op);
+  LogicalResult lowerLocalLoad(tiny::ttg::LocalLoadOp op);
+
+  /// Carve a fresh, never-reused shared-memory window of `elements` 32-bit
+  /// words and return its address (an i32, like `llvm.gpumin.shared`).
+  Value sharedWindow(int64_t elements);
+  void blockBarrier();
+  /// Row-major flattened index of static-shape `coords`.
+  Value rowMajorIndex(llvm::ArrayRef<int64_t> shape,
+                      llvm::ArrayRef<Value> coords);
+  /// Scatter every register of `value` into `window` at the coordinates its
+  /// layout assigns it.
+  LogicalResult stageToShared(RankedTensorType type, const LaneValue &value,
+                              Value window);
+  /// Gather registers for `dstType` from a `srcShape`-shaped row-major
+  /// window.  `sourceOf[d]` is the source dimension destination dimension `d`
+  /// came from: the identity for a layout conversion, the order attribute for
+  /// a transpose.
+  FailureOr<LaneValue> gatherFromShared(llvm::ArrayRef<int64_t> srcShape,
+                                        RankedTensorType dstType, Value window,
+                                        llvm::ArrayRef<int64_t> sourceOf);
 
   /// `tid` clamped to the threads the layout uses.  A 16-element layout only
   /// owns half a block, and the other half repeats the same coordinates.
@@ -363,12 +392,103 @@ LogicalResult FuncLowerer::lowerStoreScalar(tiny::ttg::StoreScalarOp op) {
   return success();
 }
 
+Value FuncLowerer::combine(Value lhs, Value rhs, StringRef combine,
+                           Type elementType, Location loc) {
+  if (combine == "add")
+    return elementType.isF32()
+               ? builder.create<LLVM::FAddOp>(loc, lhs, rhs).getResult()
+               : builder.create<LLVM::AddOp>(loc, lhs, rhs).getResult();
+
+  // max/min have no cheap machine instruction on GPUMin, so they lower to a
+  // compare plus a select: `rhs` wins only when it is strictly better.
+  bool wantMax = combine == "max";
+  Value isBetter =
+      elementType.isF32()
+          ? builder
+                .create<LLVM::FCmpOp>(
+                    loc, LLVM::FCmpPredicate(wantMax ? LLVM::FCmpPredicate::ogt
+                                                     : LLVM::FCmpPredicate::olt),
+                    rhs, lhs)
+                .getResult()
+          : builder
+                .create<LLVM::ICmpOp>(
+                    loc, LLVM::ICmpPredicate(wantMax ? LLVM::ICmpPredicate::sgt
+                                                     : LLVM::ICmpPredicate::slt),
+                    rhs, lhs)
+                .getResult();
+  return builder.create<LLVM::SelectOp>(loc, isBetter, rhs, lhs).getResult();
+}
+
+LogicalResult FuncLowerer::lowerRowReduce(tiny::ttg::ReduceOp op,
+                                          RankedTensorType inputType) {
+  auto resultType = dyn_cast<RankedTensorType>(op.getResult().getType());
+  if (!resultType || resultType.getRank() != 2 ||
+      resultType.getShape()[1] != 1)
+    return op.emitError()
+           << "chapter 7 keeps the reduced dimension: a rank-2 reduction "
+              "with axis = 1 produces tensor<rows x 1>";
+  if (op.getAxis() != 1)
+    return op.emitError() << "chapter 7 only reduces axis 1 of a rank-2 tensor";
+  if (resultType.getShape()[0] != inputType.getShape()[0])
+    return op.emitError() << "a reduction must not change the other dimension";
+
+  Type elementType = resultType.getElementType();
+  if (!elementType.isF32() && !elementType.isInteger(32))
+    return op.emitError() << "reduce supports f32 and i32 only";
+
+  Location loc = op.getLoc();
+  int64_t rows = inputType.getShape()[0];
+  int64_t cols = inputType.getShape()[1];
+  auto blocked = cast<tiny::ttg::BlockedAttr>(resultType.getEncoding());
+
+  // A row lives inside one warp -- its eight columns are the eight lanes --
+  // but no lane can see its neighbours' registers.  So the input goes to
+  // shared once, and every thread recomputes the rows it owns from there.
+  Value window = sharedWindow(rows * cols);
+  if (failed(stageToShared(inputType, lookup(op.getInput()), window)))
+    return op.emitError() << "reduction input has the wrong number of "
+                             "registers for its layout";
+  blockBarrier();
+
+  Value linear = threadIndexInLayout(blocked);
+  int64_t count = tiny::layoutElementsPerThread(blocked, resultType.getShape());
+  LaneValue value;
+  for (int64_t i = 0; i < count; ++i) {
+    tiny::ElementPosition position =
+        tiny::elementPosition(blocked, resultType.getShape(), i);
+    Value row = coordValue(resultType, position, 0, linear);
+    Value base = builder.create<LLVM::MulOp>(loc, row, constant(cols));
+    Value accumulated;
+    for (int64_t column = 0; column < cols; ++column) {
+      Value index = builder.create<LLVM::AddOp>(loc, base, constant(column));
+      Value address =
+          builder.create<LLVM::AddOp>(
+              loc, window, builder.create<LLVM::MulOp>(loc, index, constant(4)))
+              .getResult();
+      Value pointer =
+          builder.create<LLVM::IntToPtrOp>(loc, sharedPtrTy, address);
+      Value element =
+          builder.create<LLVM::LoadOp>(loc, elementType, pointer);
+      accumulated =
+          accumulated
+              ? combine(accumulated, element, op.getCombine(), elementType, loc)
+              : element;
+    }
+    value.elts.push_back(accumulated);
+  }
+  env[op.getResult()] = value;
+  return success();
+}
+
 LogicalResult FuncLowerer::lowerReduce(tiny::ttg::ReduceOp op) {
   auto type = dyn_cast<RankedTensorType>(op.getInput().getType());
   if (!type)
     return op.emitError() << "reduce expects a ranked tensor";
+  if (type.getRank() == 2)
+    return lowerRowReduce(op, type);
   if (op.getCombine() != "add")
-    return op.emitError() << "chapter 6 only lowers combine = \"add\"";
+    return op.emitError() << "chapter 6 only lowers combine = \"add\" on a "
+                             "1-D tensor";
   Type elementType = op.getResult().getType();
   if (!elementType.isF32() && !elementType.isInteger(32))
     return op.emitError() << "reduce supports f32 and i32 only";
@@ -455,13 +575,18 @@ Value FuncLowerer::coordValue(RankedTensorType type,
   int64_t perThread = blocked.getSizePerThread()[dim];
   int64_t tile = blocked.getTileSize(dim);
 
+  // A dimension with a single thread along it contributes coordinate 0 to
+  // every element: the value is replicated, not distributed.
+  if (threads == 1)
+    return constant(position.within[dim] + position.repeat[dim] * tile);
+
   // `linear` is already clamped to the layout's threads, so the modulo is
   // only needed when this dimension does not span the whole layout.
   int64_t layoutThreads = tiny::layoutThreadsInLayout(blocked);
   Value coord = linear;
   if (stride != 1)
     coord = builder.create<LLVM::UDivOp>(loc, coord, constant(stride));
-  if (threads != 1 && stride * threads != layoutThreads)
+  if (stride * threads != layoutThreads)
     coord = builder.create<LLVM::URemOp>(loc, coord, constant(threads));
   if (perThread != 1)
     coord = builder.create<LLVM::MulOp>(loc, coord, constant(perThread));
@@ -477,6 +602,205 @@ Value FuncLowerer::coordValue(RankedTensorType type,
   if (extent < tile)
     coord = builder.create<LLVM::URemOp>(loc, coord, constant(extent));
   return coord;
+}
+
+Value FuncLowerer::sharedWindow(int64_t elements) {
+  Location loc = source.getLoc();
+  Value base = intrinsic("llvm.gpumin.shared");
+  Value window = base;
+  if (sharedOffset != 0)
+    window = builder.create<LLVM::AddOp>(loc, base, constant(sharedOffset));
+  // The cursor only moves forward, so no two buffers alias and no release
+  // barrier is needed after the last read.
+  sharedOffset += 4 * elements;
+  return window;
+}
+
+void FuncLowerer::blockBarrier() {
+  builder.create<LLVM::CallIntrinsicOp>(
+      source.getLoc(), builder.getStringAttr("llvm.gpumin.barrier"),
+      ValueRange{});
+}
+
+Value FuncLowerer::rowMajorIndex(llvm::ArrayRef<int64_t> shape,
+                                 llvm::ArrayRef<Value> coords) {
+  Location loc = source.getLoc();
+  Value index = coords.front();
+  for (int64_t dim = 1, rank = shape.size(); dim < rank; ++dim)
+    index = builder.create<LLVM::AddOp>(
+        loc,
+        builder.create<LLVM::MulOp>(loc, index, constant(shape[dim])),
+        coords[dim]);
+  return index;
+}
+
+LogicalResult FuncLowerer::stageToShared(RankedTensorType type,
+                                         const LaneValue &value,
+                                         Value window) {
+  auto blocked = cast<tiny::ttg::BlockedAttr>(type.getEncoding());
+  Location loc = source.getLoc();
+  Value linear = threadIndexInLayout(blocked);
+  int64_t count = tiny::layoutElementsPerThread(blocked, type.getShape());
+  if (static_cast<int64_t>(value.elts.size()) != count)
+    return failure();
+
+  SmallVector<Value> coords(type.getRank());
+  for (int64_t i = 0; i < count; ++i) {
+    tiny::ElementPosition position =
+        tiny::elementPosition(blocked, type.getShape(), i);
+    for (int64_t dim = 0; dim < type.getRank(); ++dim)
+      coords[dim] = coordValue(type, position, dim, linear);
+    Value index = rowMajorIndex(type.getShape(), coords);
+    Value offset = builder.create<LLVM::MulOp>(loc, index, constant(4));
+    Value address = builder.create<LLVM::AddOp>(loc, window, offset);
+    Value pointer = builder.create<LLVM::IntToPtrOp>(loc, sharedPtrTy, address);
+    builder.create<LLVM::StoreOp>(loc, value.elts[i], pointer);
+  }
+  return success();
+}
+
+FailureOr<LaneValue> FuncLowerer::gatherFromShared(
+    llvm::ArrayRef<int64_t> srcShape, RankedTensorType dstType, Value window,
+    llvm::ArrayRef<int64_t> sourceOf) {
+  auto blocked = cast<tiny::ttg::BlockedAttr>(dstType.getEncoding());
+  Location loc = source.getLoc();
+  Value linear = threadIndexInLayout(blocked);
+  int64_t count = tiny::layoutElementsPerThread(blocked, dstType.getShape());
+
+  SmallVector<Value> srcCoords(srcShape.size());
+  LaneValue value;
+  for (int64_t i = 0; i < count; ++i) {
+    tiny::ElementPosition position =
+        tiny::elementPosition(blocked, dstType.getShape(), i);
+    for (int64_t dim = 0; dim < dstType.getRank(); ++dim)
+      srcCoords[sourceOf[dim]] = coordValue(dstType, position, dim, linear);
+    Value index = rowMajorIndex(srcShape, srcCoords);
+    Value offset = builder.create<LLVM::MulOp>(loc, index, constant(4));
+    Value address = builder.create<LLVM::AddOp>(loc, window, offset);
+    Value pointer = builder.create<LLVM::IntToPtrOp>(loc, sharedPtrTy, address);
+    value.elts.push_back(builder.create<LLVM::LoadOp>(
+        loc, dstType.getElementType(), pointer));
+  }
+  return value;
+}
+
+LogicalResult FuncLowerer::lowerExp2(tiny::ttg::Exp2Op op) {
+  LaneValue input = lookup(op.getInput());
+  LaneValue value;
+  for (Value element : input.elts)
+    value.elts.push_back(intrinsic("llvm.gpumin.exp2", builder.getF32Type(),
+                                   ValueRange{element}));
+  env[op.getResult()] = value;
+  return success();
+}
+
+LogicalResult FuncLowerer::lowerTrans(tiny::ttg::TransOp op) {
+  auto srcType = cast<RankedTensorType>(op.getInput().getType());
+  auto dstType = cast<RankedTensorType>(op.getResult().getType());
+  if (srcType.getRank() != 2)
+    return op.emitError() << "chapter 7 transposes rank-2 tensors only";
+  for (int64_t dim = 0; dim < 2; ++dim)
+    if (srcType.getShape()[dim] <= 1)
+      return op.emitError()
+             << "transposing a dimension of extent 1 is a layout change, not "
+                "a transpose; chapter 7 rejects it instead of guessing which "
+                "shared slot each thread should read";
+
+  // A transpose is the one operation that a single thread cannot perform
+  // alone: element (r, c) must travel to the thread that owns (c, r).  The
+  // shared window is the block's mailbox, and the barrier is what makes the
+  // exchange well defined across warps.
+  LaneValue source = lookup(op.getInput());
+  int64_t elements = 1;
+  for (int64_t extent : srcType.getShape())
+    elements *= extent;
+  Value window = sharedWindow(elements);
+  if (failed(stageToShared(srcType, source, window)))
+    return op.emitError() << "transpose source has the wrong number of "
+                             "registers for its layout";
+  blockBarrier();
+
+  SmallVector<int64_t> sourceOf;
+  sourceOf.reserve(op.getOrder().size());
+  for (int32_t dim : op.getOrder())
+    sourceOf.push_back(dim);
+  FailureOr<LaneValue> value =
+      gatherFromShared(srcType.getShape(), dstType, window, sourceOf);
+  if (failed(value))
+    return failure();
+  env[op.getResult()] = *value;
+  return success();
+}
+
+LogicalResult FuncLowerer::lowerConvertLayout(tiny::ttg::ConvertLayoutOp op) {
+  auto srcType = cast<RankedTensorType>(op.getSrc().getType());
+  auto dstType = cast<RankedTensorType>(op.getResult().getType());
+
+  // Same shape, different distribution: element k keeps its coordinates and
+  // moves to the thread that owns them in the destination layout.  The
+  // shared window holds the tensor row-major, which is the one coordinate
+  // system both layouts agree on.
+  LaneValue source = lookup(op.getSrc());
+  int64_t elements = 1;
+  for (int64_t extent : srcType.getShape())
+    elements *= extent;
+  Value window = sharedWindow(elements);
+  if (failed(stageToShared(srcType, source, window)))
+    return op.emitError() << "layout conversion source has the wrong number "
+                             "of registers for its layout";
+  blockBarrier();
+
+  SmallVector<int64_t> identity;
+  identity.reserve(dstType.getRank());
+  for (int64_t dim = 0; dim < dstType.getRank(); ++dim)
+    identity.push_back(dim);
+  FailureOr<LaneValue> value =
+      gatherFromShared(srcType.getShape(), dstType, window, identity);
+  if (failed(value))
+    return failure();
+  env[op.getResult()] = *value;
+  return success();
+}
+
+LogicalResult FuncLowerer::lowerLocalAlloc(tiny::ttg::LocalAllocOp op) {
+  auto srcType = cast<RankedTensorType>(op.getSrc().getType());
+  int64_t elements = 1;
+  for (int64_t extent : srcType.getShape())
+    elements *= extent;
+  Value window = sharedWindow(elements);
+  if (failed(stageToShared(srcType, lookup(op.getSrc()), window)))
+    return op.emitError() << "local_alloc source has the wrong number of "
+                             "registers for its layout";
+  blockBarrier();
+  // The result is a shared pointer.  Keeping it as the window's i32 address
+  // lets local_store/local_load add byte offsets without a cast round trip.
+  env[op.getResult()] = LaneValue{{window}};
+  return success();
+}
+
+LogicalResult FuncLowerer::lowerLocalStore(tiny::ttg::LocalStoreOp op) {
+  auto valueType = cast<RankedTensorType>(op.getValue().getType());
+  Value window = lookup(op.getPtr()).elts.front();
+  if (failed(stageToShared(valueType, lookup(op.getValue()), window)))
+    return op.emitError() << "local_store value has the wrong number of "
+                             "registers for its layout";
+  blockBarrier();
+  return success();
+}
+
+LogicalResult FuncLowerer::lowerLocalLoad(tiny::ttg::LocalLoadOp op) {
+  auto dstType = cast<RankedTensorType>(op.getResult().getType());
+  Value window = lookup(op.getPtr()).elts.front();
+  SmallVector<int64_t> identity;
+  identity.reserve(dstType.getRank());
+  for (int64_t dim = 0; dim < dstType.getRank(); ++dim)
+    identity.push_back(dim);
+  FailureOr<LaneValue> value =
+      gatherFromShared(dstType.getShape(), dstType, window, identity);
+  if (failed(value))
+    return failure();
+  env[op.getResult()] = *value;
+  return success();
 }
 
 LogicalResult FuncLowerer::lowerOp(Operation *op) {
@@ -501,10 +825,38 @@ LogicalResult FuncLowerer::lowerOp(Operation *op) {
     return lowerExpandDims(expand);
   if (auto broadcast = dyn_cast<tiny::ttg::BroadcastOp>(op))
     return lowerBroadcast(broadcast);
+  if (auto exp2 = dyn_cast<tiny::ttg::Exp2Op>(op))
+    return lowerExp2(exp2);
+  if (auto trans = dyn_cast<tiny::ttg::TransOp>(op))
+    return lowerTrans(trans);
+  if (auto convert = dyn_cast<tiny::ttg::ConvertLayoutOp>(op))
+    return lowerConvertLayout(convert);
+  if (auto alloc = dyn_cast<tiny::ttg::LocalAllocOp>(op))
+    return lowerLocalAlloc(alloc);
+  if (auto store = dyn_cast<tiny::ttg::LocalStoreOp>(op))
+    return lowerLocalStore(store);
+  if (auto load = dyn_cast<tiny::ttg::LocalLoadOp>(op))
+    return lowerLocalLoad(load);
+  if (isa<tiny::ttg::BarrierOp>(op)) {
+    blockBarrier();
+    return success();
+  }
   if (auto pid = dyn_cast<tiny::ttg::GetProgramIdOp>(op)) {
-    if (pid.getAxis() != 0)
-      return pid.emitError() << "chapter 5 only supports axis = 0";
-    env[pid.getResult()] = LaneValue{{intrinsic("llvm.gpumin.blockidx")}};
+    // Chapter 5 only had a 1-D grid.  Chapter 7b launches a 2-D grid, so
+    // axis 1 reads the block's y coordinate; the linear block index stays
+    // `blockidy * gridX + blockidx` on the machine side.
+    StringRef name;
+    switch (pid.getAxis()) {
+    case 0:
+      name = "llvm.gpumin.blockidx";
+      break;
+    case 1:
+      name = "llvm.gpumin.blockidy";
+      break;
+    default:
+      return pid.emitError() << "GPUMin grids are two-dimensional";
+    }
+    env[pid.getResult()] = LaneValue{{intrinsic(name)}};
     return success();
   }
 

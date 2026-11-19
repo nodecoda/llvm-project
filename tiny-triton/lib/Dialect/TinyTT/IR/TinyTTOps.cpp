@@ -66,6 +66,10 @@ LogicalResult StoreScalarOp::verify() {
   return common::verifyStoreScalar(getOperation(), getPtr(), getValue());
 }
 
+LogicalResult Exp2Op::verify() {
+  return common::verifyExp2(getOperation(), getInput(), getResult());
+}
+
 LogicalResult ExpandDimsOp::verify() {
   return common::verifyExpandDims(getOperation(), getInput(), getResult(),
                                   getAxis());

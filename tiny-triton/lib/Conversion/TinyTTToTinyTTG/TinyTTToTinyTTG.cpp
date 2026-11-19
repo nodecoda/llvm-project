@@ -171,6 +171,12 @@ LogicalResult rewriteOp(Operation *op) {
     finish(newOp);
     return success();
   }
+  if (auto old = dyn_cast<tiny::tt::Exp2Op>(op)) {
+    auto newOp = builder.create<tiny::ttg::Exp2Op>(
+        loc, old.getResult().getType(), old.getInput());
+    finish(newOp);
+    return success();
+  }
   if (auto old = dyn_cast<tiny::tt::ExpandDimsOp>(op)) {
     auto newOp = builder.create<tiny::ttg::ExpandDimsOp>(
         loc, old.getResult().getType(), old.getInput(), old.getAxisAttr());

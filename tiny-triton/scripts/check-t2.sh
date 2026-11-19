@@ -51,8 +51,8 @@ if "$FRONTEND" "$ROOT/tests/frontend/loop_rejected.py" --emit ttir \
       --arg-type a_ptr=ptr -o /dev/null 2>"$TMP/loop.err"; then
   bad "control flow was accepted by a straight-line frontend"
 else
-  if grep -q 'control flow arrives in chapter 6' "$TMP/loop.err" &&
-     grep -q 'line 9' "$TMP/loop.err"; then
+  if grep -q 'only unrolls loops with constant bounds' "$TMP/loop.err" &&
+     grep -q 'line 11' "$TMP/loop.err"; then
     ok "control flow is rejected with a location"
   else
     bad "wrong diagnostic: $(cat "$TMP/loop.err")"

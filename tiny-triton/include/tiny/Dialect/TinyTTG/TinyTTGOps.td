@@ -48,6 +48,8 @@ def TinyTTG_BroadcastOp
     : TinyCommon_Broadcast<TinyTTG_Dialect, "broadcast", [TinyTTG_Layouts]>;
 def TinyTTG_ExpandDimsOp
     : TinyCommon_ExpandDims<TinyTTG_Dialect, "expand_dims", [TinyTTG_Layouts]>;
+def TinyTTG_Exp2Op
+    : TinyCommon_Exp2<TinyTTG_Dialect, "exp2", [TinyTTG_Layouts]>;
 
 //===----------------------------------------------------------------------===//
 // Thread mapping

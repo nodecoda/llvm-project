@@ -41,5 +41,7 @@ def TinyTT_BroadcastOp
     : TinyCommon_Broadcast<TinyTT_Dialect, "broadcast">;
 def TinyTT_ExpandDimsOp
     : TinyCommon_ExpandDims<TinyTT_Dialect, "expand_dims">;
+def TinyTT_Exp2Op
+    : TinyCommon_Exp2<TinyTT_Dialect, "exp2">;
 
 #endif // TINY_TRITON_DIALECT_TINYTT_TINYTTTYPES_TD_OPS

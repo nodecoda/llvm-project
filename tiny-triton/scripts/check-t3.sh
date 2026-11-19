@@ -65,7 +65,7 @@ if "$HERE/check-t1.sh" "$BIN" >"$TMP/t1.txt" 2>&1 &&
    "$HERE/check-t2.sh" "$BIN" >"$TMP/t2.txt" 2>&1; then
   ok "check-t1.sh and check-t2.sh still pass"
 else
-  bad "earlier chapters regressed: $(tail -5 "$TMP/t1.txt" "$TMP/t2.txt")"
+  bad "earlier chapters regressed: $(tail -n 5 "$TMP/t1.txt" "$TMP/t2.txt")"
 fi
 
 echo "----"

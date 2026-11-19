@@ -177,4 +177,19 @@ class TinyCommon_ExpandDims<Dialect d, string m, list<Trait> traits = []>
   let hasVerifier = 1;
 }
 
+class TinyCommon_Exp2<Dialect d, string m, list<Trait> traits = []>
+    : Op<d, m, !listconcat([Pure], traits)> {
+  let summary = "2^x on every element";
+  let description = [{
+    GPUMin exposes exp2 as the SFU primitive behind softmax; `exp(x)` and
+    `2**(x * log2(e))` would need a libm the target does not have.  The op is
+    elementwise over the tensor and also accepts the scalar form, so a kernel
+    may scale by a scalar.
+  }];
+  let arguments = (ins AnyType:$input);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input attr-dict `:` type($input) `->` type($result)";
+  let hasVerifier = 1;
+}
+
 #endif // TINY_TRITON_DIALECT_TINYCOMMON_TINYCOMMONOPS_TD

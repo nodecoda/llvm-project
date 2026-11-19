@@ -1,0 +1,28 @@
+module {
+  func.func @softmax2d(%arg0: !tinytt.ptr<f32>, %arg1: !tinytt.ptr<f32>) {
+    %0 = tinytt.make_range <axis = 0> : tensor<8xi32>
+    %1 = tinytt.expand_dims %0 <axis = 1> : tensor<8xi32> -> tensor<8x1xi32>
+    %2 = tinytt.make_range <axis = 0> : tensor<8xi32>
+    %3 = tinytt.expand_dims %2 <axis = 0> : tensor<8xi32> -> tensor<1x8xi32>
+    %c8_i32 = arith.constant 8 : i32
+    %4 = tinytt.splat %c8_i32 : i32 -> tensor<8x1xi32>
+    %5 = arith.muli %1, %4 : tensor<8x1xi32>
+    %6 = tinytt.broadcast %5 : tensor<8x1xi32> -> tensor<8x8xi32>
+    %7 = tinytt.broadcast %3 : tensor<1x8xi32> -> tensor<8x8xi32>
+    %8 = arith.addi %6, %7 : tensor<8x8xi32>
+    %9 = tinytt.splat %arg0 : !tinytt.ptr<f32> -> tensor<8x8x!tinytt.ptr<f32>>
+    %10 = tinytt.addptr %9, %8 : tensor<8x8x!tinytt.ptr<f32>>, tensor<8x8xi32> -> tensor<8x8x!tinytt.ptr<f32>>
+    %11 = tinytt.load %10 : tensor<8x8x!tinytt.ptr<f32>>, tensor<8x8xf32>
+    %12 = tinytt.reduce %11 <axis = 1, combine = "max"> : tensor<8x8xf32> -> tensor<8x1xf32>
+    %13 = tinytt.broadcast %12 : tensor<8x1xf32> -> tensor<8x8xf32>
+    %14 = arith.subf %11, %13 : tensor<8x8xf32>
+    %15 = tinytt.exp2 %14 : tensor<8x8xf32> -> tensor<8x8xf32>
+    %16 = tinytt.reduce %15 <axis = 1, combine = "add"> : tensor<8x8xf32> -> tensor<8x1xf32>
+    %17 = tinytt.broadcast %16 : tensor<8x1xf32> -> tensor<8x8xf32>
+    %18 = arith.divf %15, %17 : tensor<8x8xf32>
+    %19 = tinytt.splat %arg1 : !tinytt.ptr<f32> -> tensor<8x8x!tinytt.ptr<f32>>
+    %20 = tinytt.addptr %19, %8 : tensor<8x8x!tinytt.ptr<f32>>, tensor<8x8xi32> -> tensor<8x8x!tinytt.ptr<f32>>
+    tinytt.store %20, %18 : tensor<8x8x!tinytt.ptr<f32>>, tensor<8x8xf32>
+    return
+  }
+}

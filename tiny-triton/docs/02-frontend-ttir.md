@@ -65,7 +65,8 @@ Triton 语义更新。
 
 ## 5. 明确不支持（报错而不是降级）
 
-- `for` / `if` / `while`：控制流在第 6 章；
+- `for` / `if` / `while`：数据相关的控制流不在 tiny 管线里；第 7b 章
+  只展开 `tl.static_range` 这种编译期已知次数的循环；
 - `tl.sum` / `tl.dot` / `tl.trans`：第 6、7 章；
 - 只给 mask 不给 other 的 `tl.load`；
 - 整数除法。
@@ -83,7 +84,8 @@ tiny-triton/scripts/check-t2.sh /home/ubuntu/llvm/builds/pr-ctpop/bin
 1. `tiny-triton --emit ttir` 成功；
 2. 产物能被 `tiny-opt --verify-each` 接受；
 3. 产物 canonical 形式与 `kernels/vecadd.ttir` 逐行一致；
-4. 控制流负例被拒绝，且诊断包含 `line 9` 与章节提示。
+4. 数据相关的循环负例被拒绝，且诊断包含源码行号与
+   `only unrolls loops with constant bounds`。
 
 ## 7. 退出条件
 

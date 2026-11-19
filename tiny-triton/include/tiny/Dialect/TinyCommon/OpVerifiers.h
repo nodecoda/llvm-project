@@ -135,18 +135,40 @@ inline mlir::LogicalResult verifyReduce(mlir::Operation *Op,
   auto InputType = asRanked(Input.getType());
   if (!InputType)
     return Op->emitOpError("input must be a ranked tensor");
-  if (InputType.getRank() != 1)
-    return Op->emitOpError("tiny only reduces 1-D tensors");
-  if (mlir::isa<mlir::RankedTensorType>(Result.getType()))
-    return Op->emitOpError("reduce produces a scalar, not a tensor");
-  if (InputType.getElementType() != Result.getType())
-    return Op->emitOpError("input and result must share an element type");
-  if (Axis != 0)
-    return Op->emitOpError("tiny only reduces axis 0");
-
   if (Combine != "add" && Combine != "max" && Combine != "min")
     return Op->emitOpError("combine must be \"add\", \"max\" or \"min\"");
-  return mlir::success();
+
+  // A 1-D reduction collapses to a scalar: chapters 5 and 6.
+  if (InputType.getRank() == 1) {
+    if (mlir::isa<mlir::RankedTensorType>(Result.getType()))
+      return Op->emitOpError("a 1-D reduce produces a scalar, not a tensor");
+    if (InputType.getElementType() != Result.getType())
+      return Op->emitOpError("input and result must share an element type");
+    if (Axis != 0)
+      return Op->emitOpError("a 1-D reduce only has axis 0");
+    return mlir::success();
+  }
+
+  // A rank-2 reduction keeps the reduced dimension so that the result can be
+  // broadcast back: tensor<rows x cols> reduced on axis 1 gives
+  // tensor<rows x 1>.  Dropping it would need a rank-1 layout for a value
+  // that lives on the rows of a 2-D tile.
+  if (InputType.getRank() == 2) {
+    auto ResultType = asRanked(Result.getType());
+    if (!ResultType || ResultType.getRank() != 2 ||
+        ResultType.getShape()[1] != 1)
+      return Op->emitOpError(
+          "a 2-D reduce on axis 1 produces tensor<rows x 1>");
+    if (Axis != 1)
+      return Op->emitOpError("a 2-D reduce only supports axis 1");
+    if (ResultType.getShape()[0] != InputType.getShape()[0])
+      return Op->emitOpError("the reduction must keep the other dimension");
+    if (InputType.getElementType() != ResultType.getElementType())
+      return Op->emitOpError("input and result must share an element type");
+    return mlir::success();
+  }
+
+  return Op->emitOpError("tiny reduces rank-1 and rank-2 tensors only");
 }
 
 inline mlir::LogicalResult verifyStoreScalar(mlir::Operation *Op,
@@ -240,6 +262,20 @@ inline mlir::LogicalResult verifyExpandDims(mlir::Operation *Op,
     ExpectedShape.push_back(I == Axis ? 1 : InputShape[Src++]);
   if (ResultType.getShape() != llvm::ArrayRef<int64_t>(ExpectedShape))
     return Op->emitOpError("result shape must be the input shape with a 1 at axis");
+  return mlir::success();
+}
+
+inline mlir::LogicalResult verifyExp2(mlir::Operation *Op,
+                                      mlir::Value Input,
+                                      mlir::Value Result) {
+  if (Input.getType() != Result.getType())
+    return Op->emitOpError("input and result must have the same type");
+  mlir::Type Element = Input.getType();
+  if (auto Tensor = asRanked(Element))
+    Element = Tensor.getElementType();
+  if (!Element.isF32())
+    return Op->emitOpError("exp2 works on f32 values only, got ")
+           << Element;
   return mlir::success();
 }
 
