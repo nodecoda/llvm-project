@@ -1,0 +1,7 @@
+// A 100-element range cannot be tiled by GPUMin's 32 threads.
+module {
+  func.func @bad() {
+    %0 = tinytt.make_range <axis = 0> : tensor<100xi32>
+    return
+  }
+}

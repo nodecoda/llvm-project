@@ -6,6 +6,7 @@ set(LIBS
   MLIRRegisterAllPasses
   MLIRSCFDialect
   TinyTTGIR
+  TinyTTToTinyTTG
   TinyTTIR
   )
 

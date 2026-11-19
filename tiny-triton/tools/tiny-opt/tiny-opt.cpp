@@ -13,11 +13,13 @@
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 
+#include "tiny/Conversion/TinyTTToTinyTTG.h"
 #include "tiny/Dialect/TinyTT/TinyTTDialect.h"
 #include "tiny/Dialect/TinyTTG/TinyTTGDialect.h"
 
 int main(int argc, char **argv) {
   mlir::registerAllPasses();
+  tiny::registerTinyTTToTinyTTGPass();
 
   mlir::DialectRegistry registry;
   registry.insert<tiny::tt::TinyTTDialect, tiny::ttg::TinyTTGDialect,
