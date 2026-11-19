@@ -14,12 +14,14 @@
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 
 #include "tiny/Dialect/TinyTT/TinyTTDialect.h"
+#include "tiny/Dialect/TinyTTG/TinyTTGDialect.h"
 
 int main(int argc, char **argv) {
   mlir::registerAllPasses();
 
   mlir::DialectRegistry registry;
-  registry.insert<tiny::tt::TinyTTDialect, mlir::arith::ArithDialect,
+  registry.insert<tiny::tt::TinyTTDialect, tiny::ttg::TinyTTGDialect,
+                  mlir::arith::ArithDialect,
                   mlir::func::FuncDialect, mlir::scf::SCFDialect>();
 
   return mlir::asMainReturnCode(

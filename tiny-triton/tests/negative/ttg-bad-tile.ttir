@@ -1,0 +1,10 @@
+// 100 elements cannot be tiled by 8 lanes without a remainder.
+#blocked = #tinyttg.blocked<sizePerThread = [1], threadsPerWarp = [8],
+                            warpsPerCTA = [4], order = [0]>
+module {
+  func.func @bad() {
+    %c0 = arith.constant 0.0 : f32
+    %0 = tinyttg.splat %c0 : f32 -> tensor<100xf32, #blocked>
+    return
+  }
+}

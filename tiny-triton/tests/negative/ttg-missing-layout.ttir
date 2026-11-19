@@ -1,0 +1,7 @@
+// `tinyttg` tensors must carry a layout; this one does not.
+module {
+  func.func @bad() {
+    %0 = tinyttg.make_range <axis = 0> : tensor<32xi32>
+    return
+  }
+}

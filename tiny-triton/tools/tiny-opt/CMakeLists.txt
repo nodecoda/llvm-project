@@ -5,6 +5,7 @@ set(LIBS
   MLIROptLib
   MLIRRegisterAllPasses
   MLIRSCFDialect
+  TinyTTGIR
   TinyTTIR
   )
 
