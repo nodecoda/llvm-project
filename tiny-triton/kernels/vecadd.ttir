@@ -1,0 +1,27 @@
+// vecadd TTIR golden: c[i] = a[i] + b[i] over one 1024-element block.
+// This is what `tiny-triton --emit ttir` must produce in chapter 2.
+// Property dictionaries (`<axis = 0>`) are MLIR's canonical property syntax.
+module {
+  func.func @vecadd(%a: tensor<1024x!tinytt.ptr<f32>>,
+                    %b: tensor<1024x!tinytt.ptr<f32>>,
+                    %c: tensor<1024x!tinytt.ptr<f32>>) {
+    %block = arith.constant 1024 : i32
+    %pid = tinytt.get_program_id <axis = 0> : i32
+    %lanes = tinytt.make_range <axis = 0> : tensor<1024xi32>
+    %pidT = tinytt.splat %pid : i32 -> tensor<1024xi32>
+    %blockT = tinytt.splat %block : i32 -> tensor<1024xi32>
+    %base = arith.muli %pidT, %blockT : tensor<1024xi32>
+    %idx = arith.addi %lanes, %base : tensor<1024xi32>
+    %pa = tinytt.addptr %a, %idx
+        : tensor<1024x!tinytt.ptr<f32>>, tensor<1024xi32> -> tensor<1024x!tinytt.ptr<f32>>
+    %pb = tinytt.addptr %b, %idx
+        : tensor<1024x!tinytt.ptr<f32>>, tensor<1024xi32> -> tensor<1024x!tinytt.ptr<f32>>
+    %pc = tinytt.addptr %c, %idx
+        : tensor<1024x!tinytt.ptr<f32>>, tensor<1024xi32> -> tensor<1024x!tinytt.ptr<f32>>
+    %va = tinytt.load %pa : tensor<1024x!tinytt.ptr<f32>>, tensor<1024xf32>
+    %vb = tinytt.load %pb : tensor<1024x!tinytt.ptr<f32>>, tensor<1024xf32>
+    %sum = arith.addf %va, %vb : tensor<1024xf32>
+    tinytt.store %pc, %sum : tensor<1024x!tinytt.ptr<f32>>, tensor<1024xf32>
+    return
+  }
+}

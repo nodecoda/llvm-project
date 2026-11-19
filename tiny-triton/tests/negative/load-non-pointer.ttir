@@ -1,0 +1,7 @@
+// `tinytt.load` must reject a tensor that is not a tensor of !tinytt.ptr.
+module {
+  func.func @bad(%x: tensor<1024xf32>) {
+    %v = tinytt.load %x : tensor<1024xf32>, tensor<1024xf32>
+    return
+  }
+}

@@ -1,0 +1,27 @@
+//===- tiny-opt.cpp - tiny Triton optimizer driver -------------*- C++ -*-===//
+//
+// `tiny-opt` is the dialect/pass driver.  Chapter 1 registers `tiny.tt` plus
+// the builtin dialects a TTIR module needs (arith, func, scf) and no passes
+// beyond the generic ones mlir-opt ships.
+//
+//===----------------------------------------------------------------------===//
+
+#include "mlir/Dialect/Arith/IR/ArithDialect.h"
+#include "mlir/Dialect/Func/IR/FuncDialect.h"
+#include "mlir/Dialect/SCF/IR/SCFDialect.h"
+#include "mlir/InitAllPasses.h"
+#include "mlir/IR/DialectRegistry.h"
+#include "mlir/Tools/mlir-opt/MlirOptMain.h"
+
+#include "tiny/Dialect/TinyTT/TinyTTDialect.h"
+
+int main(int argc, char **argv) {
+  mlir::registerAllPasses();
+
+  mlir::DialectRegistry registry;
+  registry.insert<tiny::tt::TinyTTDialect, mlir::arith::ArithDialect,
+                  mlir::func::FuncDialect, mlir::scf::SCFDialect>();
+
+  return mlir::asMainReturnCode(
+      mlir::MlirOptMain(argc, argv, "tiny-opt driver\n", registry));
+}

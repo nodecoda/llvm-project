@@ -1,0 +1,8 @@
+// `tinytt.reduce` must reject an unknown combine kind.
+module {
+  func.func @bad(%x: tensor<8xf32>) {
+    %r = tinytt.reduce %x {axis = 0 : i32, combine = "sub"}
+        : tensor<8xf32> -> tensor<8xf32>
+    return
+  }
+}
