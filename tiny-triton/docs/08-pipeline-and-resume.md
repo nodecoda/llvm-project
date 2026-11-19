@@ -133,6 +133,10 @@ tiny-triton/scripts/check-t8.sh /home/ubuntu/llvm/builds/pr-ctpop/bin
    且 TTGIR/LLIR 都能被 `tiny-opt --verify-each` 接受；
 5. `--help` 公开 `--input`/`--emit` 与三个阶段名，`docs/08` 记录同一份契约。
 
+规划里 `check-t8.sh` 的第 4 项写作“`verify-all.sh` 全绿”，但 `verify-all.sh`
+本身会调用 `check-t8.sh`，直接照写会递归。因此第 4 项落在“Python 三个
+入口与分段续跑逐字节一致”，全量门禁由 §6 的 `verify-all.sh` 负责。
+
 ## 6. 全量门禁
 
 ```sh

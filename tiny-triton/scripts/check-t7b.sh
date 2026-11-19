@@ -130,22 +130,34 @@ JSON
           --launch "$TMP/softmax2d.launch" 2>"$TMP/softmax2d.sim.err" \
           >"$TMP/softmax2d.dump" &&
        python3 - "$TMP/softmax2d.dump" <<'PY'
-import struct, sys
+import math, struct, sys
+
+# Mirror the simulator instruction by instruction: every arithmetic result is
+# rounded to f32, exp2 is math.pow(2, .) rounded to f32, and the row sum is
+# accumulated in column order, which is the order lowerRowReduce emits.  The
+# comparison is therefore bit-exact, not a tolerance.
+def f32(x):
+    return struct.unpack('<f', struct.pack('<f', x))[0]
+
 words = [int(w) for w in open(sys.argv[1]).read().split()]
 got = [struct.unpack('<f', struct.pack('<I', w))[0] for w in words]
-xs = [-4.0 + 0.125 * i for i in range(64)]
+xs = [f32(-4.0 + 0.125 * i) for i in range(64)]
 ok = len(got) == 64
 for row in range(8):
     values = xs[row * 8:(row + 1) * 8]
     top = max(values)
-    exps = [2.0 ** (v - top) for v in values]
-    total = sum(exps)
+    exps = [f32(math.pow(2.0, f32(v - top))) for v in values]
+    total = exps[0]
+    for e in exps[1:]:
+        total = f32(total + e)
     for col in range(8):
-        ok = ok and abs(got[row * 8 + col] - exps[col] / total) < 1e-5
+        want = f32(exps[col] / total)
+        ok = ok and struct.pack('<f', got[row * 8 + col]) == \
+            struct.pack('<f', want)
 sys.exit(0 if ok else 1)
 PY
     then
-      ok "softmax2d matches the base-2 reference and emits exp2 + bar.sync"
+      ok "softmax2d matches the base-2 reference bit for bit and emits exp2 + bar.sync"
     else
       bad "softmax mismatch: $(cat "$TMP/softmax2d.sim.err" 2>/dev/null)"
     fi
@@ -261,7 +273,18 @@ else
   bad "a transpose of a 1-wide dimension was accepted"
   negative_ok=0
 fi
-[ "$negative_ok" = 1 ] && ok "chapter 7 rejects 2-D reductions without keep_dims, bad broadcasts and 1-wide transposes"
+# A 2-D shape that is not covered by a whole number of tiles must be rejected
+# by the layout assignment, with the offending dimension in the message.
+if "$OPT" --tiny-convert-tt-to-ttg \
+      "$ROOT/tests/negative/ttg-bad-2d-tile.ttir" -o /dev/null \
+      2>"$TMP/bad2d.err"; then
+  bad "a 5x8 tensor with a 4-row layout tile was accepted"
+  negative_ok=0
+elif ! grep -q 'dimension 0 of size 5 is not divisible' "$TMP/bad2d.err"; then
+  bad "wrong diagnostic for the non-divisible 2-D tile: $(cat "$TMP/bad2d.err")"
+  negative_ok=0
+fi
+[ "$negative_ok" = 1 ] && ok "chapter 7 rejects 2-D reductions without keep_dims, bad broadcasts, non-divisible tiles and 1-wide transposes"
 
 echo "----"
 echo "chapter 7b: $passed passed, $failed failed"

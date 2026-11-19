@@ -244,10 +244,12 @@ tiny-triton/scripts/check-t7b.sh /home/ubuntu/llvm/builds/pr-ctpop/bin
    TTGIR 含 `tinyttg.trans`，LLIR 与 golden 一致且含 `ptr<2>` + barrier；
 2. 手写 `convert_layout.ttgir` 降级与 golden 一致，LLIR 里 shared 写 ≥ 2、
    读 ≥ 8，并且真的跑出 `1.0f`；
-3. `softmax2d` 与基 2 参考一致，汇编含 `exp2` 与 `bar.sync`；
+3. `softmax2d` 与基 2 参考**逐位一致**（参考按模拟器的 f32 逐指令舍入、
+   按列序累加），汇编含 `exp2` 与 `bar.sync`；
 4. `matmul2d` 在 4×4 的 2-D grid 上算出 1024 个 `256i + 28`；
-5. 三种非法形态（2-D reduce 缺 `keep_dims`、不可广播的 shape、
-   宽度为 1 的 `trans`）都被拒绝且诊断正确。
+5. 四种非法形态（2-D reduce 缺 `keep_dims`、不可广播的 shape、
+   5×8 配 4 行 tile 的非整除 2-D shape、宽度为 1 的 `trans`）都被拒绝，
+   且诊断指出具体维度。
 
 ## 11. 退出条件
 
