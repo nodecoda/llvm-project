@@ -12,6 +12,8 @@
 
 #include "tiny/Conversion/TinyTTGToLLVM.h"
 
+#include "tiny/Conversion/LayoutGeometry.h"
+#include "tiny/Conversion/TargetInfo.h"
 #include "tiny/Dialect/TinyTT/TinyTTTypes.h"
 #include "tiny/Dialect/TinyTTG/TinyTTGOps.h"
 
@@ -37,23 +39,15 @@ struct LaneValue {
   bool isScalar() const { return elts.size() == 1; }
 };
 
-/// Elements one thread holds for `type`, assuming sizePerThread is 1 (the
-/// chapter 3 contract).
+/// Elements one thread holds for `type`.  Chapter 7 moved the arithmetic to
+/// `LayoutGeometry.h` so that the TT->TTG pass and this pass cannot drift:
+/// extent 1 counts as one repeat, an extent smaller than a tile counts as one
+/// repeat too.
 FailureOr<int64_t> elementsPerThread(RankedTensorType type) {
   auto blocked = dyn_cast<tiny::ttg::BlockedAttr>(type.getEncoding());
   if (!blocked)
     return failure();
-
-  int64_t count = 1;
-  for (int64_t dim = 0; dim < type.getRank(); ++dim) {
-    int64_t tile = blocked.getTileSize(dim);
-    if (tile <= 0 || type.getShape()[dim] % tile != 0)
-      return failure();
-    count *= type.getShape()[dim] / tile;
-  }
-  for (int64_t size : blocked.getSizePerThread())
-    count *= size;
-  return count;
+  return tiny::layoutElementsPerThread(blocked, type.getShape());
 }
 
 /// Number of threads that participate in the layout.  This is the number of
@@ -63,16 +57,7 @@ FailureOr<int64_t> threadsInLayout(RankedTensorType type) {
   auto blocked = dyn_cast<tiny::ttg::BlockedAttr>(type.getEncoding());
   if (!blocked)
     return failure();
-
-  int64_t count = 1;
-  for (int64_t dim = 0; dim < type.getRank(); ++dim) {
-    int64_t threads = blocked.getThreadsPerWarp()[dim] *
-                      blocked.getWarpsPerCTA()[dim];
-    if (threads <= 0)
-      return failure();
-    count *= threads;
-  }
-  return count;
+  return tiny::layoutThreadsInLayout(blocked);
 }
 
 class FuncLowerer {
@@ -98,6 +83,15 @@ private:
   LogicalResult lowerStore(tiny::ttg::StoreOp op);
   LogicalResult lowerStoreScalar(tiny::ttg::StoreScalarOp op);
   LogicalResult lowerReduce(tiny::ttg::ReduceOp op);
+  LogicalResult lowerExpandDims(tiny::ttg::ExpandDimsOp op);
+  LogicalResult lowerBroadcast(tiny::ttg::BroadcastOp op);
+
+  /// `tid` clamped to the threads the layout uses.  A 16-element layout only
+  /// owns half a block, and the other half repeats the same coordinates.
+  Value threadIndexInLayout(const tiny::ttg::BlockedAttr &blocked);
+  /// Coordinate along `dim` of one register of `type`.
+  Value coordValue(RankedTensorType type, const tiny::ElementPosition &position,
+                   int64_t dim, Value linear);
 
   LaneValue lookup(Value value) const { return env.lookup(value); }
 
@@ -109,6 +103,7 @@ private:
   Type ptrTy;
   Type sharedPtrTy;
   int64_t sharedOffset = 0;
+  tiny::TargetInfo target;
 };
 
 Value FuncLowerer::constant(int64_t value) {
@@ -202,16 +197,92 @@ LogicalResult FuncLowerer::lowerMakeRange(tiny::ttg::MakeRangeOp op) {
     return op.emitError() << "chapter 5 only supports axis = 0";
 
   // GPUMin distributes consecutive elements: thread `tid` holds element
-  // `r * threads + tid` for r = 0 .. elementsPerThread-1.
-  int64_t threads = 1;
+  // `r * tile + tid` for r = 0 .. elementsPerThread-1.  A range shorter than
+  // one tile (chapter 7's `tl.arange(0, 8)`) has no room for all 32 threads,
+  // so the extra threads repeat it: the element is `tid % extent`.  Such a
+  // range only ever feeds `[:, None]` / `[None, :]`, where the consumer
+  // recomputes it from the destination coordinates anyway.
   auto blocked = cast<tiny::ttg::BlockedAttr>(type.getEncoding());
-  for (int64_t dim = 0; dim < type.getRank(); ++dim)
-    threads *= blocked.getTileSize(dim);
+  int64_t tile = blocked.getTileSize(0);
+  int64_t extent = type.getShape()[0];
+
+  Value thread = tid;
+  if (extent < tile)
+    thread = builder.create<LLVM::URemOp>(op.getLoc(), tid,
+                                          constant(extent));
 
   LaneValue value;
   for (int64_t r = 0; r < *count; ++r) {
-    Value base = constant(r * threads);
-    value.elts.push_back(builder.create<LLVM::AddOp>(op.getLoc(), base, tid));
+    Value base = constant(r * tile);
+    value.elts.push_back(
+        builder.create<LLVM::AddOp>(op.getLoc(), base, thread));
+  }
+  env[op.getResult()] = value;
+  return success();
+}
+
+LogicalResult FuncLowerer::lowerExpandDims(tiny::ttg::ExpandDimsOp op) {
+  auto resultType = cast<RankedTensorType>(op.getResult().getType());
+  auto blocked = cast<tiny::ttg::BlockedAttr>(resultType.getEncoding());
+  int64_t axis = op.getAxis();
+
+  // A range is a function of its coordinate, so expanding it needs no
+  // cross-thread movement at all: recompute `arange` at the *destination*
+  // coordinates.  This is the same observation Triton's own lowering uses
+  // for `arange(...)[:, None]`, and it keeps chapter 7 free of shuffles.
+  auto range = op.getInput().getDefiningOp<tiny::ttg::MakeRangeOp>();
+  if (!range)
+    return op.emitError() << "chapter 7 only expands tl.arange results; a "
+                             "computed 1-D tensor needs a layout conversion, "
+                             "which chapter 7b adds";
+
+  int64_t sourceDim = axis == 0 ? 1 : 0;
+  int64_t count = tiny::layoutElementsPerThread(blocked, resultType.getShape());
+  Value linear = threadIndexInLayout(blocked);
+
+  LaneValue value;
+  for (int64_t i = 0; i < count; ++i) {
+    tiny::ElementPosition position = tiny::elementPosition(
+        blocked, resultType.getShape(), i);
+    value.elts.push_back(
+        coordValue(resultType, position, sourceDim, linear));
+  }
+  env[op.getResult()] = value;
+  return success();
+}
+
+LogicalResult FuncLowerer::lowerBroadcast(tiny::ttg::BroadcastOp op) {
+  auto sourceType = cast<RankedTensorType>(op.getInput().getType());
+  auto resultType = cast<RankedTensorType>(op.getResult().getType());
+  auto sourceBlocked = cast<tiny::ttg::BlockedAttr>(sourceType.getEncoding());
+  auto resultBlocked = cast<tiny::ttg::BlockedAttr>(resultType.getEncoding());
+
+  LaneValue source = lookup(op.getInput());
+  int64_t count =
+      tiny::layoutElementsPerThread(resultBlocked, resultType.getShape());
+  if (static_cast<int64_t>(source.elts.size()) == 0)
+    return op.emitError() << "broadcast input has no lane values";
+
+  // Growing a size-1 dimension only repeats registers a thread already
+  // holds: both layouts keep the same number of elements per thread, because
+  // the size-1 dimension already used its lanes as copies.  Map each
+  // destination register back to the source register with the same repeat.
+  LaneValue value;
+  for (int64_t i = 0; i < count; ++i) {
+    tiny::ElementPosition position =
+        tiny::elementPosition(resultBlocked, resultType.getShape(), i);
+    for (int64_t dim = 0; dim < resultType.getRank(); ++dim) {
+      if (sourceType.getShape()[dim] == 1) {
+        position.repeat[dim] = 0;
+        position.within[dim] = 0;
+      }
+    }
+    int64_t index =
+        tiny::linearElementIndex(sourceBlocked, sourceType.getShape(), position);
+    if (index >= static_cast<int64_t>(source.elts.size()))
+      return op.emitError() << "broadcast maps a destination register outside "
+                               "the source layout";
+    value.elts.push_back(source.elts[index]);
   }
   env[op.getResult()] = value;
   return success();
@@ -360,6 +431,54 @@ LogicalResult FuncLowerer::lowerReduce(tiny::ttg::ReduceOp op) {
   return success();
 }
 
+Value FuncLowerer::threadIndexInLayout(const tiny::ttg::BlockedAttr &blocked) {
+  int64_t threads = tiny::layoutThreadsInLayout(blocked);
+  if (threads == target.threadsPerBlock())
+    return tid;
+  return builder.create<LLVM::URemOp>(source.getLoc(), tid,
+                                      constant(threads));
+}
+
+Value FuncLowerer::coordValue(RankedTensorType type,
+                              const tiny::ElementPosition &position,
+                              int64_t dim, Value linear) {
+  auto blocked = cast<tiny::ttg::BlockedAttr>(type.getEncoding());
+  int64_t extent = type.getShape()[dim];
+  // A dimension of extent 1 has no threads of its own: every thread holds
+  // the same value, so the coordinate is 0 no matter which lane asks.
+  if (extent == 1)
+    return constant(0);
+
+  Location loc = source.getLoc();
+  int64_t stride = tiny::layoutThreadStride(blocked, dim);
+  int64_t threads = tiny::layoutThreads(blocked, dim);
+  int64_t perThread = blocked.getSizePerThread()[dim];
+  int64_t tile = blocked.getTileSize(dim);
+
+  // `linear` is already clamped to the layout's threads, so the modulo is
+  // only needed when this dimension does not span the whole layout.
+  int64_t layoutThreads = tiny::layoutThreadsInLayout(blocked);
+  Value coord = linear;
+  if (stride != 1)
+    coord = builder.create<LLVM::UDivOp>(loc, coord, constant(stride));
+  if (threads != 1 && stride * threads != layoutThreads)
+    coord = builder.create<LLVM::URemOp>(loc, coord, constant(threads));
+  if (perThread != 1)
+    coord = builder.create<LLVM::MulOp>(loc, coord, constant(perThread));
+  if (position.within[dim] != 0)
+    coord = builder.create<LLVM::AddOp>(loc, coord,
+                                        constant(position.within[dim]));
+  if (position.repeat[dim] != 0)
+    coord = builder.create<LLVM::AddOp>(
+        loc, coord, constant(position.repeat[dim] * tile));
+
+  // A tensor shorter than one tile wraps: `tid % extent` repeats the small
+  // range over the block.  Chapter 7 only produces this for `tl.arange`.
+  if (extent < tile)
+    coord = builder.create<LLVM::URemOp>(loc, coord, constant(extent));
+  return coord;
+}
+
 LogicalResult FuncLowerer::lowerOp(Operation *op) {
   if (auto constant = dyn_cast<arith::ConstantOp>(op))
     return lowerConstant(constant);
@@ -378,6 +497,10 @@ LogicalResult FuncLowerer::lowerOp(Operation *op) {
     return lowerStoreScalar(store);
   if (auto reduce = dyn_cast<tiny::ttg::ReduceOp>(op))
     return lowerReduce(reduce);
+  if (auto expand = dyn_cast<tiny::ttg::ExpandDimsOp>(op))
+    return lowerExpandDims(expand);
+  if (auto broadcast = dyn_cast<tiny::ttg::BroadcastOp>(op))
+    return lowerBroadcast(broadcast);
   if (auto pid = dyn_cast<tiny::ttg::GetProgramIdOp>(op)) {
     if (pid.getAxis() != 0)
       return pid.emitError() << "chapter 5 only supports axis = 0";

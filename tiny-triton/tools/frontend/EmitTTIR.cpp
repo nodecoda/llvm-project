@@ -183,6 +183,12 @@ private:
   Expected<Value> lowerUnary(StringRef OpName, const JsonValue &Operand,
                              unsigned Line);
   Expected<Value> splatTo(Value Scalar, RankedTensorType Target, unsigned Line);
+  Expected<RankedTensorType> broadcastShape(RankedTensorType Lhs,
+                                            RankedTensorType Rhs,
+                                            unsigned Line);
+  Expected<Value> broadcastTo(Value Value, RankedTensorType Target,
+                              unsigned Line);
+  Expected<Value> lowerSubscript(const Object &Node, unsigned Line);
   Error lowerStmt(const Object &Stmt);
   Expected<Value> lowerConstant(const Object &ConstNode, unsigned Line);
   Expected<Value> lowerAttribute(const Object &AttrNode, unsigned Line);
@@ -243,6 +249,45 @@ Expected<Value> Emitter::splatTo(Value Scalar, RankedTensorType Target,
       .getResult();
 }
 
+Expected<RankedTensorType> Emitter::broadcastShape(RankedTensorType Lhs,
+                                                   RankedTensorType Rhs,
+                                                   unsigned Line) {
+  if (Lhs.getRank() != Rhs.getRank())
+    return frontendError(Line, "cannot broadcast tensors of rank " +
+                                   Twine(Lhs.getRank()) + " and " +
+                                   Twine(Rhs.getRank()));
+  if (Lhs.getElementType() != Rhs.getElementType())
+    return frontendError(Line, "tensor element types differ");
+  SmallVector<int64_t> Shape;
+  Shape.reserve(Lhs.getRank());
+  for (int64_t Dim = 0; Dim < Lhs.getRank(); ++Dim) {
+    int64_t L = Lhs.getShape()[Dim];
+    int64_t R = Rhs.getShape()[Dim];
+    if (L == R)
+      Shape.push_back(L);
+    else if (L == 1)
+      Shape.push_back(R);
+    else if (R == 1)
+      Shape.push_back(L);
+    else
+      return frontendError(Line, "cannot broadcast dimension " + Twine(Dim) +
+                                     ": " + Twine(L) + " against " +
+                                     Twine(R));
+  }
+  return RankedTensorType::get(Shape, Lhs.getElementType());
+}
+
+Expected<Value> Emitter::broadcastTo(Value Value, RankedTensorType Target,
+                                     unsigned Line) {
+  auto Source = dyn_cast<RankedTensorType>(Value.getType());
+  if (!Source)
+    return frontendError(Line, "broadcast needs a ranked tensor");
+  if (Source.getShape() == Target.getShape())
+    return Value;
+  return Builder.create<tiny::tt::BroadcastOp>(loc(Line), Target, Value)
+      .getResult();
+}
+
 Expected<Value> Emitter::lowerBinary(StringRef OpName, Value Lhs, Value Rhs,
                                      unsigned Line) {
   Type LhsTy = Lhs.getType();
@@ -256,9 +301,28 @@ Expected<Value> Emitter::lowerBinary(StringRef OpName, Value Lhs, Value Rhs,
       return frontendError(Line, "only `ptr + offsets` is supported");
 
     if (isTensorType(LhsTy) && isTensorType(RhsTy)) {
-      if (cast<RankedTensorType>(LhsTy).getShape() !=
-          cast<RankedTensorType>(RhsTy).getShape())
-        return frontendError(Line, "pointer and offset shapes differ");
+      auto LhsTensor = cast<RankedTensorType>(LhsTy);
+      auto RhsTensor = cast<RankedTensorType>(RhsTy);
+      if (LhsTensor.getShape() != RhsTensor.getShape()) {
+        // The pointer and its offset may differ in a size-1 dimension: an
+        // 8x8 tile is addressed with a row vector and a column vector.
+        Expected<RankedTensorType> Common =
+            broadcastShape(LhsTensor, RhsTensor, Line);
+        if (!Common)
+          return Common.takeError();
+        auto PtrTarget =
+            RankedTensorType::get(Common->getShape(), LhsTensor.getElementType());
+        auto OffTarget =
+            RankedTensorType::get(Common->getShape(), RhsTensor.getElementType());
+        Expected<Value> BroadcastPtr = broadcastTo(Lhs, PtrTarget, Line);
+        if (!BroadcastPtr)
+          return BroadcastPtr.takeError();
+        Expected<Value> BroadcastOff = broadcastTo(Rhs, OffTarget, Line);
+        if (!BroadcastOff)
+          return BroadcastOff.takeError();
+        Lhs = *BroadcastPtr;
+        Rhs = *BroadcastOff;
+      }
     } else if (isTensorType(LhsTy)) {
       // tensor<ptr> + scalar offset
       auto Shape = cast<RankedTensorType>(LhsTy).getShape();
@@ -301,8 +365,25 @@ Expected<Value> Emitter::lowerBinary(StringRef OpName, Value Lhs, Value Rhs,
   if (isTensorType(LhsTy)) {
     auto LhsTensor = cast<RankedTensorType>(LhsTy);
     auto RhsTensor = cast<RankedTensorType>(RhsTy);
-    if (LhsTensor.getShape() != RhsTensor.getShape())
-      return frontendError(Line, "tensor shapes differ");
+    if (LhsTensor.getShape() != RhsTensor.getShape()) {
+      // `r * 8 + c` with r : tensor<8x1> and c : tensor<1x8> is the chapter 7
+      // spelling of an 8x8 index tile.  Both sides are grown to the common
+      // shape first, so the arithmetic itself stays elementwise.
+      Expected<RankedTensorType> Common =
+          broadcastShape(LhsTensor, RhsTensor, Line);
+      if (!Common)
+        return Common.takeError();
+      Expected<Value> BroadcastLhs = broadcastTo(Lhs, *Common, Line);
+      if (!BroadcastLhs)
+        return BroadcastLhs.takeError();
+      Expected<Value> BroadcastRhs = broadcastTo(Rhs, *Common, Line);
+      if (!BroadcastRhs)
+        return BroadcastRhs.takeError();
+      Lhs = *BroadcastLhs;
+      Rhs = *BroadcastRhs;
+      LhsTy = Lhs.getType();
+      RhsTy = Rhs.getType();
+    }
     if (LhsTensor.getElementType() != RhsTensor.getElementType())
       return frontendError(Line, "tensor element types differ");
   }
@@ -478,6 +559,67 @@ Expected<Value> Emitter::lowerCall(const Object &Call, unsigned Line) {
                                  "load, store; chapter 6 adds sum)");
 }
 
+Expected<Value> Emitter::lowerSubscript(const Object &Node, unsigned Line) {
+  const JsonValue *ValueNode = Node.get("value");
+  const JsonValue *SliceNode = Node.get("slice");
+  if (!ValueNode || !SliceNode)
+    return frontendError(Line, "malformed Subscript");
+
+  auto Lowered = lowerExpr(*ValueNode);
+  if (!Lowered)
+    return Lowered.takeError();
+  auto TensorTy = dyn_cast<RankedTensorType>((*Lowered).getType());
+  if (!TensorTy || TensorTy.getRank() != 1)
+    return frontendError(Line,
+                         "chapter 7 only subscripts a 1-D tensor, as in "
+                         "tl.arange(0, 8)[:, None]");
+
+  // `x[:, None]` and `x[None, :]` are the only accepted forms: they insert a
+  // size-1 dimension, which is exactly `tinytt.expand_dims`.
+  auto IsNone = [](const JsonValue &V) {
+    const Object *O = asObject(V);
+    if (!O || typeOf(*O) != "Constant")
+      return false;
+    const JsonValue *Val = O->get("value");
+    return Val && Val->getAsNull();
+  };
+  auto IsFullSlice = [](const JsonValue &V) {
+    const Object *O = asObject(V);
+    if (!O || typeOf(*O) != "Slice")
+      return false;
+    for (const char *Field : {"lower", "upper", "step"}) {
+      const JsonValue *F = O->get(Field);
+      if (F && !F->getAsNull())
+        return false;
+    }
+    return true;
+  };
+
+  const json::Array *Elts = nullptr;
+  if (const Object *SliceObj = asObject(*SliceNode))
+    if (typeOf(*SliceObj) == "Tuple")
+      Elts = fieldArray(*SliceObj, "elts");
+  if (!Elts || Elts->size() != 2)
+    return frontendError(Line, "chapter 7 accepts x[:, None] and x[None, :]");
+
+  int64_t Axis = 0;
+  if (IsFullSlice((*Elts)[0]) && IsNone((*Elts)[1]))
+    Axis = 1;
+  else if (IsNone((*Elts)[0]) && IsFullSlice((*Elts)[1]))
+    Axis = 0;
+  else
+    return frontendError(Line, "chapter 7 accepts x[:, None] and x[None, :]");
+
+  SmallVector<int64_t> Shape(TensorTy.getShape().begin(),
+                             TensorTy.getShape().end());
+  Shape.insert(Shape.begin() + Axis, 1);
+  auto ResultTy = RankedTensorType::get(Shape, TensorTy.getElementType());
+  return Builder
+      .create<tiny::tt::ExpandDimsOp>(loc(Line), ResultTy, *Lowered,
+                                      Builder.getI32IntegerAttr(Axis))
+      .getResult();
+}
+
 Expected<Value> Emitter::lowerExpr(const JsonValue &Node) {
   const Object *N = asObject(Node);
   if (!N)
@@ -522,6 +664,8 @@ Expected<Value> Emitter::lowerExpr(const JsonValue &Node) {
   }
   if (Type == "Call")
     return lowerCall(*N, Line);
+  if (Type == "Subscript")
+    return lowerSubscript(*N, Line);
 
   return frontendError(Line, "unsupported expression '" + Type +
                                  "' (chapter 2 handles straight-line code)");

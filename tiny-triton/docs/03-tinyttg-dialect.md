@@ -73,6 +73,18 @@ shape[d] % (sizePerThread[d] * threadsPerWarp[d] * warpsPerCTA[d]) == 0
 这条规则是本章最容易写错的地方。若要求“布局元素数 == shape 乘积”，
 1024 元素就必须有 1024 个线程，与 GPUMin 的 32 线程模型冲突。
 
+第 7 章给这条规则补了两个例外，它们都被 `lib/Dialect/TinyTTG/IR/TinyTTGOps.cpp`
+的 verifier 接受：
+
+| 情形 | 含义 |
+| --- | --- |
+| `shape[d] == 1` | **复制**：这一维没有自己的线程，所有线程持有同一个值，坐标为 0 |
+| `shape[d] < tile` 且 `threadsInLayout % shape[d] == 0` | **回绕**：`tid % shape[d]` 把小区间复制到整个 block |
+
+例外之外仍然是严格整除。回绕形态只由 `tl.arange(0, 8)` 这类小区间产生，
+第 7 章用它喂 `[:, None]` / `[None, :]`，消费者会按目标坐标重新计算，
+因此不需要跨线程搬运。
+
 ### 2.2 shared
 
 `shared` 只有 `offset` 与 `order`，第 6 章的 reduce 与第 7 章的 trans 才会用到。

@@ -14,6 +14,7 @@
 
 #include "tiny/Conversion/TinyTTToTinyTTG.h"
 
+#include "tiny/Conversion/LayoutGeometry.h"
 #include "tiny/Conversion/TargetInfo.h"
 #include "tiny/Dialect/TinyTT/TinyTTOps.h"
 #include "tiny/Dialect/TinyTTG/TinyTTGOps.h"
@@ -35,7 +36,8 @@ Type convertTensorType(Type type, Location loc, const tiny::TargetInfo &target,
   if (!tensor || tensor.getEncoding())
     return type;
 
-  auto blocked = target.getDefaultBlocked(type.getContext(), tensor.getRank());
+  auto blocked =
+      target.getDefaultBlocked(type.getContext(), tensor.getShape());
   if (!blocked) {
     emitError(loc) << "tiny only assigns layouts to rank 1 and 2 tensors, got "
                    << "rank " << tensor.getRank();
@@ -43,10 +45,35 @@ Type convertTensorType(Type type, Location loc, const tiny::TargetInfo &target,
     return type;
   }
 
+  // Three cases are legal:
+  //   extent 1        -> replicated; the dimension has no threads of its own;
+  //   extent <  tile  -> wrapped; the surplus threads repeat `tid % extent`;
+  //   extent % tile   -> the tile repeats evenly.
+  // Anything else would place an element twice and is rejected.
   for (int64_t dim = 0; dim < tensor.getRank(); ++dim) {
     int64_t extent = tensor.getShape()[dim];
     int64_t tile = blocked.getTileSize(dim);
-    if (extent < 0 || extent % tile != 0) {
+    if (extent < 0) {
+      emitError(loc) << "tensor dimension " << dim
+                     << " must have a static shape";
+      failed = true;
+      return type;
+    }
+    if (extent <= tile) {
+      // Wrapping (`tid % extent`) is only uniform when the extent divides
+      // the block, so a 4- or 16-element range is legal and a 6-element one
+      // is not.
+      if (extent != 1 && target.threadsPerBlock() % extent != 0) {
+        emitError(loc) << "tensor dimension " << dim << " of size " << extent
+                       << " is smaller than one tile of " << tile
+                       << " but does not divide the " << target.threadsPerBlock()
+                       << " threads of a block";
+        failed = true;
+        return type;
+      }
+      continue;
+    }
+    if (extent % tile != 0) {
       emitError(loc) << "tensor dimension " << dim << " of size " << extent
                      << " is not divisible by the " << tile
                      << " threads that one tile covers";

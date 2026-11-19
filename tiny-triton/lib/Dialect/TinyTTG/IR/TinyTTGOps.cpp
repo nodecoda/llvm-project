@@ -9,6 +9,7 @@
 
 #include "tiny/Dialect/TinyTTG/TinyTTGOps.h"
 
+#include "tiny/Conversion/LayoutGeometry.h"
 #include "tiny/Dialect/TinyCommon/OpVerifiers.h"
 
 #include "mlir/IR/Builders.h"
@@ -37,13 +38,28 @@ LogicalResult verifyTensorLayout(Operation *op, Value value, StringRef what) {
     if (blocked.getRank() != rank)
       return op->emitOpError()
              << what << " layout rank does not match the tensor rank";
+    int64_t threadsInLayout = tiny::layoutThreadsInLayout(blocked);
     for (int64_t dim = 0; dim < rank; ++dim) {
       int64_t extent = tensor.getShape()[dim];
       int64_t tile = blocked.getTileSize(dim);
       if (extent < 0)
         return op->emitOpError()
                << what << " must have a static shape in tinyttg";
-      if (tile <= 0 || extent % tile != 0)
+      if (tile <= 0)
+        return op->emitOpError() << what << ": dimension " << dim
+                                 << " has a non-positive layout tile";
+      // Extent 1 replicates and a shorter extent wraps (`tid % extent`);
+      // everything else must tile exactly.  See LayoutGeometry.h.
+      if (extent <= tile) {
+        if (extent != 1 && threadsInLayout % extent != 0)
+          return op->emitOpError()
+                 << what << ": dimension " << dim << " of size " << extent
+                 << " is smaller than layout tile " << tile
+                 << " and does not divide the " << threadsInLayout
+                 << " threads of the layout";
+        continue;
+      }
+      if (extent % tile != 0)
         return op->emitOpError()
                << what << ": dimension " << dim << " of size " << extent
                << " is not divisible by layout tile " << tile;
