@@ -27,8 +27,8 @@ tiny-triton kernels/vecadd.py --emit ttir \
   --arg-type a_ptr=ptr --arg-type b_ptr=ptr --arg-type c_ptr=ptr
 ```
 
-- `--emit ttir` 是本章唯一支持的阶段；`ttgir` / `llir` 会明确报错，
-  避免“跳过阶段”悄悄成立。
+- 本章只用到 `--emit ttir`；`--emit ttgir|llir` 从第 8 章起可用，且
+  内部依次经过每个 checkpoint。
 - `--arg-type NAME=ptr|ptr<f32>|i32|f32|i1`：Triton 的实参类型来自 launch
   特化，独立编译器必须显式给。没有默认值——缺一个就报错并指出行号。
 - `--kernel NAME` 选择 kernel（缺省取第一个带 `@triton.jit` 的函数）。

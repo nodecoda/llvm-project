@@ -254,4 +254,5 @@ tiny-triton/scripts/check-t7b.sh /home/ubuntu/llvm/builds/pr-ctpop/bin
 - `ninja -C <build> tiny-opt tiny-triton` 成功；
 - `check-t1.sh`–`check-t7b.sh` 全绿；
 - `gpumin-verify-all.sh` 8/8、`triton-verify-all.sh` 无失败；
-- `docs/03` 的合法性规则表、`docs/05` 的边界清单与实现一致。
+- `docs/03` 的合法性规则表、`docs/05` 的边界清单与实现一致；
+- 下一章 `docs/08-pipeline-and-resume.md` 把三级 checkpoint 变成可续跑的 CLI。
