@@ -62,6 +62,10 @@ LogicalResult BroadcastOp::verify() {
   return common::verifyBroadcast(getOperation(), getInput(), getResult());
 }
 
+LogicalResult StoreScalarOp::verify() {
+  return common::verifyStoreScalar(getOperation(), getPtr(), getValue());
+}
+
 LogicalResult ExpandDimsOp::verify() {
   return common::verifyExpandDims(getOperation(), getInput(), getResult(),
                                   getAxis());

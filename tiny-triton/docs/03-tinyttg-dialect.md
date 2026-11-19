@@ -75,7 +75,7 @@ shape[d] % (sizePerThread[d] * threadsPerWarp[d] * warpsPerCTA[d]) == 0
 
 ### 2.2 shared
 
-`shared` 只有 `offset` 与 `order`，第 6 章的 reduce/trans 才会用到。
+`shared` 只有 `offset` 与 `order`，第 6 章的 reduce 与第 7 章的 trans 才会用到。
 它现在就注册，是为了让 `tensor<..., #tinyttg.shared<...>>` 在 TTGIR 里
 从第 3 章起就是合法类型。
 

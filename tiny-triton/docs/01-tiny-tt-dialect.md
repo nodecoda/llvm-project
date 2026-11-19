@@ -78,7 +78,7 @@ dialect `tiny`、类型 `ptr<f32>`，直接报 unregistered dialect。
 | `tinytt.masked_load` | 带 mask 与 fallback 的 gather | 上述检查 + mask 是 i1 且同形 + other 元素类型一致 |
 | `tinytt.store` | scatter | value 元素类型 == pointee；形状相等 |
 | `tinytt.masked_store` | 带 mask 的 scatter | 上述检查 + mask 是 i1 且同形 |
-| `tinytt.reduce` | 沿一个轴归约 | combine ∈ {add,max,min}；axis 在范围内；结果形状 = 输入在 axis 处置 1 |
+| `tinytt.reduce` | 1-D 归约成标量 | combine ∈ {add,max,min}；输入必须 1-D；axis 必须是 0；结果不是 tensor |
 | `tinytt.trans` | 维度置换 | order 必须是合法排列，且结果形状 = 置换后的输入形状 |
 | `tinytt.broadcast` | 1 维扩展 | rank 不变；每个维度是 1 或已相等 |
 | `tinytt.expand_dims` | 插入 1 维 | rank + 1；axis 合法；结果形状正确 |

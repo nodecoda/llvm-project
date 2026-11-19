@@ -1,0 +1,11 @@
+module {
+  func.func @reduce_sum(%arg0: !tinytt.ptr<f32>, %arg1: !tinytt.ptr<f32>) {
+    %0 = tinytt.make_range <axis = 0> : tensor<1024xi32>
+    %1 = tinytt.splat %arg0 : !tinytt.ptr<f32> -> tensor<1024x!tinytt.ptr<f32>>
+    %2 = tinytt.addptr %1, %0 : tensor<1024x!tinytt.ptr<f32>>, tensor<1024xi32> -> tensor<1024x!tinytt.ptr<f32>>
+    %3 = tinytt.load %2 : tensor<1024x!tinytt.ptr<f32>>, tensor<1024xf32>
+    %4 = tinytt.reduce %3 <axis = 0, combine = "add"> : tensor<1024xf32> -> f32
+    tinytt.store_scalar %arg1, %4 : <f32>, f32
+    return
+  }
+}

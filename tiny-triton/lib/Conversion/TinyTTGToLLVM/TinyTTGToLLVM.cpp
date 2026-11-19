@@ -56,6 +56,25 @@ FailureOr<int64_t> elementsPerThread(RankedTensorType type) {
   return count;
 }
 
+/// Number of threads that participate in the layout.  This is the number of
+/// shared slots a block-wide reduction needs, independent of how many
+/// elements each thread happens to hold.
+FailureOr<int64_t> threadsInLayout(RankedTensorType type) {
+  auto blocked = dyn_cast<tiny::ttg::BlockedAttr>(type.getEncoding());
+  if (!blocked)
+    return failure();
+
+  int64_t count = 1;
+  for (int64_t dim = 0; dim < type.getRank(); ++dim) {
+    int64_t threads = blocked.getThreadsPerWarp()[dim] *
+                      blocked.getWarpsPerCTA()[dim];
+    if (threads <= 0)
+      return failure();
+    count *= threads;
+  }
+  return count;
+}
+
 class FuncLowerer {
 public:
   FuncLowerer(func::FuncOp source, ModuleOp module)
@@ -77,6 +96,8 @@ private:
   LogicalResult lowerAddPtr(tiny::ttg::AddPtrOp op);
   LogicalResult lowerLoad(tiny::ttg::LoadOp op);
   LogicalResult lowerStore(tiny::ttg::StoreOp op);
+  LogicalResult lowerStoreScalar(tiny::ttg::StoreScalarOp op);
+  LogicalResult lowerReduce(tiny::ttg::ReduceOp op);
 
   LaneValue lookup(Value value) const { return env.lookup(value); }
 
@@ -86,6 +107,8 @@ private:
   DenseMap<Value, LaneValue> env;
   Value tid;
   Type ptrTy;
+  Type sharedPtrTy;
+  int64_t sharedOffset = 0;
 };
 
 Value FuncLowerer::constant(int64_t value) {
@@ -243,6 +266,100 @@ LogicalResult FuncLowerer::lowerStore(tiny::ttg::StoreOp op) {
   return success();
 }
 
+LogicalResult FuncLowerer::lowerStoreScalar(tiny::ttg::StoreScalarOp op) {
+  Value pointer = lookup(op.getPtr()).elts.front();
+  Value value = lookup(op.getValue()).elts.front();
+  Location loc = op.getLoc();
+
+  // Every thread holds the same reduced scalar; only lane 0 should write it.
+  // Keeping the store behind a branch also makes the memory effect match the
+  // Triton semantics instead of relying on a benign write race.
+  Value isLaneZero = builder.create<LLVM::ICmpOp>(
+      loc, LLVM::ICmpPredicate::eq, tid, constant(0));
+  Block *storeBlock = new Block();
+  Block *continueBlock = new Block();
+  Region *body = builder.getInsertionBlock()->getParent();
+  body->getBlocks().push_back(storeBlock);
+  body->getBlocks().push_back(continueBlock);
+
+  builder.create<LLVM::CondBrOp>(loc, isLaneZero, storeBlock, continueBlock,
+                                 ValueRange{});
+  builder.setInsertionPointToStart(storeBlock);
+  builder.create<LLVM::StoreOp>(loc, value, pointer);
+  builder.create<LLVM::BrOp>(loc, continueBlock);
+
+  builder.setInsertionPointToStart(continueBlock);
+  return success();
+}
+
+LogicalResult FuncLowerer::lowerReduce(tiny::ttg::ReduceOp op) {
+  auto type = dyn_cast<RankedTensorType>(op.getInput().getType());
+  if (!type)
+    return op.emitError() << "reduce expects a ranked tensor";
+  if (op.getCombine() != "add")
+    return op.emitError() << "chapter 6 only lowers combine = \"add\"";
+  Type elementType = op.getResult().getType();
+  if (!elementType.isF32() && !elementType.isInteger(32))
+    return op.emitError() << "reduce supports f32 and i32 only";
+
+  Location loc = op.getLoc();
+  LaneValue source = lookup(op.getInput());
+  if (source.elts.empty())
+    return op.emitError() << "reduce input has no lane values";
+
+  // 1. Every thread reduces its own registers first: 1024 elements over 32
+  //    threads is 32 adds, not 32 shared round trips.
+  Value partial = source.elts.front();
+  for (size_t i = 1; i < source.elts.size(); ++i) {
+    if (elementType.isF32())
+      partial = builder.create<LLVM::FAddOp>(loc, partial, source.elts[i]);
+    else
+      partial = builder.create<LLVM::AddOp>(loc, partial, source.elts[i]);
+  }
+
+  // 2. One shared slot per thread.  The number of slots is the number of
+  //    threads in the layout, not the number of elements each thread holds:
+  //    a 512-element reduce still has 32 partials even though every thread
+  //    only contributes 16 values.  `llvm.gpumin.shared` is the block's
+  //    shared-window base, so the offset is ours to choose.
+  FailureOr<int64_t> threads = threadsInLayout(type);
+  if (failed(threads))
+    return op.emitError() << "cannot compute the number of threads in the "
+                             "reduction layout";
+  Value base = intrinsic("llvm.gpumin.shared");
+  Value window = constant(sharedOffset);
+  Value tidBytes = builder.create<LLVM::MulOp>(loc, tid, constant(4));
+  Value slotOffset = builder.create<LLVM::AddOp>(loc, window, tidBytes);
+  Value slotAddress = builder.create<LLVM::AddOp>(loc, base, slotOffset);
+  Value slot = builder.create<LLVM::IntToPtrOp>(loc, sharedPtrTy, slotAddress);
+  builder.create<LLVM::StoreOp>(loc, partial, slot);
+
+  // 3. The barrier makes every slot visible to every thread, so each thread
+  //    can compute the whole sum.  No second barrier is needed: after this
+  //    point nothing writes shared memory.
+  builder.create<LLVM::CallIntrinsicOp>(
+      loc, builder.getStringAttr("llvm.gpumin.barrier"), ValueRange{});
+
+  Value sum;
+  for (int64_t i = 0; i < *threads; ++i) {
+    Value offset = constant(sharedOffset + 4 * i);
+    Value address = builder.create<LLVM::AddOp>(loc, base, offset);
+    Value pointer = builder.create<LLVM::IntToPtrOp>(loc, sharedPtrTy, address);
+    Value value =
+        builder.create<LLVM::LoadOp>(loc, elementType, pointer);
+    if (!sum)
+      sum = value;
+    else if (elementType.isF32())
+      sum = builder.create<LLVM::FAddOp>(loc, sum, value);
+    else
+      sum = builder.create<LLVM::AddOp>(loc, sum, value);
+  }
+
+  sharedOffset += 4 * *threads;
+  env[op.getResult()] = LaneValue{{sum}};
+  return success();
+}
+
 LogicalResult FuncLowerer::lowerOp(Operation *op) {
   if (auto constant = dyn_cast<arith::ConstantOp>(op))
     return lowerConstant(constant);
@@ -257,6 +374,10 @@ LogicalResult FuncLowerer::lowerOp(Operation *op) {
     return lowerLoad(load);
   if (auto store = dyn_cast<tiny::ttg::StoreOp>(op))
     return lowerStore(store);
+  if (auto store = dyn_cast<tiny::ttg::StoreScalarOp>(op))
+    return lowerStoreScalar(store);
+  if (auto reduce = dyn_cast<tiny::ttg::ReduceOp>(op))
+    return lowerReduce(reduce);
   if (auto pid = dyn_cast<tiny::ttg::GetProgramIdOp>(op)) {
     if (pid.getAxis() != 0)
       return pid.emitError() << "chapter 5 only supports axis = 0";
@@ -282,6 +403,7 @@ LogicalResult FuncLowerer::lowerOp(Operation *op) {
 LogicalResult FuncLowerer::run() {
   MLIRContext *context = source.getContext();
   ptrTy = LLVM::LLVMPointerType::get(context, 1);
+  sharedPtrTy = LLVM::LLVMPointerType::get(context, 2);
 
   // Kernel ABI: no formal parameters, void return.
   auto fnType = LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(context), {});

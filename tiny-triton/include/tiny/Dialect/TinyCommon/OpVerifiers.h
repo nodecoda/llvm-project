@@ -133,25 +133,32 @@ inline mlir::LogicalResult verifyReduce(mlir::Operation *Op,
                                         mlir::Value Result, int64_t Axis,
                                         llvm::StringRef Combine) {
   auto InputType = asRanked(Input.getType());
-  auto ResultType = asRanked(Result.getType());
-  if (!InputType || !ResultType)
-    return Op->emitOpError("expects ranked tensor types");
-  if (InputType.getElementType() != ResultType.getElementType())
+  if (!InputType)
+    return Op->emitOpError("input must be a ranked tensor");
+  if (InputType.getRank() != 1)
+    return Op->emitOpError("tiny only reduces 1-D tensors");
+  if (mlir::isa<mlir::RankedTensorType>(Result.getType()))
+    return Op->emitOpError("reduce produces a scalar, not a tensor");
+  if (InputType.getElementType() != Result.getType())
     return Op->emitOpError("input and result must share an element type");
+  if (Axis != 0)
+    return Op->emitOpError("tiny only reduces axis 0");
 
   if (Combine != "add" && Combine != "max" && Combine != "min")
     return Op->emitOpError("combine must be \"add\", \"max\" or \"min\"");
+  return mlir::success();
+}
 
-  int64_t Rank = InputType.getRank();
-  if (Axis < 0 || Axis >= Rank)
-    return Op->emitOpError("axis is out of range for the input rank");
-  if (ResultType.getRank() != Rank)
-    return Op->emitOpError("result rank must match the input rank");
-
-  llvm::SmallVector<int64_t> ExpectedShape(InputType.getShape());
-  ExpectedShape[Axis] = 1;
-  if (ResultType.getShape() != llvm::ArrayRef<int64_t>(ExpectedShape))
-    return Op->emitOpError("result shape must match the input with axis set to 1");
+inline mlir::LogicalResult verifyStoreScalar(mlir::Operation *Op,
+                                             mlir::Value Ptr,
+                                             mlir::Value Value) {
+  auto PtrType = mlir::dyn_cast<tiny::tt::PtrType>(Ptr.getType());
+  if (!PtrType)
+    return Op->emitOpError("ptr must be a scalar !tinytt.ptr");
+  if (mlir::isa<mlir::RankedTensorType>(Value.getType()))
+    return Op->emitOpError("value must be a scalar, not a tensor");
+  if (PtrType.getPointee() != Value.getType())
+    return Op->emitOpError("pointee type must match the stored value");
   return mlir::success();
 }
 

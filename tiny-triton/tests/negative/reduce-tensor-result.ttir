@@ -1,0 +1,9 @@
+// `tinytt.reduce` collapses a 1-D tensor to a scalar.  A tensor result must
+// be rejected before any lowering can treat it as a block-wide value.
+module {
+  func.func @bad(%x: tensor<8xf32>) {
+    %r = tinytt.reduce %x <axis = 0, combine = "add">
+        : tensor<8xf32> -> tensor<8xf32>
+    return
+  }
+}

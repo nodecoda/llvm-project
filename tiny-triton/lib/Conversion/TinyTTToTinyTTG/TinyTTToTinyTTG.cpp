@@ -119,6 +119,12 @@ LogicalResult rewriteOp(Operation *op) {
     finish(newOp);
     return success();
   }
+  if (auto old = dyn_cast<tiny::tt::StoreScalarOp>(op)) {
+    auto newOp = builder.create<tiny::ttg::StoreScalarOp>(
+        loc, old.getPtr(), old.getValue());
+    finish(newOp);
+    return success();
+  }
   if (auto old = dyn_cast<tiny::tt::ReduceOp>(op)) {
     auto newOp = builder.create<tiny::ttg::ReduceOp>(
         loc, old.getResult().getType(), old.getInput(), old.getAxisAttr(),

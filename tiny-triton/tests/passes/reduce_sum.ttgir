@@ -1,0 +1,13 @@
+#blocked = #tinyttg.blocked<sizePerThread = [1], threadsPerWarp = [8], warpsPerCTA = [4], order = [0]>
+module attributes {tinyttg.num_warps = 4 : i32} {
+  func.func @reduce_sum(%arg0: !tinytt.ptr<f32>, %arg1: !tinytt.ptr<f32>) {
+    %0 = tinyttg.make_range <axis = 0> : tensor<1024xi32, #blocked>
+    %1 = tinyttg.splat %arg0 : !tinytt.ptr<f32> -> tensor<1024x!tinytt.ptr<f32>, #blocked>
+    %2 = tinyttg.addptr %1, %0 : tensor<1024x!tinytt.ptr<f32>, #blocked>, tensor<1024xi32, #blocked> -> tensor<1024x!tinytt.ptr<f32>, #blocked>
+    %3 = tinyttg.load %2 : tensor<1024x!tinytt.ptr<f32>, #blocked>, tensor<1024xf32, #blocked>
+    %4 = tinyttg.reduce %3 <axis = 0, combine = "add"> : tensor<1024xf32, #blocked> -> f32
+    tinyttg.store_scalar %arg1, %4 : <f32>, f32
+    return
+  }
+}
+

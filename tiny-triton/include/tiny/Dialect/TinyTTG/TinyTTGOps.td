@@ -40,6 +40,8 @@ def TinyTTG_MaskedStoreOp
     : TinyCommon_MaskedStore<TinyTTG_Dialect, "masked_store", [TinyTTG_Layouts]>;
 def TinyTTG_ReduceOp
     : TinyCommon_Reduce<TinyTTG_Dialect, "reduce", [TinyTTG_Layouts]>;
+def TinyTTG_StoreScalarOp
+    : TinyCommon_StoreScalar<TinyTTG_Dialect, "store_scalar", [TinyTTG_Layouts]>;
 def TinyTTG_TransOp
     : TinyCommon_Trans<TinyTTG_Dialect, "trans", [TinyTTG_Layouts]>;
 def TinyTTG_BroadcastOp

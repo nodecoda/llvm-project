@@ -1,0 +1,7 @@
+// `tinytt.store_scalar` stores exactly one scalar to one pointer.
+module {
+  func.func @bad(%p: !tinytt.ptr<f32>, %v: tensor<8xf32>) {
+    tinytt.store_scalar %p, %v : !tinytt.ptr<f32>, tensor<8xf32>
+    return
+  }
+}

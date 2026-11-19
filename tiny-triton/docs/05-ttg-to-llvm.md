@@ -124,8 +124,8 @@ p    = inttoptr addr
 ## 7. 已知边界（第 6、7 章补齐）
 
 - `masked_load/masked_store`：需要谓词化与 select 的 CFG；
-- `reduce/trans/broadcast/expand_dims`：需要 shared 与 barrier；
-- `convert_layout/local_alloc/local_store/local_load/barrier`：尚未 lowering；
+- `reduce`：第 6 章已补齐 1-D reduce；`trans/broadcast/expand_dims` 仍留到第 7 章；
+- `convert_layout/local_alloc/local_store/local_load/barrier`：第 7 章补齐；
 - 2D 布局：`elementsPerThread` 已按布局计算，但本章只测 1D。
 
 遇到这些 op，pass 报

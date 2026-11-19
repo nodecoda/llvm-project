@@ -409,6 +409,28 @@ Expected<Value> Emitter::lowerCall(const Object &Call, unsigned Line) {
       Args.push_back(*LoweredArg);
     }
 
+  if (Attr == "sum") {
+    if (Args.empty() || Args.size() > 2)
+      return frontendError(Line, "tl.sum takes a tensor and an optional axis");
+    auto InputTy = dyn_cast<RankedTensorType>(Args[0].getType());
+    if (!InputTy || InputTy.getRank() != 1)
+      return frontendError(Line, "tiny only reduces 1-D tensors");
+    int64_t Axis = 0;
+    if (Args.size() == 2) {
+      auto Const = constantInt((*RawArgs)[1]);
+      if (!Const)
+        return frontendError(Line, "tl.sum axis must be a constant");
+      Axis = *Const;
+    }
+    if (Axis != 0)
+      return frontendError(Line, "tiny only reduces axis 0");
+    return Builder
+        .create<tiny::tt::ReduceOp>(loc(Line), InputTy.getElementType(),
+                                    Args[0], Builder.getI32IntegerAttr(0),
+                                    Builder.getStringAttr("add"))
+        .getResult();
+  }
+
   if (Attr == "load") {
     if (Args.empty() || Args.size() > 3)
       return frontendError(Line, "tl.load takes 1 or 3 arguments");
@@ -435,6 +457,14 @@ Expected<Value> Emitter::lowerCall(const Object &Call, unsigned Line) {
   if (Attr == "store") {
     if (Args.size() != 2 && Args.size() != 3)
       return frontendError(Line, "tl.store takes 2 or 3 arguments");
+    // A reduction produces a scalar, so `tl.store(out_ptr, sum)` is a scalar
+    // store rather than a distributed one.
+    if (isa<tiny::tt::PtrType>(Args[0].getType())) {
+      if (Args.size() != 2)
+        return frontendError(Line, "a scalar store takes exactly 2 arguments");
+      Builder.create<tiny::tt::StoreScalarOp>(loc(Line), Args[0], Args[1]);
+      return mlir::Value();
+    }
     if (Args.size() == 2)
       Builder.create<tiny::tt::StoreOp>(loc(Line), Args[0], Args[1]);
     else
@@ -445,7 +475,7 @@ Expected<Value> Emitter::lowerCall(const Object &Call, unsigned Line) {
 
   return frontendError(Line, "unsupported tl API '" + Attr +
                                  "' (chapter 2 knows program_id, arange, "
-                                 "load, store)");
+                                 "load, store; chapter 6 adds sum)");
 }
 
 Expected<Value> Emitter::lowerExpr(const JsonValue &Node) {

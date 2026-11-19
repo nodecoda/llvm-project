@@ -33,6 +33,8 @@ def TinyTT_MaskedStoreOp
     : TinyCommon_MaskedStore<TinyTT_Dialect, "masked_store">;
 def TinyTT_ReduceOp
     : TinyCommon_Reduce<TinyTT_Dialect, "reduce">;
+def TinyTT_StoreScalarOp
+    : TinyCommon_StoreScalar<TinyTT_Dialect, "store_scalar">;
 def TinyTT_TransOp
     : TinyCommon_Trans<TinyTT_Dialect, "trans">;
 def TinyTT_BroadcastOp

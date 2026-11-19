@@ -96,6 +96,19 @@ class TinyCommon_Store<Dialect d, string m, list<Trait> traits = []>
   let hasVerifier = 1;
 }
 
+class TinyCommon_StoreScalar<Dialect d, string m, list<Trait> traits = []>
+    : Op<d, m, traits> {
+  let summary = "store one scalar to one pointer";
+  let description = [{
+    A reduction collapses a block-wide tensor to a scalar, so the final store
+    has no tensor left to distribute.  After the reduction every thread holds
+    the same value; the lowering lets only lane 0 perform the store.
+  }];
+  let arguments = (ins TinyCommon_PtrTypeConstraint:$ptr, AnyType:$value);
+  let assemblyFormat = "$ptr `,` $value attr-dict `:` type($ptr) `,` type($value)";
+  let hasVerifier = 1;
+}
+
 class TinyCommon_MaskedStore<Dialect d, string m, list<Trait> traits = []>
     : Op<d, m, traits> {
   let summary = "scatter with an explicit mask";
@@ -116,10 +129,15 @@ class TinyCommon_Reduce<Dialect d, string m, list<Trait> traits = []>
   let description = [{
     Triton-faithful: no `init` operand.  The identity value follows from
     `combine`, which is one of `"add"`, `"max"`, `"min"`.
+
+    The result is a scalar.  It must not be constrained to a ranked tensor:
+    the generated builder would then cast the scalar result to
+    `TypedValue<RankedTensorType>` and crash before the verifier can explain
+    the mistake.
   }];
   let arguments = (ins AnyRankedTensor:$input, I32Attr:$axis,
                        StrAttr:$combine);
-  let results = (outs AnyRankedTensor:$result);
+  let results = (outs AnyType:$result);
   let assemblyFormat = [{
     $input prop-dict attr-dict `:` type($input) `->` type($result)
   }];
