@@ -3,21 +3,22 @@
 本目录有两个主题：
 
 - **A. 文本解析**（01–09）：`mlir/lib/AsmParser/` 如何把 MLIR 文本变成内存中的 IR。
-- **B. 声明层**（10–15）：`mlir/**/*.td` 如何通过 `include` 组成 ODS 依赖图，
+- **B. 声明层**（10–16）：`mlir/**/*.td` 如何通过 `include` 组成 ODS 依赖图，
   这张图如何经 `mlir-tblgen` 变成 `.inc` 再进入 C++，寄生在 TD 语法里的
   ODS 语义结构是什么样子（13 章给出两门可编译的语义文法），如果只描述
   方言领域本身、不描述代码生成这门定义语言应该长什么样（14 章），以及
-  把真实方言当成源程序、从语料反推出可编译文法（15 章）。
+  把真实方言当成源程序、从语料反推出可编译文法（15 章用 6 个方言归纳，
+  16 章用 gpu/linalg/tensor 扩充到 9 个并加入谓词组合）。
 
 - 分析基线：worktree `/home/ubuntu/llvm/trees/pr-ctpop`，分支 `research/mlir`。
-  01–09 基于 `5f7f36636abe`；10–15 基于 `53a80edfeb2e`（2026-11-27）。
+  01–09 基于 `5f7f36636abe`；10–16 基于 `53a80edfeb2e`（2026-11-27）。
 - 所有 `file:line` 引用均以对应提交为准；上游演进后行号可能漂移，函数名相对稳定。
 - 01–09 的范围以 `mlir/lib/AsmParser/` 为中心；为解释边界，少量引用
   `mlir/include/mlir/Parser/Parser.h`、`mlir/include/mlir/AsmParser/*`、
   `mlir/include/mlir/IR/OpImplementation.h` 与 `mlir/lib/Parser/Parser.cpp`。
-- 10–15 的范围是 `mlir/include`、`mlir/lib`、`mlir/python` 下的 412 个 `.td`
+- 10–16 的范围是 `mlir/include`、`mlir/lib`、`mlir/python` 下的 412 个 `.td`
   （不含 `mlir/test`、`mlir/examples`、`mlir/unittests`）；14 章的样例在
-  `sketch/`，15 章的语料在 `corpus/`，v1 归档在 `design-first-v1/`。
+  `sketch/`，15–16 章的语料在 `corpus/`，v1 归档在 `design-first-v1/`。
 
 ## 章节
 
@@ -37,7 +38,8 @@
 | [12-tablegen-dialect-anatomy.md](12-tablegen-dialect-anatomy.md) | 单方言解剖：Arith / Linalg 的文件划分、partition、YAML 生成、checklist |
 | [13-ods-semantic-grammar.md](13-ods-semantic-grammar.md) | ODS 语义文法：记录层 `ods.y` + `assemblyFormat` 子语言 `ods-asm-format.y`，勘误与语义约束清单 |
 | [14-dialect-domain-model.md](14-dialect-domain-model.md) | 方言定义的领域模型：定义 vs 生成的边界、结构/文本/语义三投影、trait 四分类、约束指称语义、schema refinement |
-| [15-corpus-driven-grammar.md](15-corpus-driven-grammar.md) | 语料优先归纳文法：6 个方言源程序、词法三类关键字、子句×实体矩阵、47 条规则 / 98 条产生式、8 个由语料逼出的修正 |
+| [15-corpus-driven-grammar.md](15-corpus-driven-grammar.md) | 语料优先归纳文法：6 个方言源程序、词法三类关键字、子句×实体矩阵、本轮 47 条规则 / 98 条产生式、8 个由语料逼出的修正 |
+| [16-corpus-round-two.md](16-corpus-round-two.md) | 第二轮语料：gpu/linalg/tensor、oilist/custom/functional-type/region 注解/软关键字、谓词组合（列表=合取，`\|`=析取）、9 个方言 55 条规则 / 128 条产生式 |
 
 ## 一页结论
 
@@ -103,6 +105,18 @@
 15. **下一步不是扩文法，而是扩语料**：`gpu`（interface 定义、多 region）与
     `linalg`（partial custom、`oilist`、YAML named op）是下一轮最值得写的
     源程序；文法跟不上才是新产生式的合法来源。
+16. **谓词是可组合的逻辑，不是特殊谓词表**：`Properties`/`Implements`/
+    region 注解的列表是合取，`|` 是析取；`parent_one_of` 被删除。拼写用
+    `|` 而不是 `or`，因为 `or`/`and`/`xor` 是 `gpu.all_reduce` 的合法 case 名
+    （16 章）。
+17. **约束挂在它约束的实体上**：`single_block` 从 op 属性搬到 region 绑定，
+    才能表达「变长 region 组里每个 region 都是单块」（`scf.reduce`）；
+    `gpu.launch`/`gpu.func`/`func.func` 是 `AnyRegion`，不能标（16 章）。
+18. **软关键字让领域名不被语言绑架**：`gpu.all_reduce` 的属性就叫 `op`，
+    所以声明关键字在名字位置降级为标识符（16 章）。
+19. **新构造由新方言逼出**：3 个方言换来 10 项扩展，其中 6 项在此前 6 个
+    方言里从未出现；`custom<...>`、`oilist`、`functional-type` 都不是猜的
+    （16 章）。
 
 ## A 部分：`mlir/lib/AsmParser/` 文件职责
 
@@ -134,8 +148,12 @@
 | `14-dialect-domain-model.md` | 领域模型：定义/生成边界、三投影、trait 分类、约束语义、schema refinement、v1 逐项判决 |
 | `15-corpus-driven-grammar.md` | 语料优先：方法论、语料统计、见证表、8 个修正、机械核对、与 v1/v2 差异、下一轮语料 |
 | `corpus/*.dialect` | 6 个方言源程序（arith/scf/func/cf/complex/pdl，650 行）：77 op、13 schema、5 enum、1 attr_def、4 type_def |
-| `dialect-grammar.y` | 从语料归纳的文法（bison，47 条规则 / 98 条产生式，0 冲突） |
-| `tools/dialect-corpus.py` | 语料统计与审计：子句×实体矩阵、Assembly 频次、悬挂引用、死声明、C++ 泄漏检查 |
+| `dialect-grammar.y` | 从语料归纳的文法（bison，55 条规则 / 128 条产生式，0 冲突） |
+| `16-corpus-round-two.md` | 第二轮：10 项扩展、谓词组合、region 约束搬家、软关键字、见证表、机械核对 |
+| `corpus/gpu.dialect` | gpu：launch/module/func、内建 id/dim、barrier/printf/shuffle/all_reduce/subgroup_reduce/warp（18 op） |
+| `corpus/linalg.dialect` | linalg：`Structured` schema + 5 个命名算符 + generic/map/reduce/transpose/broadcast/index/yield（12 op） |
+| `corpus/tensor.dialect` | tensor：元素访问/切片/填充/生成，partial custom 与谓词析取（12 op） |
+| `tools/dialect-corpus.py` | 语料统计与审计：子句×实体矩阵、Assembly 频次、region 注解、悬挂引用、死声明、C++ 泄漏检查（`custom<Hook>` 钩子名不算引用） |
 | `tools/dialect-lex.c` | 参考词法器（normal / assembly 两模式），用于 `6/6 parse OK` |
 | `sketch/arith.dialect` | 领域描述样例：3 约束 + 4 schema + 8 op，无 C++/namespace/class |
 | `design-first-v1/` | 归档：先定文法再凑样例的 v1（`dialect-dsl.y` + 5 个 `.mdl` + 词法器），仅作对照 |

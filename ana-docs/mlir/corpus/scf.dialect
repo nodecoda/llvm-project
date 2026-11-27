@@ -28,8 +28,8 @@ dialect scf {
                 init_args: variadic<any>);
     Results    (results: variadic<any>);
     Attributes (unsigned_cmp: optional<unit>);
-    Regions    (body: region);
-    Properties [single_block, recursive_effects, automatic_allocation_scope];
+    Regions    (body: region [single_block]);
+    Properties [recursive_effects, automatic_allocation_scope];
     Implements [LoopLikeOpInterface, RegionBranchOpInterface];
     Assembly Custom;
   }
@@ -43,8 +43,8 @@ dialect scf {
                 static_upper_bound: array<integer>,
                 static_step: array<integer>);
     Results    (results: variadic<any>);
-    Regions    (body: region);
-    Properties [single_block, recursive_effects, automatic_allocation_scope];
+    Regions    (body: region [single_block]);
+    Properties [recursive_effects, automatic_allocation_scope];
     Assembly Custom;
   }
 
@@ -60,8 +60,9 @@ dialect scf {
     Doc "if-then-else with two regions";
     Operands (condition: i1);
     Results  (results: variadic<any>);
-    Regions  (then_region: region, else_region: optional<region>);
-    Properties [single_block, recursive_effects, no_region_args];
+    Regions  (then_region: region [single_block],
+              else_region: optional<region> [single_block]);
+    Properties [recursive_effects, no_region_args];
     Implements [RegionBranchOpInterface];
     Assembly Custom;
   }
@@ -74,8 +75,8 @@ dialect scf {
                 init_values: variadic<any>);
     Results    (results: variadic<any>);
     Attributes (unsigned_cmp: optional<unit>);
-    Regions    (body: region);
-    Properties [single_block, recursive_effects];
+    Regions    (body: region [single_block]);
+    Properties [recursive_effects];
     Implements [LoopLikeOpInterface];
     Assembly Custom;
   }
@@ -83,7 +84,7 @@ dialect scf {
   op reduce {
     Doc "reduction inside scf.parallel";
     Operands (operands: variadic<any>);
-    Regions  (reductions: variadic<region>);
+    Regions  (reductions: variadic<region> [single_block]);
     Properties [has_parent(parallel)];
     Assembly Custom;
   }
@@ -99,8 +100,8 @@ dialect scf {
     Doc "generic while/do-while loop with before and after regions";
     Operands (inits: variadic<any>);
     Results  (results: variadic<any>);
-    Regions  (before: region, after: region);
-    Properties [single_block, recursive_effects];
+    Regions  (before: region [single_block], after: region [single_block]);
+    Properties [recursive_effects];
     Implements [LoopLikeOpInterface, RegionBranchOpInterface];
     Assembly Custom;
   }
@@ -110,8 +111,9 @@ dialect scf {
     Operands   (arg: index);
     Attributes (cases: array<integer>);
     Results    (results: variadic<any>);
-    Regions    (default_region: region, case_regions: variadic<region>);
-    Properties [single_block, recursive_effects];
+    Regions    (default_region: region [single_block],
+                case_regions: variadic<region> [single_block]);
+    Properties [recursive_effects];
     Assembly Custom;
   }
 
@@ -119,7 +121,8 @@ dialect scf {
     Doc "loop yield and termination operation";
     Operands   (values: variadic<any>);
     Properties [pure, terminator,
-                parent_one_of(execute_region, for, if, index_switch, while)];
+                has_parent(execute_region) | has_parent(for) |
+                has_parent(if) | has_parent(index_switch) | has_parent(while)];
     Assembly   { attr-dict if values { ":" type(values) } }
   }
 }

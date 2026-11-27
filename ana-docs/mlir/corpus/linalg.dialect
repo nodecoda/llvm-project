@@ -1,0 +1,127 @@
+/// linalg —— 结构化线性代数：generic 形态 + 共享 ins/outs 形状的命名算符。
+///
+/// 命名算符不是手写的：它们由同一份结构化描述生成，只有输入/输出元数与
+/// 迭代语义不同。领域里这就是 "一个 schema + 每个 op 的定元事实"。
+
+dialect linalg {
+  Doc "Structured linear-algebra operations: generic, named, yield.";
+
+  enum IteratorType {
+    Doc "Iterator kind of a structured-op dimension.";
+    Cases [ parallel = 0, reduction = 1 ];
+  }
+
+  /// 所有 structured op 的共同形状：ins/outs、单块 region、隐式 yield。
+  schema Structured {
+    Operands (inputs: variadic<any>, outputs: variadic<any>);
+    Results  (result_tensors: variadic<any>);
+    Regions  (region: region [single_block]);
+    Properties [destination_style, recursive_effects];
+    Assembly { "ins" "(" inputs ":" type(inputs) ")"
+               "outs" "(" outputs ":" type(outputs) ")"
+               attr-dict }
+  }
+
+  // ---- generic 形态：迭代空间由属性描述 ----
+
+  op generic {
+    Doc "Structured op whose iteration space is given by attributes.";
+    Operands   (inputs: variadic<any>, outputs: variadic<any>);
+    Results    (result_tensors: variadic<any>);
+    Attributes (indexing_maps: array<affine_map>,
+                iterator_types: array<iterator_type>,
+                doc: optional<string>,
+                library_call: optional<string>);
+    Regions    (body: region);
+    Properties [destination_style, recursive_effects];
+    Implements [DestinationStyleOpInterface, LinalgStructuredInterface];
+    Assembly Custom;
+  }
+
+  op map {
+    Doc "Apply a single payload op over mapped inputs.";
+    Operands (inputs: variadic<any>, init: any);
+    Results  (result: variadic<any>);
+    Regions  (mapper: region [single_block]);
+    Properties [destination_style, recursive_effects];
+    Implements [DestinationStyleOpInterface];
+    Assembly Custom;
+  }
+
+  op reduce {
+    Doc "Reduce the given dimensions with a combining region.";
+    Operands   (inputs: variadic<any>, init: any);
+    Attributes (dimensions: array<integer>);
+    Results    (result: variadic<any>);
+    Regions    (combiner: region [single_block]);
+    Properties [destination_style, recursive_effects];
+    Implements [DestinationStyleOpInterface];
+    Assembly Custom;
+  }
+
+  op transpose {
+    Doc "Permute the dimensions of the input.";
+    Operands   (input: any, init: any);
+    Attributes (permutation: array<integer>);
+    Results    (result: variadic<any>);
+    Regions    (region: region [single_block]);
+    Properties [destination_style, recursive_effects];
+    Implements [DestinationStyleOpInterface];
+    Assembly Custom;
+  }
+
+  op broadcast {
+    Doc "Broadcast the input along the given dimensions.";
+    Operands   (input: any, init: any);
+    Attributes (dimensions: array<integer>);
+    Results    (result: variadic<any>);
+    Regions    (region: region [single_block]);
+    Properties [destination_style, recursive_effects];
+    Implements [DestinationStyleOpInterface];
+    Assembly Custom;
+  }
+
+  // ---- 命名算符：同一形状，不同定元与迭代语义 ----
+
+  op copy from Structured {
+    Doc "Copy the tensor elementwise.";
+    Properties [inputs(1), outputs(1), elementwise];
+  }
+
+  op fill from Structured {
+    Doc "Fill the tensor with a scalar value.";
+    Properties [inputs(1), outputs(1), elementwise];
+  }
+
+  op add from Structured {
+    Doc "Add two tensors elementwise.";
+    Properties [inputs(2), outputs(1), elementwise];
+  }
+
+  op matmul from Structured {
+    Doc "Matrix multiplication of two 2-D inputs.";
+    Properties [inputs(2), outputs(1), contraction];
+  }
+
+  op batch_matmul from Structured {
+    Doc "Batched matrix multiplication.";
+    Properties [inputs(2), outputs(1), contraction];
+  }
+
+  // ---- 区域内操作 ----
+
+  op index {
+    Doc "Iteration index of the enclosing structured op.";
+    Attributes (dim: integer);
+    Results    (result: index);
+    Properties [pure];
+    Assembly   { dim attr-dict ":" type(result) }
+  }
+
+  op yield {
+    Doc "Return values from a structured-op region.";
+    Operands   (values: variadic<any>);
+    Properties [pure, terminator];
+    Assembly   { attr-dict if values { ":" type(values) } }
+  }
+}

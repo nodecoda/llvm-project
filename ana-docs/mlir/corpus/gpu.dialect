@@ -1,0 +1,246 @@
+/// gpu —— GPU 执行模型：launch、kernel 内建、同步与集团操作。
+///
+/// 领域事实：网格/块尺寸是普通 operand；异步依赖是 token；region 是
+/// kernel body；内建 id/dim 只有"哪一维"这一个参数，用枚举属性表达。
+
+dialect gpu {
+  Doc "GPU execution model: kernels, launches, builtins and collectives.";
+
+  constraint async_token = gpu_async_token;
+  constraint named_barrier_type = gpu_named_barrier;
+
+  enum Dimension {
+    Doc "x, y or z launch dimension.";
+    Cases [ x = 0, y = 1, z = 2 ];
+  }
+
+  enum ShuffleMode {
+    Doc "How a subgroup shuffle maps lanes.";
+    Cases [ xor = 0, down = 1, up = 2, idx = 3 ];
+  }
+
+  enum AllReduceOperation {
+    Doc "Reduction combinator, mirroring vector reductions.";
+    Cases [ add = 0, mul = 1, minui = 2, minsi = 3, maxui = 5, maxsi = 6,
+            and = 8, or = 9, xor = 10 ];
+  }
+
+  enum BarrierScope {
+    Doc "Execution scope synchronized by a barrier.";
+    Cases [ workgroup = 0, subgroup = 1, cluster = 2 ];
+  }
+
+  op launch {
+    Doc "Launch a kernel on a grid of blocks; the body is the kernel.";
+    Operands   (async_dependencies: variadic<async_token>,
+                grid_size_x: index, grid_size_y: index, grid_size_z: index,
+                block_size_x: index, block_size_y: index, block_size_z: index,
+                cluster_size_x: optional<index>,
+                cluster_size_y: optional<index>,
+                cluster_size_z: optional<index>,
+                dynamic_shared_memory_size: optional<i32>,
+                async_object: optional<any>);
+    Results    (token: optional<async_token>);
+    Attributes (cooperative: optional<unit>,
+                module: optional<symbol_ref>, function: optional<symbol_ref>,
+                workgroup_attributions: optional<integer>);
+    Regions    (body: region);
+    Properties [recursive_effects];
+    Assembly Custom;
+  }
+
+  op launch_func {
+    Doc "Launch a symbol as a kernel; no body region.";
+    Operands   (async_dependencies: variadic<async_token>,
+                grid_size_x: index, grid_size_y: index, grid_size_z: index,
+                block_size_x: index, block_size_y: index, block_size_z: index,
+                cluster_size_x: optional<index>,
+                cluster_size_y: optional<index>,
+                cluster_size_z: optional<index>,
+                dynamic_shared_memory_size: optional<i32>,
+                kernel_operands: variadic<any>,
+                async_object: optional<any>);
+    Results    (token: optional<async_token>);
+    Attributes (kernel: symbol_ref, cooperative: optional<unit>);
+    Properties [recursive_effects];
+    Implements [SymbolUserOpInterface];
+    Assembly Custom;
+  }
+
+  op func {
+    Doc "A function executable on a GPU.";
+    Attributes (sym_name: string, function_type: function_type,
+                sym_visibility: optional<string>,
+                arg_attrs: optional<array<dict>>,
+                res_attrs: optional<array<dict>>,
+                workgroup_attrib_attrs: optional<array<dict>>,
+                private_attrib_attrs: optional<array<dict>>,
+                known_block_size: optional<array<integer>>,
+                known_grid_size: optional<array<integer>>,
+                known_cluster_size: optional<array<integer>>,
+                workgroup_attributions: optional<integer>,
+                kernel: optional<unit>);
+    Regions    (body: region);
+    Properties [isolated_from_above, symbol];
+    Implements [FunctionOpInterface];
+    Assembly Custom;
+  }
+
+  op module {
+    Doc "A module holding GPU kernels and device code.";
+    Attributes (sym_name: string, sym_visibility: optional<string>,
+                targets: optional<array<gpu_target>>,
+                offloading_handler: optional<gpu_handler>,
+                dlti: optional<any>);
+    Regions    (body: region [single_block]);
+    Properties [isolated_from_above, symbol];
+    Assembly   { if sym_visibility { sym_visibility }
+                 sym_name
+                 if offloading_handler { "<" offloading_handler ">" }
+                 if targets { targets }
+                 if dlti { "dlti" "=" dlti }
+                 attr-dict-with-keyword body }
+  }
+
+  // ---- 内建 id/dim：只有"哪一维"参数 ----
+
+  op block_id {
+    Doc "Block index within the grid along one dimension.";
+    Attributes (dimension: Dimension, upper_bound: optional<integer>);
+    Results    (result: index);
+    Properties [pure];
+    Assembly   { dimension
+                 if upper_bound { "upper_bound" upper_bound }
+                 attr-dict }
+  }
+
+  op thread_id {
+    Doc "Thread index within the block along one dimension.";
+    Attributes (dimension: Dimension, upper_bound: optional<integer>);
+    Results    (result: index);
+    Properties [pure];
+    Assembly   { dimension
+                 if upper_bound { "upper_bound" upper_bound }
+                 attr-dict }
+  }
+
+  op block_dim {
+    Doc "Number of threads in the block along one dimension.";
+    Attributes (dimension: Dimension, upper_bound: optional<integer>);
+    Results    (result: index);
+    Properties [pure];
+    Assembly   { dimension
+                 if upper_bound { "upper_bound" upper_bound }
+                 attr-dict }
+  }
+
+  op grid_dim {
+    Doc "Number of blocks in the grid along one dimension.";
+    Attributes (dimension: Dimension, upper_bound: optional<integer>);
+    Results    (result: index);
+    Properties [pure];
+    Assembly   { dimension
+                 if upper_bound { "upper_bound" upper_bound }
+                 attr-dict }
+  }
+
+  // ---- 同步与集团操作 ----
+
+  op barrier {
+    Doc "Synchronize work items within an execution scope.";
+    Operands   (named_barrier: optional<named_barrier_type>);
+    Attributes (address_spaces: optional<array<address_space>>,
+                scope: BarrierScope = workgroup);
+    Properties [recursive_effects];
+    Assembly   { oilist("named" "(" named_barrier ":" type(named_barrier) ")"
+                        | "memfence" address_spaces
+                        | "scope" scope)
+                 attr-dict }
+  }
+
+  op initialize_named_barrier {
+    Doc "Create a named barrier with a member count.";
+    Operands (member_count: i32);
+    Results  (result: named_barrier_type);
+    Assembly { member_count attr-dict ":" type(member_count)
+               "->" type(result) }
+  }
+
+  op printf {
+    Doc "Device-side printf for debugging.";
+    Operands   (args: variadic<any>);
+    Attributes (format: string);
+    Assembly   { format attr-dict
+                 if args { "," args ":" type(args) } }
+  }
+
+  op shuffle {
+    Doc "Shuffle values across lanes of a subgroup.";
+    Operands   (value: any, offset: i32, width: i32);
+    Results    (shuffle_result: type_of(value), valid: i1);
+    Attributes (mode: ShuffleMode);
+    Properties [pure];
+    Assembly   { mode value "," offset "," width attr-dict
+                 ":" type(value) }
+  }
+
+  op all_reduce {
+    Doc "Reduce a value across the workgroup.";
+    Operands   (value: any);
+    Results    (result: type_of(value));
+    Attributes (op: optional<AllReduceOperation>, uniform: optional<unit>);
+    Regions    (body: region);
+    Assembly   { if op { op } value
+                 if uniform { "uniform" }
+                 body attr-dict
+                 ":" functional-type(operands, results) }
+  }
+
+  op subgroup_reduce {
+    Doc "Reduce a value across a subgroup.";
+    Operands   (value: any);
+    Results    (result: type_of(value));
+    Attributes (op: AllReduceOperation, uniform: optional<unit>,
+                cluster_size: optional<i32>, cluster_stride: i32 = 1);
+    Assembly   { op value
+                 if uniform { "uniform" }
+                 if cluster_size {
+                   "cluster" "(" "size" "=" cluster_size
+                   if cluster_stride { "," "stride" "=" cluster_stride }
+                   ")" }
+                 attr-dict
+                 ":" functional-type(operands, results) }
+  }
+
+  op warp_execute_on_lane_0 {
+    Doc "Execute the region on lane 0 of a warp.";
+    Operands (laneid: index, args: variadic<any>);
+    Results  (results: variadic<any>);
+    Attributes (warp_size: integer);
+    Regions  (warp_region: region [single_block]);
+    Properties [recursive_effects];
+    Assembly Custom;
+  }
+
+  // ---- terminator ----
+
+  op yield {
+    Doc "Return values from a gpu region.";
+    Operands   (values: variadic<any>);
+    Properties [pure, terminator];
+    Assembly   { attr-dict if values { ":" type(values) } }
+  }
+
+  op return {
+    Doc "Return from a gpu.func.";
+    Operands   (operands: variadic<any>);
+    Properties [pure, terminator, has_parent(func)];
+    Assembly   { attr-dict if operands { ":" type(operands) } }
+  }
+
+  op terminator {
+    Doc "Terminate a gpu.launch body.";
+    Properties [pure, terminator, has_parent(launch)];
+    Assembly   { attr-dict }
+  }
+}

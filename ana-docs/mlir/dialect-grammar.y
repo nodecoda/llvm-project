@@ -9,9 +9,13 @@
  *   - 小写关键字 = 声明与类型世界（dialect/op/schema/constraint/...）；
  *   - 首字母大写关键字 = 定义子句（Doc/Operands/Results/...）；
  *   - 子句以 `;` 结尾，以 `}` 结尾的块状子句（Assembly { ... }）除外；
- *   - 名字允许 `.`，因此 `reduce.return`、`forall.in_parallel` 无需转义；
- *   - `type`/`if`/`attr-dict` 只在 Assembly 模式里是关键字，
- *     所以 `op if`、`type_def type` 在普通模式里都合法。
+ *   - 名字允许 `.`（词法器折进同一个 IDENT），`reduce.return` 无需转义；
+ *   - 声明关键字是软关键字：`name` 也接受它们，因为 gpu.all_reduce 的
+ *     属性就叫 `op`；
+ *   - `type`/`if`/`attr-dict`/`attr-dict-with-keyword`/`functional-type`/
+ *     `oilist`/`custom` 只在 Assembly 模式里是关键字，所以 `op if`、
+ *     `type_def type` 在普通模式里都合法；
+ *   - 谓词：列表是合取，`|` 是析取，没有 `and`/`not`。
  *
  * 验证：bison -Wall -Wcounterexamples dialect-grammar.y
  *===----------------------------------------------------------------------===*/
@@ -32,7 +36,8 @@
 %token KW_CASES KW_GROUPS KW_PARAMETERS
 
 /* Assembly 模式 */
-%token A_ATTR_DICT A_TYPE A_IF
+%token A_ATTR_DICT A_ATTR_DICT_WITH_KEYWORD A_TYPE A_IF
+%token A_FUNCTIONAL_TYPE A_OILIST A_CUSTOM
 
 %define parse.trace
 
@@ -73,10 +78,19 @@ dialect_item
 /* 名字与类型                                                            */
 /*===--------------------------------------------------------------------===*/
 
-/* `reduce.return`、`forall.in_parallel`：点号属于名字。 */
+/* 名字里的 `.` 是词法事实（词法器把它折进同一 token），语法层就是 IDENT。
+ *
+ * 声明关键字是"软关键字"：只在声明/子句的起点有意义，出现在名字位置时
+ * 仍是名字。gpu.all_reduce 的属性就叫 `op`，不能因此改语言。 */
 name
   : IDENT
-  | name DOT IDENT
+  | decl_keyword
+  ;
+
+decl_keyword
+  : KW_DIALECT | KW_OP | KW_SCHEMA | KW_CONSTRAINT | KW_ENUM
+  | KW_ATTR_DEF | KW_TYPE_DEF | KW_FROM | KW_EXTENDS | KW_BITS
+  | KW_OPTIONAL | KW_VARIADIC
   ;
 
 constraint_decl
@@ -144,7 +158,7 @@ param_list
   ;
 
 param
-  : IDENT COLON type_expr
+  : name COLON type_expr
   ;
 
 extends_opt
@@ -176,7 +190,7 @@ clause
   | KW_OPERANDS L_PAREN binding_list R_PAREN SEMI
   | KW_RESULTS L_PAREN binding_list R_PAREN SEMI
   | KW_ATTRIBUTES L_PAREN binding_list R_PAREN SEMI
-  | KW_REGIONS L_PAREN binding_list R_PAREN SEMI
+  | KW_REGIONS L_PAREN region_binding_list R_PAREN SEMI
   | KW_SUCCESSORS L_PAREN binding_list R_PAREN SEMI
   | KW_PROPERTIES L_BRACKET fact_list R_BRACKET SEMI
   | KW_IMPLEMENTS L_BRACKET type_ref_list R_BRACKET SEMI
@@ -189,7 +203,25 @@ binding_list
   ;
 
 binding
-  : IDENT COLON type_expr default_opt
+  : name COLON type_expr default_opt
+  ;
+
+/* region 的块数约束是 region 自己的事实，不是 op 的：
+ * `Regions (body: region [single_block])`。
+ * 一个变长 region 组也可以带约束，表示"每个"：
+ * `Regions (case_regions: variadic<region> [single_block])`。 */
+region_binding_list
+  : region_binding
+  | region_binding_list COMMA region_binding
+  ;
+
+region_binding
+  : name COLON type_expr region_annots_opt
+  ;
+
+region_annots_opt
+  : %empty
+  | L_BRACKET fact_list R_BRACKET
   ;
 
 default_opt
@@ -197,26 +229,41 @@ default_opt
   | EQUAL expr
   ;
 
-/* 语料里的默认值只有 `none` 这类标识符；没有字符串/整数默认值，
- * 所以这里不写 STRING/INT 分支（写了就是无见证产生式）。 */
+/* 默认值：`none` 这类标识符，或 `1` 这类整数（gpu.subgroup_reduce
+ * 的 cluster_stride）。字符串默认值仍无见证。 */
 expr
   : IDENT
+  | INT
   ;
 
-/* 语义事实：pure / terminator / has_parent(func) / parent_one_of(a, b) */
+/* 语义事实是一个布尔表达式：
+ *   - 列表 `[f1, f2]` 是合取（无逗号即无 "and" 关键字）；
+ *   - `|` 是析取，优先级低于列表项，可组合任意多个原子；
+ *   - 没有 `not`：否定一个结构性事实通常意味着该换个谓词。
+ * 原子可以带实参，实参可以是名字或整数：has_parent(func)、inputs(2)。 */
 fact_list
   : fact
   | fact_list COMMA fact
   ;
 
 fact
-  : IDENT
-  | IDENT L_PAREN name_list R_PAREN
+  : fact_atom
+  | fact PIPE fact_atom
   ;
 
-name_list
+fact_atom
+  : IDENT
+  | IDENT L_PAREN fact_arg_list R_PAREN
+  ;
+
+fact_arg_list
+  : fact_arg
+  | fact_arg_list COMMA fact_arg
+  ;
+
+fact_arg
   : name
-  | name_list COMMA name
+  | INT
   ;
 
 /*===--------------------------------------------------------------------===*/
@@ -236,9 +283,29 @@ asm_list
 asm_element
   : STRING                       /* 字面量，含标点 */
   | IDENT                        /* 引用一个已声明的部件 */
-  | A_ATTR_DICT                  /* 剩余属性集合 */
+  | A_ATTR_DICT                  /* 剩余属性集合，输出为 {..} */
+  | A_ATTR_DICT_WITH_KEYWORD     /* 剩余属性集合，输出为 attributes {..} */
   | A_TYPE L_PAREN IDENT R_PAREN /* 打印某个部件的类型 */
+  | A_FUNCTIONAL_TYPE L_PAREN IDENT COMMA IDENT R_PAREN
+                                 /* (T...) -> (U...)，实参是部件组 */
+  | A_CUSTOM L_ANGLE IDENT R_ANGLE L_PAREN custom_arg_list R_PAREN
+                                 /* 局部子格式交给具名钩子 */
+  | A_OILIST L_PAREN oilist_alt_list R_PAREN
+                                 /* 至多出现一个可选组 */
   | A_IF IDENT L_BRACE asm_list R_BRACE
+  ;
+
+/* custom<Hook>(a, b)：钩子名是格式的实现细节，实参是部件引用。 */
+custom_arg_list
+  : IDENT
+  | custom_arg_list COMMA IDENT
+  ;
+
+/* oilist(a | b | c)：每个分支是一段格式；运行时至多匹配一个。
+ * 分支用 `|` 分隔，与类型并集、enum 组合子同一个析取符号。 */
+oilist_alt_list
+  : asm_list
+  | oilist_alt_list PIPE asm_list
   ;
 
 /*===--------------------------------------------------------------------===*/

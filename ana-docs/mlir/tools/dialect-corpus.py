@@ -28,7 +28,8 @@ CLAUSES = ["Operands", "Results", "Attributes", "Regions", "Successors",
            "Properties", "Implements", "Assembly", "Doc", "Cases", "Groups",
            "Parameters", "Methods"]
 STRUCT = ["Operands", "Results", "Attributes", "Regions", "Successors"]
-ASM_DIRECTIVES = {"attr-dict", "prop-dict", "type", "functional-type",
+ASM_DIRECTIVES = {"attr-dict", "attr-dict-with-keyword", "prop-dict", "type",
+                  "functional-type",
                   "operands", "results", "regions", "successors", "custom",
                   "ref", "enum", "qualified", "oilist", "params", "struct",
                   "if", "else"}
@@ -115,14 +116,14 @@ def entities(text, depth=0):
 
 
 def top_names(expr):
-    """Identifiers at parenthesis depth 0 of a comma-separated list."""
+    """Identifiers at parenthesis depth 0 of a comma/pipe-separated list."""
     out, depth, cur = [], 0, ""
     for c in expr:
         if c == "(":
             depth += 1
         elif c == ")":
             depth -= 1
-        if c == "," and depth == 0:
+        if c in ",|" and depth == 0:
             out.append(cur)
             cur = ""
         else:
@@ -150,6 +151,7 @@ def asm_refs(body):
     refs = set()
     for blk in blocks(body, "Assembly"):
         blk = re.sub(r'"(?:\\.|[^"])*"', " ", blk)   # literals are not refs
+        blk = re.sub(r"custom<[^>]*>", " ", blk)     # hook names are not refs
         for tok in re.findall(r"[A-Za-z_][\w.-]*", blk):
             if tok not in ASM_DIRECTIVES and tok not in TYPE_CTORS:
                 refs.add(tok)
@@ -165,6 +167,7 @@ def main():
     type_ctors = Counter()
     props = Counter()
     facts = Counter()
+    region_facts = Counter()
     ifaces = Counter()
     declared = {k: set() for k in DECL}
     all_entities = []
@@ -195,6 +198,10 @@ def main():
                         asm_dirs[w] += 1
             for w in re.findall(r"\b(optional|variadic|array)\s*<", body):
                 type_ctors[w] += 1
+            for m in re.finditer(r"Regions\s*\((.*?)\)\s*;", body, re.S):
+                for ann in re.findall(r"\[([^\[\]]*)\]", m.group(1)):
+                    for item in top_names(ann):
+                        region_facts[item] += 1
             for m in re.finditer(r"Properties\s*\[(.*?)\]\s*;", body, re.S):
                 for item in top_names(m.group(1)):
                     if item in ("has_parent", "parent_one_of", "parent_is"):
@@ -260,6 +267,7 @@ def main():
         print(json.dumps({"files": report,
                           "clauses": {"%s.%s" % k: v for k, v in clause_matrix.items()},
                           "assembly": asm_dirs, "type_ctors": type_ctors,
+                          "region_facts": region_facts,
                           "properties": props, "facts": facts,
                           "interfaces": ifaces, "missing_from": missing_from,
                           "dangling": dangling, "unused": unused,
@@ -286,6 +294,7 @@ def main():
 
     print("\n## assembly: " + ", ".join(f"{k}={v}" for k, v in asm_dirs.most_common()))
     print("## type ctors: " + ", ".join(f"{k}={v}" for k, v in type_ctors.most_common()))
+    print("## region facts: " + ", ".join(f"{k}={v}" for k, v in region_facts.most_common()))
     print("## properties: " + ", ".join(f"{k}={v}" for k, v in props.most_common()))
     print("## facts: " + ", ".join(f"{k}={v}" for k, v in facts.most_common()))
     print("## interfaces: " + ", ".join(f"{k}={v}" for k, v in ifaces.most_common()))

@@ -2,7 +2,8 @@
 
 > 配套文件：
 > [`corpus/`](corpus/)（6 个 `.dialect`，650 行）、
-> [`dialect-grammar.y`](dialect-grammar.y)（47 条规则 / 98 条产生式，bison
+> [`dialect-grammar.y`](dialect-grammar.y)（本章归纳时 47 条规则 / 98 条产生式；
+> 16 章加入 gpu/linalg/tensor 后为 55 条规则 / 128 条产生式，bison
 > `-Wall -Wcounterexamples -Werror` **0 冲突**）、
 > [`tools/dialect-corpus.py`](tools/dialect-corpus.py)（统计与审计）、
 > [`tools/dialect-lex.c`](tools/dialect-lex.c)（参考词法器）。
@@ -69,8 +70,9 @@ partial custom（`custom<...>` 内嵌在格式里）、`oilist`、region 的精�
 三条从语料里读出来的规则：
 
 1. **名字允许 `.`。** `reduce.return`（`corpus/scf.dialect:91`）、
-   `forall.in_parallel`（`:51`）是真实助记符，不是嵌套语法。文法里
-   `name : IDENT | name '.' IDENT`。
+   `forall.in_parallel`（`:51`）是真实助记符，不是嵌套语法。点号由词法器
+   折进同一个 `IDENT`，所以语法层 `name` 只有 `IDENT`（16 章删掉了
+   一条从未被词法器触发的 `name '.' IDENT` 产生式）。
 2. **`type` / `if` / `attr-dict` 只在 Assembly 模式里是关键字。** 因此
    `op if`（`scf.dialect:59`）、`type_def type`（`pdl.dialect:19`）在普通
    模式里完全合法。v1 把 `if` 做成全局关键字，`scf.if` 就写不出来。
@@ -148,25 +150,26 @@ partial custom（`custom<...>` 内嵌在格式里）、`oilist`、region 的精�
 
 ## 6. 文法
 
-47 条规则、98 条产生式（`bison --report=state`：`$accept` 编号 0，产生式编号 1–98）。按区域：
+本章归纳时为 47 条规则、98 条产生式（`bison --report=state`：`$accept` 编号 0）；
+16 章追加三个方言后是 55 条规则、128 条产生式。按区域（行号以当前文件为准）：
 
 | 区域 | 行 | 产生式 |
 | --- | --- | --- |
-| 文件与方言 | `dialect-grammar.y:50` | `file`、`dialect_decl`、`dialect_item_list`、`dialect_item` |
-| 名字与类型 | `:77` | `name`、`constraint_decl`、`type_expr`/`type_union`/`type_primary`、`type_ref` |
-| schema / op | `:131` | `schema_decl`、`op_decl`、`type_params`、`param`、`extends`/`from` |
-| 子句 | `:174` | `clause`、`binding`、`fact` |
-| Assembly | `:226` | `assembly`、`asm_list`、`asm_element` |
-| enum | `:248` | `enum_decl`、`enum_item`、`enum_case`、`enum_group` |
-| attr / type | `:297` | `attr_type_decl`、`def_item` |
-| 文档 | `:317` | `doc_clause` |
+| 文件与方言 | `dialect-grammar.y:51` | `file`、`dialect_decl`、`dialect_item_list`、`dialect_item` |
+| 名字与类型 | `:81` | `name`、`constraint_decl`、`type_expr`/`type_union`/`type_primary`、`type_ref` |
+| schema / op | `:141` | `schema_decl`、`op_decl`、`type_params`、`param`、`extends`/`from` |
+| 子句 | `:184` | `clause`、`binding`、`fact` |
+| Assembly | `:269` | `assembly`、`asm_list`、`asm_element` |
+| enum | `:311` | `enum_decl`、`enum_item`、`enum_case`、`enum_group` |
+| attr / type | `:360` | `attr_type_decl`、`def_item` |
+| 文档 | `:380` | `doc_clause` |
 
-核心片段：
+核心片段（`/* 16 */` 是 16 章加入的部分）：
 
 ```yacc
 name
   : IDENT
-  | name DOT IDENT
+  | decl_keyword                          /* 16：软关键字，属性可叫 op */
   ;
 
 schema_decl
@@ -183,7 +186,7 @@ clause
   | KW_OPERANDS   L_PAREN binding_list R_PAREN SEMI
   | KW_RESULTS    L_PAREN binding_list R_PAREN SEMI
   | KW_ATTRIBUTES L_PAREN binding_list R_PAREN SEMI
-  | KW_REGIONS    L_PAREN binding_list R_PAREN SEMI
+  | KW_REGIONS    L_PAREN region_binding_list R_PAREN SEMI   /* 16 */
   | KW_SUCCESSORS L_PAREN binding_list R_PAREN SEMI
   | KW_PROPERTIES L_BRACKET fact_list R_BRACKET SEMI
   | KW_IMPLEMENTS L_BRACKET type_ref_list R_BRACKET SEMI
@@ -194,13 +197,18 @@ asm_element
   : STRING
   | IDENT
   | A_ATTR_DICT
+  | A_ATTR_DICT_WITH_KEYWORD                                  /* 16 */
   | A_TYPE L_PAREN IDENT R_PAREN
+  | A_FUNCTIONAL_TYPE L_PAREN IDENT COMMA IDENT R_PAREN       /* 16 */
+  | A_CUSTOM L_ANGLE IDENT R_ANGLE L_PAREN custom_arg_list R_PAREN  /* 16 */
+  | A_OILIST L_PAREN oilist_alt_list R_PAREN                  /* 16 */
   | A_IF IDENT L_BRACE asm_list R_BRACE
   ;
 ```
 
-`constraint` 是唯一允许 `|` 的地方（类型集合的并集）；enum 组的成员也用
-`|`，但那是另一条产生式（`name_group`），两条不共享。
+`|` 在四处出现，四者是不同产生式、不共享：类型并集（`type_union`）、
+enum 组成员（`name_group`）、谓词析取（`fact`）、`oilist` 分支
+（`oilist_alt_list`）。
 
 ## 7. 见证表
 
@@ -208,7 +216,7 @@ asm_element
 | --- | --- |
 | `file` / `dialect_decl` / `dialect_item_list` | 6 个方言 |
 | `dialect_item` 的 7 个分支 | `Doc` 6、`constraint` 5、`enum` 5、`schema` 13、`op` 77、`attr_def` 1、`type_def` 4 |
-| `name` 的两个分支 | `IDENT` 全部；`name '.' IDENT` 2（`scf:51,91`） |
+| 名字内的 `.` | 词法折叠：`scf:51,91` 两个 token 内部含点；语法层单分支 |
 | `constraint_decl` | 5 |
 | `type_union` 的 `|` 分支 | `int_like`、`float_like`、`integer_or_index` |
 | `type_primary` 的三分支 | 原子（多数）、`optional<T>` 11、`variadic<T>` 34 |

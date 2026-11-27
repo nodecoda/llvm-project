@@ -1,0 +1,126 @@
+/// tensor —— ranked tensor 的元素访问、切片、填充与生成。
+///
+/// 切片类 op 的偏移/尺寸/步长是"静态数组 + 动态 operand"两份数据，
+/// 其文本形式是一个混合列表，交给具名的局部格式钩子。
+
+dialect tensor {
+  Doc "Ranked tensor operations: element access, slicing, padding, generation.";
+
+  op empty {
+    Doc "A tensor of the given shape with unspecified contents.";
+    Operands (dynamic_sizes: variadic<index>);
+    Results  (result: any);
+    Properties [pure];
+    Assembly { "(" dynamic_sizes ")" attr-dict ":" type(result) }
+  }
+
+  op dim {
+    Doc "The size of one dimension.";
+    Operands (source: any, index: index);
+    Results  (result: index);
+    Properties [pure];
+    Assembly { attr-dict source "," index ":" type(source) }
+  }
+
+  op cast {
+    Doc "Cast between tensor types, including rank changes.";
+    Operands (source: any);
+    Results  (dest: any);
+    Properties [pure];
+    Assembly { source attr-dict ":" type(source) "to" type(dest) }
+  }
+
+  op extract {
+    Doc "Read one element at a multi-dimensional index.";
+    Operands (tensor: any, indices: variadic<index>);
+    Results  (result: any);
+    Properties [pure];
+    Assembly { tensor "[" indices "]" attr-dict ":" type(tensor) }
+  }
+
+  op insert {
+    Doc "Write one element at a multi-dimensional index.";
+    Operands (scalar: any, dest: any, indices: variadic<index>);
+    Results  (result: any);
+    Properties [pure];
+    Assembly { scalar "into" dest "[" indices "]" attr-dict ":" type(dest) }
+  }
+
+  op from_elements {
+    Doc "Build a tensor from a flat list of elements.";
+    Operands (elements: variadic<any>);
+    Results  (result: any);
+    Properties [pure];
+    Assembly { elements attr-dict ":" type(result) }
+  }
+
+  op generate {
+    Doc "Build a dynamically sized tensor from a body region.";
+    Operands (dynamic_extents: variadic<index>);
+    Results  (result: any);
+    Regions  (body: region [single_block]);
+    Properties [recursive_effects];
+    Assembly { dynamic_extents body attr-dict ":" type(result) }
+  }
+
+  op pad {
+    Doc "Pad a tensor with low/high amounts, filled by a region.";
+    Operands   (source: any, low: variadic<index>, high: variadic<index>);
+    Attributes (static_low: array<integer>, static_high: array<integer>,
+                nofold: optional<unit>);
+    Regions    (region: region [single_block]);
+    Results    (result: any);
+    Properties [recursive_effects];
+    Assembly   { source
+                 if nofold { "nofold" }
+                 "low" custom<DynamicIndexList>(low, static_low)
+                 "high" custom<DynamicIndexList>(high, static_high)
+                 region attr-dict ":" type(source) "to" type(result) }
+  }
+
+  op extract_slice {
+    Doc "Take a slice out of a tensor.";
+    Operands   (source: any, offsets: variadic<index>, sizes: variadic<index>,
+                strides: variadic<index>);
+    Attributes (static_offsets: array<integer>, static_sizes: array<integer>,
+                static_strides: array<integer>);
+    Results    (result: any);
+    Properties [pure];
+    Assembly   { source
+                 custom<DynamicIndexList>(offsets, static_offsets)
+                 custom<DynamicIndexList>(sizes, static_sizes)
+                 custom<DynamicIndexList>(strides, static_strides)
+                 attr-dict ":" type(source) "to" type(result) }
+  }
+
+  op insert_slice {
+    Doc "Write a slice into a destination tensor.";
+    Operands   (source: any, dest: any, offsets: variadic<index>,
+                sizes: variadic<index>, strides: variadic<index>);
+    Attributes (static_offsets: array<integer>, static_sizes: array<integer>,
+                static_strides: array<integer>);
+    Results    (result: any);
+    Properties [pure];
+    Assembly   { source "into" dest
+                 custom<DynamicIndexList>(offsets, static_offsets)
+                 custom<DynamicIndexList>(sizes, static_sizes)
+                 custom<DynamicIndexList>(strides, static_strides)
+                 attr-dict ":" type(source) "into" type(dest) }
+  }
+
+  op reshape {
+    Doc "Reshape to a shape supplied as a 1-D tensor.";
+    Operands (source: any, shape: any);
+    Results  (result: any);
+    Properties [pure];
+    Assembly { source "(" shape ")" attr-dict
+               ":" functional-type(operands, results) }
+  }
+
+  op yield {
+    Doc "Yield one element from a generate/pad region.";
+    Operands   (value: any);
+    Properties [pure, terminator, has_parent(generate) | has_parent(pad)];
+    Assembly   { value attr-dict ":" type(value) }
+  }
+}
