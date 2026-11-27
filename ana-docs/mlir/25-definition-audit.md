@@ -193,11 +193,10 @@ type_def tensor_arm {
 | `spirv` | `LinkageType` 枚举 + `attr_def linkage_attributes` | 上游 `struct(params)`（SPIRVAttributes.td:55-61） |
 | `xevm` | 4 个 `*_etype` attr_def；字段从枚举改成 attr | 上游格式 `src_etype = $etype` / `dst_etype = $etype`（XeVMOps.td:613-646） |
 
-剩下的 163 条只有 3 个是小方言里的 attr 外壳，另有三个折叠方言：
+剩下的 163 条只有 2 个小方言里的 attr 外壳，另有三个折叠方言：
 
 | 方言 | 剩余 | 为什么保持 substituted |
 | --- | --- | --- |
-| `acc` | 1 | `defaultvalue` 的 `< value >` 外壳没有文本载体：op 打印的是枚举，不是 attr |
 | `gpu` | 1 | `gpu.object` 走 `custom<Object>` 且带 `KernelTableAttr`；`gpu.binary` 只能用 `array<any>` 承载（文件头已登记） |
 | `irdl` | 1 | `variadicity_array` 由 `NamedValueListWithVariadicity` 消费，打印的是枚举列表，不是 `[...]` 外壳 |
 
@@ -207,8 +206,8 @@ type_def tensor_arm {
 
 还有一条 **C2 policy**：某方言有 `substituted` 条，却不在文件头写
 `/// 定义层范围：`，`--coverage` 直接失败。范围决定可以不做，但不能只藏在
-审计器里——下一个读语料的人必须能在方言文件里看到它。当前 6 个有 substituted
-的方言（acc/gpu/irdl/llvm/nvvm/rocdl）全部通过；其余方言没有需要解释的
+审计器里——下一个读语料的人必须能在方言文件里看到它。当前 5 个有 substituted
+的方言（gpu/irdl/llvm/nvvm/rocdl）全部通过；其余方言没有需要解释的
 范围决定。shard 的范围注记保留，因为它的 axisarray 是上一轮补的声明。
 
 覆盖表自己还有两条防空转规则：
