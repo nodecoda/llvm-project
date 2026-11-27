@@ -1904,7 +1904,13 @@ static void printBlockArgRegion(OpAsmPrinter &p, Operation *op, Region &region,
   printBlockArgClause(p, ctx, "use_device_ptr",
                       iface.getUseDevicePtrBlockArgs(), args.useDevicePtrArgs);
 
-  p.printRegion(region, /*printEntryBlockArgs=*/false);
+  // Entry block arguments are recreated from the clause operands printed above,
+  // so they must not be printed again. If the entry block has arguments that no
+  // clause accounts for, print the block signature instead; otherwise those
+  // definitions would be missing from the output.
+  bool printEntryBlockArgs =
+      region.getNumArguments() != iface.numClauseBlockArgs();
+  p.printRegion(region, printEntryBlockArgs);
 }
 
 // These parseXyz functions correspond to the custom<Xyz> definitions

@@ -1009,6 +1009,22 @@ func.func @omp_target(%if_cond : i1, %device : si32,  %num_threads : i32, %devic
     return
 }
 
+// CHECK-LABEL: omp_target_entry_block_arg
+func.func @omp_target_entry_block_arg(%p : !llvm.ptr) -> () {
+  // An entry block argument that is not defined by any clause cannot be
+  // recreated from the clause operands, so the block signature is printed.
+  // CHECK: omp.target kernel_type(generic) {
+  // CHECK-NEXT: ^bb0(%[[ARG:.*]]: !llvm.ptr):
+  // CHECK: llvm.store {{.*}}, %[[ARG]]
+  omp.target kernel_type(generic) {
+  ^bb0(%arg0: !llvm.ptr):
+    %c = arith.constant 10 : i32
+    llvm.store %c, %arg0 : i32, !llvm.ptr
+    omp.terminator
+  }
+  return
+}
+
 func.func @omp_target_data (%if_cond : i1, %device : si32, %device_ptr: memref<i32>, %device_addr: memref<?xi32>, %map1: memref<?xi32>, %map2: memref<?xi32>) -> () {
     // CHECK: %[[MAP_A:.*]] = omp.map.info var_ptr(%[[VAL_2:.*]] : memref<?xi32>, tensor<?xi32>)   map_clauses(always, from) capture(ByRef) name("") -> memref<?xi32>
     // CHECK: omp.target_data device(%[[VAL_1:.*]] : si32) if(%[[VAL_0:.*]]) map_entries(%[[MAP_A]] : memref<?xi32>)
