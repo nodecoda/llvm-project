@@ -12,6 +12,12 @@
 /// 在这里统一写成 i32 或 optional<i32>；文本里打印的是枚举助记符，参数类型
 /// 不在本语料的建模范围。
 ///
+/// 定义层范围：coverage 的 substituted 有 106 条，全部是枚举型属性及其
+/// attr 外壳（MMATypes、MMALayout、MemScopeKind、ProxyKind、Tcgen05*、
+/// Tensormap* 等）。本语料把字段统一写成 i32/optional<i32>，枚举助记符
+/// 只在 Doc 与取值表里出现，不声明 attr_def；unreferenced 的记录没有 op
+/// 字段引用，也不声明。
+///
 /// 文本通道：219 个 op 中 214 个块格式、1 个块格式加 CTAGroup 钩子、4 个
 /// Custom、0 个 Generic。Custom 的依据（上游 hasCustomAssemblyFormat = 1）：
 ///   - mma.sync：NVVMOps.td:3560（NVVM_MmaOp，定义于 3421）

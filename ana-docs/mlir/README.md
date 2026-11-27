@@ -267,7 +267,7 @@
 | `tools/dialect-coverage.py` | 覆盖审计：50 个方言 → 聚合 TD 入口的显式映射；上游取自 `llvm-tblgen --dump-json` 的 `opName`，与语料 `op` 集合**逐字相等**（不做后缀对齐）；missing/extra 非空则退出码 1 |
 | `tools/dialect-lex.c` | 参考词法器（normal / assembly 两模式，含 `Gap` 关键字） |
 | `tools/escape-audit.py` | 逃逸点许可证审计：L0–L12 + 规范化 N1（`enum($x)`）、tblgen 逐 op 证据、预算硬上限；L3d 查本地标签的子句关键字，L4 的 scope 是封闭词表，L10 查块覆盖与家族软名，L11 查守卫可缺失，L12 拒绝定义层指令；缺 `LLVM_TBLGEN` 或查不到上游记录即失败 |
-| `tools/def-audit.py` | 定义层审计：D0–D14；通道与上游一致、参数全覆盖、enum 逐项一致、`params` 全量规则、modeled 符号级见证与扁平脊、12/4 预算、定义块钩子上游存在；`--coverage` 把未声明记录分成 unreferenced / substituted / unaccounted 三类（unaccounted 非空即失败），alias 目标与 ledger 行不计欠账，`--selftest` 21 例 |
+| `tools/def-audit.py` | 定义层审计：D0–D14；通道与上游一致、参数全覆盖、enum 逐项一致、`params` 全量规则、modeled 符号级见证与扁平脊、12/4 预算、定义块钩子上游存在；`--coverage` 把未声明记录分成 unreferenced / substituted / unaccounted 三类（unaccounted 非空、或有 substituted 却无头部 `/// 定义层范围:` 注记即失败），alias 目标与 ledger 行不计欠账，`--selftest` 23 例 |
 | `tools/def-exceptions.tsv` | 定义层逃逸账本：7 列（dialect/kind/corpus/upstream/witness/category/reason），34 行 = 3 rename + 31 modeled（20 cxx-type、4 borrowed-enum、3 builtin、2 cxx-enum、2 constraint） |
 | `tools/fact-glossary.tsv` | 事实词表：41 核心 + 20 本地（含 owner 与释义），新词未登记即失败 |
 | `tools/gap-registry.tsv` | 表达力缺口登记：4 个名字 / 9 个 op，见证集合必须与语料一致 |

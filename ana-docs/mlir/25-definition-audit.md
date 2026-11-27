@@ -1,6 +1,6 @@
 # 25. 定义层契约：范围、形状、证据、预算
 
-> 配套：`tools/def-audit.py`（D0–D14，`--selftest` 21 例，失败退出 1）、
+> 配套：`tools/def-audit.py`（D0–D14，`--selftest` 23 例，失败退出 1）、
 > `tools/def-exceptions.tsv`（7 列，34 行）、文法 `dialect-grammar.y`
 > （`Assembly Modeled;`、`params`、`struct(params)`）。
 > 上位规则见 [24 章](24-escape-licenses.md)：E0–E10、S1–S10、L0–L12。
@@ -204,6 +204,12 @@ type_def tensor_arm {
 `--coverage --verbose` 逐条打印 `unreferenced` / `substituted`，供人工抽查；默认只打
 每方言的计数。这样"missing"不再是一个可以无限增长的沉默数字：每一条都有类，
 唯一的失败类是 `unaccounted`。
+
+还有一条 **C2 policy**：某方言有 `substituted` 条，却不在文件头写
+`/// 定义层范围：`，`--coverage` 直接失败。范围决定可以不做，但不能只藏在
+审计器里——下一个读语料的人必须能在方言文件里看到它。当前 7 个有 substituted
+的方言（acc/gpu/irdl/llvm/nvvm/rocdl/shard）全部通过；其余方言没有需要
+解释的范围决定。
 
 覆盖表自己还有两条防空转规则：
 

@@ -33,6 +33,11 @@
 ///     ptr buffer load/store/atomic、prefetch、DS 屏障原子）。
 ///   没有符号、region、terminator 类 trait，故不写对应事实。
 ///
+/// 定义层范围：coverage 的 substituted 有 24 条，全部是 immarg 枚举及其
+/// attr 外壳（AsyncStages、MatrixFormat、*CachePolicy、WMMAMatrixScale 等）。
+/// 本语料把值按 i32 建模，op 文本不打印 `#rocdl.<attr><...>`，因此不声明
+/// 这些记录；文件末尾列出取值集合，供人工核对。
+///
 /// 只写进 Doc 的语义（文法没有对应谓词）：
 ///   - 所有指针操作数都是 LLVM 指针（`!llvm.ptr<AS>`，AS 为 0/1/3/7/8/15），
 ///     语料统一写 `any`，Doc 记录真实地址空间：global=1、LDS=3、buffer

@@ -130,6 +130,7 @@ BAD_FAMILY = re.compile(r"(?:custom\s*<[^>]*>\s*\([^)]*\bparams\b"
 
 DEF_RE = re.compile(r"(?m)^  (type_def|attr_def|enum)\s+([A-Za-z_][\w.]*)")
 EXCEPTIONS = ROOT / "tools/def-exceptions.tsv"
+POLICY_RE = re.compile(r"(?m)^/// 定义层范围[:：]")
 CASES_RE = re.compile(r"(?s)\bCases\s*\[(.*?)\]\s*;")
 GROUPS_RE = re.compile(r"(?s)\bGroups\s*\[(.*?)\]\s*;")
 PARAMS_RE = re.compile(r"(?s)\bParameters\s*\((.*?)\)\s*;")
@@ -585,6 +586,16 @@ def type_surface(text):
     return "".join(out)
 
 
+def policy_present(text):
+    """True when the file header records its definition-layer scope policy.
+
+    `substituted` is a scope decision, not a debt, but a decision that lives
+    only in the audit tool is still a silent black hole for the next reader.
+    Require the dialect file to say it in the header.
+    """
+    return bool(POLICY_RE.search(text))
+
+
 def upstream_reachable(up):
     """Def keys reachable from an op through structured ODS references.
 
@@ -997,10 +1008,12 @@ def audit(path, verbose=False, aliases=None, modeled=None, used=None):
                     - licensed("attr", defs["attr_def"])),
              sorted({norm(x) for x in defs["enum"]} - set(up.enums)
                     - licensed("enum", defs["enum"])))
-    scope = classify_missing(up, missing, strip_comments(path.read_text()))
+    text = path.read_text()
+    scope = classify_missing(up, missing, strip_comments(text))
     return {
         "dialect": dialect,
         "file": path.name,
+        "text": text,
         "up": up,
         "defs": defs,
         "problems": problems,
@@ -1062,6 +1075,11 @@ def audit_all():
                 problems.append((r["dialect"], 0, "C1 dangling",
                                  "%s `%s` is used as a type but not declared"
                                  % (kind, name)))
+            sub = len(r["scope"]["substituted"])
+            if sub and not policy_present(r["text"]):
+                problems.append((r["dialect"], 0, "C2 policy",
+                                 "%d substituted definitions but no "
+                                 "`/// 定义层范围:` header note" % sub))
         if verbose:
             print("\n## scope classes")
             for r in rows:
@@ -1152,6 +1170,8 @@ def selftest():
     reach = upstream_reachable(_Up())
     check("reach: structured reference", "TypeC" in reach, True)
     check("reach: prose is not an edge", "TypeB" in reach, False)
+    check("policy: header marker", policy_present("/// 定义层范围：x\n"), True)
+    check("policy: body mention only", policy_present("op x { Doc \"定义层范围：\"; }"), False)
     check("witness: no quoted symbol",
           witness_problem("gpu", "type",
                           "mlir/include/mlir/Dialect/GPU/IR/GPUBase.td:183",

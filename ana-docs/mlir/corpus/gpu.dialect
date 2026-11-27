@@ -25,6 +25,11 @@
 /// 异步 token 关系由 same_type(async_token, async_dependencies) 表达：完成 token
 /// 与每个依赖同型，wait/launch_func 的结果只是依赖列表的别名。
 ///
+/// 定义层范围：coverage 的 substituted 只有 `object` 一条。`gpu.object`
+/// 的格式是 `custom<Object>($format, $object)` 加可选的 properties/kernels，
+/// 其中 KernelTableAttr 是 C++ 类型；`gpu.binary` 只能用 array<any> 承载
+/// 这个不透明负载，故不声明 attr_def，详见下方 GAP。
+///
 /// GAP：
 ///   - dealloc 的"释放"在核心词表里没有对应词（只有 read/write/allocate），
 ///     故只写结构、不写 memory_effect（与 memref.dealloc 一致）。

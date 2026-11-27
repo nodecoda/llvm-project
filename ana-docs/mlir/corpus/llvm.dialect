@@ -29,7 +29,7 @@
 /// `prop-dict` 只在打印 properties 的 op 上出现（load/store/atomicrmw/cmpxchg/
 /// masked.load/gather/store/scatter）。
 ///
-/// 定义层范围（coverage 的三个类）：声明了的类型/属性/枚举必须与 tblgen 逐项
+/// 定义层范围：coverage 的三个类。声明了的类型/属性/枚举必须与 tblgen 逐项
 /// 一致（D0–D14）；DI 元数据属性（di_*、dinode 等）只作为 `metadata` 字典里的
 /// 不透明负载出现，语料用 `attribute`/`dictionary` 承载，不逐个声明，coverage
 /// 记为 substituted；上游定义但本树没有 op 引用的记录记为 unreferenced。唯一不允许的
