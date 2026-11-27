@@ -3,8 +3,9 @@
 本目录有两个主题：
 
 - **A. 文本解析**（01–09）：`mlir/lib/AsmParser/` 如何把 MLIR 文本变成内存中的 IR。
-- **B. 声明层依赖**（10–12）：`mlir/**/*.td` 如何通过 `include` 组成 ODS 依赖图，
-  以及这张图如何经 `mlir-tblgen` 变成 `.inc` 再进入 C++。
+- **B. 声明层**（10–13）：`mlir/**/*.td` 如何通过 `include` 组成 ODS 依赖图，
+  这张图如何经 `mlir-tblgen` 变成 `.inc` 再进入 C++，以及寄生在 TD 语法里的
+  ODS 语义结构本身是什么样子（13 章给出两门可编译的语义文法）。
 
 - 分析基线：worktree `/home/ubuntu/llvm/trees/pr-ctpop`，分支 `research/mlir`。
   01–09 基于 `5f7f36636abe`；10–12 基于 `53a80edfeb2e`（2026-11-27，含前一提交的文档）。
@@ -12,7 +13,7 @@
 - 01–09 的范围以 `mlir/lib/AsmParser/` 为中心；为解释边界，少量引用
   `mlir/include/mlir/Parser/Parser.h`、`mlir/include/mlir/AsmParser/*`、
   `mlir/include/mlir/IR/OpImplementation.h` 与 `mlir/lib/Parser/Parser.cpp`。
-- 10–12 的范围是 `mlir/include`、`mlir/lib`、`mlir/python` 下的 412 个 `.td`
+- 10–13 的范围是 `mlir/include`、`mlir/lib`、`mlir/python` 下的 412 个 `.td`
   （不含 `mlir/test`、`mlir/examples`、`mlir/unittests`）。
 
 ## 章节
@@ -31,6 +32,7 @@
 | [10-tablegen-overview.md](10-tablegen-overview.md) | `.td` 依赖图总览：扫描口径、412 节点/1132 边/0 环、六层结构、生成节点 |
 | [11-tablegen-dependency-graph.md](11-tablegen-dependency-graph.md) | 图形版：IR 内核图、方言间 21 条边、TransformOps 汇聚、最长 16 跳链 |
 | [12-tablegen-dialect-anatomy.md](12-tablegen-dialect-anatomy.md) | 单方言解剖：Arith / Linalg 的文件划分、partition、YAML 生成、checklist |
+| [13-ods-semantic-grammar.md](13-ods-semantic-grammar.md) | ODS 语义文法：记录层 `ods.y` + `assemblyFormat` 子语言 `ods-asm-format.y`，勘误与语义约束清单 |
 
 ## 一页结论
 
@@ -66,6 +68,15 @@
 5. **三条边只在 CMake 里**：OpenMP/OpenACC 的 clause 定义以 LLVM 的 `OMP.td`/`ACC.td`
    为源，Linalg 的 59 个 named op 由 YAML 生成——`.td` 图上看不到，必须读
    `mlir_tablegen()` 才能发现。
+6. **ODS 的实体 kind 由基类链决定**：`isSubClassOf("Op")`、`getAllDerivedDefinitions("Dialect")`
+   才是判定依据（`OpGenHelpers.cpp:66-75`、`DialectGen.cpp:402`）；TD 里没有
+   "定义 Op" 的语法关键字。
+7. **同一个 op 有三种等价写法**：MI 式（`Arguments<...>, Results<...>` 作 mixin）、
+   body-let 式（`let arguments = ...`）、family 式（带模板参数的 `class`）。
+   13 章把它们统一进一份文法。
+8. **ODS 语义文法没有 parser 执行**：`TGParser` 只认 TD 宿主语法，ODS backend 用
+   C++ 遍历 `Record` 做语义识别；13 章的 `ods.y` / `ods-asm-format.y` 是"从语义
+   反推的规范"，用于审阅与合法性分析，不是可运行的解析器。
 
 ## A 部分：`mlir/lib/AsmParser/` 文件职责
 
@@ -91,4 +102,7 @@
 | `10-tablegen-overview.md` | 统计口径、六层结构、include 语义、生成节点、结论 |
 | `11-tablegen-dependency-graph.md` | 4 张 Mermaid 图 + 度数排行 + 深度分布 |
 | `12-tablegen-dialect-anatomy.md` | Arith / Linalg 解剖、新方言 checklist、常见错误 |
+| `13-ods-semantic-grammar.md` | ODS 语义文法、与 TD 宿主语法的映射、5 处常见误写、29 条语义约束 |
+| `ods.y` | 记录层语义文法（bison，0 冲突）：实体、字段、值、约束表达式 |
+| `ods-asm-format.y` | `assemblyFormat` 子语言文法（bison，0 冲突） |
 | `tools/td-dependency-graph.py` | 扫描脚本：统计 + `--mermaid` + `--json`，可复现全部数字 |
