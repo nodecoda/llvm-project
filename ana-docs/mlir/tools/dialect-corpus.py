@@ -66,7 +66,10 @@ CORE_FACTS = {
 ASM_DIRECTIVES = {"attr-dict", "attr-dict-with-keyword", "prop-dict", "type",
                   "gap",
                   "functional-type",
-                  "operands", "results", "regions", "successors", "custom",
+                  # `operands`/`results` 是软家族名（S8）：没有同名部件时是
+                  # 家族引用，有同名部件时是部件引用。这里只把它们从"类型名"
+                  # 统计里排除；引用是否成立由 escape-audit 的 L10 判定。
+                  "operands", "results", "successors", "custom",
                   "ref", "enum", "qualified", "oilist", "params", "struct",
                   "if", "else"}
 TYPE_CTORS = {"optional", "variadic", "array"}

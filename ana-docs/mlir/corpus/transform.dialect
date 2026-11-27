@@ -56,8 +56,8 @@
 ///   - `regions` 指令不在本文法；块格式直接写 region 部件名，语义是打印该 op
 ///     的全部 region，与上游 `regions` 等价（不是具名缺口）。
 ///   - apply_patterns 的 max_iterations / max_num_rewrites 默认值是 C++ 表达式
-///     static_cast<uint64_t>(-1)，apply_registered_pass 的 options 默认值是
-///     `{}`；文法只接受标识符或整数默认值，故默认值不写，Doc 说明。
+///     static_cast<uint64_t>(-1)，文法只接受标识符、整数与空字典 `{}`，故这两个
+///     默认值仍不写，Doc 说明；options 的空字典默认值写成 `= {}`。
 ///   - NamedSequenceOp 的 body 由 FunctionOpInterface 约束为单块并以
 ///     transform.yield 结束；文法只能写 max_blocks(1)，单块与终结符写在 Doc。
 ///   - 类型助记符 op / type / affine_map 不能直接作为 type_primary（op 是声明
@@ -511,7 +511,7 @@ dialect transform {
                 dynamic_options: variadic<parameter>);
     Results    (result: handle);
     Attributes (pass_name: string,
-                options: dictionary);
+                options: dictionary = {});
     Implements [TransformOpInterface];
     Assembly   { pass_name
                  if options {

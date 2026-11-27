@@ -251,11 +251,13 @@ default_opt
   | EQUAL expr
   ;
 
-/* 默认值：`none` 这类标识符，或 `1` 这类整数（gpu.subgroup_reduce
- * 的 cluster_stride）。字符串默认值仍无见证。 */
+/* 默认值：`none` 这类标识符，`1` 这类整数（gpu.subgroup_reduce 的
+ * cluster_stride），或空字典 `{}`（transform.apply_registered_pass 的 options）。
+ * 字符串默认值仍无见证。 */
 expr
   : IDENT
   | INT
+  | L_BRACE R_BRACE
   ;
 
 /* 语义事实是一个布尔表达式：
@@ -308,7 +310,14 @@ asm_list
 /* 规范化 N1：上游 `enum($x)` 表示"用属性 x 的枚举打印器输出助记符"。本语言
  * 没有单独的 enum() 指令：属性部件本来就由它自己的打印器输出，所以块里直接
  * 引用 x。改写是全域、机械的，并由 escape-audit 的 N1 逐 op 验证——
- * 上游打印 enum($x)，块里就必须出现 x。 */
+ * 上游打印 enum($x)，块里就必须出现 x。
+ *
+ * 家族名 `operands` / `results` 是**软名字**，不单独开产生式：没有同名部件时
+ * 它们是 IDENT，语义是"整个家族"（`operands` 打印全部操作数值，`results` 只
+ * 作为 type(...)/functional-type(...) 的实参打印类型列表）；声明了同名部件时，
+ * 同名 token 就是那个部件（S8）。文法不建符号表，所以这条由 escape-audit 的
+ * L10 逐 op 解析：族引用只覆盖自己那一维，不得进钩子实参；空家族合法
+ * （tosa.const 的 `operands` 打印空串）。 */
 asm_element
   : STRING                       /* 字面量，含标点 */
   | IDENT                        /* 引用一个已声明的部件 */

@@ -645,12 +645,12 @@ dialect rocdl {
   }
   op asyncmark {
     Doc "Mark the end of an asynchronous-operation group. `stages` is a mask of async stages (all, or a stage such as tensor); every named stage gets the mark. Available on gfx9+.";
-    Attributes (stages: any);
+    Attributes (stages: any = all);
     Assembly   { if stages { "stages" "=" stages } attr-dict }
   }
   op wait.asyncmark {
     Doc "Wait until at most `count` async-operation groups remain unexecuted, counting each stage named by `stages` separately. Available on gfx9+.";
-    Attributes (count: i16, stages: any);
+    Attributes (count: i16, stages: any = all);
     Assembly   { count if stages { "stages" "=" stages } attr-dict }
   }
   op s.setprio {

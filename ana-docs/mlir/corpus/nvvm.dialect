@@ -682,7 +682,7 @@ dialect nvvm {
   op mbarrier.init {
     Doc "Initialize an mbarrier with a pending count and optional layout and predicate (mbarrier.init); requires sm_80.";
     Operands   (addr: ptr, count: i32);
-    Attributes (layout: i32 = 0, predicate: i32);
+    Attributes (layout: i32 = 0, predicate: optional<i32>);
     Assembly   { addr "," count if layout { "layout" "=" layout }
                  if predicate { "," "predicate" "=" predicate }
                  attr-dict ":" type(operands) }
@@ -747,7 +747,7 @@ dialect nvvm {
     Doc "Arrive and expect a transaction count (mbarrier.arrive.expect_tx); optional predicate and multicast mask; requires sm_90.";
     Operands   (addr: ptr, txcount: i32, multicastMask: optional<i32>);
     Results    (res: optional<i64>);
-    Attributes (scope: i32 = none, relaxed: i1 = false, predicate: i32);
+    Attributes (scope: i32 = none, relaxed: i1 = false, predicate: optional<i32>);
     Properties [operand_segments_by_attribute];
     Assembly   { addr "," txcount
                  if predicate { "," "predicate" "=" predicate }
@@ -872,7 +872,7 @@ dialect nvvm {
     Doc "TMA tensor copy from shared CTA memory to global memory; box, L2 hint, predicate and mode (cp.async.bulk.tensor.global.shared.cta).";
     Operands   (tmaDescriptor: ptr, srcMem: ptr, coordinates: variadic<i32>,
                 l2CacheHint: optional<i64>);
-    Attributes (mode: i32, predicate: i32);
+    Attributes (mode: i32, predicate: optional<i32>);
     Properties [operand_segments_by_attribute];
     Assembly   { tmaDescriptor "," srcMem "," "box" "[" coordinates "]"
                  oilist("l2_cache_hint" "=" l2CacheHint
@@ -950,7 +950,7 @@ dialect nvvm {
                 mbar: ptr, im2colOffsets: variadic<i16>,
                 multicastMask: optional<i16>, l2CacheHint: optional<i64>);
     Attributes (mode: i32, isCTAOnly: i1 = false, group: optional<i32>,
-                predicate: i32);
+                predicate: optional<i32>);
     Properties [operand_segments_by_attribute];
     Assembly   { dstMem "," tmaDescriptor "," mbar "," "box" "[" coordinates "]"
                  oilist("im2col" "[" im2colOffsets "]"
@@ -1266,7 +1266,7 @@ dialect nvvm {
     Doc "Move a matrix fragment between registers, optionally changing layout (movmatrix); requires sm_75.";
     Operands   (src: i32);
     Results    (dst: i32);
-    Attributes (shape: i32, eltType: i32, layout: i32);
+    Attributes (shape: i32, eltType: i32, layout: i32 = col);
     Assembly   { src "," "shape" "=" shape "," "element_type" "=" eltType
                  if layout { "," "layout" "=" layout } attr-dict ":" type(src) }
   }
@@ -1616,7 +1616,7 @@ dialect nvvm {
     Doc "Prefetch memory with optional cache level, uniform, tensormap, parameter-space and eviction-priority selectors (prefetch).";
     Operands   (addr: ptr);
     Attributes (cacheLevel: optional<i32>, evictPriority: optional<i32>,
-                predicate: i32, tensormap: optional<unit>,
+                predicate: optional<i32>, tensormap: optional<unit>,
                 uniform: optional<unit>, in_param_space: optional<unit>);
     Assembly   { if cacheLevel
                      { "level" "=" cacheLevel if uniform { "uniform" } "," }
@@ -1647,7 +1647,7 @@ dialect nvvm {
     Doc "Insert a block of inline PTX with read-only, read-write and write-only values, predicate and memory clobber (inline_ptx).";
     Operands   (readOnlyArgs: variadic<any>, readWriteArgs: variadic<any>);
     Results    (writeOnlyArgs: variadic<any>);
-    Attributes (ptxCode: string, predicate: i32, memoryClobber: i1 = false);
+    Attributes (ptxCode: string, predicate: optional<i32>, memoryClobber: i1 = false);
     Properties [operand_segments_by_attribute];
     Assembly   { ptxCode
                  if readOnlyArgs

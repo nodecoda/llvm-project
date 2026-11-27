@@ -181,7 +181,8 @@ dialect emitc {
   op include {
     Doc "源文件包含；is_standard_include 为真时打印成尖括号形式，否则打印成带引号的字符串。";
     Attributes (include: string, is_standard_include: optional<unit>);
-    Assembly   { oilist("<" include ">" | include) }
+    Assembly   { if is_standard_include { "<" } include
+                 if is_standard_include { ">" } }
   }
 
   /* ---- 值与位置 ---- */

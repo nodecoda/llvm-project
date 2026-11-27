@@ -2112,6 +2112,7 @@ dialect llvm {
   op intr.coro.free {
     Doc "Free the coroutine frame.";
     Operands   (id: token_type, handle: pointer);
+    Results    (res: llvm_ptr);
     Assembly   { id "," handle attr-dict ":"
                  functional-type(operands, results) }
   }

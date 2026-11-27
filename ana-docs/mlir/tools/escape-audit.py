@@ -25,6 +25,15 @@ The first three of the *claim* channels are checked against upstream TableGen:
   L6  budget  => global limits (Custom share, gap count, divergence)
   L7  shape   => at most one Gap per op, and never inside if/oilist/hook args
   L9  dialect => per-dialect limits (Custom share, gap count)
+  L10 cover   => a block must print every declared operand/successor and
+                 capture every attribute/property (dict or by name); a
+                 declarative-upstream block must also print every region.
+                 Family names (`operands`, `results`) are soft: they mean the
+                 family only when no part shadows them, they cover exactly
+                 that family, and they are never hook data.
+  L11 guard   => `if x` requires x to be omittable in the declaration
+                 (optional/variadic/default/unit); regions excepted because
+                 "absent" there means an empty region.
 
 Normalizations are total, mechanical rewrites of upstream spelling, not
 escapes.  N1: upstream `enum($x)` prints attribute x through its own enum
@@ -340,17 +349,257 @@ def hook_calls(text):
     return out
 
 
+# -------------------------------------------------- declared parts & coverage
+STRUCT_CLAUSES = ("Operands", "Results", "Attributes", "Regions", "Successors")
+
+
+def part_info(body):
+    """name -> (clause, constraint text incl. default) for one entity body."""
+    out = {}
+    for clause in STRUCT_CLAUSES:
+        for m in re.finditer(r"\b%s\s*\((.*?)\)\s*;" % clause, body, re.S):
+            for item in split_top(m.group(1)):
+                item = item.strip()
+                b = re.match(r"([A-Za-z_][\w.]*)\s*:\s*(.*)$", item, re.S)
+                if b:
+                    out[b.group(1)] = (clause, " ".join(b.group(2).split()))
+    return out
+
+
+def effective_parts(table, name):
+    """Declared parts of an op plus every part on its schema chain."""
+    parts, seen, cur = {}, set(), name
+    while cur and cur not in seen:
+        seen.add(cur)
+        e = table.get(cur)
+        if not e:
+            break
+        parts.update(e.get("parts", {}))
+        cur = e.get("parent")
+    return parts
+
+
+def read_word(s, i):
+    j = i
+    while j < len(s) and (s[j].isalnum() or s[j] in "_.-"):
+        j += 1
+    return s[i:j], j
+
+
+def scan_block(s, i=0, end=None, ev=None):
+    """Events for one Assembly block: elem/cond/type_arg/hook_arg/hook/dict/
+    propdict/all_succ/gap.  Strings are literals, never references."""
+    ev = [] if ev is None else ev
+    end = len(s) if end is None else end
+    while i < end:
+        c = s[i]
+        if c.isspace() or c in ",:;()[]{}|<>=":
+            i += 1
+            continue
+        if c == '"':
+            i += 1
+            while i < end and s[i] != '"':
+                i += 2 if s[i] == "\\" else 1
+            i += 1
+            continue
+        if s.startswith("custom<", i):
+            j = s.index(">", i)
+            hook = s[i + 7:j]
+            i = j + 1
+            while i < end and s[i].isspace():
+                i += 1
+            if i < end and s[i] == "(":
+                e = matching(s, i, "(", ")")
+                for arg in split_top(s[i + 1:e]):
+                    a = arg.strip()
+                    if not a:
+                        continue
+                    m = re.match(r"ref\s*\((.*)\)$", a, re.S)
+                    if m:
+                        a = m.group(1).strip()
+                    m = re.match(r"type\s*\((.*)\)$", a, re.S)
+                    if m:
+                        ev.append(("type_arg", m.group(1).strip()))
+                    elif re.fullmatch(r"[A-Za-z_][\w.]*", a):
+                        ev.append(("hook_arg", a))
+                i = e + 1
+            ev.append(("hook", hook))
+            continue
+        if s.startswith("if", i) and not (i + 2 < end and
+                                           (s[i + 2].isalnum() or s[i + 2] in "_.-")):
+            j = i + 2
+            while j < end and s[j].isspace():
+                j += 1
+            guard, j = read_word(s, j)
+            ev.append(("cond", guard))
+            while j < end and s[j].isspace():
+                j += 1
+            if j < end and s[j] == "{":
+                e = matching(s, j, "{", "}")
+                scan_block(s, j + 1, e, ev)
+                j = e + 1
+            while j < end and s[j].isspace():
+                j += 1
+            if s.startswith("else", j):
+                j += 4
+                while j < end and s[j].isspace():
+                    j += 1
+                if j < end and s[j] == "{":
+                    e = matching(s, j, "{", "}")
+                    scan_block(s, j + 1, e, ev)
+                    j = e + 1
+            i = j
+            continue
+        if s.startswith("oilist", i):
+            j = i + 6
+            while j < end and s[j].isspace():
+                j += 1
+            if j < end and s[j] == "<":
+                j = s.index(">", j) + 1
+            while j < end and s[j].isspace():
+                j += 1
+            if j < end and s[j] == "(":
+                e = matching(s, j, "(", ")")
+                scan_block(s, j + 1, e, ev)
+                j = e + 1
+            i = j
+            continue
+        if s.startswith("Gap", i):
+            j = s.index("(", i)
+            e = matching(s, j, "(", ")")
+            ev.append(("gap", s[j + 1:e].strip()))
+            i = e + 1
+            continue
+        if s.startswith("qualified", i):
+            j = s.index("(", i)
+            e = matching(s, j, "(", ")")
+            inner = s[j + 1:e].strip()
+            m = re.match(r"type\s*\((.*)\)$", inner, re.S)
+            if m:
+                ev.append(("type_arg", m.group(1).strip()))
+            elif re.fullmatch(r"[A-Za-z_][\w.]*", inner):
+                ev.append(("elem", inner))
+            i = e + 1
+            continue
+        if s.startswith("functional-type", i):
+            j = s.index("(", i)
+            e = matching(s, j, "(", ")")
+            for a in split_top(s[j + 1:e]):
+                a = a.strip()
+                m = re.match(r"type\s*\((.*)\)$", a, re.S)
+                ev.append(("type_arg", m.group(1).strip() if m else a))
+            i = e + 1
+            continue
+        if s.startswith("type", i) and i + 4 < end and s[i + 4] == "(":
+            j = s.index("(", i)
+            e = matching(s, j, "(", ")")
+            ev.append(("type_arg", s[j + 1:e].strip()))
+            i = e + 1
+            continue
+        if c.isalpha() or c == "_":
+            word, j = read_word(s, i)
+            if word in ("attr-dict", "attr-dict-with-keyword"):
+                ev.append(("dict", word))
+            elif word == "prop-dict":
+                ev.append(("propdict",))
+            elif word == "successors":
+                ev.append(("all_succ",))
+            else:
+                ev.append(("elem", word))
+            i = j
+            continue
+        i += 1
+    return ev
+
+
+def block_findings(parts, block, upstream_channel, dialect, name):
+    """L10/L11 findings for one op's effective block."""
+    fails = []
+    ev = scan_block(block)
+    decl = set(parts)
+    refs = {e[1] for e in ev if e[0] in ("elem", "cond", "type_arg", "hook_arg")}
+
+    def family(t):
+        return t in ("operands", "results") and t not in decl
+
+    fam_used = {t for t in refs if family(t)}
+    hook_fam = {e[1] for e in ev if e[0] == "hook_arg" and family(e[1])}
+    elem = [e[1] for e in ev if e[0] == "elem"]
+    named = {t for t in refs if t in decl}
+
+    for t in sorted(hook_fam):
+        fails.append(["L10", dialect, name,
+                      "family '%s' passed to a hook; hooks take parts" % t])
+    if "results" in elem and "results" not in decl:
+        fails.append(["L10", dialect, name,
+                      "'results' is a type family, not a value element"])
+
+    # operands: named, or the `operands` directive (family) prints them all.
+    covers_ops = "operands" in elem and family("operands")
+    for p, (clause, _) in sorted(parts.items()):
+        if clause == "Operands" and not covers_ops and p not in named:
+            fails.append(["L10", dialect, name, "operand '%s' not printed" % p])
+        if clause == "Regions" and upstream_channel == "block" and p not in named:
+            fails.append(["L10", dialect, name, "region '%s' not printed" % p])
+        if clause == "Successors" and not any(e[0] == "all_succ" for e in ev) \
+                and p not in named:
+            fails.append(["L10", dialect, name, "successor '%s' not printed" % p])
+    has_dict = any(e[0] == "dict" for e in ev)
+    if not has_dict:
+        for p, (clause, _) in sorted(parts.items()):
+            if clause == "Attributes" and p not in named:
+                fails.append(["L10", dialect, name,
+                              "attribute '%s' neither printed nor in attr-dict" % p])
+    if not any(e[0] == "propdict" for e in ev):
+        for p, (clause, _) in sorted(parts.items()):
+            if clause == "Properties" and p not in named:
+                fails.append(["L10", dialect, name,
+                              "property '%s' neither printed nor in prop-dict" % p])
+
+    # L11: a guard promises "this part may be absent"; the declaration must agree.
+    for guard in sorted({e[1] for e in ev if e[0] == "cond"}):
+        info = parts.get(guard)
+        if not info:
+            fails.append(["L11", dialect, name,
+                          "if %s: no such declared part" % guard])
+            continue
+        clause, cs = info
+        if clause == "Regions":
+            continue          # absent region == empty region, a legal state
+        omittable = ("optional<" in cs or "variadic<" in cs
+                     or re.search(r"=\s*\S", cs) or cs.strip() == "unit")
+        if not omittable:
+            fails.append(["L11", dialect, name,
+                          "if %s: declared %s, not omittable" % (guard, cs)])
+    return fails
+
+
 # ---------------------------------------------------------------- corpus
 OP_RE = re.compile(r'(?m)^  (?:(op) "?([A-Za-z0-9_.]+)"?|(schema) ([A-Za-z_][\w.]*))')
 NEXT_RE = re.compile(r'(?m)^  (?:op|schema|enum|constraint|type_def|attr_def|dialect)\b')
 PARENT_RE = re.compile(r"\b(?:from|extends)\s+([A-Za-z_][\w.]*)")
 
 
+ASM_CLAUSE_RE = re.compile(r"(?m)^[ \t]*Assembly[ \t]*(?:\{|\bCustom\b|\bGeneric\b)")
+
+
 def assembly_block(seg):
-    i = seg.find("Assembly")
-    if i < 0:
+    """The Assembly clause itself, braces included.
+
+    Anchored on a clause at line start: the bare word also occurs inside
+    doc comments ("Assembly Generic。"), and matching those made the audit
+    read the comment as the format.  Only the braces (or the Custom/Generic
+    word) belong to the channel decision; trailing text does not.
+    """
+    m = ASM_CLAUSE_RE.search(seg)
+    if not m:
         return ""
-    return seg[i:]
+    i = m.end() - 1
+    if seg[i] == "{":
+        e = matching(seg, i, "{", "}")
+        return seg[i:e + 1] if e > 0 else seg[i:]
+    j = seg.find(";", i)
+    return seg[i:j + 1] if j >= 0 else seg[i:]
 
 
 def parse_corpus(path):
@@ -381,6 +630,7 @@ def parse_corpus(path):
             "block": block,
             "facts": set(corpus_mod.fact_names(seg)),
             "has_assembly": bool(block),
+            "parts": part_info(seg),
         }
         (ops if kind == "op" else schemas)[name] = entry
     return dialect, ops, schemas
@@ -457,14 +707,27 @@ def gap_positions(block):
 
 
 def matching(text, start, op, cl):
+    """Index of the delimiter matching text[start]; strings never count."""
     depth = 0
-    for i in range(start, len(text)):
-        if text[i] == op:
+    i = start
+    in_str = False
+    while i < len(text):
+        c = text[i]
+        if in_str:
+            if c == "\\":
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+        elif c == op:
             depth += 1
-        elif text[i] == cl:
+        elif c == cl:
             depth -= 1
             if depth == 0:
                 return i
+        i += 1
     return -1
 
 
@@ -571,6 +834,45 @@ def selftest():
     check("missing scope", len(gap_findings(nosc, users, blocks)), 1)
     wrong = {"g": [("d", "o", "Gap(g) a")]}
     check("scope mismatch", len(gap_findings(reg, users, wrong)), 1)
+
+    # L10/L11: the block must account for every declared part, and a guard
+    # must be declared omittable.  Synthetic parts keep each rule pinned even
+    # when the corpus happens to be clean.
+    P = {"a": ("Operands", "any"), "r": ("Results", "any"),
+         "c": ("Attributes", "optional<i32>"),
+         "n": ("Attributes", "i32")}
+    PB = dict(P, body=("Regions", "region"))
+
+    def cov(block, parts=P, up="block"):
+        return [f[3] for f in block_findings(parts, block, up, "d", "o")]
+
+    check("coverage ok", cov("a attr-dict \":\" type(r)"), [])
+    check("operand omitted", cov("attr-dict \":\" type(r)"),
+          ["operand 'a' not printed"])
+    check("family covers operands",
+          cov("operands attr-dict \":\" type(r)", {"a": ("Operands", "any"),
+                                           "b": ("Operands", "any"),
+                                           "r": ("Results", "any")}), [])
+    check("family shadowed by part",
+          cov("operands attr-dict", {"operands": ("Operands", "any"),
+                                    "x": ("Operands", "any")}),
+          ["operand 'x' not printed"])
+    check("attribute needs dict", cov("a \":\" type(r)", {"a": ("Operands", "any"),
+                                                     "c": ("Attributes", "optional<i32>")}),
+          ["attribute 'c' neither printed nor in attr-dict"])
+    check("region in declarative", cov("a attr-dict", PB),
+          ["region 'body' not printed"])
+    check("region outside custom text", cov("a attr-dict", PB, "custom"), [])
+    check("successors directive",
+          cov("a attr-dict successors", {"a": ("Operands", "any"),
+                                        "s": ("Successors", "successor")}), [])
+    check("family as hook data",
+          cov("a custom<F>(operands) attr-dict"),
+          ["family 'operands' passed to a hook; hooks take parts"])
+    check("guard on required attr", cov("a if n { n } attr-dict"),
+          ["if n: declared i32, not omittable"])
+    check("guard on optional attr", cov("a if c { c } attr-dict"), [])
+    check("guard on region", cov("a attr-dict if body { body }", PB), [])
 
     print("## selftest")
     for label, verdict in cases:
@@ -680,6 +982,12 @@ def main():
                 fails.append(["L1", dialect, name, "Custom, but upstream is %s" % up])
             if up != "unknown" and ch == "generic" and up != "generic":
                 fails.append(["L2", dialect, name, "Generic, but upstream is %s" % up])
+
+            # L10/L11: the block is the normal-form description, so it must
+            # account for every declared part; a guard must be omittable.
+            if ch in ("block", "block-hook"):
+                fails += block_findings(effective_parts(table, name), eff,
+                                        up, dialect, name)
 
             # L3b: a hook call mirrors the upstream call's data arguments.
             # Quoted configuration (delimiters, builder names) is dropped on
