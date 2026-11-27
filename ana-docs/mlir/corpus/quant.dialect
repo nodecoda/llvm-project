@@ -1,0 +1,81 @@
+/// quant —— 量化：给整数存储一个"比例 + 零点"的解释。
+///
+/// 这个方言的价值不在 op（只有三个 cast），而在**类型**：`!quant.uniform`
+/// 等四类类型的文法不在 ODS 里，而是 `TypeParser.cpp:544` 按助记符手写分派，
+/// 该文件还以注释形式给出了完整 BNF。这说明 ODS 表达不了"类型自身的文本
+/// 形状"，只能落到 C++；这里用 `type_def` + `Assembly` 把它收回领域层。
+
+dialect quant {
+  Doc "Quantization: interpret integer storage with a scale and zero point.";
+
+  /* 存储类型：字节宽度 + 符号解释。f8/f4 是浮点存储，也应算作存储类型，
+   * 但本语料只取整数几种作为见证。 */
+  constraint storage    = i8 | i16 | i32 | i64 | u8 | u16 | u32 | u64;
+  constraint float_like = f16 | f32 | f64;
+  constraint quantized  = Uniform | Any | Calibrated | Quantile;
+  constraint integer_or_quantized = storage | quantized;
+
+  /* `!quant.uniform<i8:f32, 2.0:10>`：per-layer。
+   * `!quant.uniform<i8:f32:1, {0.1,0.2}:{3,4}>`：per-axis，多一个轴号。
+   * 两者共用一个助记符，靠标点区分；`oilist` 正好表达"至多出现一种"。 */
+  type_def Uniform {
+    Doc "Uniform quantization: storage/expressed pair plus scales and zero points.";
+    Parameters (storage: storage, expressed: float_like,
+                axis: optional<i64>,
+                scales: array<f64>, zero_points: array<i64>);
+    Assembly { "<" storage ":" expressed if axis { ":" axis }
+               "," oilist("{" scales "}:{" zero_points "}"
+                          | scales ":" zero_points)
+               ">" }
+  }
+
+  /* `!quant.any<i8<-8:7>>`、`!quant.any<i8:f32>`：还没有比例，只有存储
+   * 类型（可选择显式的存储范围）和可选的表达类型。 */
+  type_def Any {
+    Doc "Storage type with an optional explicit range and optional expressed type.";
+    Parameters (storage: storage, range: optional<i64>,
+                expressed: optional<float_like>);
+    Assembly { "<" storage if range { "<" range ">" }
+               if expressed { ":" expressed } ">" }
+  }
+
+  /* `!quant.calibrated<f32<-1.0:1.0>>`：只观测到取值范围，还没有比例。 */
+  type_def Calibrated {
+    Doc "Observed value range only; no scale yet.";
+    Parameters (expressed: float_like, min: f64, max: f64);
+    Assembly { "<" expressed "<" min ":" max ">" ">" }
+  }
+
+  /* `!quant.quantile<tensor<1xf32>:f32, {1.0}>`：按观测分位数定标。 */
+  type_def Quantile {
+    Doc "Quantile-based quantization over storage and quantile types.";
+    Parameters (storage: any, quantile_type: any, quantiles: array<f64>);
+    Assembly { "<" storage ":" quantile_type "," "{" quantiles "}" ">" }
+  }
+
+  /* 三个 cast 的文本完全同形：`%v : T to U`。 */
+  schema Cast {
+    Operands   (input: any);
+    Results    (result: any);
+    Properties [pure, same_shape];
+    Assembly   { input attr-dict ":" type(input) "to" type(result) }
+  }
+
+  op dcast from Cast {
+    Doc "Dequantize: quantized value to its expressed floating point value.";
+    Operands (input: quantized);
+    Results  (result: float_like);
+  }
+
+  op qcast from Cast {
+    Doc "Quantize: floating point value to a quantized type.";
+    Operands (input: float_like);
+    Results  (result: quantized);
+  }
+
+  op scast from Cast {
+    Doc "Storage cast: quantized value to its raw storage and back.";
+    Operands (input: integer_or_quantized);
+    Results  (result: integer_or_quantized);
+  }
+}

@@ -37,7 +37,7 @@
 
 /* Assembly 模式 */
 %token A_ATTR_DICT A_ATTR_DICT_WITH_KEYWORD A_TYPE A_IF
-%token A_FUNCTIONAL_TYPE A_OILIST A_CUSTOM
+%token A_FUNCTIONAL_TYPE A_OILIST A_CUSTOM A_SUCCESSORS
 
 %define parse.trace
 
@@ -118,9 +118,16 @@ type_postfix_opt
   | L_PAREN IDENT R_PAREN              /* type_of(lhs) */
   ;
 
+/* 类型实例的实参可以是类型，也可以是整数：`Cast<index, fixed_int_like>`
+ * 传类型约束，`tosa.shape<4>` 传 rank——rank 是值，不是类型。 */
 type_arg_list
+  : type_arg
+  | type_arg_list COMMA type_arg
+  ;
+
+type_arg
   : type_expr
-  | type_arg_list COMMA type_expr
+  | INT
   ;
 
 /* 引用一个 schema 或接口：`IntBinaryWithOverflow`、`Cast<index, int_like>` */
@@ -202,8 +209,16 @@ binding_list
   | binding_list COMMA binding
   ;
 
+/* 部件的值域事实挂在部件上，与 region 的注解同一个机制：
+ * `Attributes (count: i64 [positive])`、`Operands (operand: any [non_negative])`。
+ * 它是"这个属性的取值受限"，不是类型的一部分——同是 i64，一个受限一个不受。 */
 binding
-  : name COLON type_expr default_opt
+  : name COLON type_expr binding_annots_opt default_opt
+  ;
+
+binding_annots_opt
+  : %empty
+  | L_BRACKET fact_list R_BRACKET
   ;
 
 /* region 的块数约束是 region 自己的事实，不是 op 的：
@@ -293,6 +308,7 @@ asm_element
   | A_OILIST L_PAREN oilist_alt_list R_PAREN
                                  /* 至多出现一个可选组 */
   | A_IF IDENT L_BRACE asm_list R_BRACE
+  | A_SUCCESSORS                  /* 打印全部后继，名字不再逐个写出 */
   ;
 
 /* custom<Hook>(a, b)：钩子名是格式的实现细节，实参是部件引用。
@@ -305,7 +321,8 @@ custom_arg_list
 
 custom_arg
   : IDENT
-  | A_TYPE
+  | A_TYPE                        /* 部件名恰好叫 type */
+  | A_TYPE L_PAREN IDENT R_PAREN  /* 派生：把某个部件的类型交给钩子 */
   ;
 
 /* oilist(a | b | c)：每个分支是一段格式；运行时至多匹配一个。

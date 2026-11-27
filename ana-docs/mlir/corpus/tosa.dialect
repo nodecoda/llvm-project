@@ -1,0 +1,651 @@
+/// tosa —— 面向神经网络整张量算子的方言：卷积、池化、逐元素、形状与持久变量。
+///
+/// 本语料只写领域事实。tosa 的属性层很厚：算子参数大量是定长整数数组、
+/// 枚举、类型引用、稠密常量与符号名；卷积的零点是操作数而不是属性，
+/// reshape/slice/tile/pad 的形状也是操作数（!tosa.shape 类型）。
+
+dialect tosa {
+  Doc "Tensor Operator Set Architecture: whole-tensor operators for neural networks.";
+
+  // 元素类型的领域分类。
+  constraint number      = signless_integer | unsigned_integer | f16 | bf16 | f32;
+  constraint int_number  = signless_integer | unsigned_integer;
+  constraint float_number = f16 | bf16 | f32;
+  constraint int_or_float = int_number | float_number;
+
+  // 定长整数数组是 tosa 属性层的主要形状：strides/dilations 按空间维数，
+  // padding 是每维前后两份，所以是空间维数的两倍。
+  //
+  // 长度挂在哪一层，取决于范围：一个 schema 的所有实例都同长，就挂在绑定上
+  // （`pad: array<i64> [cardinality(4)]`）；不同实例长度不同（conv 的 2D/3D
+  // 共用一个 schema），就留在 op 级的 `cardinality(pad, N)` 事实里。
+  constraint shape_value = shape;
+
+  // ---- 枚举：规格里的量化/舍入/重采样/分块与目标环境 ----
+
+  enum Profile {
+    Doc "TOSA profile: integer inference, floating-point inference, or none.";
+    Cases [ none = 0, pro_int = 1, pro_fp = 2 ];
+  }
+
+  enum Extension {
+    Doc "Optional TOSA extensions exercised by a target.";
+    Cases [ none = 0, int16 = 1, int4 = 2, bf16 = 3, fp8e4m3 = 4,
+            fp8e5m2 = 5, fft = 6, variable = 7, controlflow = 8,
+            doubleround = 9, inexactround = 10, dynamic = 11, mxfp = 12,
+            int64 = 13, mxfp_conv = 14, shape = 15, mx_common = 16,
+            mx_fp4e2m1 = 17, mx_fp6e2m3 = 18, mx_fp6e3m2 = 19,
+            mx_fp8e4m3 = 20, mx_fp8e5m2 = 21, mx_int8 = 22 ];
+  }
+
+  enum Level {
+    Doc "TOSA conformance level.";
+    Cases [ none = 0, eightK = 1 "8k" ];
+  }
+
+  enum SpecificationVersion {
+    Doc "TOSA specification revision.";
+    Cases [ V_1_0 = 0 "1.0", V_1_1_DRAFT = 1 "1.1.draft" ];
+  }
+
+  enum NanPropagationMode {
+    Doc "Whether a NaN input propagates to the result.";
+    Cases [ PROPAGATE = 1, IGNORE = 2 ];
+  }
+
+  enum RoundingMode {
+    Doc "How rescale rounds its fixed-point product.";
+    Cases [ SINGLE_ROUND = 1, INEXACT_ROUND = 2, DOUBLE_ROUND = 3 ];
+  }
+
+  enum ResizeMode {
+    Doc "Spatial upsampling strategy.";
+    Cases [ NEAREST_NEIGHBOR = 1, BILINEAR = 2 ];
+  }
+
+  enum BlockSize {
+    Doc "Block length along the innermost dimension for block-scaled data.";
+    Cases [ BLOCK_SIZE_1 = 1, BLOCK_SIZE_32 = 32 ];
+  }
+
+  enum BlockShape {
+    Doc "Block shape for block-scaled data; only the innermost dimension is scaled.";
+    Cases [ BLOCK_SHAPE_32 = 32 ];
+  }
+
+  // ---- 类型：形状值 ----
+
+  type_def shape {
+    Doc "A statically ranked shape: rank plus index-typed dimensions.";
+    Parameters (rank: i32);
+    Assembly { "<" rank ">" }
+  }
+
+  // ---- 属性：量化信息是领域对象，不是零散的整数 ----
+
+  attr_def UnaryQuant {
+    Doc "Zero points for an operator with one numerical input and one output.";
+    Parameters (input_zp: i64, output_zp: i64);
+    Assembly { "<" "input_zp" "=" input_zp "," "output_zp" "=" output_zp ">" }
+  }
+
+  attr_def ConvQuant {
+    Doc "Input and weight zero points for convolution and matrix product.";
+    Parameters (input_zp: i64, weight_zp: i64);
+    Assembly { "<" "input_zp" "=" input_zp "," "weight_zp" "=" weight_zp ">" }
+  }
+
+  attr_def MatMulQuant {
+    Doc "Zero points of the two matrix multiplicands.";
+    Parameters (a_zp: i64, b_zp: i64);
+    Assembly { "<" "a_zp" "=" a_zp "," "b_zp" "=" b_zp ">" }
+  }
+
+  attr_def PadQuant {
+    Doc "Zero point correction applied to the padding constant.";
+    Parameters (input_zp: i64);
+    Assembly { "<" "input_zp" "=" input_zp ">" }
+  }
+
+  attr_def AccumulatorType {
+    Doc "Element type of the accumulator: i32, i48, i64, f16, f32 or bf16.";
+    Parameters (element: type);
+    Assembly { element }
+  }
+
+  attr_def DenseElements {
+    Doc "A dense constant payload; its element type and shape are the tensor type.";
+    Parameters (values: any);
+    Assembly Custom;
+  }
+
+  attr_def IndexElements {
+    Doc "A dense list of index values, used as a shape payload.";
+    Parameters (values: array<index>);
+    Assembly Custom;
+  }
+
+  attr_def SymbolName {
+    Doc "A bare identifier naming a symbol.";
+    Parameters (name: string);
+    Assembly { "@" name }
+  }
+
+  attr_def TargetEnv {
+    Doc "Target environment: specification revision, level, profiles and extensions.";
+    Parameters (specification_version: SpecificationVersion,
+                level: Level,
+                profiles: optional<array<Profile>>,
+                extensions: optional<array<Extension>>);
+    Assembly { "<" "specification_version" "=" specification_version
+               "," "level" "=" level
+               if profiles { "," "profiles" "=" "[" profiles "]" }
+               if extensions { "," "extensions" "=" "[" extensions "]" }
+               ">" }
+  }
+
+  // ---- schema：共享同一批部件与文本形状的算子族 ----
+
+  schema ElementwiseUnary {
+    Doc "One input and one result with the same shape and element type.";
+    Operands   (input1: tensor<number>);
+    Results    (output: tensor<number>);
+    Properties [elementwise, broadcastable, same_rank, same_shape,
+                same_element_type, no_memory_effect];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema ElementwiseBinary {
+    Doc "Two inputs and one result; size-one axes broadcast, ranks match.";
+    Operands   (input1: tensor<number>, input2: tensor<number>);
+    Results    (output: tensor<number>);
+    Properties [elementwise, broadcastable, same_rank, no_memory_effect];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema ElementwiseBinaryWithNanMode extends ElementwiseBinary {
+    Attributes (nan_mode: NanPropagationMode = PROPAGATE);
+    Assembly   { operands oilist("nan_mode" nan_mode)
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema ElementwiseBinaryWithRound extends ElementwiseBinary {
+    Attributes (round: bool);
+    Assembly   { operands "round" "(" round ")"
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema Reduction {
+    Doc "Reduce one axis to a tensor of the same rank; the axis size becomes one.";
+    Operands   (input1: tensor<number>);
+    Results    (output: tensor<number>);
+    Attributes (axis: i32);
+    Properties [no_memory_effect, infer_tensor_type];
+    Implements [TosaOpInterface];
+    Assembly   { operands "axis" "(" axis ")"
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema ReductionWithNanMode extends Reduction {
+    Attributes (nan_mode: NanPropagationMode = PROPAGATE);
+    Assembly   { operands "axis" "(" axis ")"
+                 oilist("nan_mode" nan_mode)
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema Pool2D {
+    Doc "2D pooling with integer arrays for kernel, stride and padding.";
+    Operands   (input1: tensor<number, 4>,
+                input_zp: scalar<tensor<number>>,
+                output_zp: scalar<tensor<number>>);
+    Results    (output: tensor<number, 4>);
+    Attributes (kernel: array<i64> [cardinality(2)],
+                stride: array<i64> [cardinality(2)],
+                pad: array<i64> [cardinality(4)],
+                acc_type: AccumulatorType);
+    Properties [no_memory_effect];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands "kernel" "(" kernel ")" "stride" "(" stride ")"
+                 "pad" "(" pad ")" "acc_type" "(" acc_type ")"
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema Pool2DPlain {
+    Doc "2D max pooling; no zero points, but a NaN propagation choice.";
+    Operands   (input1: tensor<number, 4>);
+    Results    (output: tensor<number, 4>);
+    Attributes (kernel: array<i64> [cardinality(2)],
+                stride: array<i64> [cardinality(2)],
+                pad: array<i64> [cardinality(4)],
+                nan_mode: NanPropagationMode = PROPAGATE);
+    Properties [pure];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands "kernel" "(" kernel ")" "stride" "(" stride ")"
+                 "pad" "(" pad ")" oilist("nan_mode" nan_mode)
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema Conv {
+    Doc "Convolution: 4D or 5D data and weight, 1D bias, two zero-point scalars.";
+    Operands   (input1: tensor<number>, weight: tensor<number>,
+                bias: tensor<number>,
+                input_zp: scalar<tensor<number>>,
+                weight_zp: scalar<tensor<number>>);
+    Results    (output: tensor<number>);
+    Attributes (pad: array<i64>, stride: array<i64>, dilation: array<i64>,
+                acc_type: AccumulatorType, local_bound: bool = false);
+    Properties [same_variadic_operand_size, no_memory_effect];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands "pad" "(" pad ")" "stride" "(" stride ")"
+                 "dilation" "(" dilation ")" "acc_type" "(" acc_type ")"
+                 custom<LocalBound>(local_bound)
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema TransposeConv2D {
+    Doc "Transposed 2D convolution with an output padding array instead of dilation.";
+    Operands   (input1: tensor<number>, weight: tensor<number>,
+                bias: tensor<number>,
+                input_zp: scalar<tensor<number>>,
+                weight_zp: scalar<tensor<number>>);
+    Results    (output: tensor<number>);
+    Attributes (out_pad: array<i64> [cardinality(4)],
+                stride: array<i64> [cardinality(2)],
+                acc_type: AccumulatorType,
+                local_bound: bool = false);
+    Properties [same_variadic_operand_size, no_memory_effect];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands "out_pad" "(" out_pad ")" "stride" "(" stride ")"
+                 "acc_type" "(" acc_type ")"
+                 custom<LocalBound>(local_bound)
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema Clamp {
+    Doc "Clamp each element between two scalar attribute bounds.";
+    Operands   (input1: tensor<number>);
+    Results    (output: tensor<number>);
+    Attributes (min_val: int_or_float, max_val: int_or_float,
+                nan_mode: NanPropagationMode = PROPAGATE);
+    Properties [pure, elementwise, broadcastable, same_rank, same_shape,
+                same_element_type, no_memory_effect];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands "min_val" "(" min_val ")" "max_val" "(" max_val ")"
+                 oilist("nan_mode" nan_mode)
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema Rescale {
+    Operands   (input1: tensor<number>,
+                multiplier: tensor<int_number>,
+                shift: tensor<i8>,
+                input_zp: scalar<tensor<number>>,
+                output_zp: scalar<tensor<number>>);
+    Results    (output: tensor<number>);
+    Attributes (scale32: bool, rounding_mode: RoundingMode,
+                per_channel: bool, input_unsigned: bool,
+                output_unsigned: bool);
+    Properties [no_memory_effect];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands "scale32" "(" scale32 ")"
+                 "rounding_mode" rounding_mode
+                 "per_channel" "(" per_channel ")"
+                 "input_unsigned" "(" input_unsigned ")"
+                 "output_unsigned" "(" output_unsigned ")"
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema Pad {
+    Doc "Pad every dimension by a shape operand; the pad constant is a scalar tensor.";
+    Operands   (input1: tensor<number>, padding: shape_value,
+                pad_const: scalar<tensor<number>>);
+    Results    (output: tensor<number>);
+    Properties [pure, resolvable_shape_operands];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema Reshape {
+    Doc "Reinterpret the input with a shape operand; no data conversion.";
+    Operands   (input1: tensor<number>, shape: shape_value);
+    Results    (output: tensor<number>);
+    Properties [pure, infer_tensor_type, resolvable_shape_operands];
+    Implements [TosaOpInterface];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema Slice {
+    Doc "Slice from start for size along every dimension; start and size are shape operands.";
+    Operands   (input1: tensor<number>, start: shape_value, size: shape_value);
+    Results    (output: tensor<number>);
+    Properties [pure, resolvable_shape_operands];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema Tile {
+    Doc "Repeat the input by the multiples in a shape operand.";
+    Operands   (input1: tensor<number>, multiples: shape_value);
+    Results    (output: tensor<number>);
+    Properties [pure, resolvable_shape_operands];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema Transpose {
+    Doc "Permute dimensions by an integer array; element types match.";
+    Operands   (input1: tensor<number>);
+    Results    (output: tensor<number>);
+    Attributes (perms: array<i32>);
+    Properties [pure, all_element_types_match(input1, output)];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands "perms" "(" perms ")"
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema Gather {
+    Doc "Gather batched rows from a 3D values tensor using 2D integer indices.";
+    Operands (values: tensor<number, 3>, indices: tensor<index, 2>);
+    Results  (output: tensor<number, 3>);
+    Operands   (values: tensor<number>, indices: tensor<int_number>);
+    Results    (output: tensor<number>);
+    Properties [no_memory_effect];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema Scatter {
+    Doc "Scatter batched rows into a 3D tensor; output indices must be unique.";
+    Operands (values: tensor<number, 3>, indices: tensor<index, 2>,
+              input1: tensor<number, 3>);
+    Results  (output: tensor<number, 3>);
+    Operands   (values_in: tensor<number>, indices: tensor<int_number>,
+                input1: tensor<number>);
+    Results    (values_out: tensor<number>);
+    Properties [no_memory_effect];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema Resize {
+    Doc "Resize height and width; scale is rank 4, offset and border are rank 2.";
+    Operands   (input1: tensor<number>, scale: shape_value,
+                offset: shape_value, border: shape_value);
+    Results    (output: tensor<number>);
+    Attributes (mode: ResizeMode);
+    Properties [pure, resolvable_shape_operands];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands "mode" mode
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema Cast {
+    Doc "Cast element type while preserving shape.";
+    Operands   (input1: tensor<number>);
+    Results    (output: tensor<number>);
+    Attributes (input_unsigned: bool = false);
+    Properties [pure, same_shape];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands custom<InputUnsigned>(input_unsigned)
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  // ---- 逐元素与规约：同形算子由 schema 覆盖 ----
+
+  op erf from ElementwiseUnary {
+    Doc "Gauss error function applied elementwise.";
+    Properties [pure];
+  }
+
+  op add from ElementwiseBinary {
+    Doc "Elementwise addition; size-one axes broadcast; overflow is undefined.";
+    Properties [commutative, same_element_type];
+  }
+
+  op maximum from ElementwiseBinaryWithNanMode {
+    Doc "Elementwise maximum; size-one axes broadcast.";
+    Properties [commutative, same_element_type];
+  }
+
+  op arithmetic_right_shift from ElementwiseBinaryWithRound {
+    Doc "Elementwise arithmetic right shift; round selects rounding of the shifted-out bits.";
+    Properties [same_element_type];
+  }
+
+  op clamp from Clamp {
+    Doc "Clamp each element to [min_val, max_val] in the input type's range.";
+  }
+
+  op mul {
+    Doc "Hadamard product; int32 inputs may be right-shifted by a scalar amount.";
+    Operands   (input1: tensor<number>, input2: tensor<number>,
+                shift: scalar<tensor<i8>>);
+    Results    (output: tensor<number>);
+    Properties [broadcastable, same_rank, no_memory_effect];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
+  }
+
+  op reduce_sum from Reduction {
+    Doc "Sum along one axis.";
+  }
+
+  op reduce_max from ReductionWithNanMode {
+    Doc "Maximum along one axis, with a NaN propagation choice.";
+    Properties [pure];
+  }
+
+  op argmax {
+    Doc "Index of the largest value along one axis; ties choose the first index.";
+    Operands   (input1: tensor<number>);
+    Results    (output: tensor<int_number>);
+    Attributes (axis: i32, nan_mode: NanPropagationMode = PROPAGATE);
+    Properties [no_memory_effect];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands "axis" "(" axis ")" oilist("nan_mode" nan_mode)
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  // ---- 卷积与池化：定长数组属性的代表 ----
+
+  op avg_pool2d from Pool2D {
+    Doc "2D average pooling over a 4D input; only valid input values divide.";
+  }
+
+  op max_pool2d from Pool2DPlain {
+    Doc "2D max pooling over a 4D input.";
+  }
+
+  // 同一件事的第二种领域形状：kernel/stride/pad 不是属性，而是 rank-2/rank-4
+  // 的 shape 操作数。文本上它只印 operands 与 acc_type。
+  op avg_pool2d_adaptive {
+    Doc "2D average pooling whose window is given by rank-2/rank-4 shape operands.";
+    Operands   (input1: tensor<number, 4>,
+                input_zp: scalar<tensor<number>>,
+                output_zp: scalar<tensor<number>>,
+                kernel: shape<2>, stride: shape<2>, pad: shape<4>);
+    Results    (output: tensor<number, 4>);
+    Attributes (acc_type: AccumulatorType);
+    Properties [no_memory_effect];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands "acc_type" "(" acc_type ")"
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  op conv2d from Conv {
+    Doc "2D convolution; pad has 4 entries, stride and dilation have 2.";
+    Properties [cardinality(pad, 4), cardinality(stride, 2),
+                cardinality(dilation, 2)];
+  }
+
+  op conv3d from Conv {
+    Doc "3D convolution; pad has 6 entries, stride and dilation have 3.";
+    Properties [cardinality(pad, 6), cardinality(stride, 3),
+                cardinality(dilation, 3)];
+  }
+
+  op depthwise_conv2d from Conv {
+    Doc "Per-channel 2D convolution; pad has 4 entries, stride and dilation have 2.";
+    Properties [cardinality(pad, 4), cardinality(stride, 2),
+                cardinality(dilation, 2)];
+  }
+
+  op transpose_conv2d from TransposeConv2D {
+    Doc "Transposed 2D convolution; out_pad has 4 entries and stride has 2.";
+  }
+
+  // ---- 形状算子：形状是操作数，属性只剩轴、排列与模式 ----
+
+  op pad from Pad {
+    Doc "Pad every dimension by the amounts in the shape operand, using pad_const.";
+  }
+
+  op reshape from Reshape {
+    Doc "Reinterpret the input with the shape given by the shape operand.";
+  }
+
+  op slice from Slice {
+    Doc "Slice from start for size along every dimension; both are shape operands.";
+  }
+
+  op tile from Tile {
+    Doc "Repeat the input by the multiples in the shape operand.";
+  }
+
+  op transpose from Transpose {
+    Doc "Permute dimensions by the integer array perms.";
+  }
+
+  op gather from Gather {
+    Doc "Gather batched index rows from a 3D values tensor.";
+  }
+
+  op scatter from Scatter {
+    Doc "Scatter batched index rows into a 3D tensor; output indices are unique.";
+  }
+
+  op resize from Resize {
+    Doc "Resize height and width; scale, offset and border are shape operands.";
+  }
+
+  // ---- 转换、常量与自定义 ----
+
+  op cast from Cast {
+    Doc "Cast a tensor element type; input_unsigned selects unsigned reinterpretation.";
+  }
+
+  op rescale from Rescale {
+    Doc "Fixed-point multiply, add and shift; multiplier and shift are 1D operands.";
+  }
+
+  // GAP: 列表实参的 trait（如 all_shapes_match([values, output])）无法写出；
+  // 这里拆成二元 same_shape 事实。
+  op const {
+    Doc "A dense constant; the result type is derived from the values attribute.";
+    Attributes (values: DenseElements);
+    Results    (output: tensor<number>);
+    Properties [constant_like, pure, first_attr_derived_result_type,
+                same_shape(values, output)];
+    Implements [TosaOpInterface];
+    Assembly   { operands "values" "(" values ")"
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  op custom {
+    Doc "Backend-specific operator identified by name, domain and an opaque attribute string.";
+    Operands   (input_list: variadic<tensor<number>>);
+    Results    (output_list: variadic<tensor<number>>);
+    Attributes (operator_name: string, domain_name: string,
+                implementation_attrs: string);
+    Implements [TosaOpInterface];
+    Assembly   { operands "operator_name" "(" operator_name ")"
+                 "domain_name" "(" domain_name ")"
+                 "implementation_attrs" "(" implementation_attrs ")"
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  // ---- 控制流与持久变量 ----
+
+  op cond_if {
+    Doc "Two-arm conditional; then and else regions each take one block and yield tensors.";
+    Operands   (condition: tensor<i1>, input_list: variadic<tensor<number>>);
+    Results    (output_list: variadic<tensor<number>>);
+    Regions    (then_graph: region [single_block],
+                else_graph: region [single_block]);
+    Properties [recursive_memory_effects,
+                single_block_implicit_terminator(Yield)];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly Custom;
+  }
+
+  op while_loop {
+    Doc "Loop with a condition region and a body region; both are single-block and yield.";
+    Operands   (input_list: variadic<tensor<number>>);
+    Results    (output_list: variadic<tensor<number>>);
+    Regions    (cond_graph: region [single_block],
+                body_graph: region [single_block]);
+    Properties [recursive_memory_effects,
+                single_block_implicit_terminator(Yield), loop_like];
+    Implements [LoopLikeOpInterface, InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly Custom;
+  }
+
+  op yield {
+    Doc "Terminator of cond_if and while_loop regions; returns tensors to the parent.";
+    Operands   (inputs: variadic<tensor<number>>);
+    Properties [terminator, pure];
+    Implements [TosaOpInterface];
+    Assembly   { inputs attr-dict ":" type(inputs) }
+  }
+
+  op variable {
+    Doc "Persistent mutable tensor with a symbol name, index-element shape and optional initial value.";
+    Attributes (sym_name: SymbolName, sym_visibility: optional<string>,
+                var_shape: IndexElements, type: type,
+                initial_value: optional<any>);
+    Properties [symbol, symbol_visibility];
+    Implements [TosaOpInterface];
+    Assembly Custom;
+  }
+
+  op variable_write {
+    Doc "Assign a tensor to the symbol named by the name attribute.";
+    Operands   (input1: tensor<number>);
+    Attributes (name: SymbolName);
+    Implements [TosaOpInterface];
+    Assembly   { name attr-dict "," input1 ":" type(input1) }
+  }
+
+  op variable_read {
+    Doc "Read the tensor held by the symbol named by the name attribute.";
+    Results    (output1: tensor<number>);
+    Attributes (name: SymbolName);
+    Implements [TosaOpInterface];
+    Assembly   { name attr-dict ":" type(output1) }
+  }
+
+  // ---- 形状值的生产与消费 ----
+
+  op const_shape {
+    Doc "A constant shape payload; the result is a !tosa.shape value.";
+    Attributes (values: IndexElements);
+    Results    (output: shape_value);
+    Properties [constant_like, pure, shape_operator];
+    Implements [TosaOpInterface];
+    Assembly   { operands "values" "(" values ")"
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  op dim {
+    Doc "Extract one dimension size from a tensor as a rank-1 shape.";
+    Operands   (input1: tensor<number>);
+    Results    (output: shape_value);
+    Attributes (axis: i32);
+    Properties [pure, shape_operator];
+    Implements [TosaOpInterface];
+    Assembly   { operands "axis" "(" axis ")"
+                 attr-dict ":" functional-type(operands, results) }
+  }
+}

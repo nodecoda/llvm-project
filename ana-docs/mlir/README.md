@@ -3,23 +3,24 @@
 本目录有两个主题：
 
 - **A. 文本解析**（01–09）：`mlir/lib/AsmParser/` 如何把 MLIR 文本变成内存中的 IR。
-- **B. 声明层**（10–17）：`mlir/**/*.td` 如何通过 `include` 组成 ODS 依赖图，
+- **B. 声明层**（10–18）：`mlir/**/*.td` 如何通过 `include` 组成 ODS 依赖图，
   这张图如何经 `mlir-tblgen` 变成 `.inc` 再进入 C++，寄生在 TD 语法里的
   ODS 语义结构是什么样子（13 章给出两门可编译的语义文法），如果只描述
   方言领域本身、不描述代码生成这门定义语言应该长什么样（14 章），以及
   把真实方言当成源程序、从语料反推出可编译文法（15 章用 6 个方言归纳，
   16 章用 gpu/linalg/tensor 扩充到 9 个并加入谓词组合，17 章再用 5 个
-  形状差异更大的方言检验文法是否收敛）。
+  形状差异更大的方言检验文法是否收敛，18 章换问题：ODS 装不下的概念
+  落在 C++ 里，它还是不是领域事实）。
 
 - 分析基线：worktree `/home/ubuntu/llvm/trees/pr-ctpop`，分支 `research/mlir`。
-  01–09 基于 `5f7f36636abe`；10–17 基于 `53a80edfeb2e`（2026-11-27）。
+  01–09 基于 `5f7f36636abe`；10–18 基于 `53a80edfeb2e`（2026-11-27）。
 - 所有 `file:line` 引用均以对应提交为准；上游演进后行号可能漂移，函数名相对稳定。
 - 01–09 的范围以 `mlir/lib/AsmParser/` 为中心；为解释边界，少量引用
   `mlir/include/mlir/Parser/Parser.h`、`mlir/include/mlir/AsmParser/*`、
   `mlir/include/mlir/IR/OpImplementation.h` 与 `mlir/lib/Parser/Parser.cpp`。
-- 10–17 的范围是 `mlir/include`、`mlir/lib`、`mlir/python` 下的 412 个 `.td`
+- 10–18 的范围是 `mlir/include`、`mlir/lib`、`mlir/python` 下的 412 个 `.td`
   （不含 `mlir/test`、`mlir/examples`、`mlir/unittests`）；14 章的样例在
-  `sketch/`，15–17 章的语料在 `corpus/`，v1 归档在 `design-first-v1/`。
+  `sketch/`，15–18 章的语料在 `corpus/`，v1 归档在 `design-first-v1/`。
 
 ## 章节
 
@@ -42,6 +43,7 @@
 | [15-corpus-driven-grammar.md](15-corpus-driven-grammar.md) | 语料优先归纳文法：6 个方言源程序、词法三类关键字、子句×实体矩阵、本轮 47 条规则 / 98 条产生式、8 个由语料逼出的修正 |
 | [16-corpus-round-two.md](16-corpus-round-two.md) | 第二轮语料：gpu/linalg/tensor、oilist/custom/functional-type/region 注解/软关键字、谓词组合（列表=合取，`\|`=析取）、9 个方言 55 条规则 / 128 条产生式 |
 | [17-corpus-round-three.md](17-corpus-round-three.md) | 第三轮语料：memref/vector/affine/math/index，验证收敛（80 个 op 只换来 1 条新规则）、per-region 约束首个见证、`type` 作 custom 实参、14 个方言 56 条规则 / 130 条产生式 |
+| [18-corpus-round-four.md](18-corpus-round-four.md) | 第四轮语料：pdl_interp/tosa/shape/async/quant，五个“缺口判决”（ODS 落点、声明名=助记符、trait 列表实参、verifier 领域、推迟项）、属性值域、秩进类型、19 个方言 58 条规则 / 136 条产生式 |
 
 ## 一页结论
 
@@ -128,6 +130,20 @@
 22. **关键字只在起语法作用的位置是关键字**：`memref.global` 的部件名就叫
     `type`，`type,` 与 `type(` 靠 LR(1) lookahead 区分；软关键字思路在
     Assembly 模式里同样成立（17 章）。
+23. **“ODS 装不下”不等于“不是领域事实”**：`quant` 四个类型的文法全在
+    `TypeParser.cpp` 里手写，但它们仍是最纯粹的领域事实（存储/表达/比例/
+    零点）；`type_def` + `Assembly` 的存在理由就是这一类（18 章）。
+24. **很多“文法缺口”是用错了词**：`type_def Token` 照抄了 C++ 类名，
+    `int2 = array<i64>` 把长度编码进名字，`all_shapes_match([a, b])` 照抄了
+    容器的方括号；换成领域词，缺口就消失（18 章）。
+25. **约束挂载点看作用范围**：一个 schema 的所有实例同长就挂绑定注解
+    （`pad: array<i64> [cardinality(4)]`），不同实例长度不同就挂 op 事实；
+    与 17 章 per-region 约束同一条判据（18 章）。
+26. **值可以进类型**：`tensor<number, 4>`、`shape<2>` 比 `Tosa_Tensor4D`、
+    `Rank2TosaShape` 更直接——秩是值，不是另一个类型名（18 章）。
+27. **定义语言只描述“结构 + 文本 + 可陈述的事实”**：region 入口块参数与
+    操作数的解包关系是事实（`entry_args_unwrap`），不是语法位置；ODS 自己
+    也没有对应声明（18 章）。
 
 ## A 部分：`mlir/lib/AsmParser/` 文件职责
 
@@ -158,8 +174,8 @@
 | `ods-asm-format.y` | `assemblyFormat` 子语言文法（bison，0 冲突） |
 | `14-dialect-domain-model.md` | 领域模型：定义/生成边界、三投影、trait 分类、约束语义、schema refinement、v1 逐项判决 |
 | `15-corpus-driven-grammar.md` | 语料优先：方法论、语料统计、见证表、8 个修正、机械核对、与 v1/v2 差异、下一轮语料 |
-| `corpus/*.dialect` | 14 个方言源程序（1809 行）：199 op、19 schema、14 enum、8 constraint、1 attr_def、4 type_def |
-| `dialect-grammar.y` | 从语料归纳的文法（bison，56 条规则 / 130 条产生式，0 冲突，`14/14 parse OK`） |
+| `corpus/*.dialect` | 19 个方言源程序（3667 行）：346 op、54 schema、23 enum、29 constraint、10 attr_def、20 type_def |
+| `dialect-grammar.y` | 从语料归纳的文法（bison，58 条规则 / 136 条产生式，0 冲突，`19/19 parse OK`） |
 | `16-corpus-round-two.md` | 第二轮：10 项扩展、谓词组合、region 约束搬家、软关键字、见证表、机械核对 |
 | `corpus/gpu.dialect` | gpu：launch/module/func、内建 id/dim、barrier/printf/shuffle/all_reduce/subgroup_reduce/warp（18 op） |
 | `corpus/linalg.dialect` | linalg：`Structured` schema + 5 个命名算符 + generic/map/reduce/transpose/broadcast/index/yield（12 op） |
@@ -170,6 +186,12 @@
 | `corpus/affine.dialect` | affine：apply/min/max/for/parallel/if/load/store/prefetch/delinearize_index（11 op） |
 | `corpus/math.dialect` | math：15 个 op 收敛为 4 个 schema，复用 arith 的 FastMathFlags/RoundingMode |
 | `corpus/index.dialect` | index：全部 operand/result 都是 `index`，10 个二元 op 共用一个 schema（16 op） |
+| `18-corpus-round-four.md` | 第四轮：五个缺口判决、quant 的 C++ 落点、属性值域、秩进类型、约束挂载点判据、机械核对 |
+| `corpus/pdl_interp.dialect` | pdl_interp：谓词/分支/switch 基本块原语，20 个 `get_*`/`check_*` 由 4 个 schema 覆盖（39 op） |
+| `corpus/tosa.dialect` | tosa：属性密集（定长数组/枚举/属性包/符号名），`avg_pool2d` 与 `avg_pool2d_adaptive` 两种窗口形状（36 op） |
+| `corpus/shape.dialect` | shape：纯类型层，`witness` 证明值与 `assuming` 单块 region（40 op） |
+| `corpus/async.dialect` | async：六个自有类型（token/group/value/coro.*）与“值既是结果又是 region 入口”（29 op） |
+| `corpus/quant.dialect` | quant：4 个类型的文法全在 C++ 里，用 `type_def` + `Assembly` 收回；3 个 cast（3 op） |
 | `tools/dialect-corpus.py` | 语料统计与审计：子句×实体矩阵、Assembly 频次、region 注解、悬挂引用、死声明、C++ 泄漏检查（`custom<Hook>` 钩子名不算引用） |
 | `tools/dialect-lex.c` | 参考词法器（normal / assembly 两模式） |
 | `sketch/arith.dialect` | 领域描述样例：3 约束 + 4 schema + 8 op，无 C++/namespace/class |

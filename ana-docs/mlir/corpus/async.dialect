@@ -1,0 +1,278 @@
+/// async —— 异步执行：token/group/value 三类自有类型，以及"结果即 region 入口"的执行体。
+///
+/// 领域事实：
+///   - token 只表示完成，不携带数据；group 是创建时定长的集合，成员是 token 或
+///     value；value 携带一个尚未就绪的元素。三者的打印拼写是 token、group、
+///     value<元素类型>，其中元素类型是 value 唯一的类型参数。
+///   - execute 在同一个 op 里既有 value/token 操作数（body_operands），又有 value
+///     结果（body_results）；body region 的入口块参数是操作数解包后的元素：值从
+///     操作数进入 region，region 里 yield 原始元素，再经 op 结果包回 value。
+///   - await 是同步点：等到 token 时没有结果，等到 value 时解包出元素，结果类型
+///     由操作数类型导出，不独立写出。
+///   - 其余分三层：用户层（execute/func/call/return/yield）、组层
+///     （create_group/add_to_group/await_all）、下层（coro.* 与 runtime.*，为逐步
+///     降低到协程与运行时保留的显式 IR）。
+
+dialect async {
+  Doc "Asynchronous execution over tokens, values and groups.";
+
+  constraint value_or_token = value | token;
+  constraint any_async      = value | token | group;
+
+  type_def token {
+    Doc "async.token: becomes available when its producer finishes; carries nothing";
+  }
+
+  type_def group {
+    Doc "async.group: a set of tokens or values whose size is fixed at creation";
+  }
+
+  type_def value {
+    Doc "async.value: a future that will carry one element of the parameter type";
+    Parameters (value_type: any);
+    Assembly   { "<" value_type ">" }
+  }
+
+  type_def coro.id {
+    Doc "async.coro.id: identifies a switched-resume coroutine";
+  }
+
+  type_def coro.handle {
+    Doc "async.coro.handle: handle to a coroutine frame";
+  }
+
+  type_def coro.state {
+    Doc "async.coro.state: saved coroutine state consumed by suspension";
+  }
+
+  // 组操作的用户层与运行时层是同一形状，只有 assembly 里 attr-dict 的位置不同。
+  schema CreateGroup {
+    Operands (size: index);
+    Results  (result: group);
+    Assembly { size ":" type(result) attr-dict }
+  }
+
+  schema AddToGroup {
+    Operands (operand: value_or_token, group: group);
+    Results  (rank: index);
+    Assembly { operand "," group ":" type(operand) attr-dict }
+  }
+
+  // 加引用与减引用是同一件事的两个方向。
+  schema RefCount {
+    Operands   (operand: any_async);
+    Attributes (count: i64 [positive]);
+    Assembly   { operand "count" "=" count attr-dict ":" type(operand) }
+  }
+
+  // ---- 用户层 ----
+
+  op execute {
+    Doc "run a body region concurrently; entry waits for every dependency and the body entry block receives the unwrapped values";
+    Operands   (dependencies: variadic<token>,
+                body_operands: variadic<value_or_token>);
+    Results    (completion: token,
+                body_results: variadic<value>);
+    Regions    (body: region [single_block,
+                              implicit_terminator(yield),
+                              entry_args_unwrap(body_operands),
+                              yield_types_match(body_results)]);
+    Properties [recursive_effects, automatic_allocation_scope];
+    Implements [RegionBranchOpInterface];
+    Assembly Custom;
+  }
+
+  op func {
+    Doc "async function symbol; its results are a token and/or async values, never void";
+    Attributes (sym_name: string,
+                function_type: function_type,
+                sym_visibility: optional<string>,
+                arg_attrs: optional<array<dictionary>>,
+                res_attrs: optional<array<dictionary>>);
+    Regions    (body: region [single_block]);
+    Properties [symbol, isolated_from_above];
+    Implements [FunctionOpInterface];
+    Assembly Custom;
+  }
+
+  op call {
+    Doc "direct call to an async function in the same symbol scope";
+    Operands   (operands: variadic<any>);
+    Results    (results: variadic<value_or_token>);
+    Attributes (callee: flat_symbol_ref,
+                arg_attrs: optional<array<dictionary>>,
+                res_attrs: optional<array<dictionary>>);
+    Implements [CallOpInterface, SymbolUserOpInterface];
+    Assembly   { callee "(" operands ")"
+                 if arg_attrs { "arg_attrs" "=" arg_attrs }
+                 if res_attrs { "res_attrs" "=" res_attrs }
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  op return {
+    Doc "terminator of an async function; returns the unwrapped values";
+    Operands   (operands: variadic<any>);
+    Properties [pure, terminator, return_like, has_parent(func)];
+    Assembly   { attr-dict if operands { ":" type(operands) } }
+  }
+
+  op yield {
+    Doc "terminator of an execute body; yields the raw element values";
+    Operands   (operands: variadic<any>);
+    Properties [pure, terminator, return_like, has_parent(execute)];
+    Assembly   { if operands { operands ":" type(operands) } attr-dict }
+  }
+
+  op await {
+    Doc "block until a token is available, or unwrap the element of an async value";
+    Operands   (operand: value_or_token);
+    Results    (result: optional<any>);
+    Properties [unwraps_element_type(operand)];
+    // 钩子负责"token 不印结果类型、value 印解包后的元素类型"这段选择。
+    Assembly   { custom<AwaitResultType>(type(operand), type(result)) }
+  }
+
+  // ---- 组层 ----
+
+  op create_group from CreateGroup {
+    Doc "allocate an empty group of the given size";
+    Properties [pure];
+  }
+
+  op add_to_group from AddToGroup {
+    Doc "add a token or value to a group and return its rank, fixed for the group";
+  }
+
+  op await_all {
+    Doc "wait until every member of the group is available";
+    Operands (operand: group);
+    Assembly { operand attr-dict }
+  }
+
+  // ---- 协程层 ----
+
+  op coro.id {
+    Doc "produce a switched-resume coroutine identifier";
+    Results  (id: coro_id);
+    Assembly { attr-dict }
+  }
+
+  op coro.begin {
+    Doc "allocate the coroutine frame and return a handle to it";
+    Operands (id: coro_id);
+    Results  (handle: coro_handle);
+    Assembly { id attr-dict }
+  }
+
+  op coro.free {
+    Doc "deallocate the frame once the coroutine has ended";
+    Operands (id: coro_id, handle: coro_handle);
+    Assembly { id "," handle attr-dict }
+  }
+
+  op coro.end {
+    Doc "mark the end of the coroutine inside its suspend block";
+    Operands (handle: coro_handle);
+    Assembly { handle attr-dict }
+  }
+
+  op coro.save {
+    Doc "save the coroutine state before suspension";
+    Operands (handle: coro_handle);
+    Results  (state: coro_state);
+    Assembly { handle attr-dict }
+  }
+
+  op coro.suspend {
+    Doc "suspend, transferring control to the suspend, resume or cleanup successor";
+    Operands   (state: coro_state);
+    Successors (suspend_dest: successor, resume_dest: successor,
+                cleanup_dest: successor);
+    Properties [terminator];
+    Assembly   { state "," suspend_dest "," resume_dest "," cleanup_dest attr-dict }
+  }
+
+  // ---- 运行时层 ----
+
+  op runtime.create {
+    Doc "create a token or value in the non-ready state";
+    Results  (result: value_or_token);
+    Assembly { attr-dict ":" type(result) }
+  }
+
+  op runtime.create_group from CreateGroup {
+    Doc "create an empty runtime group of the given size";
+  }
+
+  op runtime.set_available {
+    Doc "switch a token or value to the available state";
+    Operands (operand: value_or_token);
+    Assembly { operand attr-dict ":" type(operand) }
+  }
+
+  op runtime.set_error {
+    Doc "switch a token or value to the error state";
+    Operands (operand: value_or_token);
+    Assembly { operand attr-dict ":" type(operand) }
+  }
+
+  op runtime.is_error {
+    Doc "report whether a token, value or group is in the error state";
+    Operands (operand: any_async);
+    Results  (is_error: i1);
+    Assembly { operand attr-dict ":" type(operand) }
+  }
+
+  op runtime.await {
+    Doc "block the calling thread until a token, value or group is available";
+    Operands (operand: any_async);
+    Assembly { operand attr-dict ":" type(operand) }
+  }
+
+  op runtime.resume {
+    Doc "resume the coroutine on a runtime-managed thread";
+    Operands (handle: coro_handle);
+    Assembly { handle attr-dict }
+  }
+
+  op runtime.await_and_resume {
+    Doc "await a token, value or group, then resume the coroutine on a runtime-managed thread";
+    Operands (operand: any_async, handle: coro_handle);
+    Assembly { operand "," handle attr-dict ":" type(operand) }
+  }
+
+  op runtime.store {
+    Doc "store a value into async value storage, whose element type it must match";
+    Operands   (value: any, storage: value);
+    Properties [element_type_matches(storage, value)];
+    Assembly   { value "," storage attr-dict ":" type(storage) }
+  }
+
+  op runtime.load {
+    Doc "load the element out of async value storage";
+    Operands   (storage: value);
+    Results    (result: any);
+    Properties [element_type_matches(storage, result)];
+    Assembly   { storage attr-dict ":" type(storage) }
+  }
+
+  op runtime.add_to_group from AddToGroup {
+    Doc "add a token or value to a runtime group and return its rank";
+    Assembly { operand "," group attr-dict ":" type(operand) }
+  }
+
+  op runtime.add_ref from RefCount {
+    Doc "add a reference to a token, value or group";
+  }
+
+  op runtime.drop_ref from RefCount {
+    Doc "drop a reference to a token, value or group";
+  }
+
+  op runtime.num_worker_threads {
+    Doc "read the number of worker threads in the runtime pool";
+    Results    (result: index);
+    Implements [InferTypeOpInterface];
+    Assembly   { attr-dict ":" type(result) }
+  }
+}

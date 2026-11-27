@@ -1,0 +1,450 @@
+/// pdl_interp —— PDL 模式的解释执行原语：把"匹配 + 重写"展开成基本块间的判别与分支。
+///
+/// 领域定位：
+///   - PDL 用声明式模式描述 IR；pdl_interp 是它降到解释器字节码前的低层形态，
+///     没有模式语法，只有"取一个部件、判一个条件、走一条边"的原语。
+///   - 一个 pattern 编译成 pdl_interp.func：matcher 函数（约定名 matcher）负责
+///     匹配，rewriters 模块（约定名 rewriters）里的函数负责重写。
+///   - 控制用基本块。谓词原语把"判定"和"二路分支"融进一个 op：成功走
+///     true_dest，失败走 false_dest；switch 原语把"取值"和"多路分派"融合，
+///     case 值与 case 后继按位置一一对应，都不命中走 default_dest。
+///   - 值域只有 PDL handle：!pdl.value / !pdl.attribute / !pdl.operation /
+///     !pdl.type 及其 range。"取不到"用 null 表示，所以取部件后要显式判空。
+///   - 索引与计数是非负 i32；record_match 的 benefit 是非负 i16，大的先试。
+///   - 匹配阶段无副作用，只有改写阶段（apply_rewrite/erase/replace 等）动 IR。
+///
+/// 只有领域事实：部件、约束、文本、语义。
+
+dialect pdl_interp {
+  Doc "Low-level interpreter primitives for matching and rewriting IR.";
+
+  // PDL handle 的四个单值种类，以及它们的序列。
+  constraint pdl_entity   = pdl.value | pdl.attribute | pdl.operation | pdl.type;
+  constraint pdl_sequence = pdl.range<value> | pdl.range<attribute> |
+                            pdl.range<operation> | pdl.range<type>;
+  constraint pdl_any      = pdl_entity | pdl_sequence;
+
+  // "单个 handle 或它的 range"是多数 get_* 的输入/输出形状。
+  constraint value_or_range = pdl.value | pdl.range<value>;
+  constraint type_or_range  = pdl.type | pdl.range<type>;
+
+  // ------------------------------------------------------------------
+  // 控制骨架
+  // ------------------------------------------------------------------
+
+  // 所有谓词原语的共同形状：两个后继，并终结所在块。
+  schema Predicate {
+    Doc "Fused predicate and two-way branch; the result picks one of two blocks.";
+    Successors (true_dest: successor, false_dest: successor);
+    Properties [terminator];
+  }
+
+  // 所有 switch 原语的共同形状：一个默认后继，外加与 case 值等长的后继组。
+  schema Switch {
+    Doc "Fused value selection and multi-way dispatch.";
+    Successors (default_dest: successor, cases: variadic<successor>);
+    Properties [terminator];
+  }
+
+  // 操作数计数与结果计数共用同一段文本，op 名区分看的是哪一侧。
+  schema CountCheck extends Predicate {
+    Doc "Compare an operation's operand or result count with a constant.";
+    Operands   (input_op: pdl.operation);
+    Attributes (count: i32 [non_negative], compare_at_least: bool = false);
+    Assembly   { "of" input_op "is"
+                 if compare_at_least { "at_least" }
+                 count attr-dict "->" successors }
+  }
+
+  schema CountSwitch extends Switch {
+    Doc "Dispatch on an operation's operand or result count.";
+    Operands   (input_op: pdl.operation);
+    Attributes (case_values: array<integer>);
+    Assembly   { "of" input_op "to" case_values
+                 "(" cases ")" attr-dict "->" default_dest }
+  }
+
+  // ------------------------------------------------------------------
+  // 谓词与分派
+  // ------------------------------------------------------------------
+
+  // 约束由外部注册、按名字查找；可返回任意多个 handle。
+  // is_negated 为真时交换成功/失败两条边的语义。
+  op apply_constraint from Predicate {
+    Doc "Apply a registered constraint to positional handles and branch on success.";
+    Operands   (args: variadic<pdl_any>);
+    Results    (results: variadic<pdl_any>);
+    Attributes (name: string, is_negated: bool = false);
+    Assembly   { name "(" args ":" type(args) ")"
+                 if is_negated { "is_negated" "=" is_negated }
+                 if results { ":" type(results) }
+                 attr-dict "->" successors }
+  }
+
+  // 两端必须同为单值或同为 range，且 handle 种类一致。
+  op are_equal from Predicate {
+    Doc "Check two handles, or two ranges, for equality.";
+    Operands   (lhs: pdl_any, rhs: pdl_any);
+    Properties [pure, same_type_operands];
+    Assembly   { lhs "," rhs ":" type(lhs) attr-dict
+                 "->" successors }
+  }
+
+  op check_attribute from Predicate {
+    Doc "Compare an attribute handle with a constant attribute.";
+    Operands   (attribute: pdl.attribute);
+    Attributes (constant_value: any);
+    Properties [pure];
+    Assembly   { attribute "is" constant_value attr-dict
+                 "->" successors }
+  }
+
+  op check_operand_count from CountCheck {
+    Doc "Branch on an operation's operand count.";
+  }
+
+  op check_operation_name from Predicate {
+    Doc "Compare an operation's name with a constant string.";
+    Operands   (input_op: pdl.operation);
+    Attributes (name: string);
+    Properties [pure];
+    Assembly   { "of" input_op "is" name attr-dict
+                 "->" successors }
+  }
+
+  op check_result_count from CountCheck {
+    Doc "Branch on an operation's result count.";
+  }
+
+  // 常量类型在文本里直接印成类型字面量；td 里的字段名是 type，
+  // 但 Assembly 模式中 type 是关键字，故按领域角色改叫 constant_type。
+  op check_type from Predicate {
+    Doc "Compare a type handle with a constant type.";
+    Operands   (value: pdl.type);
+    Attributes (constant_type: type);
+    Properties [pure];
+    Assembly   { value "is" constant_type attr-dict
+                 "->" successors }
+  }
+
+  op check_types from Predicate {
+    Doc "Compare a range of type handles with a constant list of types.";
+    Operands   (value: pdl.range<type>);
+    Attributes (types: array<type>);
+    Properties [pure];
+    Assembly   { value "are" types attr-dict "->" successors }
+  }
+
+  op is_not_null from Predicate {
+    Doc "Check that a handle or range is present rather than null.";
+    Operands   (value: pdl_any);
+    Properties [pure];
+    Assembly   { value ":" type(value) attr-dict
+                 "->" successors }
+  }
+
+  op switch_attribute from Switch {
+    Doc "Dispatch on an attribute handle against constant attributes.";
+    Operands   (attribute: pdl.attribute);
+    Attributes (case_values: array<any>);
+    Properties [pure];
+    Assembly   { attribute "to" case_values "(" cases ")"
+                 attr-dict "->" default_dest }
+  }
+
+  op switch_operand_count from CountSwitch {
+    Doc "Dispatch on an operation's operand count.";
+  }
+
+  op switch_operation_name from Switch {
+    Doc "Dispatch on an operation's name against constant strings.";
+    Operands   (input_op: pdl.operation);
+    Attributes (case_values: array<string>);
+    Properties [pure];
+    Assembly   { "of" input_op "to" case_values "(" cases ")"
+                 attr-dict "->" default_dest }
+  }
+
+  op switch_result_count from CountSwitch {
+    Doc "Dispatch on an operation's result count.";
+  }
+
+  op switch_type from Switch {
+    Doc "Dispatch on a type handle against constant types.";
+    Operands   (value: pdl.type);
+    Attributes (case_values: array<type>);
+    Properties [pure];
+    Assembly   { value "to" case_values "(" cases ")"
+                 attr-dict "->" default_dest }
+  }
+
+  // case 值是"类型序列的序列"：每个 case 自己是一组类型。
+  op switch_types from Switch {
+    Doc "Dispatch on a range of type handles against constant type lists.";
+    Operands   (value: pdl.range<type>);
+    Attributes (case_values: array<array<type>>);
+    Properties [pure];
+    Assembly   { value "to" case_values "(" cases ")"
+                 attr-dict "->" default_dest }
+  }
+
+  // ------------------------------------------------------------------
+  // 读取部件
+  // ------------------------------------------------------------------
+
+  op get_attribute {
+    Doc "Read a named attribute of an operation; null when absent.";
+    Operands   (input_op: pdl.operation);
+    Results    (attribute: pdl.attribute);
+    Attributes (name: string);
+    Properties [pure];
+    Assembly   { name "of" input_op attr-dict }
+  }
+
+  op get_attribute_type {
+    Doc "Get the type produced by an attribute.";
+    Operands   (value: pdl.attribute);
+    Results    (result: pdl.type);
+    Properties [pure];
+    Assembly   { "of" value attr-dict }
+  }
+
+  // range 输入时取第一个元素的定义者。
+  op get_defining_op {
+    Doc "Get the operation that defines a value, or the first value of a range.";
+    Operands   (value: value_or_range);
+    Results    (input_op: pdl.operation);
+    Properties [pure];
+    Assembly   { "of" value ":" type(value) attr-dict }
+  }
+
+  op get_operand {
+    Doc "Get one operand of an operation by index; null when out of range.";
+    Operands   (input_op: pdl.operation, index: i32);
+    Results    (value: pdl.value);
+    Properties [pure];
+    Assembly   { index "of" input_op attr-dict }
+  }
+
+  // 无索引时取全部操作数；期望单值但组大小不为 1 时得 null。
+  op get_operands {
+    Doc "Get one operand group of an operation, or all operands.";
+    Operands   (input_op: pdl.operation);
+    Results    (value: value_or_range);
+    Attributes (index: optional<i32>);
+    Properties [pure];
+    Assembly   { if index { index } "of" input_op
+                 ":" type(value) attr-dict }
+  }
+
+  op get_result {
+    Doc "Get one result of an operation by index; null when out of range.";
+    Operands   (input_op: pdl.operation, index: i32);
+    Results    (value: pdl.value);
+    Properties [pure];
+    Assembly   { index "of" input_op attr-dict }
+  }
+
+  op get_results {
+    Doc "Get one result group of an operation, or all results.";
+    Operands   (input_op: pdl.operation);
+    Results    (value: value_or_range);
+    Attributes (index: optional<i32>);
+    Properties [pure];
+    Assembly   { if index { index } "of" input_op
+                 ":" type(value) attr-dict }
+  }
+
+  // range 输入时取所有元素使用者的并集。
+  op get_users {
+    Doc "Get the operations that use a value, or the union over a range.";
+    Operands   (value: value_or_range);
+    Results    (operations: pdl.range<operation>);
+    Properties [pure];
+    Assembly   { "of" value ":" type(value) attr-dict }
+  }
+
+  // 单值进、单类型出；range 进、类型 range 出，输入与结果的元数一致。
+  op get_value_type {
+    Doc "Get the type of a value, or the types of a value range.";
+    Operands   (value: value_or_range);
+    Results    (result: type_or_range);
+    Properties [pure, matches_input_arity];
+    Assembly   { "of" value ":" type(result) attr-dict }
+  }
+
+  // range 的元素类型必须等于结果的类型；越界取到 null。
+  op extract {
+    Doc "Extract the element at an index from a range; null when out of range.";
+    Operands   (range: pdl_sequence, index: i32);
+    Results    (result: pdl_any);
+    Properties [pure, element_type_is_result_type];
+    Assembly   { index "of" range ":" type(result) attr-dict }
+  }
+
+  // ------------------------------------------------------------------
+  // 构造 handle
+  // ------------------------------------------------------------------
+
+  // 常量属性；后面的 attributes {..} 是剩余的属性字典。
+  op create_attribute {
+    Doc "Build a handle to a constant attribute.";
+    Attributes (value: attribute);
+    Results    (attribute: pdl.attribute);
+    Properties [pure];
+    Assembly   { value attr-dict-with-keyword }
+  }
+
+  op create_type {
+    Doc "Build a handle to a constant type.";
+    Attributes (value: type);
+    Results    (result: pdl.type);
+    Properties [pure];
+    Assembly   { value attr-dict }
+  }
+
+  op create_types {
+    Doc "Build a handle to a constant list of types.";
+    Attributes (value: array<type>);
+    Results    (result: pdl.range<type>);
+    Properties [pure];
+    Assembly   { value attr-dict }
+  }
+
+  // 三个 variadic 部件靠操作数分段属性区分：输入操作数、输入属性、结果类型。
+  // 输入属性与输入属性名按位置配对；inferred_result_types 时结果类型交给
+  // 目标 op 的类型推断，文本上以 <inferred> 代替结果类型列表。
+  // 结果钩子同时拿到结果类型列表本身、这些类型的文本，以及是否交给目标 op
+  // 推断。
+  op create_operation {
+    Doc "Create an operation from a name, operand handles, attribute handles and result types.";
+    Operands   (input_operands: variadic<value_or_range>,
+                input_attributes: variadic<pdl.attribute>,
+                input_result_types: variadic<type_or_range>);
+    Results    (result_op: pdl.operation);
+    Attributes (name: string,
+                input_attribute_names: array<string>,
+                inferred_result_types: bool = false);
+    Properties [operand_segments_by_attribute];
+    Assembly   { name
+                 if input_operands { "(" input_operands ":" type(input_operands) ")" }
+                 custom<CreateOperationOpAttributes>(input_attributes, input_attribute_names)
+                 custom<CreateOperationOpResults>(input_result_types,
+                                                  type(input_result_types),
+                                                  inferred_result_types)
+                 attr-dict }
+  }
+
+  // 实参可以是单值，也可以是与它有相同元素种类的 range；所有实参必须同种类。
+  // 文本分两种：实参非空时印 `实参 : 各自类型`；实参为空时只剩
+  // `: !pdl.range<种类>`，元素种类由结果类型给出。文法无法表达"实参为空"
+  // 这一条件（只能测部件存在），故此处记非空形态，空形态见 GAP 说明。
+  op create_range {
+    Doc "Build a range from handles sharing one element kind.";
+    Operands   (arguments: variadic<pdl_any>);
+    Results    (result: pdl.range<value> | pdl.range<type>);
+    Properties [pure];
+    // GAP: 空实参分支 —— 结果类型只在实参为空时印出。
+    Assembly   { if arguments { arguments ":" type(arguments) } attr-dict }
+  }
+
+  // ------------------------------------------------------------------
+  // 改写
+  // ------------------------------------------------------------------
+
+  // 重写器由外部注册、按名字查找；可返回 handle 供后续步骤使用。
+  op apply_rewrite {
+    Doc "Invoke a registered rewriter on positional handles; it may return handles.";
+    Operands   (args: variadic<pdl_any>);
+    Results    (results: variadic<pdl_any>);
+    Attributes (name: string);
+    Assembly   { name if args { "(" args ":" type(args) ")" }
+                 if results { ":" type(results) } attr-dict }
+  }
+
+  op erase {
+    Doc "Mark an operation as erased.";
+    Operands (input_op: pdl.operation);
+    Assembly { input_op attr-dict }
+  }
+
+  op replace {
+    Doc "Mark an operation as replaced by a list of value handles.";
+    Operands   (input_op: pdl.operation,
+                repl_values: variadic<value_or_range>);
+    Assembly   { input_op "with" " " "("
+                 if repl_values { repl_values ":" type(repl_values) } ")"
+                 attr-dict }
+  }
+
+  // 匹配成功时把元数据交给解释器：哪个重写器、benefit、参与匹配的 op 列表，
+  // 以及可选的根 op 名与本次新建的 op 名。随后跳到下一个 matcher 块。
+  op record_match {
+    Doc "Record a successful match and branch to the next matcher block.";
+    Operands   (inputs: variadic<pdl_any>,
+                matched_ops: variadic<pdl.operation>);
+    Attributes (rewriter: symbol_ref,
+                benefit: i16,
+                root_kind: optional<string>,
+                generated_ops: optional<array<string>>);
+    Successors (dest: successor);
+    Properties [terminator, operand_segments_by_attribute];
+    Assembly   { rewriter
+                 if inputs { "(" inputs ":" type(inputs) ")" }
+                 ":" "benefit" "(" benefit ")" ","
+                 if generated_ops { "generatedOps" "(" generated_ops ")" "," }
+                 "loc" "(" "[" matched_ops "]" ")"
+                 if root_kind { "," "root" "(" root_kind ")" }
+                 "->" dest }
+  }
+
+  // ------------------------------------------------------------------
+  // 函数与块间控制
+  // ------------------------------------------------------------------
+
+  op branch {
+    Doc "Unconditional branch to another matcher block.";
+    Successors (dest: successor);
+    Properties [pure, terminator];
+    Assembly   { dest attr-dict }
+  }
+
+  op finalize {
+    Doc "End a matcher or rewrite sequence.";
+    Properties [pure, terminator];
+    Assembly   { attr-dict }
+  }
+
+  // region 的入口块恰好有一个块参数，它就是本轮元素（与输入 range 的元素类型
+  // 相同）；每轮从块首执行到 continue，输入 range 随迭代被消耗，全部走完跳 next。
+  op foreach {
+    Doc "Iterate a range, running the region once per element until continue.";
+    Operands   (values: pdl_sequence);
+    Regions    (region: region);
+    Successors (next: successor);
+    Properties [terminator];
+    Assembly Custom;
+  }
+
+  op continue {
+    Doc "End the current iteration of the enclosing foreach.";
+    Properties [pure, terminator, has_parent(foreach)];
+    Assembly   { attr-dict }
+  }
+
+  // 函数体是至少一个块的 region；参数与返回类型都在 function_type 属性里，
+  // 函数体块参数对应这些参数。只有 matcher 与 rewriter 两类函数。
+  op func {
+    Doc "A callable interpreter function holding matcher or rewriter code.";
+    Attributes (sym_name: string,
+                function_type: function_type,
+                arg_attrs: optional<array<dictionary>>,
+                res_attrs: optional<array<dictionary>>,
+                sym_visibility: optional<string>);
+    // 至少一个块：与 single_block（恰好一块）同一根轴，用块数事实表达。
+    Regions    (body: region [min_blocks(1)]);
+    Properties [isolated_from_above, symbol];
+    Implements [FunctionOpInterface];
+    Assembly Custom;
+  }
+}

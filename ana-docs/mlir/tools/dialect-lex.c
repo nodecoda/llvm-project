@@ -106,6 +106,7 @@ static int asm_kw(const char *s) {
   if (!strcmp(s, "functional-type")) return A_FUNCTIONAL_TYPE;
   if (!strcmp(s, "oilist")) return A_OILIST;
   if (!strcmp(s, "custom")) return A_CUSTOM;
+  if (!strcmp(s, "successors")) return A_SUCCESSORS;
   return IDENT;
 }
 

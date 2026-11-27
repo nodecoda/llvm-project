@@ -1,0 +1,398 @@
+/// shape —— 纯类型层的形状推断：结果的载体是类型本身，不是数据。
+///
+/// 方言里几乎所有 result 都是 shape / size / witness 之一，operand 也多是
+/// 这些类型；真正的结果由 `->` 之后的类型后缀给出，运行时值只是陪衬。
+/// 三个领域重点：
+///   - 见证链：cstr_* 产出 witness，assuming_all 合取，assuming 消费；
+///   - 变长约束：多个 op 在语义上要求"一个到多个" shape，
+///     但语言的 variadic 只能表达零个或多个；
+///   - 单块 region：assuming 与 reduce 的 region 恰好一个 block，
+///     并分别以 assuming_yield / yield 隐式终止。
+
+dialect shape {
+  Doc "Type-level shape inference over shape, size, extent tensor and witness values.";
+
+  type_def shape {
+    Doc "An unranked or ranked shape whose extents are size values, or the invalid shape.";
+  }
+
+  type_def size {
+    Doc "A non-negative extent that can also be unknown or invalid.";
+  }
+
+  type_def value_shape {
+    Doc "A value paired with the shape it conforms to; either half may be unknown.";
+  }
+
+  type_def extent_tensor {
+    Doc "A rank-1 tensor of index extents; it cannot represent the invalid state.";
+  }
+
+  type_def witness {
+    Doc "A compile-time proof that runtime shape assertions hold; it carries no data.";
+  }
+
+  constraint shape_or_size     = shape | size;
+  constraint shape_or_extent   = shape | extent_tensor;
+  constraint size_or_index     = size | index;
+  constraint any_shape_or_size = size | index | shape | extent_tensor;
+  constraint any_shaped        = tensor | vector | memref;
+
+  /// 二元算术共用一份形状：两个 size-or-index，结果同域。
+  schema shape.SizeBinary {
+    Operands (lhs: size_or_index, rhs: size_or_index);
+    Results  (result: size_or_index);
+    Assembly { lhs "," rhs attr-dict ":" type(lhs) "," type(rhs) "->" type(result) }
+  }
+
+  /// 逐元素比较/合并共用一份形状：两个 shape-or-size，结果同域。
+  schema shape.ShapeBinary {
+    Operands (lhs: shape_or_size, rhs: shape_or_size);
+    Results  (result: shape_or_size);
+    Assembly { lhs "," rhs attr-dict ":" type(lhs) "," type(rhs) "->" type(result) }
+  }
+
+  /// 变长形状输入，产出 i1 谓词。
+  schema shape.Predicate {
+    Operands (shapes: variadic<shape_or_extent>);
+    Results  (result: i1);
+    Assembly { shapes attr-dict ":" type(shapes) }
+  }
+
+  /// 变长形状输入，产出见证。
+  schema shape.Constraint {
+    Operands (shapes: variadic<shape_or_extent>);
+    Results  (result: witness);
+    Assembly { shapes attr-dict ":" type(shapes) }
+  }
+
+  /// 变长形状输入，产出形状；用于 any。
+  schema shape.Combine {
+    Operands (shapes: variadic<shape_or_extent>);
+    Results  (result: shape_or_extent);
+    Assembly { shapes attr-dict ":" type(shapes) "->" type(result) }
+  }
+
+  /// 变长形状输入，可带一段错误说明；用于 broadcast。
+  schema shape.Broadcast {
+    Operands   (shapes: variadic<shape_or_extent>);
+    Attributes (error: optional<string>);
+    Results    (result: shape_or_extent);
+    Assembly   { shapes if error { "error" "=" error } attr-dict
+                 ":" type(shapes) "->" type(result) }
+  }
+
+  op add from shape.SizeBinary {
+    Doc "Adds two sizes or indices; an error operand propagates into the result.";
+    Properties [pure, commutative];
+    Implements [InferTypeOpInterface];
+  }
+
+  op broadcast from shape.Broadcast {
+    Doc "Broadcasts two or more shapes; the error attribute names the failure case.";
+    Properties [pure, commutative];
+  }
+
+  op const_shape {
+    Doc "A constant shape or extent tensor; the attribute holds one extent per rank.";
+    Attributes (shape: shape);
+    Results    (result: shape_or_extent);
+    Properties [pure, constant_like];
+    Implements [InferTypeOpInterface];
+    Assembly Custom;
+  }
+
+  op const_size {
+    Doc "A constant size, used both as a value and as a result name.";
+    Attributes (value: size);
+    Results    (result: size);
+    Properties [pure, constant_like];
+    Implements [OpAsmOpInterface];
+    Assembly   { value attr-dict }
+  }
+
+  op div from shape.SizeBinary {
+    Doc "Divides two sizes or indices, rounding toward negative infinity.";
+    Properties [pure];
+    Implements [InferTypeOpInterface];
+  }
+
+  op shape_eq from shape.Predicate {
+    Doc "Compares one or more shapes for equality; the invalid shape equals itself.";
+    Properties [pure, commutative];
+  }
+
+  op from_extents {
+    Doc "Builds a shape from dimensions; no operands means the rank-0 shape.";
+    Operands (extents: variadic<size_or_index>);
+    Results  (shape: shape);
+    Properties [pure];
+    Assembly { extents attr-dict ":" type(extents) }
+  }
+
+  op from_extent_tensor {
+    Doc "Builds a shape from an extent tensor; the rank is the tensor length.";
+    Operands (input: extent_tensor);
+    Results  (result: shape);
+    Properties [pure];
+    Assembly { input attr-dict ":" type(input) }
+  }
+
+  op is_broadcastable from shape.Predicate {
+    Doc "Tests whether the given shapes can be broadcast without error.";
+    Properties [commutative];
+  }
+
+  op rank {
+    Doc "Returns the number of extents of a shape or extent tensor.";
+    Operands (shape: shape_or_extent);
+    Results  (rank: size_or_index);
+    Properties [pure];
+    Implements [InferTypeOpInterface];
+    Assembly { shape attr-dict ":" type(shape) "->" type(rank) }
+  }
+
+  op to_extent_tensor {
+    Doc "Converts a shape to an extent tensor; an invalid shape is undefined here.";
+    Operands (input: shape_or_extent);
+    Results  (result: extent_tensor);
+    Properties [pure];
+    Implements [CastOpInterface];
+    Assembly { input attr-dict ":" type(input) "->" type(result) }
+  }
+
+  op dim {
+    Doc "Reads one extent from the shape of a shaped value.";
+    Operands (value: any_shaped, index: size_or_index);
+    Results  (extent: size_or_index);
+    Properties [pure];
+    Implements [InferTypeOpInterface];
+    Assembly { value "," index attr-dict
+               ":" type(value) "," type(index) "->" type(extent) }
+  }
+
+  op get_extent {
+    Doc "Reads one extent from a shape or extent tensor by dimension index.";
+    Operands (shape: shape_or_extent, dim: size_or_index);
+    Results  (extent: size_or_index);
+    Properties [pure];
+    Implements [InferTypeOpInterface];
+    Assembly { shape "," dim attr-dict
+               ":" type(shape) "," type(dim) "->" type(extent) }
+  }
+
+  op index_to_size {
+    Doc "Promotes an index to a size; negative indices are undefined.";
+    Operands (arg: index);
+    Results  (result: size);
+    Properties [pure];
+    Assembly { arg attr-dict }
+  }
+
+  op max from shape.ShapeBinary {
+    Doc "Elementwise maximum of two sizes or of two equal-rank shapes.";
+    Properties [pure, commutative];
+    Implements [InferTypeOpInterface];
+  }
+
+  op meet {
+    Doc "Keeps the least general shape or size, asserting static extents match.";
+    Operands   (arg0: any_shape_or_size, arg1: any_shape_or_size);
+    Attributes (error: optional<string>);
+    Results    (result: any_shape_or_size);
+    Properties [commutative];
+    Implements [InferTypeOpInterface];
+    Assembly   { arg0 "," arg1 if error { "," "error" "=" error } attr-dict
+                 ":" type(arg0) "," type(arg1) "->" type(result) }
+  }
+
+  op min from shape.ShapeBinary {
+    Doc "Elementwise minimum of two sizes or of two equal-rank shapes.";
+    Properties [pure, commutative];
+    Implements [InferTypeOpInterface];
+  }
+
+  op mul from shape.SizeBinary {
+    Doc "Multiplies two sizes or indices; an error operand propagates into the result.";
+    Properties [pure, commutative];
+    Implements [InferTypeOpInterface];
+  }
+
+  op num_elements {
+    Doc "Returns the product of the extents of a shape or extent tensor.";
+    Operands (shape: shape_or_extent);
+    Results  (result: size_or_index);
+    Properties [pure];
+    Implements [InferTypeOpInterface];
+    Assembly { shape attr-dict ":" type(shape) "->" type(result) }
+  }
+
+  op reduce {
+    Doc "Folds a shape extent by extent through a one-block region.";
+    Operands (shape: shape_or_extent, init_vals: variadic<any>);
+    Results  (result: variadic<any>);
+    Regions  (region: region [single_block]);
+    Properties [implicit_terminator(yield)];
+    Assembly Custom;
+  }
+
+  op shape_of {
+    Doc "Returns the shape of a shaped value or of a value_shape.";
+    Operands (arg: any_shaped | value_shape);
+    Results  (result: shape_or_extent);
+    Properties [pure];
+    Implements [InferTypeOpInterface];
+    Assembly { arg attr-dict ":" type(arg) "->" type(result) }
+  }
+
+  op value_of {
+    Doc "Extracts the value half of a value_shape.";
+    Operands (arg: value_shape);
+    Results  (result: any_shaped);
+    Properties [pure];
+    Assembly { arg attr-dict ":" type(result) }
+  }
+
+  op size_to_index {
+    Doc "Demotes a size to an index; unknown and invalid sizes are undefined.";
+    Operands (arg: size_or_index);
+    Results  (result: index);
+    Properties [pure];
+    Implements [CastOpInterface];
+    Assembly { arg attr-dict ":" type(arg) }
+  }
+
+  op value_as_shape {
+    Doc "Reads a rank-1 tensor of signless integers or indices as a shape.";
+    Operands (arg: tensor<integer | index> | value_shape);
+    Results  (result: shape_or_extent);
+    Properties [pure];
+    Assembly { arg attr-dict ":" type(arg) "->" type(result) }
+  }
+
+  op with_shape {
+    Doc "Builds a value_shape from a value and the shape it should conform to.";
+    Operands (operand: any_shaped | value_shape, shape: shape_or_extent);
+    Results  (result: value_shape);
+    Properties [pure];
+    Assembly { operand "," shape attr-dict
+               ":" type(operand) "," type(shape) }
+  }
+
+  op yield {
+    Doc "Returns reduction values to the enclosing reduce or function_library.";
+    Operands   (operands: variadic<any>);
+    Properties [pure, terminator, return_like,
+                has_parent(reduce) | has_parent(function_library)];
+    Assembly   { attr-dict if operands { ":" type(operands) } }
+  }
+
+  op debug_print {
+    Doc "Passes a shape or size through after printing it; test-only.";
+    Operands (input: shape_or_size);
+    Results  (output: shape_or_size);
+  }
+
+  op split_at {
+    Doc "Splits a shape at a dimension index into head and tail; negative counts from the back.";
+    Operands (operand: shape_or_extent, index: size_or_index);
+    Results  (head: shape_or_extent, tail: shape_or_extent);
+    Properties [pure];
+  }
+
+  op concat {
+    Doc "Concatenates two shapes, lhs extents first.";
+    Operands (lhs: shape_or_extent, rhs: shape_or_extent);
+    Results  (result: shape_or_extent);
+    Properties [pure];
+    Assembly { lhs "," rhs attr-dict
+               ":" type(lhs) "," type(rhs) "->" type(result) }
+  }
+
+  op any from shape.Combine {
+    Doc "Returns some combination of the input extents; undefined when they disagree.";
+    Properties [pure, commutative];
+  }
+
+  op assuming_all {
+    Doc "Conjoins witnesses; any single failing witness fails the result.";
+    Operands (inputs: variadic<witness>);
+    Results  (result: witness);
+    Properties [pure, commutative];
+    Assembly { inputs attr-dict }
+  }
+
+  op assuming {
+    Doc "Runs a one-block region under the assumption that a witness holds.";
+    Operands (witness: witness);
+    Results  (results: variadic<any>);
+    Regions  (do_region: region [single_block]);
+    Properties [recursive_effects, implicit_terminator(assuming_yield)];
+    Implements [RegionBranchOpInterface];
+    Assembly Custom;
+  }
+
+  op assuming_yield {
+    Doc "Returns the values of an assuming region to its parent.";
+    Operands   (operands: variadic<any>);
+    Properties [pure, terminator, return_like, has_parent(assuming)];
+    Assembly   { attr-dict if operands { ":" type(operands) } }
+  }
+
+  op cstr_broadcastable from shape.Constraint {
+    Doc "Asserts that the given shapes broadcast, returning a witness.";
+    Properties [commutative];
+  }
+
+  op cstr_eq from shape.Constraint {
+    Doc "Asserts that all given shapes are equal, returning a witness.";
+    Properties [commutative];
+  }
+
+  op const_witness {
+    Doc "A statically known witness, passing or failing.";
+    Attributes (passing: bool);
+    Results    (result: witness);
+    Properties [pure, constant_like];
+    Assembly   { passing attr-dict }
+  }
+
+  op cstr_require {
+    Doc "Asserts an arbitrary i1 predicate and attaches a message for users.";
+    Operands   (pred: i1);
+    Attributes (msg: string);
+    Results    (result: witness);
+    Assembly   { pred "," msg attr-dict }
+  }
+
+  op function_library {
+    Doc "A symbol table of shape functions plus the mapping from ops to them.";
+    Attributes (sym_name: string, sym_visibility: optional<string>,
+                mapping: dict);
+    Regions    (body: region [single_block]);
+    Properties [affine_scope, isolated_from_above, no_region_args,
+                symbol_table, symbol, symbol_visibility, no_terminator];
+    Implements [OpAsmOpInterface];
+    Assembly Custom;
+  }
+
+  op func {
+    Doc "A shape transfer function with one SSACFG region.";
+    Attributes (sym_name: string, function_type: function_type,
+                arg_attrs: optional<array<dict>>,
+                res_attrs: optional<array<dict>>,
+                sym_visibility: optional<string>);
+    Regions    (body: region);
+    Properties [affine_scope, automatic_allocation_scope, isolated_from_above,
+                symbol, symbol_visibility, function_interface];
+    Implements [FunctionOpInterface, OpAsmOpInterface];
+    Assembly Custom;
+  }
+
+  op return {
+    Doc "Returns from a shape function.";
+    Operands   (operands: variadic<any>);
+    Properties [pure, terminator, return_like, has_parent(func)];
+    Assembly   { attr-dict if operands { ":" type(operands) } }
+  }
+}
