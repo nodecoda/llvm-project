@@ -1,0 +1,157 @@
+/// irdl —— IR Definition Language：用 IR 描述方言本身。
+///
+/// 领域特点：所有约束求值都产出 `!irdl.attribute` 句柄，region 约束额外产出
+/// `!irdl.region`。符号体（dialect/type/attribute/operation）都是单块 region，
+/// 文本只打印名字与关键字，块体交给 `SingleBlockRegion` 钩子。
+///
+/// 本文件把两个句柄类型命名为 `irdl_attr` / `irdl_region`（打印名分别是
+/// `!irdl.attribute` / `!irdl.region`），避免遮蔽内建的 `attribute`/`region`。
+
+dialect irdl {
+  Doc "A dialect for defining dialects at runtime.";
+
+  type_def irdl_attr {
+    Doc "Handle to an attribute value (prints !irdl.attribute).";
+  }
+  type_def irdl_region {
+    Doc "Handle to a region constraint (prints !irdl.region).";
+  }
+
+  op dialect {
+    Doc "Define a dialect; body is the symbol table of its definitions.";
+    Attributes (sym_name: string, sym_visibility: optional<string>);
+    Regions    (body: region [single_block]);
+    Properties [isolated_from_above, no_terminator, symbol, symbol_visibility,
+                symbol_table];
+    Assembly   { if sym_visibility { sym_visibility } sym_name
+                 attr-dict-with-keyword custom<SingleBlockRegion>(body) }
+  }
+
+  op type {
+    Doc "Define a type inside a dialect.";
+    Attributes (sym_name: string, sym_visibility: optional<string>);
+    Regions    (body: region [single_block]);
+    Properties [has_parent(dialect), isolated_from_above, no_region_args,
+                no_terminator, symbol, symbol_visibility];
+    Assembly   { if sym_visibility { sym_visibility } sym_name
+                 attr-dict-with-keyword custom<SingleBlockRegion>(body) }
+  }
+
+  op attribute {
+    Doc "Define an attribute inside a dialect.";
+    Attributes (sym_name: string, sym_visibility: optional<string>);
+    Regions    (body: region [single_block]);
+    Properties [has_parent(dialect), isolated_from_above, no_region_args,
+                no_terminator, symbol, symbol_visibility];
+    Assembly   { if sym_visibility { sym_visibility } sym_name
+                 attr-dict-with-keyword custom<SingleBlockRegion>(body) }
+  }
+
+  op operation {
+    Doc "Define an operation inside a dialect.";
+    Attributes (sym_name: string, sym_visibility: optional<string>);
+    Regions    (body: region [single_block]);
+    Properties [has_parent(dialect), isolated_from_above, no_region_args,
+                no_terminator, symbol, symbol_visibility];
+    Assembly   { if sym_visibility { sym_visibility } sym_name
+                 attr-dict-with-keyword custom<SingleBlockRegion>(body) }
+  }
+
+  op parameters {
+    Doc "Constrain the parameters of the enclosing type or attribute.";
+    Operands   (args: variadic<irdl_attr>);
+    Attributes (names: array<string>);
+    Assembly   { custom<NamedValueList>(args, names) attr-dict }
+  }
+
+  op operands {
+    Doc "Constrain the operands of the enclosing operation, with variadicity.";
+    Operands   (args: variadic<irdl_attr>);
+    Attributes (names: array<string>, variadicity: array<integer>);
+    Assembly   { custom<NamedValueListWithVariadicity>(args, names, variadicity)
+                 attr-dict }
+  }
+
+  op results {
+    Doc "Constrain the results of the enclosing operation, with variadicity.";
+    Operands   (args: variadic<irdl_attr>);
+    Attributes (names: array<string>, variadicity: array<integer>);
+    Assembly   { custom<NamedValueListWithVariadicity>(args, names, variadicity)
+                 attr-dict }
+  }
+
+  op attributes {
+    Doc "Constrain the attributes of the enclosing operation.";
+    Operands   (attributeValues: variadic<irdl_attr>);
+    Attributes (attributeValueNames: array<string>);
+    Assembly   { custom<AttributesOp>(attributeValues, attributeValueNames)
+                 attr-dict }
+  }
+
+  op region {
+    Doc "Describe one region: entry-block constraints and a block count.";
+    Operands   (entryBlockArgs: variadic<irdl_attr>);
+    Attributes (numberOfBlocks: optional<i32>,
+                constrainedArguments: optional<unit>);
+    Results    (output: irdl_region);
+    Assembly   { if constrainedArguments { "(" entryBlockArgs ")" }
+                 if numberOfBlocks { " with size" numberOfBlocks } attr-dict }
+  }
+
+  op regions {
+    Doc "Constrain the regions of the enclosing operation.";
+    Operands   (args: variadic<irdl_region>);
+    Attributes (names: array<string>);
+    Assembly   { custom<NamedValueList>(args, names) attr-dict }
+  }
+
+  op is {
+    Doc "Constrain a handle to be exactly one attribute value.";
+    Attributes (expected: attribute);
+    Results    (output: irdl_attr);
+    Assembly   { expected " " attr-dict }
+  }
+
+  op base {
+    Doc "Constrain a handle to a named base attribute or type.";
+    Attributes (base_ref: optional<symbol_ref>, base_name: optional<string>);
+    Results    (output: irdl_attr);
+    Assembly   { if base_ref { base_ref } if base_name { base_name }
+                 " " attr-dict }
+  }
+
+  op parametric {
+    Doc "Apply a base type or attribute to parameter constraints.";
+    Operands   (args: variadic<irdl_attr>);
+    Attributes (base_type: symbol_ref);
+    Results    (output: irdl_attr);
+    Assembly   { base_type "<" args ">" " " attr-dict }
+  }
+
+  op any {
+    Doc "Constraint satisfied by any attribute.";
+    Results    (output: irdl_attr);
+    Assembly   { attr-dict }
+  }
+
+  op any_of {
+    Doc "Union of the given constraints.";
+    Operands   (args: variadic<irdl_attr>);
+    Results    (output: irdl_attr);
+    Assembly   { "(" args ")" " " attr-dict }
+  }
+
+  op all_of {
+    Doc "Intersection of the given constraints.";
+    Operands   (args: variadic<irdl_attr>);
+    Results    (output: irdl_attr);
+    Assembly   { "(" args ")" " " attr-dict }
+  }
+
+  op c_pred {
+    Doc "Constraint written as a C++ predicate string.";
+    Attributes (pred: string);
+    Results    (output: irdl_attr);
+    Assembly   { pred " " attr-dict }
+  }
+}

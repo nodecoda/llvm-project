@@ -12,9 +12,9 @@
  *   - 名字允许 `.`（词法器折进同一个 IDENT），`reduce.return` 无需转义；
  *   - 声明关键字是软关键字：`name` 也接受它们，因为 gpu.all_reduce 的
  *     属性就叫 `op`；
- *   - `type`/`if`/`attr-dict`/`attr-dict-with-keyword`/`functional-type`/
- *     `oilist`/`custom` 只在 Assembly 模式里是关键字，所以 `op if`、
- *     `type_def type` 在普通模式里都合法；
+ *   - `type`/`if`/`attr-dict`/`attr-dict-with-keyword`/`prop-dict`/
+ *     `functional-type`/`oilist`/`custom` 只在 Assembly 模式里是关键字，
+ *     所以 `op if`、`type_def type` 在普通模式里都合法；
  *   - 谓词：列表是合取，`|` 是析取，没有 `and`/`not`。
  *
  * 验证：bison -Wall -Wcounterexamples dialect-grammar.y
@@ -37,7 +37,7 @@
 %token KW_GENERIC
 
 /* Assembly 模式 */
-%token A_ATTR_DICT A_ATTR_DICT_WITH_KEYWORD A_TYPE A_IF
+%token A_ATTR_DICT A_ATTR_DICT_WITH_KEYWORD A_PROP_DICT A_TYPE A_IF
 %token A_FUNCTIONAL_TYPE A_QUALIFIED A_OILIST A_CUSTOM A_SUCCESSORS
 %token A_GAP
 
@@ -310,6 +310,7 @@ asm_element
   | IDENT                        /* 引用一个已声明的部件 */
   | A_ATTR_DICT                  /* 剩余属性集合，输出为 {..} */
   | A_ATTR_DICT_WITH_KEYWORD     /* 剩余属性集合，输出为 attributes {..} */
+  | A_PROP_DICT                  /* 固有属性（properties），输出为 <{..}> */
   | A_TYPE L_PAREN IDENT R_PAREN /* 打印某个部件的类型 */
   | A_QUALIFIED L_PAREN A_TYPE L_PAREN IDENT R_PAREN R_PAREN
                                  /* qualified(type(x))：强制带方言前缀打印 */

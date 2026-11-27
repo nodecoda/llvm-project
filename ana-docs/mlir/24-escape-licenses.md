@@ -3,7 +3,7 @@
 > 配套：`tools/escape-audit.py`（L0–L6，失败退出 1）、
 > `tools/gap-registry.tsv`、`tools/fact-glossary.tsv`、`tools/hook-registry.tsv`；
 > 文法：`dialect-grammar.y` 的 `Gap(name)`；上位规则见 [19 章](19-escape-hatches.md)。
-> 语料：31 个方言、1036 个 op。
+> 语料：39 个方言、1171 个 op（本章数字随语料更新；历史数字见各轮章节）。
 
 ## 0. 19 章留下了什么口子
 
@@ -105,18 +105,23 @@ L1/L2 的判据来自上游，不来自语料，所以它们不会"自证"。这
 它把这种状态从"偷偷用 Custom"变成一条有名字的债务。
 
 `tools/gap-registry.tsv` 四列：`gap`、`witness`（哪些 op）、`missing`（缺什么）、
-`status`。当前 4 条、9 个 op：
+`status`。本轮关掉一条（`prop_dict`），当前 3 条、6 个 op：
 
 | gap | 见证 | 缺的构造 | 关闭方式 |
 | --- | --- | --- | --- |
-| `prop_dict` | `emitc.call_opaque`、`emitc.member_call_opaque`、`func.call` | `prop-dict` 在文本中的位置 | 加 `A_PROP_DICT` 指令 |
 | `optional_default` | amdgpu 3 个 packed op | `($x^):("undef")?`：缺省时打印固定字面量 | 给 `if` 加 `else "literal"` |
 | `ref_type` | `cf.switch`、`pdl_interp.create_range` | `ref(type($x))` 作为钩子实参 | 加 `ref(type(x))` 产生式 |
 | `oilist_separator` | `func.call_indirect` | `oilist<sep>(...)` 的分隔符 | 给 `oilist` 加首参 |
 
-四条都是**由真实 op 逼出来的**，符合"先写源程序，文法跟不上才是新产生式的
+三条都是**由真实 op 逼出来的**，符合"先写源程序，文法跟不上才是新产生式的
 合法来源"。L4 保证缺口不会被悄悄扩大：新增一个 `Gap(foo)` 而没登记，
 工具直接失败；登记表里的见证和语料不一致，也失败。
+
+关闭一条缺口就走同一条路：新语料的 XeGPU/NVGPU/XeVM 共 23 个 op 的格式里
+有 `prop-dict`，它的位置逐 op 不同（都在操作数之后、`attr-dict` 之前），
+证据足够，于是给文法加 `A_PROP_DICT` 产生式，把三条 `Gap(prop_dict)` 改写成
+`prop-dict`，再删登记表里的那一行。缺口不是被预算挤掉的，是被语料补上的；
+预算 6 / 12 让剩下的三条继续有界。
 
 预算把缺口限制在可关闭的规模：`named gaps <= 12`，当前 9。
 
@@ -125,13 +130,14 @@ L1/L2 的判据来自上游，不来自语料，所以它们不会"自证"。这
 | 指标 | 当前 | 红线 | 说明 |
 | --- | --- | --- | --- |
 | 无文本通道的 op | 0 | 0 | 每个 op 都交代了文本来源 |
-| `Custom` 占 op 比 | 66/1036 = 6.4% | 25% | 过高说明块格式表达力不足 |
-| 具名缺口 | 9 | 12 | 每个缺口都有登记与见证 |
+| `Custom` 占 op 比 | 67/1171 = 5.7% | 25% | 过高说明块格式表达力不足 |
+| 具名缺口 | 6 | 12 | 每个缺口都有登记与见证 |
 | 单次使用的本地事实 | 7/20 = 35% | 50% | 事实不能退化成注释 |
 | 设计分歧（block vs 上游 custom/generic） | 22 | 30 | 见 §7 |
 
-`Custom` 从 19 章的 75/692 = 11% 降到 6.4%，不是删了 op，而是 16 处假 Custom
-被拆成 7 个块格式和 9 个具名缺口。
+`Custom` 从 19 章的 75/692 = 11% 降到 5.7%，不是删了 op，而是 16 处假 Custom
+被拆成 7 个块格式和 9 个具名缺口；随后 `prop_dict` 那 9 个见证里 3 个改写成
+新产生式，另外 20 个新 op 直接用了 `prop-dict`，缺口总数降到 6。
 
 ## 7. 设计分歧不是逃逸
 
@@ -171,7 +177,7 @@ Assembly { condition if branch_weights { "weights" "(" branch_weights ")" } ","
 
 ```bash
 cd ana-docs/mlir
-bison -Wall -Wcounterexamples -Werror -o /tmp/dg.c dialect-grammar.y   # 58 规则 / 141 产生式 / 0 冲突
+bison -Wall -Wcounterexamples -Werror -o /tmp/dg.c dialect-grammar.y   # 58 规则 / 142 产生式 / 0 冲突
 python3 tools/dialect-corpus.py        # 四段审计 + gap 计数
 python3 tools/dialect-coverage.py      # 覆盖缺口必须为 0
 python3 tools/escape-audit.py          # L0–L6；失败退出 1

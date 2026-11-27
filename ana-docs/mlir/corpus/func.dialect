@@ -8,7 +8,7 @@ dialect func {
     Results    (results: variadic<any>);
     Attributes (callee: symbol_ref);
     Implements [CallOpInterface, SymbolUserOpInterface];
-    Assembly   { Gap(prop_dict) callee "(" operands ")" attr-dict ":"
+    Assembly   { callee "(" operands ")" prop-dict attr-dict ":"
                functional-type(operands, results) }
   }
 

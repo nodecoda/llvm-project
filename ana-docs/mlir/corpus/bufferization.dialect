@@ -1,0 +1,97 @@
+/// bufferization —— tensor 与 buffer 之间的材料化锚点。
+///
+/// 领域：本方言不做计算，只给 bufferization 过程提供锚点。alloc_tensor 开启
+/// 一条新的 tensor SSA 链（bufferize 后不与任何既有 buffer 别名）；to_tensor /
+/// to_buffer 在 tensor 与 buffer 之间搬运；materialize_in_destination 把 source
+/// 写入 dest（tensor 或 memref）并可选地返回更新后的 tensor；clone 复制一个
+/// buffer；dealloc_tensor / dealloc 释放所有权（后者按条件与保留集合判断）。
+/// 全部 op 围绕 TensorLikeTypeInterface 与 BufferLikeTypeInterface 两个类型族。
+///
+/// 文本通道：7 个 op 中 1 个 Custom（alloc_tensor 上游有手写打印器），
+/// 6 个块格式。dealloc 的两个可选组都以变长操作数为锚点，条件集合只在
+/// 第一组里出现。
+///
+/// 事实：operand_segments_by_attribute（AttrSizedOperandSegments）、
+/// memory_effect（Arg/Res 上的 MemRead/MemWrite/MemAlloc）、pure（Pure）、
+/// destination_style（DestinationStyleOpInterface）、
+/// element_type_matches（AllElementTypesMatch）、
+/// same_variadic_operand_size（dealloc 的 verifier 要求 memrefs 与 conditions
+/// 等长）。没有 trait 依据的事实一律不写。
+
+dialect bufferization {
+  Doc "Materialization anchors between tensors and buffers: allocation, copy, materialization, and deallocation.";
+
+  constraint tensor_like = tensor;
+  constraint buffer_like = memref;
+
+  op alloc_tensor {
+    Doc "Uninitialized tensor of a given shape, bufferizing to a fresh allocation; the optional copy supplies contents, size_hint gives a sparse element bound, and dynamic_sizes only apply to ranked results. Operand groups are sized by an attribute.";
+    Operands   (dynamic_sizes: variadic<index>,
+                copy: optional<tensor_like>,
+                size_hint: optional<index>);
+    Results    (result: tensor_like);
+    Attributes (memory_space: optional<attribute>);
+    Properties [operand_segments_by_attribute];
+    Assembly   Custom;
+  }
+
+  op clone {
+    Doc "Copy a buffer-like value; the result may alias the input, so mutating either after the clone is undefined. Reads the input and writes plus allocates the output.";
+    Operands   (input: buffer_like);
+    Results    (output: buffer_like);
+    Properties [memory_effect(read), memory_effect(write), memory_effect(allocate)];
+    Assembly   { input attr-dict ":" type(input) "to" type(output) }
+  }
+
+  op materialize_in_destination {
+    Doc "Guarantee that source materializes in dest; with a tensor dest the updated tensor is returned, with a memref dest there is no result. restrict and writable are unit attributes that only make sense for buffer destinations.";
+    Operands   (source: tensor, dest: tensor | memref);
+    Results    (result: optional<tensor>);
+    Attributes (restrict: optional<unit>, writable: optional<unit>);
+    Properties [destination_style, element_type_matches(source, dest)];
+    Assembly   { source "in" if restrict { "restrict" restrict }
+                 if writable { "writable" writable } dest attr-dict
+                 ":" functional-type(operands, results) }
+  }
+
+  op dealloc_tensor {
+    Doc "Release the underlying storage format of a tensor; it has no results.";
+    Operands   (tensor: tensor);
+    Assembly   { tensor attr-dict ":" type(tensor) }
+  }
+
+  op to_tensor {
+    Doc "Create a tensor from a buffer-like value; shapes and element types must match. restrict claims this is the only tensor view of the memref, writable makes writes through the tensor legal.";
+    Operands   (buffer: buffer_like);
+    Results    (result: tensor_like);
+    Attributes (restrict: optional<unit>, writable: optional<unit>);
+    Properties [memory_effect(read)];
+    Assembly   { buffer if restrict { "restrict" restrict }
+                 if writable { "writable" writable } attr-dict
+                 ":" type(buffer) "to" type(result) }
+  }
+
+  op to_buffer {
+    Doc "Return the future buffer of a tensor; read_only promises the returned buffer and its aliases will not be written.";
+    Operands   (tensor: tensor_like);
+    Results    (buffer: buffer_like);
+    Attributes (read_only: optional<unit>);
+    Properties [pure];
+    Assembly   { tensor if read_only { "read_only" read_only } attr-dict
+                 ":" type(tensor) "to" type(buffer) }
+  }
+
+  op dealloc {
+    Doc "Deallocate each memref that has no alias in retained and whose condition is set; returns one updated condition per retained memref. The two optional groups are anchored on memrefs and retained respectively, and memrefs and conditions must have equal lengths.";
+    Operands   (memrefs: variadic<buffer_like>,
+                conditions: variadic<i1>,
+                retained: variadic<buffer_like>);
+    Results    (updatedConditions: variadic<i1>);
+    Properties [operand_segments_by_attribute,
+                same_variadic_operand_size(memrefs, conditions)];
+    Assembly   { if memrefs { "(" memrefs ":" type(memrefs) ")"
+                              "if" "(" conditions ")" }
+                 if retained { "retain" "(" retained ":" type(retained) ")" }
+                 attr-dict }
+  }
+}

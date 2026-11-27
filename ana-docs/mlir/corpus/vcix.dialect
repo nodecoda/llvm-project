@@ -1,0 +1,43 @@
+/// vcix —— SiFive 向量协处理器接口：两个指令族，文本全部交给通用格式。
+///
+/// 领域：VCIX 让 RISC-V 核通过一组 `sf.vc.v.*` 指令调用协处理器。本方言的
+/// 两条 op 对应两个族：
+///   - v.iv：第二操作数是立即数（sf.vc.v.iv）；
+///   - v.sv：第二操作数是向量、整型标量或浮点标量（sf.vc.v.vv/.xv/.fv）。
+/// 两条都带 32/64 位的 opcode 立即数属性，宽度随目标 xlen 选择；vl 是可选的
+/// 向量长度操作数。
+///
+/// 文本通道：上游两条 op 既没有 assemblyFormat，也没有手写打印器，因此
+/// 都是 `Assembly Generic;`。opcode 与 imm 是属性，vs2/op/vl 是操作数；
+/// 通用格式按 ODS 槽位顺序打印，本语法不应该为它发明块格式。
+///
+/// 类型：LLVM_AnyVector 与 VCIX_VectorOrScalar 来自 LLVMIR 方言；本语料没有
+/// llvm 方言的声明，按 R7 声明本地词 llvm_any_vector / vcix_vl。
+///
+/// 事实：两条 op 都没有 trait、接口或 verifier 上的语义事实，故不写
+/// Properties。
+
+dialect vcix {
+  Doc "SiFive Vector Coprocessor Interface: RISC-V coprocessor calls carrying an opcode immediate.";
+
+  constraint llvm_any_vector = vector;
+  constraint vcix_vl = i64 | i32;
+
+  op v.iv {
+    Doc "sf.vc.v.iv: binary VCIX operation whose second operand is an immediate; opcode and imm are I32 or I64 attributes selected by xlen.";
+    Operands   (vs2: llvm_any_vector, vl: optional<vcix_vl>);
+    Results    (res: llvm_any_vector);
+    Attributes (opcode: i32 | i64, imm: i32 | i64);
+    Assembly   Generic;
+  }
+
+  op v.sv {
+    Doc "sf.vc.v.vv/.xv/.fv: binary VCIX operation whose second operand is a vector, an integer scalar or a floating-point scalar, chosen by the operand type.";
+    Operands   (vs2: llvm_any_vector,
+                op: llvm_any_vector | i32 | i64 | f16 | f32 | f64,
+                vl: optional<vcix_vl>);
+    Results    (res: llvm_any_vector);
+    Attributes (opcode: i32 | i64);
+    Assembly   Generic;
+  }
+}

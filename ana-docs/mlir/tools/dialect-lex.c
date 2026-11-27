@@ -4,7 +4,8 @@
  * 产品实现。两个模式：
  *   normal  —— 默认；`Assembly {` 之后切到 assembly 模式。
  *   assembly—— 字面量是 STRING；`attr-dict`/`attr-dict-with-keyword`/
- *              `type`/`if`/`functional-type`/`oilist`/`custom`/`Gap` 是关键字，
+ *              `prop-dict`/`type`/`if`/`functional-type`/`oilist`/`custom`/
+ *              `Gap` 是关键字，
  *              其余标识符是部件引用；`{ }` 计深度，深度归零切回 normal。
  *
  * 名字允许 `.`（`reduce.return`），不允许 `-`；`attr-dict` 是 assembly 模式
@@ -102,6 +103,7 @@ static int normal_kw(const char *s) {
 static int asm_kw(const char *s) {
   if (!strcmp(s, "attr-dict")) return A_ATTR_DICT;
   if (!strcmp(s, "attr-dict-with-keyword")) return A_ATTR_DICT_WITH_KEYWORD;
+  if (!strcmp(s, "prop-dict")) return A_PROP_DICT;
   if (!strcmp(s, "type")) return A_TYPE;
   if (!strcmp(s, "qualified")) return A_QUALIFIED;
   if (!strcmp(s, "if")) return A_IF;

@@ -1,0 +1,212 @@
+/// x86 —— x86 目标方言：AVX512 / AVX10 / AVX / AMX 四组 x86 intrinsic op。
+///
+/// 上游 X86.td 的 18 个 op 定义都经由基类（AVX512_Op / AVX10_Op / AVX_Op /
+/// AVX_LowOp / AMX_Op）拼接出命名空间前缀：avx512. / avx10. / avx. /
+/// avx.intr. / amx.。语料里 op 名是"去掉 x86. 前缀后的完整打印名"，因此
+/// avx512.dot 与 avx.intr.dot、avx10.dot.i8 与 avx.dot.i8 是四个不同的 op，
+/// 而不是同名的两个。
+///
+/// 文本通道：18 个 op 全部有上游 assemblyFormat，全部转写成块格式；
+/// 没有 Custom、没有 Generic、没有 Gap —— 上游没有手写打印器，且所有格式
+/// 都能用 if / optional / variadic / qualified 表达。
+///
+/// 类型：唯一的方言类型是 !x86.amx.tile，上游 hasCustomAssemblyFormat = 1，
+/// 以 Assembly Custom; 记录。
+///
+/// 事实：Pure、MemRead/MemWrite（含 Arg 上的效果）照 trait 抄；AllTypesMatch
+/// 是集合级约束，核心词表只有二元的 same_type，本文件写成一串相邻二元事实
+/// （等价，因为 same_type 传递）；相关度不同的 AllElementCountsMatch 写成
+/// same_shape。没有 trait 依据的关系不写。
+
+dialect x86 {
+  Doc "x86 target dialect: AVX512, AVX10, AVX and AMX operations lowering to x86 LLVM intrinsics.";
+
+  // ---- AMX tile type ----
+
+  type_def amx.tile {
+    Doc "A 2-D AMX tile register value: shape plus element type. The printer is custom.";
+    Parameters (shape: array<i64>,
+                element: f32 | f16 | bf16 | i32 | i8 | f8e4m3fn | f8e5m2);
+    Assembly Custom;
+  }
+
+  // ==== AVX512 ====
+
+  op avx512.mask.compress {
+    Doc "Masked compress: copy active elements of a into dst, passing through remaining elements from optional src or a constant_src attribute.";
+    Operands   (k: vector, a: vector, src: optional<vector>);
+    Results    (dst: vector);
+    Attributes (constant_src: optional<attribute_value>);
+    Properties [pure, same_type(a, dst)];
+    Implements [X86IntrinsicOpInterface];
+    Assembly   { k "," a if src { "," src }
+                 if constant_src { "constant_src" "=" constant_src }
+                 attr-dict ":" type(dst) if src { "," type(src) } }
+  }
+
+  op avx512.mask.rndscale {
+    Doc "Masked roundscale: round packed floats in a by imm fraction bits under writemask k.";
+    Operands   (src: vector, k: i32, a: vector, imm: i16 | i8, rounding: i32);
+    Results    (dst: vector);
+    Properties [pure, same_type(src, a), same_type(a, dst)];
+    Implements [X86IntrinsicOpInterface];
+    Assembly   { src "," k "," a "," imm "," rounding attr-dict ":" type(dst) }
+  }
+
+  op avx512.mask.scalef {
+    Doc "Masked scalef: scale packed floats in a by the values in b under writemask k.";
+    Operands   (src: vector, a: vector, b: vector, k: i16 | i8, rounding: i32);
+    Results    (dst: vector);
+    Properties [pure, same_type(src, a), same_type(a, b), same_type(b, dst)];
+    Implements [X86IntrinsicOpInterface];
+    Assembly   { src "," a "," b "," k "," rounding attr-dict ":" type(dst) }
+  }
+
+  op avx512.vp2intersect {
+    Doc "Intersect packed integer vectors a and b, producing two mask vectors k1 and k2.";
+    Operands   (a: vector, b: vector);
+    Results    (k1: vector, k2: vector);
+    Properties [pure, same_type(a, b)];
+    Implements [X86IntrinsicOpInterface];
+    Assembly   { a "," b attr-dict ":" type(a) }
+  }
+
+  op avx512.dot {
+    Doc "AVX512-BF16 dot product: multiply bf16 pairs in a and b, accumulate into src.";
+    Operands   (src: vector, a: vector, b: vector);
+    Results    (dst: vector);
+    Properties [pure, same_type(a, b), same_type(src, dst)];
+    Implements [X86IntrinsicOpInterface];
+    Assembly   { src "," a "," b attr-dict ":" type(a) "->" type(src) }
+  }
+
+  op avx512.cvt.packed.f32_to_bf16 {
+    Doc "Convert packed f32 vector a to packed bf16 vector dst.";
+    Operands   (a: vector);
+    Results    (dst: vector);
+    Properties [pure, same_shape(a, dst)];
+    Implements [X86IntrinsicOpInterface];
+    Assembly   { a attr-dict ":" type(a) "->" type(dst) }
+  }
+
+  // ==== AVX10 ====
+
+  op avx10.dot.i8 {
+    Doc "AVX10 int8 dot product: multiply adjacent i8 pairs in a and b and accumulate into the i32 vector w.";
+    Operands   (w: vector, a: vector, b: vector);
+    Results    (dst: vector);
+    Properties [pure, same_type(a, b), same_type(w, dst)];
+    Implements [X86IntrinsicOpInterface];
+    Assembly   { w "," a "," b attr-dict ":" type(a) "->" type(w) }
+  }
+
+  // ==== AVX ====
+
+  op avx.rsqrt {
+    Doc "Reciprocal square root of a packed f32 vector a.";
+    Operands   (a: vector);
+    Results    (b: vector);
+    Properties [pure, same_type(a, b)];
+    Implements [X86IntrinsicOpInterface];
+    Assembly   { a attr-dict ":" type(a) }
+  }
+
+  op avx.intr.dot {
+    Doc "Low-level 4-way f32 dot product of source vectors a and b.";
+    Operands   (a: vector, b: vector);
+    Results    (res: vector);
+    Properties [pure, same_type(a, res)];
+    Implements [X86IntrinsicOpInterface];
+    Assembly   { a "," b attr-dict ":" type(res) }
+  }
+
+  op avx.dot.i8 {
+    Doc "AVX2 int8 dot product: multiply adjacent i8 pairs in a and b and accumulate into the i32 vector w.";
+    Operands   (w: vector, a: vector, b: vector);
+    Results    (dst: vector);
+    Properties [pure, same_type(a, b), same_type(w, dst)];
+    Implements [X86IntrinsicOpInterface];
+    Assembly   { w "," a "," b attr-dict ":" type(a) "->" type(w) }
+  }
+
+  op avx.bcst_to_f32.packed {
+    Doc "Broadcast a scalar bf16/f16 value loaded from memref a into a packed f32 vector.";
+    Operands   (a: memref);
+    Results    (dst: vector);
+    Properties [memory_effect(read)];
+    Implements [X86IntrinsicOpInterface];
+    Assembly   { a attr-dict ":" type(a) "->" type(dst) }
+  }
+
+  op avx.cvt.packed.even.indexed_to_f32 {
+    Doc "Convert even-indexed bf16/f16 elements loaded from memref a into a packed f32 vector.";
+    Operands   (a: memref);
+    Results    (dst: vector);
+    Properties [memory_effect(read)];
+    Implements [X86IntrinsicOpInterface];
+    Assembly   { a attr-dict ":" type(a) "->" type(dst) }
+  }
+
+  op avx.cvt.packed.odd.indexed_to_f32 {
+    Doc "Convert odd-indexed bf16/f16 elements loaded from memref a into a packed f32 vector.";
+    Operands   (a: memref);
+    Results    (dst: vector);
+    Properties [memory_effect(read)];
+    Implements [X86IntrinsicOpInterface];
+    Assembly   { a attr-dict ":" type(a) "->" type(dst) }
+  }
+
+  // ==== AMX ====
+
+  op amx.tile_zero {
+    Doc "Zero an AMX tile register; the result tile type gives its shape and element type.";
+    Results    (res: amx.tile);
+    Properties [memory_effect(write)];
+    Implements [X86IntrinsicOpInterface];
+    Assembly   { attr-dict ":" qualified(type(res)) }
+  }
+
+  op amx.tile_load {
+    Doc "Load an AMX tile from memref base at variadic indices, with an optional row stride.";
+    Operands   (base: memref, indices: variadic<index>, stride: optional<index>);
+    Results    (res: amx.tile);
+    Properties [memory_effect(read), memory_effect(write)];
+    Implements [X86IntrinsicOpInterface];
+    Assembly   { base "[" indices "]" if stride { "," stride }
+                 attr-dict ":" type(base) "into" qualified(type(res)) }
+  }
+
+  op amx.tile_store {
+    Doc "Store AMX tile val to memref base at variadic indices, with an optional row stride.";
+    Operands   (base: memref, indices: variadic<index>, val: amx.tile,
+                stride: optional<index>);
+    Properties [memory_effect(write)];
+    Implements [X86IntrinsicOpInterface];
+    Assembly   { base "[" indices "]" "," val if stride { "," stride }
+                 attr-dict ":" type(base) "," qualified(type(val)) }
+  }
+
+  op amx.tile_mulf {
+    Doc "Floating-point AMX tile multiply: lhs times rhs accumulated into acc.";
+    Operands   (lhs: amx.tile, rhs: amx.tile, acc: amx.tile);
+    Results    (res: amx.tile);
+    Properties [pure, same_type(acc, res)];
+    Implements [X86IntrinsicOpInterface];
+    Assembly   { lhs "," rhs "," acc attr-dict ":"
+                 qualified(type(lhs)) "," qualified(type(rhs)) ","
+                 qualified(type(acc)) }
+  }
+
+  op amx.tile_muli {
+    Doc "Integer AMX tile multiply: lhs times rhs accumulated into acc; the zext flags select unsigned operand interpretation.";
+    Operands   (lhs: amx.tile, rhs: amx.tile, acc: amx.tile);
+    Attributes (isZextLhs: optional<unit>, isZextRhs: optional<unit>);
+    Results    (res: amx.tile);
+    Properties [pure, same_type(acc, res)];
+    Implements [X86IntrinsicOpInterface];
+    Assembly   { lhs if isZextLhs { "zext" isZextLhs } "," rhs
+                 if isZextRhs { "zext" isZextRhs } "," acc attr-dict ":"
+                 qualified(type(lhs)) "," qualified(type(rhs)) ","
+                 qualified(type(acc)) }
+  }
+}

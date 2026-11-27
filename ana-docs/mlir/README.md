@@ -19,7 +19,10 @@
   再用覆盖审计量出 258 个缺失 op 并补账，共 31 个方言、1036 个 op，
   文法只多一条产生式：带引号的名字；24 章给五种逃逸点发许可证：断言必须与
   上游 TD 一致，说出不来的构造用 `Gap(name)` 记成登记过的债务，检查第一次
-  跑就抓到 16 处假 `Custom` 和 1 个拼错的钩子名）。
+  跑就抓到 16 处假 `Custom` 和 1 个拼错的钩子名）。此后又用 bufferization、
+  vcix、xevm、x86、xegpu、nvgpu、mpi、irdl 八个方言把语料推到 39 个方言、
+  1171 个 op；`prop_dict` 因 XeGPU/NVGPU/XeVM 共 23 个 op 的证据而从缺口
+  升级成 `A_PROP_DICT` 产生式，这是"文法跟不上语料才加产生式"的正例。
 
 - 分析基线：worktree `/home/ubuntu/llvm/trees/pr-ctpop`，分支 `research/mlir`。
   01–09 基于 `5f7f36636abe`；10–23 基于 `53a80edfeb2e`（2026-11-27）。
@@ -220,8 +223,8 @@
 | `ods-asm-format.y` | `assemblyFormat` 子语言文法（bison，0 冲突） |
 | `14-dialect-domain-model.md` | 领域模型：定义/生成边界、三投影、trait 分类、约束语义、schema refinement、v1 逐项判决 |
 | `15-corpus-driven-grammar.md` | 语料优先：方法论、语料统计、见证表、8 个修正、机械核对、与 v1/v2 差异、下一轮语料 |
-| `corpus/*.dialect` | 31 个方言源程序（12063 行）：1036 op、157 schema、73 enum、149 constraint、20 attr_def、53 type_def；31/31 覆盖缺口为 0 |
-| `dialect-grammar.y` | 从语料归纳的文法（bison，58 条规则 / 141 条产生式，0 冲突，`31/31 parse OK`），含 `Gap(name)` 与 9 个 `Gap` 使用点 |
+| `corpus/*.dialect` | 39 个方言源程序（13928 行）：1171 op、158 schema、95 enum、181 constraint、27 attr_def、68 type_def；39/39 覆盖缺口为 0 |
+| `dialect-grammar.y` | 从语料归纳的文法（bison，58 条规则 / 142 条产生式，0 冲突，`39/39 parse OK`），含 `Gap(name)` 与 6 个 `Gap` 使用点 |
 | `16-corpus-round-two.md` | 第二轮：10 项扩展、谓词组合、region 约束搬家、软关键字、见证表、机械核对 |
 | `corpus/gpu.dialect` | gpu：launch/module/func、内建 id/dim、barrier/printf/shuffle/all_reduce/subgroup_reduce/warp（18 op） |
 | `corpus/linalg.dialect` | linalg：`Structured` schema + 5 个命名算符 + generic/map/reduce/transpose/broadcast/index/yield（12 op） |

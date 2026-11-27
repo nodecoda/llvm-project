@@ -1,0 +1,327 @@
+/// xevm —— Intel GPU 的向量引擎方言：块读写、2D 描述符、MMA 与专用寄存器。
+///
+/// 领域：
+///   1. 块搬运：blockload/blockstore 在子组内按 lane 跨步读写；blockload2d/
+///      blockstore2d/blockprefetch2d 用 base_width/height/pitch 与 x/y/tile_*
+///      描述一块 2D tile；prefetch 是单地址预取。
+///   2. 同步：memfence 在给定 scope 内对给定地址空间建立内存序。
+///   3. 矩阵：mma/mma_mx 是子组协作的 D = C + A x B，shape 与 types 两个属性
+///      描述形状与元素类型；mma_mx 额外带 A/B 的 MX 缩放操作数。
+///   4. 浮点转换：truncf/extf 在 f16/bf16 与 f8/bf8/f4 之间截断/扩展；
+///      bitcast_shuffle 是位保持的子组内打包/解包。
+///   5. 专用寄存器：lane_id/subgroup_id/subgroup_size 与 local_id/local_size/
+///      group_id/group_count 的 .x/.y/.z 组合。
+///
+/// 文本通道：27 个 op 全部是块格式（12 个独立 op + 15 个由 defm 生成的
+/// 寄存器查询）。没有 Custom，也没有 Generic：上游每个 op 都有 assemblyFormat
+/// （寄存器查询由基类的 assemblyFormat 继承），因此没有手写打印器。
+///
+/// 属性拼写有两种，语料按实测文本各写一种：
+///   - 带方言前缀的尖括号形式 `#xevm.mem_scope<workgroup>`：mem_scope、
+///     addr_space、load_cache_control、store_cache_control；
+///   - 内联形式 `shape=<m=8, ...>` 与 `src_etype = bf16`：mma_shape、mma_types
+///     与 truncf/extf 的元素类型参数。二者在语料里分别写成 attr_def 与
+///     enum 值类型，因为实测打印不同，不是风格选择。
+///
+/// 事实：blockload/blockload2d 读内存，blockstore/blockstore2d 写内存，
+/// truncf/extf 是 Pure；其余 op 没有 trait 依据，不写 Properties。
+///
+/// GAP:
+///   - tf32 是 MLIR 的真实内建类型，但核心类型词表未收录，审计把它列为
+///     外部类型名。
+///   - 子组大小、tile 形状与元素位宽的互约关系（如 transpose 与
+///     pack_register 互斥）由 verifier 检查，文法写不出。
+
+dialect xevm {
+  Doc "Intel GPU vector engine dialect: block transfers, 2D tiles, subgroup MMA and special registers.";
+
+  constraint llvm_any_pointer = any;
+  constraint llvm_constant_range = attribute;
+  constraint block_elem = i8 | i16 | i32 | i64;
+  constraint matrix_elem = i8 | i16 | i32 | f16 | bf16 | f32 | tf32;
+  constraint f16_or_bf16 = f16 | bf16 | vector<f16> | vector<bf16>;
+  constraint i8_or_i4 = i8 | i4 | vector<i8> | vector<i4>;
+  constraint bitcast_elem = i8 | i16 | i32 | i64;
+  constraint bitcast_val = bitcast_elem | vector<bitcast_elem>;
+
+  // ---- 缓存控制与内存作用域 ----
+
+  enum LoadCacheControl {
+    Doc "Load cache controls over L1/L2/L3: uc uncached, c cached, s streaming, ir invalidate after read.";
+    Cases [ Use_Default = 0,
+            L1uc_L2uc_L3uc = 1, L1uc_L2uc_L3c = 2,
+            L1uc_L2c_L3uc = 3, L1uc_L2c_L3c = 4,
+            L1c_L2uc_L3uc = 5, L1c_L2uc_L3c = 6,
+            L1c_L2c_L3uc = 7, L1c_L2c_L3c = 8,
+            L1s_L2uc_L3uc = 9, L1s_L2uc_L3c = 10,
+            L1s_L2c_L3uc = 11, L1s_L2c_L3c = 12,
+            ir = 13 ];
+  }
+
+  enum StoreCacheControl {
+    Doc "Store cache controls over L1/L2/L3: uc uncached, wb write-back, wt write-through, s streaming.";
+    Cases [ Use_Default = 0,
+            L1uc_L2uc_L3uc = 1, L1uc_L2uc_L3wb = 2,
+            L1uc_L2wb_L3uc = 3, L1uc_L2wb_L3wb = 4,
+            L1wt_L2uc_L3uc = 5, L1wt_L2uc_L3wb = 6,
+            L1wt_L2wb_L3uc = 7, L1wt_L2wb_L3wb = 8,
+            L1s_L2uc_L3uc = 9, L1s_L2uc_L3wb = 10,
+            L1s_L2wb_L3uc = 11, L1s_L2wb_L3wb = 12,
+            L1wb_L2uc_L3uc = 13, L1wb_L2wb_L3uc = 14,
+            L1wb_L2uc_L3wb = 15 ];
+  }
+
+  enum MemScope {
+    Doc "Scopes at which a memfence becomes visible.";
+    Cases [ lane = 0, subgroup = 1, workgroup = 2, cluster = 3,
+            device = 4, system = 5 ];
+  }
+
+  enum AddrSpace {
+    Doc "Address spaces a memfence applies to.";
+    Cases [ private = 0, global = 1, constant = 2, shared = 3, generic = 4 ];
+  }
+
+  enum ElemType {
+    Doc "Matrix element types, including the narrow and scaled float formats.";
+    Cases [ bf16 = 8, f16 = 9, s8 = 10, u8 = 11, s4 = 12, u4 = 13,
+            tf32 = 14, f32 = 15, s32 = 16, e2m1 = 17, bf8 = 18, f8 = 19 ];
+  }
+
+  enum TruncfSrcElemTypes {
+    Doc "Sources of xevm.truncf.";
+    Cases [ bf16 = 8, f16 = 9 ];
+  }
+
+  enum TruncfDstElemTypes {
+    Doc "Destinations of xevm.truncf.";
+    Cases [ e2m1 = 17, bf8 = 18, f8 = 19 ];
+  }
+
+  enum ExtfSrcElemTypes {
+    Doc "Sources of xevm.extf.";
+    Cases [ e2m1 = 17, bf8 = 18, f8 = 19 ];
+  }
+
+  enum ExtfDstElemTypes {
+    Doc "Destinations of xevm.extf.";
+    Cases [ bf16 = 8, f16 = 9 ];
+  }
+
+  attr_def load_cache_control {
+    Doc "#xevm.load_cache_control decorates a load; printed as angle brackets around the case mnemonic.";
+    Parameters (value: LoadCacheControl);
+    Assembly   { "<" value ">" }
+  }
+
+  attr_def store_cache_control {
+    Doc "#xevm.store_cache_control decorates a store; printed as angle brackets around the case mnemonic.";
+    Parameters (value: StoreCacheControl);
+    Assembly   { "<" value ">" }
+  }
+
+  attr_def mem_scope {
+    Doc "#xevm.mem_scope selects the visibility scope of a fence.";
+    Parameters (value: MemScope);
+    Assembly   { "<" value ">" }
+  }
+
+  attr_def addr_space {
+    Doc "#xevm.addr_space selects the address space of a fence.";
+    Parameters (value: AddrSpace);
+    Assembly   { "<" value ">" }
+  }
+
+  attr_def mma_shape {
+    Doc "M, N and K of an MMA: A is MxK, B is KxN, D and C are MxN. Printed inline as <m=.., n=.., k=..>.";
+    Parameters (m: i32, n: i32, k: i32);
+    Assembly   { "<" "m" "=" m "," "n" "=" n "," "k" "=" k ">" }
+  }
+
+  attr_def mma_types {
+    Doc "Element types of D, A, B and the optional C. Printed inline as <d=.., a=.., b=.., c=..>.";
+    Parameters (d: ElemType, a: ElemType, b: ElemType, c: optional<ElemType>);
+    Assembly   { "<" "d" "=" d "," "a" "=" a "," "b" "=" b
+                 if c { "," "c" "=" c } ">" }
+  }
+
+  // ---- 块搬运 ----
+
+  op blockload {
+    Doc "Subgroup block load: each invocation reads its strided component from ptr. The cache-control decoration lives in the property dictionary.";
+    Operands   (ptr: llvm_any_pointer);
+    Results    (res: block_elem | vector<block_elem>);
+    Attributes (cache_control: optional<load_cache_control>);
+    Properties [memory_effect(read)];
+    Assembly   { operands prop-dict attr-dict ":"
+                 functional-type(operands, results) }
+  }
+
+  op blockstore {
+    Doc "Subgroup block store: val is written strided to ptr, one component per invocation.";
+    Operands   (ptr: llvm_any_pointer, val: block_elem | vector<block_elem>);
+    Attributes (cache_control: optional<store_cache_control>);
+    Properties [memory_effect(write)];
+    Assembly   { operands prop-dict attr-dict ":" "(" type(operands) ")" }
+  }
+
+  op blockload2d {
+    Doc "2D block load: base_width/height/pitch describe the base matrix and x/y the tile origin; the attribute set gives element width and tile shape.";
+    Operands   (ptr: llvm_any_pointer,
+                base_width: i32, base_height: i32, base_pitch: i32,
+                x: i32, y: i32);
+    Results    (res: vector<matrix_elem>);
+    Attributes (elem_size_in_bits: i32, tile_width: i32, tile_height: i32,
+                v_blocks: i32, transpose: i1, pack_register: i1,
+                cache_control: optional<load_cache_control>);
+    Properties [memory_effect(read)];
+    Assembly   { operands prop-dict attr-dict ":"
+                 functional-type(operands, results) }
+  }
+
+  op blockstore2d {
+    Doc "2D block store: stored_val is written into the tile described by the base matrix operands and the shape attributes.";
+    Operands   (ptr: llvm_any_pointer,
+                base_width: i32, base_height: i32, base_pitch: i32,
+                x: i32, y: i32, stored_val: vector<matrix_elem>);
+    Attributes (elem_size_in_bits: i32, tile_width: i32, tile_height: i32,
+                cache_control: optional<store_cache_control>);
+    Properties [memory_effect(write)];
+    Assembly   { operands prop-dict attr-dict ":" "(" type(operands) ")" }
+  }
+
+  op blockprefetch2d {
+    Doc "2D block prefetch: same tile description as blockload2d, but the data is only brought into the cache; v_blocks counts consecutive tiles.";
+    Operands   (ptr: llvm_any_pointer,
+                base_width: i32, base_height: i32, base_pitch: i32,
+                x: i32, y: i32);
+    Attributes (elem_size_in_bits: i32, tile_width: i32, tile_height: i32,
+                v_blocks: i32, cache_control: optional<load_cache_control>);
+    Assembly   { operands prop-dict attr-dict ":" "(" type(operands) ")" }
+  }
+
+  op prefetch {
+    Doc "Prefetch one address into the cache; ptr must be in the global or generic address space.";
+    Operands   (ptr: llvm_any_pointer);
+    Attributes (cache_control: optional<load_cache_control>);
+    Assembly   { operands prop-dict attr-dict ":" "(" type(operands) ")" }
+  }
+
+  // ---- 同步 ----
+
+  op memfence {
+    Doc "Memory fence: prior accesses of this work-item to addrspace become visible to scope. Both are enum attributes in the property dictionary.";
+    Attributes (scope: mem_scope, addrspace: addr_space = generic);
+    Assembly   { prop-dict attr-dict }
+  }
+
+  // ---- 矩阵乘累加 ----
+
+  op mma {
+    Doc "Subgroup matrix multiply-add D = C + A x B; a and b are the input fragments, c the optional accumulator. shape and types are printed inline.";
+    Operands   (a: vector<matrix_elem>, b: vector<matrix_elem>,
+                c: optional<vector<matrix_elem>>);
+    Results    (d: vector<matrix_elem>);
+    Attributes (shape: mma_shape, types: mma_types);
+    Assembly   { a "," b if c { "," c } "{" "shape" "=" shape ","
+                 "types" "=" types "}" attr-dict ":"
+                 functional-type(operands, results) }
+  }
+
+  op mma_mx {
+    Doc "MMA with MX scaling: scale_a and scale_b multiply the A and B matrices before the multiply-add.";
+    Operands   (a: vector<matrix_elem>, b: vector<matrix_elem>,
+                scale_a: i8 | vector<i8>, scale_b: i8 | vector<i8>,
+                c: optional<vector<matrix_elem>>);
+    Results    (d: vector<matrix_elem>);
+    Attributes (shape: mma_shape, types: mma_types);
+    Assembly   { a "," b "," scale_a "," scale_b if c { "," c } "{" "shape" "=" shape "," "types" "=" types "}" attr-dict ":" functional-type(operands, results) }
+  }
+
+  // ---- 浮点转换与位打包 ----
+
+  op truncf {
+    Doc "Truncate f16/bf16 to f8/bf8/f4; src_etype and dst_etype are printed inline inside braces.";
+    Operands   (src: f16_or_bf16);
+    Results    (dst: i8_or_i4);
+    Attributes (src_etype: TruncfSrcElemTypes,
+                dst_etype: TruncfDstElemTypes);
+    Properties [pure];
+    Assembly   { src "{" "src_etype" "=" src_etype ","
+                 "dst_etype" "=" dst_etype "}" attr-dict ":"
+                 functional-type(operands, results) }
+  }
+
+  op extf {
+    Doc "Extend f8/bf8/f4 to f16/bf16; the inverse of truncf, with the same inline brace spelling.";
+    Operands   (src: i8_or_i4);
+    Results    (dst: f16_or_bf16);
+    Attributes (src_etype: ExtfSrcElemTypes, dst_etype: ExtfDstElemTypes);
+    Properties [pure];
+    Assembly   { src "{" "src_etype" "=" src_etype ","
+                 "dst_etype" "=" dst_etype "}" attr-dict ":"
+                 functional-type(operands, results) }
+  }
+
+  op bitcast_shuffle {
+    Doc "Bit-preserving pack or unpack across the subgroup: exactly one side is a vector; the total bit counts of src and res must be equal.";
+    Operands   (src: bitcast_val);
+    Results    (res: bitcast_val);
+    Assembly   { src attr-dict ":" functional-type(operands, results) }
+  }
+
+  // ---- 专用寄存器 ----
+
+  schema SpecialIdRegister {
+    Doc "Common shape of the id and size queries: the result is i32 or i64, an optional constant range narrows it, and the mnemonic carries the axis (.x/.y/.z or none).";
+    Results    (res: i32 | i64);
+    Attributes (range: optional<llvm_constant_range>);
+    Assembly   { if range { "range" range } attr-dict ":" type(res) }
+  }
+
+  op lane_id from SpecialIdRegister {
+    Doc "Lane id within the subgroup.";
+  }
+  op subgroup_id from SpecialIdRegister {
+    Doc "Subgroup id within the workgroup.";
+  }
+  op subgroup_size from SpecialIdRegister {
+    Doc "Number of lanes in the subgroup.";
+  }
+  op local_id.x from SpecialIdRegister {
+    Doc "Work-item id along x within the workgroup.";
+  }
+  op local_id.y from SpecialIdRegister {
+    Doc "Work-item id along y within the workgroup.";
+  }
+  op local_id.z from SpecialIdRegister {
+    Doc "Work-item id along z within the workgroup.";
+  }
+  op local_size.x from SpecialIdRegister {
+    Doc "Workgroup size along x.";
+  }
+  op local_size.y from SpecialIdRegister {
+    Doc "Workgroup size along y.";
+  }
+  op local_size.z from SpecialIdRegister {
+    Doc "Workgroup size along z.";
+  }
+  op group_id.x from SpecialIdRegister {
+    Doc "Workgroup id along x.";
+  }
+  op group_id.y from SpecialIdRegister {
+    Doc "Workgroup id along y.";
+  }
+  op group_id.z from SpecialIdRegister {
+    Doc "Workgroup id along z.";
+  }
+  op group_count.x from SpecialIdRegister {
+    Doc "Number of workgroups along x.";
+  }
+  op group_count.y from SpecialIdRegister {
+    Doc "Number of workgroups along y.";
+  }
+  op group_count.z from SpecialIdRegister {
+    Doc "Number of workgroups along z.";
+  }
+}

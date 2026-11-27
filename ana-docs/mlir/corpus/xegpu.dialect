@@ -1,0 +1,408 @@
+/// xegpu —— Intel Xe GPU 方言：张量描述符、块访存与散射访存、矩阵乘、
+/// 命名屏障、内存栅栏与布局转换。
+///
+/// 上游 XeGPUOps.td 只有 21 个 op，全部带声明式 assemblyFormat，
+/// 因此文本通道全部是块格式：block 21，Custom 0，Generic 0，Gap 0。
+///
+/// 三个方言类型（助记符取自 XeGPUTypes.td 的 mnemonic）：
+///   - !xegpu.tensor_desc<shape x element_type, encoding?, layout?>：
+///     内存区域的元数据视图，本身不持有数据；
+///   - !xegpu.mem_desc<shape x element_type, mem_layout?>：
+///     共享本地内存（SLM）中的数据块；
+///   - !xegpu.nbarrier：命名屏障句柄，无参数。
+///
+/// 文本中的 `prop-dict`：XeGPU_Op 基类打开 hasCustomPropertiesPrinter，
+/// 上游把固有属性（const_offsets、缓存提示、layout 等）收进属性字典，
+/// 以 `<{...}>` 打印；块里按上游位置逐字写 `prop-dict attr-dict`。
+/// `enum($x)` 按 gpu.shuffle 的既有写法直接引用部件 x，打印裸助记符。
+///
+/// 事实全部来自 TD 的 trait/interface：Pure、MemoryEffects、
+/// AllElementTypesMatch、AllShapesMatch、AllTypesMatch、AllRanksMatch、
+/// AttrSizedOperandSegments、AnchorLayoutInterface、ViewLikeOpInterface。
+///
+/// 文法表达不了、只写进 Doc 的上游约束：
+///   - TensorDesc/ValueType 的 rank 上界（1..8）、DpasOprType 的 1..4；
+///   - DynamicIndexList 的静态/动态混合长度等于张量描述符的 rank；
+///   - CreateMemDescOp 的 AllMemSizesMatch（源 memref 与 mem_desc 的位宽
+///     总量相等）在核心词表里没有对应事实；
+///   - 缓存提示的有效范围：cached/uncached 读写皆可，streaming/
+///     read_invalidate 只读，write_back/write_through 只写；
+///   - atomic_rmw 的 kind 取值集合与 mask 形状一致，由 verifier 保证。
+
+dialect xegpu {
+  Doc "Intel Xe GPU dialect: tensor descriptors, block and scattered memory access, matrix multiplication, named barriers, fences and layout conversion.";
+
+  // ---- 值域约束：上游 XeGPUTypes.td 的 type 约束族 ----
+
+  constraint float_scalar = f16 | bf16 | f32 | f64 | f8e4m3fn | f8e5m2
+                          | f8e8m0fnu | f4e2m1fn;
+  constraint scalar = signless_integer | unsigned_integer | float_scalar;
+  constraint numeric = scalar | index;
+  constraint i64_array = array<i64>;
+
+  /// 指针源：ui64/ui32/i64/i32 四种整型（XeGPU_PointerType）。
+  constraint pointer = signless_integer | unsigned_integer;
+  /// CreateNdDescOp 的源：非零 rank 的标量 memref，或裸指针。
+  constraint addr = memref<scalar> | pointer;
+  /// gather/scatter 与 prefetch 的源：一维标量 memref，或裸指针。
+  constraint base_addr = memref<scalar, 1> | pointer;
+  /// 偏移：index 标量或 index 向量（XeGPU_OffsetType 与 Index）。
+  constraint offset_like = vector<index> | index;
+  /// load/store 的掩码：i1 标量或 i1 向量。
+  constraint mask_like = vector<i1> | i1;
+  /// atomic_rmw 的掩码只接受 i1 向量（XeGPU_MaskType）。
+  constraint mask_vec = vector<i1>;
+  /// 值：标量或标量向量（XeGPU_ValueOrScalarType）。
+  constraint payload = vector<scalar> | scalar;
+  /// convert_layout 的源/结果：标量、index 或其向量。
+  constraint vector_or_scalar = vector<numeric> | numeric;
+  /// create_mem_desc 的源：静态形状、位于共享内存的标量 memref。
+  constraint shared_memref = memref<scalar>;
+  /// truncf 的源/结果：浮点标量向量（rank 非零）。
+  constraint float_value = vector<float_scalar>;
+  /// dpas_mx 的 scale 操作数：E8M0 微缩放因子，标量或 1..4 维向量。
+  constraint scale_value = f8e8m0fnu | vector<f8e8m0fnu>;
+
+  // ---- 枚举：属性打印形态与上游 EnumAttr 的 case 名一致 ----
+
+  enum MemorySpace {
+    Doc "Address space of the memory a tensor descriptor is created for.";
+    Cases [ global = 0, slm = 3 ];
+  }
+
+  enum CachePolicy {
+    Doc "Cache hints for prefetch/load/store; the printed spelling is the case name.";
+    Cases [ cached = 0, uncached = 1, streaming = 2, read_invalidate = 3,
+            write_back = 4, write_through = 5 ];
+  }
+
+  enum FenceScope {
+    Doc "Fence scope: inside one workgroup, or across workgroups of the GPU.";
+    Cases [ workgroup = 0, gpu = 1 ];
+  }
+
+  enum LaneShuffleMode {
+    Doc "Direction of a lane shuffle: pack gathers a lane's elements into consecutive logical positions, unpack scatters them back out.";
+    Cases [ pack = 0, unpack = 1 ];
+  }
+
+  enum AtomicRMWKind {
+    Doc "Atomic read-modify-write kind, using the arith AtomicRMWKind case names.";
+    Cases [ addf = 0, addi = 1, andi = 2, assign = 3, maximumf = 4,
+            maxnumf = 5, maxs = 6, maxu = 7, minimumf = 8, minnumf = 9,
+            mins = 10, minu = 11, mulf = 12, muli = 13, ori = 14,
+            xori = 15 ];
+  }
+
+  // ---- 属性定义 ----
+
+  /// #xegpu.cache_hint<cached> 等：angle brackets 里是一个 CachePolicy case。
+  attr_def cache_hint {
+    Doc "#xegpu.cache_hint selects one cache policy for a prefetch/load/store.";
+    Parameters (value: CachePolicy);
+    Assembly   { "<" value ">" }
+  }
+
+  // ---- 类型定义 ----
+
+  type_def tensor_desc {
+    Doc "Metadata view of a memory region: static shape, element type, an optional block descriptor and an optional distribution layout. It holds no data; printed as !xegpu.tensor_desc<8x16xf32>.";
+    Parameters (shape: array<i64>, element_type: type,
+                encoding: optional<attribute>, layout: optional<attribute>);
+    Assembly   { "<" shape "x" element_type
+                 if encoding { "," encoding }
+                 if layout { "," layout } ">" }
+  }
+
+  type_def mem_desc {
+    Doc "Block of data in shared local memory: static shape, element type and an optional memory layout; printed as !xegpu.mem_desc<128x128xf16, #xegpu.mem_layout<...>>.";
+    Parameters (shape: array<i64>, element_type: type,
+                mem_layout: optional<attribute>);
+    Assembly   { "<" shape "x" element_type
+                 if mem_layout { "," mem_layout } ">" }
+  }
+
+  type_def nbarrier {
+    Doc "Opaque named-barrier handle (!xegpu.nbarrier); carries no parameters.";
+  }
+
+  // ---- 描述符创建 ----
+
+  op create_nd_tdesc {
+    Doc "Create a 1D/2D tensor descriptor over a memref or a raw pointer; leading dimensions of 3D+ descriptors are batch dimensions. A pointer source must pass shape and strides, a memref source encodes them already.";
+    Operands   (source: addr,
+                shape: variadic<index>,
+                strides: variadic<index>);
+    Results    (TensorDesc: tensor_desc);
+    Attributes (const_shape: optional<i64_array>,
+                const_strides: optional<i64_array>);
+    Properties [pure, operand_segments_by_attribute];
+    Implements [ViewLikeOpInterface];
+    Assembly   { source
+                 if shape { "," "shape" ":" custom<DynamicIndexList>(shape, const_shape)
+                            "," "strides" ":" custom<DynamicIndexList>(strides, const_strides) }
+                 attr-dict ":" type(source) "->" qualified(type(TensorDesc)) }
+  }
+
+  // ---- 块访存（非散射） ----
+
+  op prefetch_nd {
+    Doc "Prefetch one block of a tensor descriptor into the cache hierarchy. The number of offsets equals the descriptor rank; l1/l2/l3 hints and the layout are optional.";
+    Operands   (TensorDesc: tensor_desc,
+                offsets: variadic<index>);
+    Attributes (const_offsets: i64_array,
+                l1_hint: optional<cache_hint>,
+                l2_hint: optional<cache_hint>,
+                l3_hint: optional<cache_hint>,
+                layout: optional<attribute>);
+    Implements [AnchorLayoutInterface];
+    Assembly   { TensorDesc custom<DynamicIndexList>(offsets, const_offsets)
+                 prop-dict attr-dict ":" qualified(type(TensorDesc)) }
+  }
+
+  op load_nd {
+    Doc "Read a block of data from the memory region described by a tensor descriptor into a vector; offsets count matches the descriptor rank. packed and transpose are hardware packing options and are mutually exclusive.";
+    Operands   (TensorDesc: tensor_desc,
+                offsets: variadic<index>);
+    Results    (value: vector<scalar>);
+    Attributes (const_offsets: i64_array,
+                packed: optional<unit>,
+                transpose: optional<i64_array>,
+                l1_hint: optional<cache_hint>,
+                l2_hint: optional<cache_hint>,
+                l3_hint: optional<cache_hint>,
+                layout: optional<attribute>);
+    Properties [memory_effect(read), same_element_type(value, TensorDesc)];
+    Implements [AnchorLayoutInterface];
+    Assembly   { TensorDesc custom<DynamicIndexList>(offsets, const_offsets)
+                 prop-dict attr-dict ":" qualified(type(TensorDesc)) "->" type(value) }
+  }
+
+  op store_nd {
+    Doc "Write a vector block back into the memory region described by a tensor descriptor; offsets count matches the descriptor rank. The value shape equals the descriptor shape.";
+    Operands   (value: vector<scalar>,
+                TensorDesc: tensor_desc,
+                offsets: variadic<index>);
+    Attributes (const_offsets: i64_array,
+                l1_hint: optional<cache_hint>,
+                l2_hint: optional<cache_hint>,
+                l3_hint: optional<cache_hint>,
+                layout: optional<attribute>);
+    Properties [memory_effect(write), same_element_type(value, TensorDesc)];
+    Implements [AnchorLayoutInterface];
+    Assembly   { value "," TensorDesc custom<DynamicIndexList>(offsets, const_offsets)
+                 prop-dict attr-dict ":" type(value) "," qualified(type(TensorDesc)) }
+  }
+
+  // ---- 散射访存 ----
+
+  op prefetch {
+    Doc "Prefetch a set of scattered data points into the cache hierarchy. source is a 1D memref or a raw pointer; offsets is a vector (or a scalar at lane level). offset_align_byte is required for, and only valid with, a pointer source.";
+    Operands   (source: base_addr,
+                offsets: offset_like);
+    Attributes (l1_hint: optional<cache_hint>,
+                l2_hint: optional<cache_hint>,
+                l3_hint: optional<cache_hint>,
+                offset_align_byte: optional<i64>,
+                layout: optional<attribute>);
+    Implements [AnchorLayoutInterface];
+    Assembly   { source "[" offsets "]" prop-dict attr-dict ":" type(operands) }
+  }
+
+  op load {
+    Doc "Load scattered data points, one per lane; mask, offsets and result have the same shape and each mask element gates one lane. contiguity bounds the number of neighbouring elements contiguous in memory.";
+    Operands   (source: base_addr,
+                offsets: offset_like,
+                mask: mask_like);
+    Results    (value: payload);
+    Attributes (l1_hint: optional<cache_hint>,
+                l2_hint: optional<cache_hint>,
+                l3_hint: optional<cache_hint>,
+                layout: optional<attribute>,
+                contiguity: optional<i64>);
+    Properties [memory_effect(read)];
+    Implements [AnchorLayoutInterface];
+    Assembly   { source "[" offsets "]" "," mask prop-dict attr-dict ":"
+                 type(operands) "->" type(value) }
+  }
+
+  op store {
+    Doc "Store scattered data points, one per lane; mask, offsets and value have the same shape and each mask element gates one lane. contiguity bounds the number of neighbouring elements contiguous in memory.";
+    Operands   (value: payload,
+                dest: base_addr,
+                offsets: offset_like,
+                mask: mask_like);
+    Attributes (l1_hint: optional<cache_hint>,
+                l2_hint: optional<cache_hint>,
+                l3_hint: optional<cache_hint>,
+                layout: optional<attribute>,
+                contiguity: optional<i64>);
+    Properties [memory_effect(write)];
+    Implements [AnchorLayoutInterface];
+    Assembly   { value "," dest "[" offsets "]" "," mask prop-dict attr-dict ":"
+                 type(operands) }
+  }
+
+  // ---- 矩阵乘 ----
+
+  op dpas {
+    Doc "Matrix multiply-accumulate on vector fragments: lhs is m x k, rhs is k x n, acc is the optional m x n accumulator and the result is m x n. Leading dimensions of 3D/4D operands are shared batch dimensions.";
+    Operands   (lhs: vector<scalar>,
+                rhs: vector<scalar>,
+                acc: optional<vector<scalar>>);
+    Results    (result: vector<scalar>);
+    Attributes (layout_a: optional<attribute>,
+                layout_b: optional<attribute>,
+                layout_cd: optional<attribute>);
+    Properties [pure, same_element_type(lhs, rhs)];
+    Implements [AnchorLayoutInterface];
+    Assembly   { lhs "," rhs if acc { "," acc } prop-dict attr-dict ":"
+                 type(lhs) "," type(rhs) if acc { "," type(acc) }
+                 "->" type(result) }
+  }
+
+  op atomic_rmw {
+    Doc "Atomic read-modify-write over the region described by a tensor descriptor. kind selects the operation; mask, tensorDesc, value and result share a shape and mask gates each data point.";
+    Operands   (tensorDesc: tensor_desc,
+                mask: mask_vec,
+                value: vector<scalar>);
+    Results    (result: vector<scalar>);
+    Attributes (kind: AtomicRMWKind,
+                layout: optional<attribute>);
+    Properties [pure, memory_effect(read), memory_effect(write),
+                same_element_type(tensorDesc, value),
+                same_shape(tensorDesc, value)];
+    Implements [AnchorLayoutInterface];
+    Assembly   { kind tensorDesc "," mask "," value prop-dict attr-dict ":"
+                 qualified(type(tensorDesc)) "," type(mask) "," type(value)
+                 "->" type(result) }
+  }
+
+  // ---- 命名屏障 ----
+
+  op alloc_nbarrier {
+    Doc "Allocate a set of named barriers as specified by nbarrier_num; named barriers are workgroup-level resources shared by all threads of the workgroup.";
+    Attributes (nbarrier_num: i64);
+    Assembly   { nbarrier_num attr-dict }
+  }
+
+  op init_nbarrier {
+    Doc "Assign the named barrier with the given id to the current thread; participant_thread_num is the total number of threads bound to that barrier.";
+    Operands   (nbarrier_id: i8,
+                participant_thread_num: i8);
+    Results    (result: nbarrier);
+    Assembly   { nbarrier_id "," participant_thread_num attr-dict ":"
+                 type(nbarrier_id) "," type(participant_thread_num)
+                 "->" qualified(type(result)) }
+  }
+
+  op nbarrier_arrive {
+    Doc "Signal that the current thread has produced its data for the named barrier; once all participant threads arrive, the waiters are notified.";
+    Operands   (nbarrier: nbarrier);
+    Assembly   { nbarrier attr-dict ":" qualified(type(nbarrier)) }
+  }
+
+  op nbarrier_wait {
+    Doc "Wait on the named barrier until all participant threads have arrived.";
+    Operands   (nbarrier: nbarrier);
+    Assembly   { nbarrier attr-dict ":" qualified(type(nbarrier)) }
+  }
+
+  op fence {
+    Doc "Synchronize memory accesses between a write and the following read or write. memory_kind selects global or shared local memory; fence_scope is workgroup or GPU.";
+    Attributes (memory_kind: MemorySpace,
+                fence_scope: FenceScope);
+    Assembly   { "memory_kind" "=" memory_kind ","
+                 "fence_scope" "=" fence_scope attr-dict }
+  }
+
+  // ---- 布局与共享内存 ----
+
+  op convert_layout {
+    Doc "Redistribute data across subgroups and/or lanes from input_layout to target_layout; source and result have the same type. input_layout defaults to target_layout when omitted.";
+    Operands   (source: vector_or_scalar);
+    Results    (result: vector_or_scalar);
+    Attributes (input_layout: optional<attribute>,
+                target_layout: attribute);
+    Properties [same_type(source, result), memory_effect(read),
+                memory_effect(write)];
+    Implements [AnchorLayoutInterface];
+    Assembly   { source prop-dict attr-dict ":" type(source) }
+  }
+
+  op create_mem_desc {
+    Doc "Create a memory descriptor from a contiguous, statically shaped shared-local-memory buffer; the descriptor has the same total size as that buffer.";
+    Operands   (source: shared_memref);
+    Results    (mem_desc: mem_desc);
+    Properties [pure];
+    Assembly   { source prop-dict attr-dict ":" type(source) "->" qualified(type(mem_desc)) }
+  }
+
+  op load_matrix {
+    Doc "Load a block of data from shared local memory as described by a memory descriptor; offsets count matches the descriptor rank. subgroup_block_io marks offsets that are uniform across the subgroup.";
+    Operands   (mem_desc: mem_desc,
+                offsets: variadic<index>);
+    Results    (res: payload);
+    Attributes (const_offsets: i64_array,
+                subgroup_block_io: optional<unit>,
+                layout: optional<attribute>);
+    Properties [memory_effect(read), same_element_type(mem_desc, res)];
+    Implements [AnchorLayoutInterface];
+    Assembly   { mem_desc custom<DynamicIndexList>(offsets, const_offsets)
+                 prop-dict attr-dict ":" type(operands) "->" type(results) }
+  }
+
+  op store_matrix {
+    Doc "Store a data fragment into shared local memory as described by a memory descriptor; offsets count matches the descriptor rank. subgroup_block_io marks offsets that are uniform across the subgroup.";
+    Operands   (data: payload,
+                mem_desc: mem_desc,
+                offsets: variadic<index>);
+    Attributes (const_offsets: i64_array,
+                subgroup_block_io: optional<unit>,
+                layout: optional<attribute>);
+    Properties [memory_effect(write), same_element_type(mem_desc, data)];
+    Implements [AnchorLayoutInterface];
+    Assembly   { data "," mem_desc custom<DynamicIndexList>(offsets, const_offsets)
+                 prop-dict attr-dict ":" type(operands) }
+  }
+
+  // ---- 数据类型转换与 lane 重排 ----
+
+  op truncf {
+    Doc "Truncate floating point values from a higher precision type to a lower precision type, for example f16/bf16 to microscaling float types; source and result share rank and shape. Rounding defaults to round to nearest even.";
+    Operands   (source: float_value);
+    Results    (result: float_value);
+    Properties [pure, same_shape(source, result), same_rank(source, result)];
+    Assembly   { source attr-dict ":" type(operands) "->" type(results) }
+  }
+
+  op lane_shuffle {
+    Doc "Re-distribute a lane-level 1D fragment across the lanes of a full subgroup. pack maps element j of lane i to logical position i * N + j, unpack is its exact inverse; source and result have the same type.";
+    Operands   (source: vector<scalar>);
+    Results    (result: vector<scalar>);
+    Attributes (mode: LaneShuffleMode);
+    Properties [pure, same_type(source, result)];
+    Assembly   { source mode attr-dict ":" type(source) }
+  }
+
+  op dpas_mx {
+    Doc "Scaled matrix multiply-accumulate on low-precision fragments: result is a * b + acc, with scale_a and scale_b applying the microscaling factors. Leading dimensions of 3D/4D operands are shared batch dimensions.";
+    Operands   (a: vector<scalar>,
+                b: vector<scalar>,
+                acc: optional<vector<scalar>>,
+                scale_a: optional<scale_value>,
+                scale_b: optional<scale_value>);
+    Results    (result: vector<scalar>);
+    Attributes (layout_a: optional<attribute>,
+                layout_b: optional<attribute>,
+                layout_cd: optional<attribute>,
+                layout_a_scale: optional<attribute>,
+                layout_b_scale: optional<attribute>);
+    Properties [pure, operand_segments_by_attribute];
+    Implements [AnchorLayoutInterface];
+    Assembly   { a "," b if acc { "," acc }
+                 if scale_a { "scale_a" "=" scale_a }
+                 if scale_b { "scale_b" "=" scale_b }
+                 prop-dict attr-dict ":" functional-type(operands, results) }
+  }
+}

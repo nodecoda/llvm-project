@@ -162,7 +162,7 @@ dialect emitc {
                 args: optional<array<attribute_value>>,
                 template_args: optional<array<attribute_value>>);
     Implements [CExpressionInterface];
-    Assembly   { Gap(prop_dict) callee "(" arg_operands ")" attr-dict ":"
+    Assembly   { callee "(" arg_operands ")" prop-dict attr-dict ":"
                functional-type(arg_operands, results) }
   }
 
@@ -174,7 +174,7 @@ dialect emitc {
                 args: optional<array<attribute_value>>,
                 template_args: optional<array<attribute_value>>);
     Implements [CExpressionInterface];
-    Assembly   { Gap(prop_dict) receiver callee "(" arg_operands ")" attr-dict ":"
+    Assembly   { receiver callee "(" arg_operands ")" prop-dict attr-dict ":"
                type(receiver) "," functional-type(arg_operands, results) }
   }
 

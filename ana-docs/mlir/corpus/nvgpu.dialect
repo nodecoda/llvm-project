@@ -1,0 +1,383 @@
+/// nvgpu —— NVIDIA GPU 方言：warp/ warpgroup 矩阵片段、异步拷贝、
+/// mbarrier 同步与 TMA 描述符。
+///
+/// 领域分层：
+///   1. warp 矩阵层：ldmatrix 从共享内存装入矩阵片段；mma.sync /
+///      mma.sp.sync 在线程级片段上做 warp 级矩阵乘累加，mmmShape 是
+///      warp 级指令形状，稀疏形式另带 metadata 与 selector。
+///   2. 异步拷贝层：device_async_copy 把元素从 global 拷到 shared，
+///      返回 !nvgpu.device.async.token；create_group 把若干 token 组成
+///      一组，wait 阻塞到组完成。
+///   3. mbarrier 层：create/get/init/test.wait/arrive 族在 shared memory
+///      上操作 mbarrier 对象，arrive.expect_tx 与 try_wait.parity 描述
+///      TMA 事务计数与阶段奇偶等待。
+///   4. TMA 层：tensormap 描述符的 fence/prefetch/create，以及
+///      tma.async.load / tma.async.store 的 tile 搬运。
+///   5. warpgroup 层：warpgroup 矩阵描述符的生成、warpgroup.mma 与
+///      accumulator 的初始化/写回。
+///   6. 转换层：rcp、truncf、extf 三个纯浮点转换/倒数 op。
+///
+/// 文本通道统计：26 个 op —— block 26，Custom 0，Generic 0。上游每个 op
+/// 都自带 assemblyFormat，没有手写打印器；rcp、truncf、extf 的格式里含
+/// prop-dict，本文法本轮补上了这个产生式，位置逐字照写。
+///
+/// 事实：只用核心词表（pure、memory_effect(read/write)）。MemoryRead /
+/// MemoryWrite 的 Arg 效果与 op 级 MemoryEffects 都折算到对应部件所在的
+/// op 上；没有 NoMemoryEffect，也不把“没有该 trait”当成 no_memory_effect。
+///
+/// GAP:
+///   - mbarrier.group 的 num_barriers 与 tensormap.descriptor 的四个
+///     枚举参数只出现在类型文本里，本文法用 Parameters 描述。
+///   - 上游 mbarrier / tensormap / warpgroup 类型别名在 TD 里带
+///     `struct(params)` 的打印，这里逐参数展开为同一个尖括号形式。
+
+dialect nvgpu {
+  Doc "NVIDIA GPU dialect: warp and warpgroup matrix fragments, asynchronous copies, mbarrier synchronization and TMA descriptors.";
+
+  // ---- NVVM 的浮点舍入/饱和枚举（nvgpu 的转换 op 直接使用） ----
+
+  enum FPRoundingMode {
+    Doc "NVVM FPRoundingMode: PTX floating-point rounding modes.";
+    Cases [ none = 0 "none", rn = 1 "rn", rm = 2 "rm", rp = 3 "rp",
+            rz = 4 "rz", rna = 5 "rna", rs = 6 "rs" ];
+  }
+
+  enum SaturationMode {
+    Doc "NVVM SaturationMode: PTX saturation modes.";
+    Cases [ none = 0 "none", satfinite = 1 "satfinite", sat = 2 "sat" ];
+  }
+
+  // ---- tensormap 描述符的枚举参数（NVGPU.td） ----
+
+  enum TensorMapSwizzleKind {
+    Doc "Tensor map shared-memory bank swizzling mode.";
+    Cases [ swizzle_none = 0 "none", swizzle_32b = 1 "swizzle_32b",
+            swizzle_64b = 2 "swizzle_64b", swizzle_128b = 3 "swizzle_128b" ];
+  }
+
+  enum TensorMapL2PromoKind {
+    Doc "Tensor map L2 promotion size.";
+    Cases [ l2promo_none = 0 "none", l2promo_64b = 1 "l2promo_64b",
+            l2promo_128b = 2 "l2promo_128b", l2promo_256b = 3 "l2promo_256b" ];
+  }
+
+  enum TensorMapOOBKind {
+    Doc "Tensor map out-of-bounds fill value.";
+    Cases [ oob_zero = 0 "zero", oob_nan = 1 "nan" ];
+  }
+
+  enum TensorMapInterleaveKind {
+    Doc "Tensor map interleave layout.";
+    Cases [ interleave_none = 0 "none", interleave_16b = 1 "interleave_16b",
+            interleave_32b = 2 "interleave_32b" ];
+  }
+
+  // ---- 本方言类型 ----
+
+  type_def device.async.token {
+    Doc "!nvgpu.device.async.token: completion token of an asynchronous device operation.";
+  }
+
+  type_def mbarrier.group {
+    Doc "!nvgpu.mbarrier.group: one or more mbarrier objects in shared memory; memorySpace is an attribute and num_barriers defaults to 1.";
+    Parameters (memorySpace: attribute, num_barriers: integer);
+    Assembly { "<" "memorySpace" "=" memorySpace "," "num_barriers" "=" num_barriers ">" }
+  }
+
+  type_def mbarrier.token {
+    Doc "!nvgpu.mbarrier.token: token returned by the arrive operations.";
+  }
+
+  type_def tensormap.descriptor {
+    Doc "!nvgpu.tensormap.descriptor: TMA tensor-map descriptor over a memref, with swizzle, L2 promotion, OOB fill and interleave parameters.";
+    Parameters (tensor: memref, swizzle: TensorMapSwizzleKind,
+                l2promo: TensorMapL2PromoKind, oob: TensorMapOOBKind,
+                interleave: TensorMapInterleaveKind);
+    Assembly { "<" "tensor" "=" tensor "," "swizzle" "=" swizzle ","
+               "l2promo" "=" l2promo "," "oob" "=" oob ","
+               "interleave" "=" interleave ">" }
+  }
+
+  type_def warpgroup.descriptor {
+    Doc "!nvgpu.warpgroup.descriptor: 64-bit warpgroup matrix descriptor over a shared-memory memref.";
+    Parameters (tensor: memref);
+    Assembly { "<" "tensor" "=" tensor ">" }
+  }
+
+  type_def warpgroup.accumulator {
+    Doc "!nvgpu.warpgroup.accumulator: distributed accumulator fragment for warpgroup.mma.";
+    Parameters (fragmented: vector);
+    Assembly { "<" "fragmented" "=" fragmented ">" }
+  }
+
+  // ---- 类型约束 ----
+
+  constraint any_vector = vector;
+  constraint f32_vector = vector<f32>;
+  constraint float_or_vector = float | vector<float>;
+  constraint sparse_metadata = vector<i16, 2>;
+  constraint mbarrier_pointer = i32 | i64;
+
+  // ---- warp 级矩阵 ----
+
+  op ldmatrix {
+    Doc "Load a matrix fragment from shared memory into registers.";
+    Operands   (srcMemref: memref, indices: variadic<index>);
+    Results    (res: any_vector);
+    Attributes (transpose: bool, numTiles: i32);
+    Properties [memory_effect(read), same_element_type(srcMemref, res)];
+    Assembly   { srcMemref "[" indices "]" "numTiles" "=" numTiles
+                 "transpose" "=" transpose attr-dict ":"
+                 type(srcMemref) "->" type(res) }
+  }
+
+  op mma.sync {
+    Doc "Warp-level matrix-multiply-and-accumulate over thread-level fragments.";
+    Operands   (matrixA: any_vector, matrixB: any_vector, matrixC: any_vector);
+    Results    (res: any_vector);
+    Attributes (mmaShape: array<i64>, tf32Enabled: optional<unit>);
+    Properties [pure, same_element_type(matrixA, matrixB)];
+    Assembly   { "(" matrixA "," matrixB "," matrixC ")" "mmaShape" "=" mmaShape
+                 if tf32Enabled { "tf32Enabled" }
+                 attr-dict ":" "(" type(matrixA) "," type(matrixB) ","
+                 type(matrixC) ")" "->" type(res) }
+  }
+
+  op mma.sp.sync {
+    Doc "Warp-level sparse matrix-multiply-and-accumulate with structured sparse A and metadata indices.";
+    Operands   (matrixA: any_vector, matrixB: any_vector, matrixC: any_vector,
+                sparseMetadata: sparse_metadata);
+    Results    (res: any_vector);
+    Attributes (mmaShape: array<i64>, sparsitySelector: i32 = 0,
+                tf32Enabled: optional<unit>);
+    Properties [pure, same_element_type(matrixA, matrixB)];
+    Assembly   { "(" matrixA "," matrixB "," matrixC ")" "metadata" "(" sparseMetadata ")"
+                 "mmaShape" "=" mmaShape
+                 if sparsitySelector { "sparsitySelector" "=" sparsitySelector }
+                 if tf32Enabled { "tf32Enabled" }
+                 attr-dict ":" "(" type(matrixA) "," type(matrixB) ","
+                 type(matrixC) ")" "->" type(res) }
+  }
+
+  // ---- 设备侧异步拷贝 ----
+
+  op device_async_copy {
+    Doc "Initiate an asynchronous element copy from global memory to shared memory; the result token joins a copy group.";
+    Operands   (dst: memref, dstIndices: variadic<index>,
+                src: memref, srcIndices: variadic<index>,
+                srcElements: optional<index>);
+    Results    (asyncToken: device.async.token);
+    Attributes (dstElements: integer, bypassL1: optional<unit>);
+    Properties [memory_effect(read), memory_effect(write)];
+    Assembly   { src "[" srcIndices "]" "," dst "[" dstIndices "]" ","
+                 dstElements if srcElements { "," srcElements }
+                 if bypassL1 { "bypassL1" }
+                 attr-dict ":" type(src) "to" type(dst) }
+  }
+
+  op device_async_create_group {
+    Doc "Create a group from pending device async tokens and return its completion token.";
+    Operands   (inputTokens: variadic<device.async.token>);
+    Results    (asyncToken: device.async.token);
+    Assembly   { inputTokens attr-dict }
+  }
+
+  op device_async_wait {
+    Doc "Block the thread until the group associated with the token completes.";
+    Operands   (asyncDependencies: device.async.token);
+    Attributes (numGroups: optional<i32>);
+    Assembly   { asyncDependencies
+                 if numGroups { "numGroups" "=" numGroups }
+                 attr-dict }
+  }
+
+  // ---- mbarrier ----
+
+  op mbarrier.create {
+    Doc "Create one or more mbarrier objects in shared memory.";
+    Results    (barriers: mbarrier.group);
+    Assembly   { attr-dict "->" type(barriers) }
+  }
+
+  op mbarrier.get {
+    Doc "Return a pointer to one mbarrier object in a group.";
+    Operands   (barriers: mbarrier.group, mbarId: index);
+    Results    (mbarrierPointer: mbarrier_pointer);
+    Assembly   { barriers "[" mbarId "]" attr-dict ":"
+                 type(barriers) "->" type(mbarrierPointer) }
+  }
+
+  op mbarrier.init {
+    Doc "Initialize an mbarrier object with a thread count.";
+    Operands   (barriers: mbarrier.group, count: index, mbarId: index,
+                predicate: optional<i1>);
+    Assembly   { barriers "[" mbarId "]" "," count
+                 if predicate { "," "predicate" "=" predicate }
+                 attr-dict ":" type(barriers) }
+  }
+
+  op mbarrier.test.wait {
+    Doc "Non-blocking test whether the mbarrier has completed its current phase.";
+    Operands   (barriers: mbarrier.group, token: mbarrier.token, mbarId: index);
+    Results    (waitComplete: i1);
+    Assembly   { barriers "[" mbarId "]" "," token attr-dict ":"
+                 type(barriers) "," type(token) }
+  }
+
+  op mbarrier.arrive {
+    Doc "Perform an arrive-on operation on an mbarrier and return a token.";
+    Operands   (barriers: mbarrier.group, mbarId: index);
+    Results    (token: mbarrier.token);
+    Assembly   { barriers "[" mbarId "]" attr-dict ":"
+                 type(barriers) "->" type(token) }
+  }
+
+  op mbarrier.arrive.nocomplete {
+    Doc "Perform a non-completing arrive-on operation with an explicit count and return a token.";
+    Operands   (barriers: mbarrier.group, mbarId: index, count: index);
+    Results    (token: mbarrier.token);
+    Assembly   { barriers "[" mbarId "]" "," count attr-dict ":"
+                 type(barriers) "->" type(token) }
+  }
+
+  op mbarrier.arrive.expect_tx {
+    Doc "Perform an expect-tx operation on an mbarrier, increasing its transaction count.";
+    Operands   (barriers: mbarrier.group, txcount: index, mbarId: index,
+                predicate: optional<i1>);
+    Assembly   { barriers "[" mbarId "]" "," txcount
+                 if predicate { "," "predicate" "=" predicate }
+                 attr-dict ":" type(barriers) }
+  }
+
+  op mbarrier.try_wait.parity {
+    Doc "Wait on an mbarrier phase selected by parity, with a system-dependent timeout.";
+    Operands   (barriers: mbarrier.group, phaseParity: i1, ticks: index,
+                mbarId: index);
+    Assembly   { barriers "[" mbarId "]" "," phaseParity "," ticks attr-dict ":"
+                 type(barriers) }
+  }
+
+  // ---- TMA ----
+
+  op tma.fence.descriptor {
+    Doc "Fence a tensor-map descriptor after it was modified from the host.";
+    Operands   (tensorMapDescriptor: tensormap.descriptor);
+    Assembly   { tensorMapDescriptor attr-dict ":"
+                 type(tensorMapDescriptor) }
+  }
+
+  op tma.prefetch.descriptor {
+    Doc "Prefetch the cache line containing a tensor-map descriptor.";
+    Operands   (tensorMapDescriptor: tensormap.descriptor,
+                predicate: optional<i1>);
+    Assembly   { tensorMapDescriptor
+                 if predicate { "," "predicate" "=" predicate }
+                 attr-dict ":" type(tensorMapDescriptor) }
+  }
+
+  op tma.async.load {
+    Doc "Asynchronously load a tile from global memory to shared memory through TMA.";
+    Operands   (dst: memref, barriers: mbarrier.group,
+                tensorMapDescriptor: tensormap.descriptor,
+                coordinates: variadic<index>, mbarId: index,
+                multicastMask: optional<i16>, predicate: optional<i1>);
+    Properties [memory_effect(write)];
+    Assembly   { tensorMapDescriptor "[" coordinates "]" "," barriers "[" mbarId "]"
+                 "to" dst
+                 if multicastMask { "multicast_mask" "=" multicastMask }
+                 if predicate { "," "predicate" "=" predicate }
+                 attr-dict ":" type(tensorMapDescriptor) "," type(barriers)
+                 "->" type(dst) }
+  }
+
+  op tma.async.store {
+    Doc "Asynchronously store a tile to global memory through TMA.";
+    Operands   (src: memref, tensorMapDescriptor: tensormap.descriptor,
+                coordinates: variadic<index>, predicate: optional<i1>);
+    Properties [memory_effect(read), memory_effect(write)];
+    Assembly   { src "to" tensorMapDescriptor "[" coordinates "]"
+                 if predicate { "," "predicate" "=" predicate }
+                 attr-dict ":" type(src) "->" type(tensorMapDescriptor) }
+  }
+
+  op tma.create.descriptor {
+    Doc "Create a tensor-map descriptor for a tiled memory region.";
+    Operands   (tensor: memref, boxDimensions: variadic<index>);
+    Results    (tensorMap: tensormap.descriptor);
+    Assembly   { tensor "box" "[" boxDimensions "]" attr-dict ":"
+                 type(tensor) "->" type(tensorMap) }
+  }
+
+  // ---- warpgroup ----
+
+  op warpgroup.generate.descriptor {
+    Doc "Build a warpgroup matrix descriptor from a shared-memory tensor and its tensor map.";
+    Operands   (tensor: memref, tensorMap: tensormap.descriptor);
+    Results    (descriptor: warpgroup.descriptor);
+    Properties [memory_effect(read)];
+    Assembly   { tensor "," tensorMap attr-dict ":"
+                 type(tensor) "," type(tensorMap) "->" type(descriptor) }
+  }
+
+  op warpgroup.mma {
+    Doc "Warpgroup-level matrix-multiply-and-accumulate over wgmma descriptors and accumulators.";
+    Operands   (descriptorA: warpgroup.descriptor,
+                descriptorB: warpgroup.descriptor,
+                matrixC: warpgroup.accumulator);
+    Results    (matrixD: warpgroup.accumulator);
+    Attributes (waitGroup: i64 = 1, transposeA: optional<unit>,
+                transposeB: optional<unit>);
+    Assembly   { descriptorA "," descriptorB "," matrixC
+                 if waitGroup { "waitGroup" "=" waitGroup }
+                 if transposeA { "transposeA" }
+                 if transposeB { "transposeB" }
+                 attr-dict ":" type(descriptorA) "," type(descriptorB) ","
+                 type(matrixC) "->" type(matrixD) }
+  }
+
+  op warpgroup.mma.store {
+    Doc "Store a warpgroup accumulator fragment to a memref.";
+    Operands   (matrixD: warpgroup.accumulator, dstMemref: memref);
+    Properties [memory_effect(write)];
+    Assembly   { matrixD "," dstMemref attr-dict ":"
+                 type(matrixD) "to" type(dstMemref) }
+  }
+
+  op warpgroup.mma.init.accumulator {
+    Doc "Create and initialize a warpgroup accumulator matrix.";
+    Results    (matrixC: warpgroup.accumulator);
+    Assembly   { attr-dict "->" type(matrixC) }
+  }
+
+  // ---- 浮点转换 ----
+
+  op rcp {
+    Doc "Reciprocal of an f32 vector; rounding, approx and ftz are NVVM float attributes.";
+    Operands   (in: f32_vector);
+    Results    (out: f32_vector);
+    Attributes (rounding: FPRoundingMode = none, approx: bool = false,
+                ftz: bool = false);
+    Properties [pure, same_type(in, out)];
+    Assembly   { in prop-dict attr-dict ":" type(out) }
+  }
+
+  op truncf {
+    Doc "Truncate a floating-point value to a strictly narrower floating-point type.";
+    Operands   (in: float_or_vector, random_bits: optional<i32>);
+    Results    (out: float_or_vector);
+    Attributes (rnd: FPRoundingMode = rn, sat: SaturationMode = satfinite,
+                relu: bool = false);
+    Properties [pure];
+    Assembly   { in if random_bits { "," random_bits } prop-dict attr-dict
+                 ":" type(in) "to" type(out) }
+  }
+
+  op extf {
+    Doc "Extend a floating-point value to a strictly wider floating-point type.";
+    Operands   (in: float_or_vector);
+    Results    (out: float_or_vector);
+    Attributes (rnd: FPRoundingMode = rn, relu: bool = false);
+    Properties [pure];
+    Assembly   { in prop-dict attr-dict ":" type(in) "to" type(out) }
+  }
+}
