@@ -277,7 +277,7 @@ dialect emitc {
     Operands   (reference: lvalue);
     Results    (result: ptr);
     Properties [pure, c_expression];
-    Assembly   { reference ":" type(reference) attr-dict }
+    Assembly   { reference ":" qualified(type(reference)) attr-dict }
   }
 
   op dereference {
@@ -285,7 +285,7 @@ dialect emitc {
     Operands   (pointer: ptr);
     Results    (result: lvalue);
     Properties [pure, c_expression, always_inline];
-    Assembly   { pointer ":" type(pointer) attr-dict }
+    Assembly   { pointer ":" qualified(type(pointer)) attr-dict }
   }
 
   op cast {

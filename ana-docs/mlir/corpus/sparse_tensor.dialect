@@ -274,7 +274,8 @@ dialect sparse_tensor {
     Results    (result: storage_specifier);
     Properties [pure];
     Assembly   { attr-dict if source { "with" source } ":"
-                 if source { "from" type(source) "to" } type(result) }
+                 if source { "from" qualified(type(source)) "to" }
+                 qualified(type(result)) }
   }
 
   op storage_specifier.get {
@@ -285,7 +286,8 @@ dialect sparse_tensor {
                 level: optional<index> [non_negative]);
     Properties [pure];
     Assembly   { specifier specifier_kind
-                 if level { "at" level } attr-dict ":" type(specifier) }
+                 if level { "at" level } attr-dict
+                 ":" qualified(type(specifier)) }
   }
 
   op storage_specifier.set {
@@ -297,7 +299,7 @@ dialect sparse_tensor {
     Properties [pure];
     Assembly   { specifier specifier_kind
                  if level { "at" level } "with" value
-                 attr-dict ":" type(result) }
+                 attr-dict ":" qualified(type(result)) }
   }
 
   // ---- 坐标与级的下标 ----
@@ -487,7 +489,7 @@ dialect sparse_tensor {
                  "lvls" "=" custom<LevelRange>(lo_lvl, hi_lvl)
                  attr-dict ":" type(tensor)
                  if parent_iter { "," type(parent_iter) }
-                 "->" type(extracted_space) }
+                 "->" qualified(type(extracted_space)) }
   }
 
   op extract_value {
@@ -496,7 +498,7 @@ dialect sparse_tensor {
     Results    (result: supported_element);
     Properties [pure];
     Assembly   { tensor "at" iterator attr-dict ":" type(tensor) ","
-                 type(iterator) }
+                 qualified(type(iterator)) }
   }
 
   op iterate {

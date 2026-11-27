@@ -103,6 +103,7 @@ static int asm_kw(const char *s) {
   if (!strcmp(s, "attr-dict")) return A_ATTR_DICT;
   if (!strcmp(s, "attr-dict-with-keyword")) return A_ATTR_DICT_WITH_KEYWORD;
   if (!strcmp(s, "type")) return A_TYPE;
+  if (!strcmp(s, "qualified")) return A_QUALIFIED;
   if (!strcmp(s, "if")) return A_IF;
   if (!strcmp(s, "functional-type")) return A_FUNCTIONAL_TYPE;
   if (!strcmp(s, "oilist")) return A_OILIST;

@@ -49,7 +49,7 @@
 | [18-corpus-round-four.md](18-corpus-round-four.md) | 第四轮语料：pdl_interp/tosa/shape/async/quant，五个“缺口判决”（ODS 落点、声明名=助记符、trait 列表实参、verifier 领域、推迟项）、属性值域、秩进类型、19 个方言 58 条规则 / 136 条产生式 |
 | [19-escape-hatches.md](19-escape-hatches.md) | 逃逸点宪章：五种通道（块/Custom/Generic/事实/类型名）、七条规则（显式、单维、可数、判据、词表、预算、类型名）、核心词表 39 + 方言本地 26（20 章复审后 19）、诚实的无通道缺口清单 |
 | [20-corpus-round-five.md](20-corpus-round-five.md) | 第五轮语料：emitc/sparse_tensor，92 个 op 换 0 条产生式、`oilist` 读窄的修正、同名类型/属性空间、字典型属性、预算首次告警与 8 合 7 留的单次事实复审 |
-| [21-corpus-round-six.md](21-corpus-round-six.md) | 第六轮语料：ub/ptr/shard/arm_sve，81 个 op 换 0 条产生式；`same_type` 升级进核心（39→40）、本地词表 19→18；`qualified` 第三个见证判决为产生式；空负载属性、符号非类型、Generic 是契约 |
+| [21-corpus-round-six.md](21-corpus-round-six.md) | 第六轮语料：ub/ptr/shard/arm_sve，81 个 op 换 0 条 op 形状产生式；`same_type` 升级进核心（39→40）、本地词表 19→18；`qualified` 第三个见证落地为文本产生式（11 处使用点）；空负载属性、符号非类型、Generic 是契约 |
 
 ## 一页结论
 
@@ -166,9 +166,9 @@
 34. **预算告警先于失控**：两个方言就把本地事实 8→34；复审不删信息，只换词，
     单次占比 59%→33%（19 章 R6、20 章 §6.1、21 章 §7）。
 35. **op 数量与文法大小已经脱钩**：最后 173 个 op（第五、六轮）只换来
-    1 条产生式，新增 op 与新增词的比例降到 81:1（21 章）。
+    2 条产生式（都是文本通道），新增 op 与新增词的比例降到 81:1（21 章）。
 36. **同一个缺口第三次出现就该改文法**：`qualified(type(x))` 在
-    sparse_tensor/emitc/ptr 三处独立出现，判决为产生式，不再留在 Doc（21 章）。
+    sparse_tensor/emitc/ptr 三处独立出现，已成为产生式，11 处使用点同时落地（21 章）。
 37. **“没有类型”和“没有格式”都是领域事实**：`shard.grid` 是符号 op 而非
     `GridType`；`arm_sve` 的 scalable vector 是内建 `vector`，不发明方言类型（21 章）。
 38. **Generic 是契约，不是历史遗留**：`arm_sve` 的 23 个 `intr.*` 与 21 个
@@ -204,7 +204,7 @@
 | `14-dialect-domain-model.md` | 领域模型：定义/生成边界、三投影、trait 分类、约束语义、schema refinement、v1 逐项判决 |
 | `15-corpus-driven-grammar.md` | 语料优先：方法论、语料统计、见证表、8 个修正、机械核对、与 v1/v2 差异、下一轮语料 |
 | `corpus/*.dialect` | 25 个方言源程序（5739 行）：519 op、76 schema、34 enum、66 constraint、14 attr_def、33 type_def |
-| `dialect-grammar.y` | 从语料归纳的文法（bison，58 条规则 / 137 条产生式，0 冲突，`25/25 parse OK`） |
+| `dialect-grammar.y` | 从语料归纳的文法（bison，58 条规则 / 138 条产生式，0 冲突，`25/25 parse OK`） |
 | `16-corpus-round-two.md` | 第二轮：10 项扩展、谓词组合、region 约束搬家、软关键字、见证表、机械核对 |
 | `corpus/gpu.dialect` | gpu：launch/module/func、内建 id/dim、barrier/printf/shuffle/all_reduce/subgroup_reduce/warp（18 op） |
 | `corpus/linalg.dialect` | linalg：`Structured` schema + 5 个命名算符 + generic/map/reduce/transpose/broadcast/index/yield（12 op） |

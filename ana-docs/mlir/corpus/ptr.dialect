@@ -94,7 +94,7 @@ dialect ptr {
     Attributes (alignment: optional<integer>);
     Assembly   { ptr "," mask "," passthrough
                  if alignment { "alignment" "=" alignment }
-                 attr-dict ":" type(ptr) "->" type(result) }
+                 attr-dict ":" qualified(type(ptr)) "->" type(result) }
   }
 
   /// 掩码写的公共形状。ptr 同样是地址：masked_store 是标量 ptr，scatter 是
@@ -105,7 +105,7 @@ dialect ptr {
     Attributes (alignment: optional<integer>);
     Assembly   { value "," ptr "," mask
                  if alignment { "alignment" "=" alignment }
-                 attr-dict ":" type(value) "," type(ptr) }
+                 attr-dict ":" type(value) "," qualified(type(ptr)) }
   }
 
   // ---- 常量与类型转换 ----
@@ -175,7 +175,7 @@ dialect ptr {
                         | "invariant" invariant
                         | "invariant_group" invariant_group
                         | "alignment" "=" alignment)
-                 attr-dict ":" type(ptr) "->" type(value) }
+                 attr-dict ":" qualified(type(ptr)) "->" type(value) }
   }
 
   op store {
@@ -195,7 +195,7 @@ dialect ptr {
                  oilist("nontemporal" nontemporal
                         | "invariant_group" invariant_group
                         | "alignment" "=" alignment)
-                 attr-dict ":" type(value) "," type(ptr) }
+                 attr-dict ":" type(value) "," qualified(type(ptr)) }
   }
 
   // ---- 掩码访存 ----

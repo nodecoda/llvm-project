@@ -38,7 +38,7 @@
 
 /* Assembly 模式 */
 %token A_ATTR_DICT A_ATTR_DICT_WITH_KEYWORD A_TYPE A_IF
-%token A_FUNCTIONAL_TYPE A_OILIST A_CUSTOM A_SUCCESSORS
+%token A_FUNCTIONAL_TYPE A_QUALIFIED A_OILIST A_CUSTOM A_SUCCESSORS
 
 %define parse.trace
 
@@ -305,6 +305,8 @@ asm_element
   | A_ATTR_DICT                  /* 剩余属性集合，输出为 {..} */
   | A_ATTR_DICT_WITH_KEYWORD     /* 剩余属性集合，输出为 attributes {..} */
   | A_TYPE L_PAREN IDENT R_PAREN /* 打印某个部件的类型 */
+  | A_QUALIFIED L_PAREN A_TYPE L_PAREN IDENT R_PAREN R_PAREN
+                                 /* qualified(type(x))：强制带方言前缀打印 */
   | A_FUNCTIONAL_TYPE L_PAREN IDENT COMMA IDENT R_PAREN
                                  /* (T...) -> (U...)，实参是部件组 */
   | A_CUSTOM L_ANGLE IDENT R_ANGLE L_PAREN custom_arg_list R_PAREN
