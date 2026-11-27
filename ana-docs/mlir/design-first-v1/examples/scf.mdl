@@ -1,0 +1,94 @@
+/// The scf dialect: structured control flow with regions.
+dialect SCF {
+  Namespace "mlir::scf";
+  Class "SCFDialect";
+
+  family SCFBaseOp<mnemonic: string> { }
+
+  /// Yield values out of an enclosing scf region.
+  op YieldOp "yield" extends SCFBaseOp<"yield"> {
+    Operands (results: variadic<any>)
+    Traits   [Pure, ReturnLike, Terminator,
+              ParentOneOf<["ExecuteRegionOp", "ForOp", "IfOp", "IndexSwitchOp", "WhileOp"]>]
+    Format   { attr-dict if results { ":" type[results] } }
+  }
+
+  /// Continue an scf.while loop.
+  op ConditionOp "condition" extends SCFBaseOp<"condition"> {
+    Operands (condition: i1, args: variadic<any>)
+    Traits   [Pure, HasParent<"WhileOp">, Terminator]
+    Implements [RegionBranchTerminatorOpInterface]
+    Format   { "(" condition ")" attr-dict if args { ":" type[args] } }
+  }
+
+  /// If-then-else with two single-block regions.
+  op IfOp "if" extends SCFBaseOp<"if"> {
+    Operands (condition: i1)
+    Results  (results: variadic<any>)
+    Regions  (thenRegion: SizedRegion<1>, elseRegion: SizedRegion<1>)
+    Traits   [SingleBlockImplicitTerminator<"scf::YieldOp">, RecursiveMemoryEffects,
+              RecursivelySpeculatable, NoRegionArguments]
+    Implements [RegionBranchOpInterface, PromotableRegionOpInterface]
+    Format   Custom;
+    Verify;
+    Fold;
+    Canonicalize;
+  }
+
+  /// Counted loop over [lowerBound, upperBound) with carried values.
+  op ForOp "for" extends SCFBaseOp<"for"> {
+    Operands (lowerBound: index, upperBound: index, step: index,
+              initArgs: variadic<any>)
+    Results  (results: variadic<any>)
+    Attrs    (unsignedCmp: UnitAttr optional)
+    Regions  (body: SizedRegion<1>)
+    Traits   [AutomaticAllocationScope,
+              AllTypesMatch<["lowerBound", "upperBound", "step"]>,
+              ConditionallySpeculatable,
+              SingleBlockImplicitTerminator<"scf::YieldOp">,
+              RecursiveMemoryEffects]
+    Implements [LoopLikeOpInterface, RegionBranchOpInterface, PromotableRegionOpInterface]
+    Format   Custom;
+    Verify;
+    Canonicalize;
+  }
+
+  /// Generic "while"/"do-while" loop with before/after regions.
+  op WhileOp "while" extends SCFBaseOp<"while"> {
+    Operands (inits: variadic<any>)
+    Results  (results: variadic<any>)
+    Regions  (before: SizedRegion<1>, after: SizedRegion<1>)
+    Traits   [SingleBlock, RecursiveMemoryEffects]
+    Implements [RegionBranchOpInterface, LoopLikeOpInterface, PromotableRegionOpInterface]
+    Format   Custom;
+    Verify;
+    Canonicalize;
+  }
+
+  /// Execute a multi-block region exactly once.
+  op ExecuteRegionOp "execute_region" extends SCFBaseOp<"execute_region"> {
+    Attrs    (no_inline: UnitAttr optional)
+    Results  (results: variadic<any>)
+    Regions  (region: AnyRegion)
+    Traits   [RecursiveMemoryEffects]
+    Implements [RegionBranchOpInterface, PromotableRegionOpInterface]
+    Format   Custom;
+    Verify;
+    Canonicalize;
+  }
+
+  /// Multi-way branch on an index value, one region per case.
+  op IndexSwitchOp "index_switch" extends SCFBaseOp<"index_switch"> {
+    Operands (arg: index)
+    Results  (results: variadic<any>)
+    Attrs    (cases: DenseI64ArrayAttr)
+    Regions  (defaultRegion: SizedRegion<1>,
+              caseRegions: VariadicRegion<SizedRegion<1>>)
+    Traits   [RecursiveMemoryEffects, SingleBlockImplicitTerminator<"scf::YieldOp">]
+    Format   { arg attr-dict if results { "->" type[results] }
+               custom<SwitchCases>[cases, caseRegions]
+               "\n" "default" defaultRegion }
+    Verify;
+    Canonicalize;
+  }
+}

@@ -1,0 +1,96 @@
+/// arith.dialect —— 一个方言的领域描述（sketch，不是最终语法）。
+///
+/// 名字即身份：`dialect arith` + `op addi` 就是 `arith.addi`。
+/// 这里没有 namespace / class / builder / C++ 片段：那些是生成问题。
+/// `///` 是写给维护者的注释；`doc` 子句才是会被消费的文档数据。
+
+dialect arith {
+  doc "Arithmetic operations over integers, floats and index."
+
+  /// 约束指称一个类型集合。
+  constraint int_like   = signless_integer | index
+  constraint float_like = f16 | f32 | f64 | bf16
+  constraint bool_like  = i1
+
+  /// schema 是一组 op 的公共形状。schema 没有助记符参数：
+  /// op 的名字由 `op addi` 决定，schema 只提供部件。
+  /// 子定义是 refinement：同名部件覆盖，新部件追加，Properties 取并集。
+  schema IntBinary {
+    Operands (lhs: int_like, rhs: type_of(lhs))
+    Results  (result: type_of(lhs))
+    Properties [pure, elementwise]
+    Assembly { lhs "," rhs attr-dict ":" type(result) }
+  }
+
+  schema IntBinaryWithOverflow extends IntBinary {
+    Attributes (overflow_flags: OverflowFlags = none)
+    Assembly {
+      lhs "," rhs
+      if overflow_flags { "overflow" overflow_flags }
+      attr-dict ":" type(result)
+    }
+  }
+
+  op addi from IntBinaryWithOverflow {
+    doc "Integer addition."
+    Properties [commutative]
+  }
+
+  op subi from IntBinaryWithOverflow {
+    doc "Integer subtraction."
+  }
+
+  op muli from IntBinaryWithOverflow {
+    doc "Integer multiplication."
+  }
+
+  /// 没有 schema 可复用：直接定义。
+  op constant {
+    doc "Produce a value from a constant attribute."
+    Results    (result: any)
+    Attributes (value: any_attribute)
+    Properties [pure, constant_like]
+    Assembly   { value attr-dict ":" type(result) }
+  }
+
+  schema Compare {
+    Operands   (lhs: any, rhs: type_of(lhs))
+    Results    (result: bool_like)
+    Attributes (predicate: IntegerPredicate)
+    Properties [pure]
+    Assembly   { predicate "," lhs "," rhs attr-dict ":" type(lhs) }
+  }
+
+  /// 只收窄一个部件：rhs 从 schema 继承，不被覆盖。
+  op cmpi from Compare {
+    doc "Integer comparison."
+    Operands (lhs: int_like)
+  }
+
+  /// `from`/`to` 是关键字，参数名用 source/target 避开。
+  schema Cast<source: type, target: type> {
+    Operands (input: source)
+    Results  (output: target)
+    Properties [pure]
+    Assembly { input attr-dict ":" type(input) "to" type(output) }
+  }
+
+  op extsi from Cast<int_like, int_like> {
+    doc "Sign-extend an integer."
+  }
+
+  op extf from Cast<float_like, float_like> {
+    doc "Extend a float."
+  }
+
+  op select {
+    doc "Choose one of two values."
+    Operands (condition: bool_like,
+              true_value: any,
+              false_value: type_of(true_value))
+    Results  (result: type_of(true_value))
+    Properties [pure, elementwise, speculatable]
+    Assembly { condition "," true_value "," false_value
+               attr-dict ":" type(result) }
+  }
+}

@@ -1,0 +1,91 @@
+/// The arith dialect.
+dialect Arith {
+  Namespace "mlir::arith";
+  Class "ArithDialect";
+
+  constraint int_like = signless_integer | index;
+  constraint float_like = f16 | f32 | f64 | bf16;
+  constraint bool_like = i1;
+
+  family ArithOp<mnemonic: string, extra: [trait] = []> {
+    Traits [VectorUnroll, NoMemoryEffect, ElementwiseMappable]
+    Extra "// extra declarations";
+  }
+
+  family UnaryOp<mnemonic: string, extra: [trait] = []>
+      extends ArithOp<mnemonic, extra> {
+    Operands (operand: any)
+    Results  (result: any)
+    Traits   [Pure, SameOperandsAndResultType]
+    Format   { operand attr-dict ":" type[result] }
+  }
+
+  family BinaryOp<mnemonic: string, extra: [trait] = []>
+      extends ArithOp<mnemonic, extra> {
+    Operands (lhs: any, rhs: any)
+    Results  (result: any)
+    Traits   [SameOperandsAndResultType]
+    Format   { lhs "," rhs attr-dict ":" type[result] }
+  }
+
+  family IntBinaryOp<mnemonic: string, extra: [trait] = []>
+      extends BinaryOp<mnemonic, extra> {
+    Operands (lhs: int_like, rhs: int_like)
+    Results  (result: int_like)
+    Implements [InferIntRange]
+  }
+
+  family IntBinaryOpWithOverflow<mnemonic: string, extra: [trait] = []>
+      extends IntBinaryOp<mnemonic, extra> {
+    Attrs (overflow_flags: IntegerOverflowFlags = none)
+    Format {
+      lhs "," rhs
+      if overflow_flags { "overflow" overflow_flags }
+      attr-dict ":" type[result]
+    }
+  }
+
+  /// Integer addition operation.
+  ///
+  /// Performs N-bit addition on the operands.
+  op AddIOp "addi" extends IntBinaryOpWithOverflow<"addi", []> {
+    Summary "integer addition operation";
+    Traits [Commutative]
+  }
+
+  op SubIOp "subi" extends IntBinaryOpWithOverflow<"subi", []> {
+    Summary "integer subtraction operation";
+  }
+
+  op CmpIOp "cmpi" extends ArithOp<"cmpi", []> {
+    Operands (lhs: int_like, rhs: int_like)
+    Results  (result: bool_like)
+    Attrs    (predicate: IntegerPredicate)
+    Traits   [Pure, SameTypeOperands]
+    Implements [InferIntRange]
+    Format   { predicate "," lhs "," rhs attr-dict ":" type[lhs] }
+  }
+
+  op ConstantOp "constant" extends ArithOp<"constant", []> {
+    Results (result: any)
+    Attrs   (value: any_attr)
+    Format  { value attr-dict ":" type[result] }
+  }
+
+  family CastOp<from: type, to: type, mnemonic: string>
+      extends ArithOp<mnemonic, []> {
+    Operands (in: from)
+    Results  (out: to)
+    Traits   [Pure, SameOperandsAndResultShape]
+    Implements [CastOpInterface]
+    Format   { in attr-dict ":" type[in] "to" type[out] }
+    Builders [
+      Build(in: Value) "return build($_builder, $_state, in.getType(), in);"
+    ]
+    Verify code { return success(); };
+  }
+
+  op ExtSIOp "extsi" extends CastOp<int_like, int_like, "extsi"> {
+    Summary "sign extend integer";
+  }
+}

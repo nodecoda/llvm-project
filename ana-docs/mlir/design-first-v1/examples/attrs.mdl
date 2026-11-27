@@ -1,0 +1,37 @@
+/// Attribute, type, interface and enum declarations.
+dialect ArithExtras {
+  Namespace "mlir::arith";
+  Class "ArithDialect";
+
+  enum_def FastMathFlags: IntegerFlags {
+    None = 0, "none";
+    Reassoc = 1, "reassoc";
+    Nnan = 2, "nnan";
+    Ninf = 4, "ninf";
+  }
+
+  attr_def FastMathAttr: EnumAttr {
+    Parameters (value: FastMathFlags = None)
+    Mnemonic "fastmath";
+    Summary "floating point fast-math flags";
+    Verify code { return success(); }
+    Extra code { static constexpr llvm::StringRef getMnemonic() { return "fastmath"; } }
+  }
+
+  type_def ComplexType {
+    Parameters (element: type)
+    Mnemonic "complex";
+    Format   { "<" element ">" }
+    Verify;
+  }
+
+  interface InferIntRange {
+    Namespace "mlir::infer_int_range";
+    Summary "range inference for integer-valued results";
+    Methods [
+      Method inferResultRanges(inputs: ValueRange, results: ValueRange)
+        code { return success(); }
+    ]
+    Extra "// interface declarations";
+  }
+}

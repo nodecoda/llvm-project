@@ -1,0 +1,72 @@
+/// The func dialect: function-like operations.
+dialect Func {
+  Namespace "mlir::func";
+  Class "FuncDialect";
+
+  /// Every operation in this dialect derives from this family.
+  family FuncBaseOp<mnemonic: string> { }
+
+  /// Shape shared by direct and indirect calls.
+  family CallLikeOp<mnemonic: string> extends FuncBaseOp<mnemonic> {
+    Attrs  (arg_attrs: OptionalAttr<DictArrayAttr>,
+            res_attrs: OptionalAttr<DictArrayAttr>)
+    Traits [CallOpInterface, MemRefsNormalizable]
+    Format Custom;
+  }
+
+  /// Direct call to a symbol in the enclosing symbol table.
+  op CallOp "call" extends CallLikeOp<"call"> {
+    Operands (operands: variadic<any>)
+    Results  (results: variadic<any>)
+    Attrs    (callee: FlatSymbolRefAttr)
+    Implements [SymbolUserOpInterface]
+    Builders [
+      Build(callee: FuncOp, operands: ValueRange)
+        code { $_state.addOperands(operands); }
+    ]
+  }
+
+  /// Call through a value of function type.
+  op CallIndirectOp "call_indirect" extends CallLikeOp<"call_indirect"> {
+    Operands (callee: FunctionType, callee_operands: variadic<any>)
+    Results  (results: variadic<any>)
+    Traits   [TypesMatchWith<"callee input types match argument types", "callee", "callee_operands", "::llvm::cast<FunctionType>($_self).getInputs()">]
+  }
+
+  /// A symbol reference to a function, usable as an SSA value.
+  op ConstantOp "constant" extends FuncBaseOp<"constant"> {
+    Results (result: any)
+    Attrs   (value: FlatSymbolRefAttr)
+    Traits  [ConstantLike, Pure]
+    Implements [SymbolUserOpInterface, OpAsmOpInterface]
+    Format  { attr-dict value ":" type[result] }
+    Fold;
+  }
+
+  /// An operation with a name containing a single SSACFG region.
+  family CallableOp<mnemonic: string> extends FuncBaseOp<mnemonic> {
+    Regions (body: AnyRegion)
+    Traits  [SymbolName, SymbolVisibility, FunctionOpInterface, IsolatedFromAbove,
+             OpAsmOpInterface, DLTIQueryOpInterface]
+    Format  Custom;
+    Extra code {
+      mlir::FunctionType getFunctionType() {
+        return getFunctionTypeAttr().getValue();
+      }
+    }
+  }
+
+  op FuncOp "func" extends CallableOp<"func"> {
+    Attrs (sym_name: SymbolNameAttr,
+           function_type: TypeAttrOf<FunctionType>,
+           sym_visibility: OptionalAttr<StrAttr>,
+           dlti: OptionalAttr<DLTIQueryAttr>)
+  }
+
+  /// Return from the enclosing function.
+  op ReturnOp "return" extends FuncBaseOp<"return"> {
+    Operands (operands: variadic<any>)
+    Traits   [Pure, HasParent<"FuncOp">, MemRefsNormalizable, ReturnLike, Terminator]
+    Format   { attr-dict if operands { ":" type[operands] } }
+  }
+}

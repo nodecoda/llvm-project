@@ -3,9 +3,10 @@
 本目录有两个主题：
 
 - **A. 文本解析**（01–09）：`mlir/lib/AsmParser/` 如何把 MLIR 文本变成内存中的 IR。
-- **B. 声明层**（10–13）：`mlir/**/*.td` 如何通过 `include` 组成 ODS 依赖图，
-  这张图如何经 `mlir-tblgen` 变成 `.inc` 再进入 C++，以及寄生在 TD 语法里的
-  ODS 语义结构本身是什么样子（13 章给出两门可编译的语义文法）。
+- **B. 声明层**（10–14）：`mlir/**/*.td` 如何通过 `include` 组成 ODS 依赖图，
+  这张图如何经 `mlir-tblgen` 变成 `.inc` 再进入 C++，寄生在 TD 语法里的
+  ODS 语义结构是什么样子（13 章给出两门可编译的语义文法），以及如果只描述
+  方言领域本身、不描述代码生成，这门定义语言应该长什么样（14 章）。
 
 - 分析基线：worktree `/home/ubuntu/llvm/trees/pr-ctpop`，分支 `research/mlir`。
   01–09 基于 `5f7f36636abe`；10–12 基于 `53a80edfeb2e`（2026-11-27，含前一提交的文档）。
@@ -13,8 +14,9 @@
 - 01–09 的范围以 `mlir/lib/AsmParser/` 为中心；为解释边界，少量引用
   `mlir/include/mlir/Parser/Parser.h`、`mlir/include/mlir/AsmParser/*`、
   `mlir/include/mlir/IR/OpImplementation.h` 与 `mlir/lib/Parser/Parser.cpp`。
-- 10–13 的范围是 `mlir/include`、`mlir/lib`、`mlir/python` 下的 412 个 `.td`
-  （不含 `mlir/test`、`mlir/examples`、`mlir/unittests`）。
+- 10–14 的范围是 `mlir/include`、`mlir/lib`、`mlir/python` 下的 412 个 `.td`
+  （不含 `mlir/test`、`mlir/examples`、`mlir/unittests`）；14 章的样例在
+  `sketch/`，v1 归档在 `design-first-v1/`。
 
 ## 章节
 
@@ -33,6 +35,7 @@
 | [11-tablegen-dependency-graph.md](11-tablegen-dependency-graph.md) | 图形版：IR 内核图、方言间 21 条边、TransformOps 汇聚、最长 16 跳链 |
 | [12-tablegen-dialect-anatomy.md](12-tablegen-dialect-anatomy.md) | 单方言解剖：Arith / Linalg 的文件划分、partition、YAML 生成、checklist |
 | [13-ods-semantic-grammar.md](13-ods-semantic-grammar.md) | ODS 语义文法：记录层 `ods.y` + `assemblyFormat` 子语言 `ods-asm-format.y`，勘误与语义约束清单 |
+| [14-dialect-domain-model.md](14-dialect-domain-model.md) | 方言定义的领域模型：定义 vs 生成的边界、结构/文本/语义三投影、trait 四分类、约束指称语义、schema refinement |
 
 ## 一页结论
 
@@ -77,6 +80,15 @@
 8. **ODS 语义文法没有 parser 执行**：`TGParser` 只认 TD 宿主语法，ODS backend 用
    C++ 遍历 `Record` 做语义识别；13 章的 `ods.y` / `ods-asm-format.y` 是"从语义
    反推的规范"，用于审阅与合法性分析，不是可运行的解析器。
+9. **方言定义只需描述三件事**：结构（部件）、文本（assembly 双向程序）、语义
+   （property/invariant）。`Namespace` / `Class` / `Builders` / `Extra` 回答的是
+   "生成的 C++ 长什么样"，不属于定义语言（14 章）。
+10. **trait 不是一类东西**：结构角色、代数性质、效应摘要、能力四类混在
+    `Traits<[...]>` 里；`Pure` 本身还是 `AlwaysSpeculatable + NoMemoryEffect`
+    的合取（`SideEffectInterfaces.td:155`）。
+11. **部件间的类型相等是约束，不是 trait**：`SameOperandsAndResultType` /
+    `AllTypesMatch` / `TypesMatchWith` 在领域模型里都是 `type_of(x)`，一个构造
+    取代三个特殊机制。
 
 ## A 部分：`mlir/lib/AsmParser/` 文件职责
 
@@ -105,4 +117,7 @@
 | `13-ods-semantic-grammar.md` | ODS 语义文法、与 TD 宿主语法的映射、5 处常见误写、29 条语义约束 |
 | `ods.y` | 记录层语义文法（bison，0 冲突）：实体、字段、值、约束表达式 |
 | `ods-asm-format.y` | `assemblyFormat` 子语言文法（bison，0 冲突） |
+| `14-dialect-domain-model.md` | 领域模型：定义/生成边界、三投影、trait 分类、约束语义、schema refinement、v1 逐项判决 |
+| `sketch/arith.dialect` | 领域描述样例：3 约束 + 4 schema + 8 op，无 C++/namespace/class |
+| `design-first-v1/` | 归档：先定文法再凑样例的 v1（`dialect-dsl.y` + 5 个 `.mdl` + 词法器），仅作对照 |
 | `tools/td-dependency-graph.py` | 扫描脚本：统计 + `--mermaid` + `--json`，可复现全部数字 |

@@ -1,0 +1,51 @@
+/// The cf dialect: explicit block-to-block control flow.
+dialect ControlFlow {
+  Namespace "mlir::cf";
+  Class "ControlFlowDialect";
+
+  family CFBaseOp<mnemonic: string> { }
+
+  /// Runtime assertion with a message attribute.
+  op AssertOp "assert" extends CFBaseOp<"assert"> {
+    Operands (arg: i1)
+    Attrs    (msg: StrAttr)
+    Implements [MemoryEffectsOpInterface]
+    Format   { arg "," msg attr-dict }
+  }
+
+  /// Unconditional branch, forwarding operands to the target block.
+  op BranchOp "br" extends CFBaseOp<"br"> {
+    Operands   (destOperands: variadic<any>)
+    Successors (dest: AnySuccessor)
+    Traits     [Pure, Terminator]
+    Implements [BranchOpInterface]
+    Format     Custom;
+  }
+
+  /// Two-way branch on an i1.
+  op CondBranchOp "cond_br" extends CFBaseOp<"cond_br"> {
+    Operands   (condition: i1,
+                trueDestOperands: variadic<any>,
+                falseDestOperands: variadic<any>)
+    Attrs      (branch_weights: OptionalAttr<DenseI32ArrayAttr>)
+    Successors (trueDest: AnySuccessor, falseDest: AnySuccessor)
+    Traits     [AttrSizedOperandSegments, Pure, Terminator]
+    Implements [BranchOpInterface]
+    Format     Custom;
+  }
+
+  /// Multi-way branch on a signless integer.
+  op SwitchOp "switch" extends CFBaseOp<"switch"> {
+    Operands   (flag: AnySignlessInteger,
+                defaultOperands: variadic<any>,
+                caseOperands: variadic_of_variadic<any, "case_operand_segments">)
+    Attrs      (case_values: OptionalAttr<AnyIntElementsAttr>,
+                case_operand_segments: DenseI32ArrayAttr)
+    Successors (defaultDestination: AnySuccessor,
+                caseDestinations: VariadicSuccessor<AnySuccessor>)
+    Traits     [AttrSizedOperandSegments, Pure, Terminator]
+    Implements [BranchOpInterface]
+    Format     Custom;
+    Verify;
+  }
+}
