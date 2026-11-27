@@ -89,7 +89,7 @@ assembly
 | file | block | Custom | Generic |
 ops without a text channel: none
 
-## fact vocabulary: core=40 used, local(distinct)=18, local(single-use)=6
+## fact vocabulary: core=41 used, local(distinct)=17, local(single-use)=6
 ```
 
 `ops without a text channel: none` 是 R1 的自动检查。`distinct/facts` 接近 1
@@ -112,8 +112,8 @@ ops without a text channel: none
 
 事实分两层：
 
-- **核心词表**（40 个，§3）：语义在本章定义，任何方言可用，不需要再解释。
-- **方言本地事实**（18 个，§4）：只在一个方言出现，必须在该方言文件里被解释。
+- **核心词表**（41 个，§3）：语义在本章定义，任何方言可用，不需要再解释。
+- **方言本地事实**（17 个，§4）：只在一个方言出现，必须在该方言文件里被解释。
 
 升级与合并规则：
 
@@ -134,8 +134,8 @@ ops without a text channel: none
 | 指标 | 当前值 | 红线 | 超线的含义 |
 | --- | --- | --- | --- |
 | `ops without a text channel` | 0 | 0 | 有 op 没交代文本，语料不完整 |
-| `Assembly Custom` 占 op 比 | 68/519 = 13% | 25% | 过高说明块格式表达力不足 |
-| 单次使用的本地事实 | 6/18 = 33% | 50% | 事实在替代注释 |
+| `Assembly Custom` 占 op 比 | 75/692 = 11% | 25% | 过高说明块格式表达力不足 |
+| 单次使用的本地事实 | 6/17 = 35% | 50% | 事实在替代注释 |
 | 跨 ≥3 方言的非核心事实 | 0 | 0 | 词表失控 |
 
 预算的作用不是卡数字，而是**在扩语料前先怀疑构造**：一个方言里
@@ -164,9 +164,9 @@ ops without a text channel: none
 
 | 指标 | 加之前（19 方言） | 加之后（21 方言） | 处置后 |
 | --- | --- | --- | --- |
-| 方言本地事实 | 8 | **34** | 18 |
+| 方言本地事实 | 8 | **34** | 17 |
 | 单次使用 | 5 | **20** | 6 |
-| 单次占比 | 62% | **59%** | 33% |
+| 单次占比 | 62% | **59%** | 35% |
 | 跨 ≥3 方言未升级 | 0 | 1（`operand_segments_by_attribute`） | 0 |
 
 两个方言就把本地词表翻了四倍。这正是"逃逸点会变黑洞"的现场：不是有人故意
@@ -188,15 +188,15 @@ ops without a text channel: none
 | `side_effects_only` | `memory_effect(write)` | “无结果”是结构，副作用是写 |
 | `writes_in_place`、`in_place_buffers` | `in_place` | 同一条轴：写回自身缓冲 |
 
-合并后 18 个本地事实、6 个单次使用（33%），回到红线内；剩下 6 个各有
-不可替代的理由（§5）。第六轮又把 `same_type` 升级进核心表：它在 pdl_interp
-与 shard 两个方言各有一个独立见证，按 R5 第 4 条该升级。
+合并后 17 个本地事实、6 个单次使用（35%），回到红线内；剩下 6 个各有
+不可替代的理由（§5）。第六、七轮各升级一个词进核心表：`same_type`（pdl_interp
+与 shard）与 `speculatable`（sparse_tensor 与 smt），都是两个方言的独立见证。
 
-## 4. 核心词表（40）
+## 4. 核心词表（41）
 
 | 组 | 事实 | 含义 |
 | --- | --- | --- |
-| 结构/trait | `pure` `commutative` `terminator` `elementwise` `constant_like` | 与 ODS trait 对应的领域性质 |
+| 结构/trait | `pure` `commutative` `speculatable` `terminator` `elementwise` `constant_like` | 与 ODS trait 对应的领域性质 |
 | | `symbol` `symbol_table` `symbol_visibility` `isolated_from_above` | 符号与作用域 |
 | | `recursive_effects` `no_memory_effect` `memory_effect(x)` | 副作用；`x ∈ {read, write, allocate}` |
 | | `automatic_allocation_scope` `destination_style` `contraction` | 分配与角色约定 |
@@ -220,7 +220,7 @@ Attributes (count: i64 [positive]);                     /* 值域 */
 Operands   (operands: variadic<any> [arity(inputs, 2)]);/* 元数 */
 ```
 
-## 5. 方言本地事实（18）
+## 5. 方言本地事实（17）
 
 每个都必须在所属方言里被解释；跨方言借用要先升级为核心词。
 
@@ -237,7 +237,6 @@ Operands   (operands: variadic<any> [arity(inputs, 2)]);/* 元数 */
 | `in_place` | sparse_tensor | 2 | 写回自身缓冲 / 原地排序；不是“分配”也不是“纯读” |
 | `same_operands_and_result_type` | sparse_tensor | 2 | 操作数与结果同元素类型 |
 | `shape_operator` | tosa | 2 | 该 op 属于形状算子族 |
-| `speculatable` | sparse_tensor | 2 | 无副作用且可安全推测执行 |
 | `at_least` | sparse_tensor | 1 | 值下限依赖于另一个参数（`m >= n`），非固定常数 |
 | `debug_only` | sparse_tensor | 1 | 仅调试用途，可被删除 |
 | `first_attr_derived_result_type` | tosa | 1 | 结果类型由属性导出，不是由操作数推导 |
@@ -266,7 +265,7 @@ Operands   (operands: variadic<any> [arity(inputs, 2)]);/* 元数 */
    （单维）、能查余额（可数）。
 2. **省略是最坏的逃逸形式**，因为它不可见。`Assembly Generic;` 多一个 token，
    换来"每个 op 都交代了文本从哪来"。
-3. **事实的诱惑最大，因为最自由。** 40 个核心词 + 18 个本地词的上限，靠三条
+3. **事实的诱惑最大，因为最自由。** 41 个核心词 + 17 个本地词的上限，靠三条
    纪律维持：同一概念一个词、组合不造新词、跨方言借用要升级。
 4. **预算第一次告警就来自两个方言**：本地词表 8→34、单次使用 5→20。
    这不是意外，是默认趋势；规则的价值在于它先于失控被发现。

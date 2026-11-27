@@ -46,7 +46,7 @@ TYPE_KEYWORDS = {"optional", "variadic", "array", "type_of"}
 
 CORE_FACTS = {
     # 结构 / trait
-    "pure", "commutative", "terminator", "elementwise", "constant_like",
+    "pure", "commutative", "speculatable", "terminator", "elementwise", "constant_like",
     "symbol", "symbol_table", "symbol_visibility", "isolated_from_above",
     "recursive_effects", "no_memory_effect", "automatic_allocation_scope",
     "destination_style", "contraction", "return_like", "no_region_args",

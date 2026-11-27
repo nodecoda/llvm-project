@@ -1,0 +1,536 @@
+/// smt —— 可满足性模理论（SMT）方言：把 SMT-LIB 的项语言搬进 MLIR。
+///
+/// 领域分三层：
+///   - 语言层（SMTOps.td）：solver 生命周期、declare_fun/apply_func、布尔核心
+///     （and/or/xor/not/implies/eq/distinct/ite）、量词 forall/exists，以及
+///     set_logic/assert/reset/push/pop/check/yield 这些脚本命令。
+///   - 整数与数组理论层（SMTIntOps.td、SMTArrayOps.td）：!smt.int 上的
+///     常量、一元/变长/二元运算、比较与 int2bv，以及 !smt.array 上的
+///     store/select/broadcast。
+///   - 位向量理论层（SMTBitVectorOps.td）：!smt.bv<w> 上的一元/二元运算、
+///     比较、常量、拼接、抽取、重复与 bv2int。
+///
+/// 值类型只有六种：bool、int、bv<w>、array<[D -> R]>、func<(D...) R>、
+/// sort<"name"[...]>。array 的域/值可以是任意 SMT 值类型；func 的域与值
+/// 都是非函数 SMT 类型，因为 SMT 只有一阶逻辑；sort 是未解释 sort 的使用点。
+///
+/// 文本通道：51 个 op 用块格式（其中若干经 schema 继承），3 个 op 交给
+/// 自定义打印器；attr_def bv 的文本也归自定义打印器，但不计入 op：
+///   - eq/distinct 的自定义打印器只打印变长操作数的公共类型，而不是逐个
+///     打印每个操作数的类型；变长组里没有可命名的“第一个操作数”部件。
+///   - bv.repeat 打印的次数由结果宽度除以输入宽度算出，既不是 operand 也
+///     不是 attribute，块语法无法命名它。
+///
+/// GAP: AnyNonSMTType 是“非 SMT 类型”的否定谓词，类型并集表达不了否定；
+///   这里用内建 any 近似，真正的排除由校验器完成。
+/// GAP: declare_fun 的结果带 MemAlloc 效应，bv.constant 的属性要求
+///   qualified(value) 打印。本语料的 Assembly 只在 type(...) 上提供
+///   qualified；属性名前缀属于打印层面，故块格式写 value，前缀由属性自身
+///   的方言给出。
+/// GAP: array.store / array.select 的 index、value、result 类型由 array 的
+///   域类型/值类型投影决定，类型文法没有这种投影；块格式只写出 array 自身
+///   的限定类型，其余约束见各 op 的 Doc。
+
+dialect smt {
+  Doc "Satisfiability modulo theories: SMT terms, solvers, quantifiers, and the bit-vector theory.";
+
+  // ---- 值类型 ----
+
+  /// bool 与 int 没有参数，文本就是助记符本身（!smt.bool、!smt.int）。
+  type_def bool {
+    Doc "The SMT Bool sort; its text carries no parameters.";
+  }
+
+  type_def int {
+    Doc "The SMT Int sort; its text carries no parameters.";
+  }
+
+  /// 位宽必须严格大于零；文本是 !smt.bv<8>。
+  type_def bv {
+    Doc "A fixed-size bit-vector sort of the given width; the width is strictly positive.";
+    Parameters (width: integer);
+    Assembly { "<" width ">" }
+  }
+
+  /// 域与值都是 SMT 值类型，可递归；文本是 !smt.array<[!smt.int -> !smt.int]>。
+  type_def array {
+    Doc "An SMT array sort from a domain sort to a range sort; both are SMT value sorts.";
+    Parameters (domain: any_smt, range: any_smt);
+    Assembly { "<" "[" domain "->" range "]" ">" }
+  }
+
+  /// 域列表总是带括号打印，空域打印成 ()；文本是 !smt.func<(!smt.int) !smt.int>。
+  type_def func {
+    Doc "An uninterpreted SMT function sort: a domain list and one range sort, neither of which is a function.";
+    Parameters (domain: variadic<any_value_smt>, range: any_value_smt);
+    Assembly { "<" "(" domain ")" range ">" }
+  }
+
+  /// 未解释 sort 的使用点；标识符是带引号的字符串，参数可选。
+  type_def sort {
+    Doc "An uninterpreted sort use-site: a quoted identifier plus optional sort parameters.";
+    Parameters (identifier: string, sort_params: optional<array<any_value_smt>>);
+    Assembly { "<" identifier if sort_params { "[" sort_params "]" } ">" }
+  }
+
+  // ---- 类型并集 ----
+
+  /// 任意 SMT 值类型；declare_fun 与 ite 的结果/分支可用。
+  constraint any_smt = bool | int | bv | array | func | sort;
+
+  /// 非函数 SMT 值类型；apply_func 的实参与结果、eq/distinct 的操作数可用。
+  constraint any_value_smt = bool | int | bv | array | sort;
+
+  /// SolverOp 的载荷：AnyNonSMTType。见文件头 GAP。
+  constraint non_smt = any;
+
+  // ---- 属性与枚举 ----
+
+  /// #smt.bv<92>：非负整数，宽度由上下文类型给出。
+  /// 上游 BitVectorAttr 的参数是 APInt 且 hasCustomAssemblyFormat=true，
+  /// 打印器自己输出 ten 进制串；本语言只能记录参数与 Custom 通道。
+  attr_def bv {
+    Doc "A bit-vector literal: an APInt printed in decimal, interpreted at the width of the context type; the printer is custom.";
+    Parameters (value: integer);
+    Assembly Custom;
+  }
+
+  /// 八个比较谓词，文本就是用例名（slt、ule ...）。
+  enum BVCmpPredicate {
+    Doc "Signed or unsigned bit-vector comparison predicates, printed as their keyword.";
+    Cases [ slt = 0, sle = 1, sgt = 2, sge = 3, ult = 4, ule = 5, ugt = 6, uge = 7 ];
+  }
+
+  /// 四个整数比较谓词，文本就是用例名（lt、le、gt、ge）。
+  enum IntPredicate {
+    Doc "Integer comparison predicates, printed as their keyword.";
+    Cases [ lt = 0, le = 1, gt = 2, ge = 3 ];
+  }
+
+  // ---- 共享形状 ----
+
+  /// push/pop 只差文档：一个非负层数，没有结果。
+  schema stack_count {
+    Doc "Shared shape of push and pop: one non-negative level count and no results.";
+    Attributes (count: i32 [non_negative]);
+    Assembly { count attr-dict }
+  }
+
+  /// and/or/xor 共用：变长布尔操作数，结果仍是布尔。
+  schema bool_variadic {
+    Doc "A left-associative boolean operator over two or more operands; the text is the operand list.";
+    Operands (inputs: variadic<bool>);
+    Results (result: bool);
+    Properties [pure];
+    Assembly { inputs attr-dict }
+  }
+
+  /// forall/exists 共用：可选的名字前缀、单块 body、可选 patterns 区域。
+  /// speculatable 来自 RecursivelySpeculatable：量化体可被推测执行；
+  /// 它在 sparse_tensor 已有见证，本方言是第二个，故按 R5 进核心词表。
+  schema quantifier {
+    Doc "A first-order quantifier with optional bound-variable name prefixes, one single-block body yielding a Bool, optional pattern regions, and solver annotations.";
+    Attributes (weight: i32 = 0,
+                no_pattern: optional<unit>,
+                bound_var_names: optional<array<string>>);
+    Regions (body: region [single_block],
+             patterns: variadic<region> [single_block]);
+    Results (result: bool);
+    Properties [recursive_effects, speculatable, implicit_terminator(yield)];
+    Assembly { if bound_var_names { bound_var_names }
+               if no_pattern { "no_pattern" no_pattern }
+               if weight { "weight" weight }
+               attr-dict-with-keyword body
+               if patterns { "patterns" patterns } }
+  }
+
+  /// eq/distinct 共用形状；文本由各自的自定义打印器负责。
+  schema variadic_same {
+    Doc "Two or more operands of one SMT value type compared to a Bool result; the custom printers print only the common type.";
+    Operands (inputs: variadic<any_value_smt>);
+    Results (result: bool);
+    Properties [pure, same_type];
+  }
+
+  // ---- 整数共享形状 ----
+
+  /// add/mul 共用：变长整数操作数，结果仍是整数；两者都是交换运算。
+  schema int_variadic {
+    Doc "A commutative integer operator over two or more operands; the text is the operand list.";
+    Operands (inputs: variadic<int>);
+    Results (result: int);
+    Properties [pure, commutative];
+    Assembly { inputs attr-dict }
+  }
+
+  /// sub/div/mod 共用两操作数形状；cmp 复用同一对 operand，只改结果与文本。
+  schema int_binary {
+    Doc "A binary integer operation over two integer operands, printed as the operand pair.";
+    Operands (lhs: int, rhs: int);
+    Results (result: int);
+    Properties [pure];
+    Assembly { lhs "," rhs attr-dict }
+  }
+
+  // ---- 位向量共享形状 ----
+
+  /// 一元位向量运算：输入与结果同型，文本打印结果类型。
+  schema bv_unary {
+    Doc "A bit-vector unary operation whose input and result share one bit-vector type, printed as the result type.";
+    Operands (input: bv);
+    Results (result: bv);
+    Properties [pure, same_type];
+    Assembly { input attr-dict ":" qualified(type(result)) }
+  }
+
+  /// 二元位向量运算：两操作数与结果同型，文本打印结果类型。
+  schema bv_binary {
+    Doc "A bit-vector binary operation whose operands and result share one bit-vector type, printed as the result type.";
+    Operands (lhs: bv, rhs: bv);
+    Results (result: bv);
+    Properties [pure, same_type];
+    Assembly { lhs "," rhs attr-dict ":" qualified(type(result)) }
+  }
+
+  // ---- 声明、求解器与脚本命令 ----
+
+  op declare_fun {
+    Doc "Declare a fresh symbolic value of an SMT sort; the optional string prefixes the generated name. Each declaration yields a distinct value, so it is not common-subexpression eliminated.";
+    Attributes (name_prefix: optional<string>);
+    Results (result: any_smt);
+    Properties [memory_effect];
+    Implements [OpAsmOpInterface];
+    Assembly { if name_prefix { name_prefix } attr-dict ":" qualified(type(result)) }
+  }
+
+  /// 属性 value 是内建 BoolAttr，存储类型是 i1；值类型 bool 指 !smt.bool，
+  /// 两者同名但命名空间不同。
+  op constant {
+    Doc "The boolean constants true and false; the attribute carries the value and the result is Bool.";
+    Attributes (value: i1);
+    Results (result: bool);
+    Properties [pure, constant_like];
+    Implements [OpAsmOpInterface];
+    Assembly { value attr-dict }
+  }
+
+  op solver {
+    Doc "A solver lifespan with concrete inputs and results, a single-block body terminated by smt.yield, and an isolated region; every SMT value stays inside it.";
+    Operands (inputs: variadic<non_smt>);
+    Results (results: variadic<non_smt>);
+    Regions (body: region [single_block]);
+    Properties [isolated_from_above, implicit_terminator(yield)];
+    Assembly { "(" inputs ")" attr-dict ":" functional-type(inputs, results) body }
+  }
+
+  op set_logic {
+    Doc "Set the SMT-LIB logic of the enclosing solver from a quoted name.";
+    Attributes (logic: string);
+    Properties [has_parent(solver)];
+    Assembly { logic attr-dict }
+  }
+
+  op assert {
+    Doc "Assert that a boolean term holds; it has no result and mutates the enclosing solver state.";
+    Operands (input: bool);
+    Properties [memory_effect];
+    Assembly { input attr-dict }
+  }
+
+  op reset {
+    Doc "Reset the enclosing solver, discarding its assertions and declarations.";
+    Assembly { attr-dict }
+  }
+
+  op push from stack_count {
+    Doc "Push the given number of levels onto the assertion stack.";
+  }
+
+  op pop from stack_count {
+    Doc "Pop the given number of levels from the assertion stack.";
+  }
+
+  op check {
+    Doc "Check satisfiability of the enclosing solver: exactly one of the sat, unknown, and unsat single-block regions runs, and the optional results are yielded by that region.";
+    Regions (sat_region: region [single_block],
+             unknown_region: region [single_block],
+             unsat_region: region [single_block]);
+    Results (results: variadic<any>);
+    Properties [no_region_args, implicit_terminator(yield)];
+    Assembly { attr-dict "sat" sat_region "unknown" unknown_region
+               "unsat" unsat_region
+               if results { "->" qualified(type(results)) } }
+  }
+
+  op yield {
+    Doc "Terminator of solver, check, and quantifier regions; yields the values of the region.";
+    Operands (values: variadic<any>);
+    Properties [pure, terminator, return_like];
+    Assembly { if values { values ":" qualified(type(values)) } attr-dict }
+  }
+
+  // ---- 项构造与布尔核心 ----
+
+  op apply_func {
+    Doc "Apply an SMT function value to arguments; the function sort fixes the argument sorts and the result sort.";
+    Operands (func: func, args: variadic<any_value_smt>);
+    Results (result: any_value_smt);
+    Properties [pure];
+    Assembly { func "(" args ")" attr-dict ":" qualified(type(func)) }
+  }
+
+  op eq from variadic_same {
+    Doc "True when all operands are identical; the custom printer prints the operand list and one common type.";
+    Assembly Custom;
+  }
+
+  op distinct from variadic_same {
+    Doc "True when no operand equals any other; the custom printer prints the operand list and one common type.";
+    Assembly Custom;
+  }
+
+  op ite {
+    Doc "If-then-else over SMT values: cond is Bool and the two arms and the result share one SMT type.";
+    Operands (cond: bool, then_value: any_smt, else_value: any_smt);
+    Results (result: any_smt);
+    Properties [pure, same_type];
+    Assembly { cond "," then_value "," else_value attr-dict ":" qualified(type(result)) }
+  }
+
+  op not {
+    Doc "Boolean negation.";
+    Operands (input: bool);
+    Results (result: bool);
+    Properties [pure];
+    Assembly { input attr-dict }
+  }
+
+  op and from bool_variadic {
+    Doc "Boolean conjunction of two or more operands.";
+  }
+
+  op or from bool_variadic {
+    Doc "Boolean disjunction of two or more operands.";
+  }
+
+  op xor from bool_variadic {
+    Doc "Boolean exclusive or of two or more operands.";
+  }
+
+  op implies {
+    Doc "Boolean implication from lhs to rhs.";
+    Operands (lhs: bool, rhs: bool);
+    Results (result: bool);
+    Properties [pure];
+    Assembly { lhs "," rhs attr-dict }
+  }
+
+  op forall from quantifier {
+    Doc "The forall quantifier; bound variables are the body block arguments.";
+  }
+
+  op exists from quantifier {
+    Doc "The exists quantifier; bound variables are the body block arguments.";
+  }
+
+  // ---- 整数理论 ----
+
+  /// TD 里是 hasCustomAssemblyFormat，但打印器只输出 numeral 与 attr-dict，
+  /// 文本完全可表达，故仍用块格式；结果类型固定为 Int，文本不带类型后缀。
+  op int.constant {
+    Doc "An infinite-precision integer literal of the Int sort; the attribute is the numeral and the result type is fixed to Int.";
+    Attributes (value: integer);
+    Results (result: int);
+    Properties [pure, constant_like];
+    Implements [OpAsmOpInterface];
+    Assembly { value attr-dict }
+  }
+
+  op int.abs {
+    Doc "The absolute value of an Int.";
+    Operands (input: int);
+    Results (result: int);
+    Properties [pure];
+    Assembly { input attr-dict }
+  }
+
+  op int.add from int_variadic {
+    Doc "Integer addition of two or more operands.";
+  }
+
+  op int.mul from int_variadic {
+    Doc "Integer multiplication of two or more operands.";
+  }
+
+  op int.sub from int_binary {
+    Doc "Integer subtraction.";
+  }
+
+  op int.div from int_binary {
+    Doc "Integer division.";
+  }
+
+  op int.mod from int_binary {
+    Doc "Integer remainder.";
+  }
+
+  op int.cmp from int_binary {
+    Doc "Compare two integers according to the predicate; the result is Bool while the operands stay Int.";
+    Attributes (pred: IntPredicate);
+    Results (result: bool);
+    Assembly { pred lhs "," rhs attr-dict }
+  }
+
+  op int2bv {
+    Doc "Convert an Int to a bit-vector; the result bit-vector type gives the width.";
+    Operands (input: int);
+    Results (result: bv);
+    Properties [pure];
+    Assembly { input attr-dict ":" qualified(type(result)) }
+  }
+
+  // ---- 数组理论 ----
+
+  op array.store {
+    Doc "Return a new array equal to array except that the value at index is replaced by value; index and value must match the array domain and range types.";
+    Operands (array: array, index: any_smt, value: any_smt);
+    Results (result: array);
+    Properties [pure, same_type];
+    Assembly { array "[" index "]" "," value attr-dict
+               ":" qualified(type(array)) }
+  }
+
+  op array.select {
+    Doc "Read the value stored in array at index; the result type is the array range type.";
+    Operands (array: array, index: any_smt);
+    Results (result: any_smt);
+    Properties [pure];
+    Assembly { array "[" index "]" attr-dict ":" qualified(type(array)) }
+  }
+
+  op array.broadcast {
+    Doc "Construct an array with value stored at every index; the result array range type is the type of value.";
+    Operands (value: any_smt);
+    Results (result: array);
+    Properties [pure];
+    Assembly { value attr-dict ":" qualified(type(result)) }
+  }
+
+  // ---- 位向量理论 ----
+
+  /// value 是 BitVectorAttr（#smt.bv<...>），与类型 !smt.bv<w> 同名但命名空间
+  /// 不同；结果宽度由属性自身给出。
+  op bv.constant {
+    Doc "A bit-vector constant; the attribute is a bit-vector literal and the result width matches it. The literal prints with its dialect prefix.";
+    Attributes (value: bv);
+    Results (result: bv);
+    Properties [pure, constant_like];
+    Implements [InferTypeOpInterface, OpAsmOpInterface];
+    Assembly { value attr-dict }
+  }
+
+  op bv.not from bv_unary {
+    Doc "Bitwise negation.";
+  }
+
+  op bv.neg from bv_unary {
+    Doc "Two's complement unary minus.";
+  }
+
+  op bv.and from bv_binary {
+    Doc "Bitwise AND.";
+  }
+
+  op bv.or from bv_binary {
+    Doc "Bitwise OR.";
+  }
+
+  op bv.xor from bv_binary {
+    Doc "Bitwise exclusive OR.";
+  }
+
+  op bv.add from bv_binary {
+    Doc "Addition.";
+  }
+
+  op bv.mul from bv_binary {
+    Doc "Multiplication.";
+  }
+
+  op bv.udiv from bv_binary {
+    Doc "Unsigned division, rounded towards zero.";
+  }
+
+  op bv.sdiv from bv_binary {
+    Doc "Two's complement signed division.";
+  }
+
+  op bv.urem from bv_binary {
+    Doc "Unsigned remainder.";
+  }
+
+  op bv.srem from bv_binary {
+    Doc "Two's complement signed remainder; the sign follows the dividend.";
+  }
+
+  op bv.smod from bv_binary {
+    Doc "Two's complement signed remainder; the sign follows the divisor.";
+  }
+
+  op bv.shl from bv_binary {
+    Doc "Shift left.";
+  }
+
+  op bv.lshr from bv_binary {
+    Doc "Logical shift right.";
+  }
+
+  op bv.ashr from bv_binary {
+    Doc "Arithmetic shift right.";
+  }
+
+  op bv.cmp {
+    Doc "Compare two bit-vectors as signed or unsigned according to the predicate; the result is Bool and the operand type prints once.";
+    Operands (lhs: bv, rhs: bv);
+    Attributes (pred: BVCmpPredicate);
+    Results (result: bool);
+    Properties [pure, same_type];
+    Assembly { pred lhs "," rhs attr-dict ":" qualified(type(lhs)) }
+  }
+
+  op bv.concat {
+    Doc "Concatenate two bit-vectors with lhs in the high bits; the text prints both operand types, which upstream spells as one operand-group type.";
+    Operands (lhs: bv, rhs: bv);
+    Results (result: bv);
+    Properties [pure];
+    Assembly { lhs "," rhs attr-dict
+               ":" qualified(type(lhs)) "," qualified(type(rhs)) }
+  }
+
+  op bv.extract {
+    Doc "Extract a result-width range of bits starting at low_bit (inclusive); the text prints the input and result types.";
+    Attributes (low_bit: i32);
+    Operands (input: bv);
+    Results (result: bv);
+    Properties [pure];
+    Assembly { input "from" low_bit attr-dict ":" functional-type(input, result) }
+  }
+
+  op bv.repeat {
+    Doc "Repeated concatenation of one bit-vector; the printed count is result width divided by input width, so it is neither an operand nor an attribute and the custom printer owns the text.";
+    Operands (input: bv);
+    Results (result: bv);
+    Properties [pure];
+    Assembly Custom;
+  }
+
+  op bv2int {
+    Doc "Convert a bit-vector to an SMT integer; signed selects two's complement interpretation.";
+    Operands (input: bv);
+    Attributes (is_signed: optional<unit>);
+    Results (result: int);
+    Properties [pure];
+    Assembly { input if is_signed { "signed" is_signed } attr-dict
+               ":" qualified(type(input)) }
+  }
+}

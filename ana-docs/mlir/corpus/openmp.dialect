@@ -1,0 +1,1374 @@
+/// openmp —— OpenMP 指令的 MLIR 形态：并行/任务/目标/工作共享构造、子句包
+/// 与两类区域终结符。
+///
+/// 领域要点：
+///   - OpenMP 的 op 分成三层：带 region 的构造（parallel、teams、task、target
+///     等），不带 region 的独立指令（barrier、taskyield、flush、cancel 等），
+///     以及给子句/区域提供句柄的辅助 op（map.bounds、map.info、affinity_entry、
+///     iterator、new_cli）。
+///   - 子句不是独立的 op，而是父 op 的 operand/attribute 组。可选子句按 ODS 的
+///     `oilist(...)` 打印，顺序无关、每支最多一次；必选子句直接出现。语料把
+///     子句名写成字符串字面量，把子句负载写成部件引用。
+///   - 区域终结符有两类：结构化构造区域以 `omp.terminator` 结束；recipe 区域
+///     （omp.private、omp.declare_reduction）与循坏体区域以 `omp.yield` 结束。
+///     `omp.loop_nest` 的 yield 不带操作数，`omp.iterator` 的 yield 带元素值。
+///   - 循环包装 op（omp.loop、omp.wsloop、omp.simd、omp.distribute、
+///     omp.workshare.loop_wrapper、omp.taskloop.wrapper）是单块且无终结符；
+///     它们的 region 里恰好嵌套另一个包装 op 或 omp.loop_nest。
+///   - `AttrSizedOperandSegments` 用核心事实 operand_segments_by_attribute；
+///     `SameVariadicOperandSize` 用 same_variadic_operand_size。变长子句负载
+///     因此不需要 invent 位置事实。
+///
+/// 文本通道：67 个块状 Assembly，5 个 Custom。Custom 只给上游 TD 明确写了
+/// `hasCustomAssemblyFormat` 的 op：omp.canonical_loop、三个 unroll、omp.loop_nest。
+/// 其余 op 的声明式格式都能用块格式表达，包括 oilist 子句组与局部 custom<...>
+/// 钩子（AllocateAndAllocator、PrivateClause、ReductionClause、DependVarList、
+/// LoopTransformClis、IteratorHeader 等）。没有 Generic 通道。
+///
+/// 本地事实：0 个。全部用核心词表；没有 position-as-fact。
+///
+// GAP: 上游 OpenMP_PointerLikeType 是接口约束（任意 pointer-like 类型），
+///      本语言没有接口约束，constraint pointer_like 只能退化为 opaque 这个
+///      占位类型；语义留在 Doc 里。
+// GAP: 多数构造的 region 在 ODS 里是 AnyRegion（可多块），本文件只在 TD 的
+///      SingleBlock / SizedRegion<1> / SingleBlockImplicitTerminator 处写
+///      single_block；其余只写 implicit_terminator(terminator) 表示结构化区
+///      域的退出约定，不把“恰好一块”当事实。
+// GAP: Clause 枚举（ScheduleKind、ProcBindKind、MemoryOrderKind 等）在本树的
+///      OpenMP TD 里按 Attr 名引用，没有同名 TableGen 定义；语料按它们的
+///      打印拼写声明，值编号沿用 LLVM 侧枚举。
+
+dialect omp {
+  Doc "OpenMP directives, clauses, target and task constructs.";
+
+  // ---- 真正的 TypeDef ----
+
+  type_def cli {
+    Doc "!omp.cli: an opaque handle to a canonical loop; created by omp.new_cli.";
+  }
+
+  type_def map_bounds_ty {
+    Doc "!omp.map_bounds_ty: normalized bounds produced by omp.map.bounds.";
+  }
+
+  type_def affinity_entry_ty {
+    Doc "!omp.affinity_entry_ty<addr, len>: one affinity locator entry.";
+    Parameters (addr: pointer_like, len: int_like);
+    Assembly   { "<" addr "," len ">" }
+  }
+
+  type_def iterated {
+    Doc "!omp.iterated<T>: handle to the list of values yielded by omp.iterator.";
+    Parameters (element: any);
+    Assembly   { "<" element ">" }
+  }
+
+  // ---- 子句枚举（只声明语料实际引用的那些） ----
+
+  enum CancellationConstructType {
+    Doc "Construct named by cancel and cancellation_point.";
+    Cases [ loop = 0 "loop", parallel = 1 "parallel",
+            sections = 2 "sections", taskgroup = 3 "taskgroup" ];
+  }
+
+  enum DataSharingClauseType {
+    Doc "Which data-sharing recipe omp.private implements.";
+    Cases [ private = 0 "private", firstprivate = 1 "firstprivate",
+            linear = 2 "linear" ];
+  }
+
+  enum ClauseSeverity {
+    Doc "Severity of omp.error.";
+    Cases [ warning = 1 "warning", fatal = 2 "fatal" ];
+  }
+
+  enum TargetExecMode {
+    Doc "Execution mode recorded on omp.target.";
+    Cases [ bare = 0 "bare", generic = 1 "generic",
+            spmd = 2 "spmd", spmd_no_loop = 3 "spmd_no_loop" ];
+  }
+
+  enum ScheduleKind {
+    Doc "OpenMP schedule kind; printed as the clause keyword.";
+    Cases [ static = 0 "static", dynamic = 1 "dynamic", guided = 2 "guided",
+            auto = 3 "auto", runtime = 4 "runtime", distribute = 5 "distribute" ];
+  }
+
+  enum ScheduleModifier {
+    Doc "Schedule modifier attached to a schedule clause.";
+    Cases [ none = 0 "none", monotonic = 1 "monotonic",
+            nonmonotonic = 2 "nonmonotonic", simd = 3 "simd" ];
+  }
+
+  enum ProcBindKind {
+    Doc "Thread affinity policy of the proc_bind clause.";
+    Cases [ primary = 0 "primary", master = 1 "master",
+            close = 2 "close", spread = 3 "spread" ];
+  }
+
+  enum BindKind {
+    Doc "Binding region of the loop construct.";
+    Cases [ teams = 0 "teams", parallel = 1 "parallel", thread = 2 "thread" ];
+  }
+
+  enum OrderKind {
+    Doc "Ordering guarantee of the order clause.";
+    Cases [ concurrent = 0 "concurrent", reproducible = 1 "reproducible",
+            unconstrained = 2 "unconstrained" ];
+  }
+
+  enum OrderModifier {
+    Doc "Modifier that refines the order clause.";
+    Cases [ reproducible = 0 "reproducible", unconstrained = 1 "unconstrained" ];
+  }
+
+  enum MemoryOrderKind {
+    Doc "Memory ordering of an atomic construct.";
+    Cases [ seq_cst = 0 "seq_cst", acq_rel = 1 "acq_rel", release = 2 "release",
+            acquire = 3 "acquire", relaxed = 4 "relaxed" ];
+  }
+
+  enum ClauseDepend {
+    Doc "Doacross depend type.";
+    Cases [ dependsource = 0 "dependsource", dependsink = 1 "dependsink" ];
+  }
+
+  enum ClauseTaskDepend {
+    Doc "Task depend kind, one entry per depend list item.";
+    Cases [ taskdependin = 0 "taskdependin", taskdependout = 1 "taskdependout",
+            taskdependinout = 2 "taskdependinout",
+            taskdependmutexinoutset = 3 "taskdependmutexinoutset",
+            taskdependinoutset = 4 "taskdependinoutset" ];
+  }
+
+  enum ReductionModifier {
+    Doc "Per-variable reduction modifier.";
+    Cases [ defaultmod = 0 "defaultmod", inscan = 1 "inscan", task = 2 "task" ];
+  }
+
+  enum LinearModifier {
+    Doc "Per-variable linear modifier.";
+    Cases [ val = 0 "val", ref = 1 "ref", uval = 2 "uval" ];
+  }
+
+  enum ClauseMapFlags : bits {
+    Doc "Map type and modifier bits carried by omp.map.info.";
+    Cases [ none = 0 "none", storage = 0 "storage", to = 1 "to", from_ = 2 "from",
+            always = 3 "always", del = 4 "del", return_param = 5 "return_param",
+            priv = 6 "priv", literal = 7 "literal", implicit = 8 "implicit",
+            close = 9 "close", present = 10 "present", ompx_hold = 11 "ompx_hold",
+            attach = 12 "attach", attach_always = 13 "attach_always",
+            attach_never = 14 "attach_never", attach_auto = 15 "attach_auto",
+            ref_ptr = 16 "ref_ptr", ref_ptee = 17 "ref_ptee",
+            is_device_ptr = 18 "is_device_ptr", target_param = 19 "target_param" ];
+  }
+
+  enum VariableCaptureKind {
+    Doc "How a mapped variable is captured.";
+    Cases [ This = 0 "This", ByRef = 1 "ByRef", ByCopy = 2 "ByCopy",
+            VLAType = 3 "VLAType" ];
+  }
+
+  enum NumTasksType {
+    Doc "Strictness of the num_tasks clause.";
+    Cases [ strict = 0 "strict", loose = 1 "loose" ];
+  }
+
+  enum GrainsizeType {
+    Doc "Strictness of the grainsize clause.";
+    Cases [ strict = 0 "strict", loose = 1 "loose" ];
+  }
+
+  enum DeclareTargetDeviceType {
+    Doc "Device kind of a groupprivate directive.";
+    Cases [ any = 0 "any", host = 1 "host", nohost = 2 "nohost" ];
+  }
+
+  enum ThreadsetPolicy {
+    Doc "Threadset policy of a task or taskloop.";
+    Cases [ omp_pool = 0 "omp_pool", omp_team = 1 "omp_team" ];
+  }
+
+  enum InteropType {
+    Doc "Interop object flavor.";
+    Cases [ target = 0 "target", targetsync = 1 "targetsync" ];
+  }
+
+  enum AccessGroupModifier {
+    Doc "Access group modifier of dyn_groupprivate.";
+    Cases [ cgroup = 0 "cgroup" ];
+  }
+
+  enum FallbackModifier {
+    Doc "Fallback behavior of dyn_groupprivate.";
+    Cases [ abort = 0 "abort", null = 1 "null", default_mem = 2 "default_mem" ];
+  }
+
+  // ---- 类型域与属性域 ----
+
+  /// PointerLikeTypeInterface 的占位（见 GAP）：opaque 代表 !llvm.ptr 一类。
+  constraint pointer_like = opaque;
+  /// IntLikeType：标准整数或 index。
+  constraint int_like = integer | index;
+
+  constraint i64_array = array<i64>;
+  constraint bool_array = array<bool>;
+  constraint symbol_array = array<symbol_ref>;
+  constraint type_array = array<type>;
+  constraint task_depend_array = array<ClauseTaskDepend>;
+  constraint reduction_mod_array = array<ReductionModifier>;
+  constraint linear_mod_array = array<LinearModifier>;
+  constraint interop_type_array = array<InteropType>;
+  constraint map_bounds_array = array<map_bounds_ty>;
+  constraint member_index_array = array<array<i64>>;
+
+  // ---- 真正的 AttrDef ----
+
+  attr_def atomic_control {
+    Doc "Architectural controls attached to omp.atomic.update.";
+    Parameters (ignore_denormal_mode: bool = false,
+                fine_grained_memory: bool = false,
+                remote_memory: bool = false);
+    Assembly   { "<" struct "(" params ")" ">" }
+  }
+
+  // ---- 区域骨架 ----
+
+  /// 结构化构造区域：退出约定是 omp.terminator；块数不一定是 1。
+  schema TerminatedRegion {
+    Doc "Structured region whose exit block ends in omp.terminator.";
+    Regions (region: region [implicit_terminator(terminator)]);
+  }
+
+  /// ODS 明确要求恰好一块的构造区域（SizedRegion<1> / SingleBlock）。
+  schema SingleBlockTerminatedRegion {
+    Doc "Exactly one block, ended by omp.terminator.";
+    Regions (region: region [single_block, implicit_terminator(terminator)]);
+  }
+
+  /// 单块且无终结符的循环包装区域。
+  schema NoTerminatorRegion {
+    Doc "Exactly one block with no terminator; holds one nested loop or wrapper.";
+    Regions (region: region [single_block, no_terminator]);
+  }
+
+  /// 同上，且打印格式统一。
+  schema NoTerminatorWrapper {
+    Doc "Single-block wrapper around one nested loop op, printed as bare region.";
+    Regions (region: region [single_block, no_terminator]);
+    Assembly { region attr-dict }
+  }
+
+  /// 没有子句、只有一个 region 的结构化 op。
+  schema SimpleRegion {
+    Doc "Structured construct region with no clause payload.";
+    Regions (region: region [implicit_terminator(terminator)]);
+    Assembly { region attr-dict }
+  }
+
+  /// omp.atomic.update / omp.atomic.compare 的区域：单块、隐式 yield。
+  schema AtomicRMWRegion {
+    Doc "Single-block atomic region terminated by omp.yield.";
+    Regions (region: region [single_block, implicit_terminator(yield)]);
+  }
+
+  /// 循环变换 op：generatees <- applyees，后接子句。
+  schema LoopTransform {
+    Doc "Loop transformation with generated and applied canonical loops.";
+    Operands (generatees: variadic<cli>, applyees: variadic<cli>);
+    Properties [operand_segments_by_attribute];
+  }
+
+  /// 只有 applyee 的 unroll 变形。
+  schema UnrollSimple {
+    Doc "Unroll transformation over one canonical loop.";
+    Operands (applyee: cli);
+  }
+
+  /// target enter/exit/update data 三兄弟共享同一组子句与文本。
+  schema TargetDataStandalone {
+    Doc "Stand-alone target data directive.";
+    Operands (depend_vars: variadic<pointer_like>,
+              depend_iterated: variadic<iterated>,
+              device: optional<integer>,
+              map_vars: variadic<pointer_like>,
+              map_iterated: variadic<iterated>,
+              if_expr: optional<i1>);
+    Attributes (depend_kinds: optional<task_depend_array>,
+                depend_iterated_kinds: optional<task_depend_array>,
+                nowait: optional<unit>);
+    Properties [operand_segments_by_attribute];
+    Assembly { oilist("depend" "(" custom<DependVarList>(depend_vars, depend_kinds, depend_iterated, depend_iterated_kinds) ")"
+                    | "device" "(" device ":" type(device) ")"
+                    | "if" "(" if_expr ")"
+                    | "map_entries" "(" map_vars ":" type(map_vars) ")"
+                    | "map_iterated" "(" map_iterated ":" type(map_iterated) ")"
+                    | "nowait" nowait)
+               attr-dict }
+  }
+
+  /// interop.use 与 interop.destroy 的形状完全相同。
+  schema InteropUseLike {
+    Doc "Interop object use or destroy; depend and nowait clauses.";
+    Operands (interop_var: pointer_like,
+              device: optional<integer>,
+              depend_vars: variadic<pointer_like>,
+              depend_iterated: variadic<iterated>);
+    Attributes (depend_kinds: optional<task_depend_array>,
+                depend_iterated_kinds: optional<task_depend_array>,
+                nowait: optional<unit>);
+    Properties [operand_segments_by_attribute];
+    Assembly { interop_var ":" type(interop_var)
+               if device { "device" "(" device ":" type(device) ")" }
+               oilist("depend" "(" custom<DependVarList>(depend_vars, depend_kinds, depend_iterated, depend_iterated_kinds) ")"
+                    | "nowait" nowait)
+               attr-dict }
+  }
+
+  // ------------------------------------------------------------------
+  // 声明、终结符与循环变换
+  // ------------------------------------------------------------------
+
+  op private {
+    Doc "Declares how to privatize one variable: data-sharing kind, allocated type, and optional init/copy/data_address/dealloc regions.";
+    Attributes (sym_name: string,
+                sym_visibility: optional<string>,
+                decl_type: type,
+                data_sharing_type: DataSharingClauseType);
+    Regions    (init_region: region [implicit_terminator(yield)],
+                copy_region: region [implicit_terminator(yield)],
+                dealloc_region: region [implicit_terminator(yield)],
+                data_address_region: region [implicit_terminator(yield)]);
+    Properties [isolated_from_above, symbol, symbol_visibility];
+    Assembly   { "{" "type" "=" data_sharing_type "}"
+                 if sym_visibility { sym_visibility }
+                 sym_name ":" decl_type
+                 if init_region { "init" init_region }
+                 if copy_region { "copy" copy_region }
+                 if data_address_region { "data_address" data_address_region }
+                 if dealloc_region { "dealloc" dealloc_region }
+                 attr-dict }
+  }
+
+  op terminator {
+    Doc "Terminator of structured OpenMP regions; takes no operands.";
+    Properties [pure, terminator];
+    Assembly   { attr-dict }
+  }
+
+  op yield {
+    Doc "Terminator of recipe, loop-nest, iterator and atomic regions; yields values to the parent.";
+    Operands   (results: variadic<any>);
+    Properties [pure, terminator, return_like,
+                has_parent(atomic.update) | has_parent(atomic.compare)
+                | has_parent(declare_reduction) | has_parent(loop_nest)
+                | has_parent(private) | has_parent(iterator)];
+    Assembly   { if results { "(" results ":" type(results) ")" } attr-dict }
+  }
+
+  op new_cli {
+    Doc "Creates a canonical-loop handle that can be attached to one loop and consumed once.";
+    Results    (result: cli);
+    Assembly   { attr-dict }
+  }
+
+  op canonical_loop {
+    Doc "A canonical loop: one trip count, one induction variable, and an optional !omp.cli handle.";
+    Operands   (trip_count: int_like, cli: optional<cli>);
+    Regions    (region: region);
+    Assembly Custom;
+  }
+
+  op unroll_heuristic from UnrollSimple {
+    Doc "Unroll a canonical loop by implementation-defined heuristics.";
+    Assembly Custom;
+  }
+
+  op unroll_full from UnrollSimple {
+    Doc "Fully unroll a canonical loop with a constant trip count.";
+    Assembly Custom;
+  }
+
+  op unroll_partial from UnrollSimple {
+    Doc "Partially unroll a canonical loop by unroll_factor positive iterations.";
+    Attributes (unroll_factor: i64 [positive]);
+    Assembly Custom;
+  }
+
+  op tile from LoopTransform {
+    Doc "Tile the applied loops into equally sized tiles.";
+    Operands   (sizes: variadic<int_like>);
+    Assembly   { custom<LoopTransformClis>(generatees, applyees)
+                 "sizes" "(" sizes ":" type(sizes) ")" attr-dict }
+  }
+
+  op fuse from LoopTransform {
+    Doc "Fuse the selected loops of the applied loop sequence; first and count select the looprange.";
+    Attributes (first: optional<i64>, count: optional<i64>);
+    Assembly   { custom<LoopTransformClis>(generatees, applyees)
+                 if first { "looprange" "(" "first" "=" first
+                            if count { "," "count" "=" count } ")" }
+                 attr-dict }
+  }
+
+  // ------------------------------------------------------------------
+  // 并行、工作共享与同步构造
+  // ------------------------------------------------------------------
+
+  op parallel from TerminatedRegion {
+    Doc "Parallel region executed by a team of threads; clauses select allocation, private and reduction data, thread count and proc_bind.";
+    Operands   (allocate_vars: variadic<any>,
+                allocator_vars: variadic<any>,
+                if_expr: optional<i1>,
+                num_threads_vars: variadic<int_like>,
+                private_vars: variadic<any>,
+                reduction_vars: variadic<pointer_like>);
+    Attributes (allocate_alignments: optional<i64_array>,
+                allocate_private_indices: optional<i64_array>,
+                private_syms: optional<symbol_array>,
+                private_needs_barrier: optional<unit>,
+                private_assume_bounded_recipe_effects: optional<unit>,
+                reduction_mods: optional<reduction_mod_array>,
+                reduction_byref: optional<bool_array>,
+                reduction_syms: optional<symbol_array>,
+                reduction_assume_bounded_recipe_effects: optional<unit>,
+                proc_bind_kind: optional<ProcBindKind>);
+    Properties [recursive_effects, automatic_allocation_scope,
+                operand_segments_by_attribute];
+    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, allocator_vars) ")"
+                        if allocate_alignments { "allocate_alignments" "(" allocate_alignments ")" }
+                        if allocate_private_indices { "allocate_private_indices" "(" allocate_private_indices ")" }
+                      | "if" "(" if_expr ")"
+                      | "num_threads" "(" num_threads_vars ":" type(num_threads_vars) ")"
+                      | "private" "(" custom<PrivateClause>(private_vars, private_syms) ")"
+                      | "proc_bind" "(" custom<ClauseAttr>(proc_bind_kind) ")"
+                      | "reduction" "(" custom<ReductionClause>(reduction_vars, reduction_mods, reduction_byref, reduction_syms) ")")
+                 attr-dict region }
+  }
+
+  op teams from TerminatedRegion {
+    Doc "League-of-teams region; adds dyn_groupprivate, num_teams and thread_limit to the parallel-like clause set.";
+    Operands   (allocate_vars: variadic<any>,
+                allocator_vars: variadic<any>,
+                dyn_groupprivate_size: optional<integer>,
+                if_expr: optional<i1>,
+                num_teams_lower: optional<int_like>,
+                num_teams_upper_vars: variadic<int_like>,
+                private_vars: variadic<any>,
+                reduction_vars: variadic<pointer_like>,
+                thread_limit_vars: variadic<int_like>);
+    Attributes (allocate_alignments: optional<i64_array>,
+                allocate_private_indices: optional<i64_array>,
+                dyn_groupprivate_access_group: optional<AccessGroupModifier>,
+                dyn_groupprivate_fallback: optional<FallbackModifier>,
+                private_syms: optional<symbol_array>,
+                private_needs_barrier: optional<unit>,
+                private_assume_bounded_recipe_effects: optional<unit>,
+                reduction_mods: optional<reduction_mod_array>,
+                reduction_byref: optional<bool_array>,
+                reduction_syms: optional<symbol_array>,
+                reduction_assume_bounded_recipe_effects: optional<unit>);
+    Properties [recursive_effects, operand_segments_by_attribute];
+    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, allocator_vars) ")"
+                        if allocate_alignments { "allocate_alignments" "(" allocate_alignments ")" }
+                        if allocate_private_indices { "allocate_private_indices" "(" allocate_private_indices ")" }
+                      | "dyn_groupprivate" "(" custom<DynGroupprivateClause>(dyn_groupprivate_access_group, dyn_groupprivate_fallback, dyn_groupprivate_size) ")"
+                      | "if" "(" if_expr ")"
+                      | "num_teams" "(" if num_teams_lower { num_teams_lower ":" type(num_teams_lower) "to" }
+                                     num_teams_upper_vars ":" type(num_teams_upper_vars) ")"
+                      | "private" "(" custom<PrivateClause>(private_vars, private_syms) ")"
+                      | "reduction" "(" custom<ReductionClause>(reduction_vars, reduction_mods, reduction_byref, reduction_syms) ")"
+                      | "thread_limit" "(" thread_limit_vars ":" type(thread_limit_vars) ")")
+                 attr-dict region }
+  }
+
+  op sections from SingleBlockTerminatedRegion {
+    Doc "Non-iterative worksharing region containing omp.section ops.";
+    Operands   (allocate_vars: variadic<any>,
+                allocator_vars: variadic<any>,
+                private_vars: variadic<any>,
+                reduction_vars: variadic<pointer_like>);
+    Attributes (allocate_alignments: optional<i64_array>,
+                allocate_private_indices: optional<i64_array>,
+                nowait: optional<unit>,
+                private_syms: optional<symbol_array>,
+                private_needs_barrier: optional<unit>,
+                private_assume_bounded_recipe_effects: optional<unit>,
+                reduction_mods: optional<reduction_mod_array>,
+                reduction_byref: optional<bool_array>,
+                reduction_syms: optional<symbol_array>,
+                reduction_assume_bounded_recipe_effects: optional<unit>);
+    Properties [recursive_effects, operand_segments_by_attribute];
+    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, allocator_vars) ")"
+                        if allocate_alignments { "allocate_alignments" "(" allocate_alignments ")" }
+                        if allocate_private_indices { "allocate_private_indices" "(" allocate_private_indices ")" }
+                      | "nowait" nowait
+                      | "private" "(" custom<PrivateClause>(private_vars, private_syms) ")"
+                      | "reduction" "(" custom<ReductionClause>(reduction_vars, reduction_mods, reduction_byref, reduction_syms) ")")
+                 attr-dict region }
+  }
+
+  op section from SimpleRegion {
+    Doc "One section of a surrounding omp.sections region.";
+    Properties [recursive_effects, has_parent(sections)];
+  }
+
+  op single from TerminatedRegion {
+    Doc "Structured block executed by exactly one thread of the team.";
+    Operands   (allocate_vars: variadic<any>,
+                allocator_vars: variadic<any>,
+                copyprivate_vars: variadic<any>,
+                private_vars: variadic<any>);
+    Attributes (allocate_alignments: optional<i64_array>,
+                allocate_private_indices: optional<i64_array>,
+                copyprivate_syms: optional<symbol_array>,
+                nowait: optional<unit>,
+                private_syms: optional<symbol_array>,
+                private_needs_barrier: optional<unit>,
+                private_assume_bounded_recipe_effects: optional<unit>);
+    Properties [recursive_effects, operand_segments_by_attribute];
+    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, allocator_vars) ")"
+                        if allocate_alignments { "allocate_alignments" "(" allocate_alignments ")" }
+                        if allocate_private_indices { "allocate_private_indices" "(" allocate_private_indices ")" }
+                      | "copyprivate" "(" custom<Copyprivate>(copyprivate_vars, copyprivate_syms) ")"
+                      | "nowait" nowait
+                      | "private" "(" custom<PrivateClause>(private_vars, private_syms) ")")
+                 attr-dict region }
+  }
+
+  op scope from TerminatedRegion {
+    Doc "Lexical scope for privatization, executed by all threads of the current team.";
+    Operands   (allocate_vars: variadic<any>,
+                allocator_vars: variadic<any>,
+                private_vars: variadic<any>,
+                reduction_vars: variadic<pointer_like>);
+    Attributes (allocate_alignments: optional<i64_array>,
+                allocate_private_indices: optional<i64_array>,
+                nowait: optional<unit>,
+                private_syms: optional<symbol_array>,
+                private_needs_barrier: optional<unit>,
+                reduction_mods: optional<reduction_mod_array>,
+                reduction_byref: optional<bool_array>,
+                reduction_syms: optional<symbol_array>);
+    Properties [operand_segments_by_attribute];
+    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, allocator_vars) ")"
+                        if allocate_alignments { "allocate_alignments" "(" allocate_alignments ")" }
+                        if allocate_private_indices { "allocate_private_indices" "(" allocate_private_indices ")" }
+                      | "nowait" nowait
+                      | "private" "(" custom<PrivateClause>(private_vars, private_syms) ")"
+                      | "reduction" "(" custom<ReductionClause>(reduction_vars, reduction_mods, reduction_byref, reduction_syms) ")")
+                 attr-dict region }
+  }
+
+  op workshare from TerminatedRegion {
+    Doc "Divides a structured block into units of work before the units are distributed.";
+    Attributes (nowait: optional<unit>);
+    Properties [recursive_effects];
+    Assembly   { oilist("nowait" nowait) attr-dict region }
+  }
+
+  op master from SimpleRegion {
+    Doc "Structured block executed by the master thread of the team.";
+    Properties [recursive_effects];
+  }
+
+  op critical.declare {
+    Doc "Declares a named critical section and its hint.";
+    Attributes (sym_name: string,
+                sym_visibility: optional<string>,
+                hint: i64 = 0);
+    Assembly   { if sym_visibility { sym_visibility } sym_name
+                 oilist("hint" "(" hint ")") attr-dict }
+  }
+
+  op critical from TerminatedRegion {
+    Doc "Structured block executed by one thread at a time; an optional symbol names the critical section.";
+    Attributes (name: optional<flat_symbol_ref>);
+    Properties [recursive_effects, memory_effect(read), memory_effect(write)];
+    Assembly   { if name { "(" name ")" } region attr-dict }
+  }
+
+  op barrier {
+    Doc "Explicit barrier at the point where the construct appears.";
+    Assembly   { attr-dict }
+  }
+
+  op error {
+    Doc "Execution-time error directive with warning or fatal severity and an optional message.";
+    Operands   (message_expr: optional<pointer_like>);
+    Attributes (severity: ClauseSeverity, message: optional<string>);
+    Assembly   { "severity" "(" custom<ClauseAttr>(severity) ")"
+                 if message { "message" "(" message ")" }
+                 if message_expr { "message_expr" "(" message_expr ":" type(message_expr) ")" }
+                 attr-dict }
+  }
+
+  op ordered {
+    Doc "Stand-alone ordered directive carrying doacross depend information.";
+    Operands   (doacross_depend_vars: variadic<any>);
+    Attributes (doacross_depend_type: optional<ClauseDepend>,
+                doacross_num_loops: optional<i64> [non_negative]);
+    Assembly   { if doacross_depend_type { "depend_type" "(" doacross_depend_type ")" }
+                 if doacross_depend_vars { "depend_vec" "(" doacross_depend_vars ":" type(doacross_depend_vars) ")" }
+                 if doacross_num_loops { "num_loops" "(" doacross_num_loops ")" }
+                 attr-dict }
+  }
+
+  op ordered.region from TerminatedRegion {
+    Doc "Structured block executed in loop-iteration order.";
+    Attributes (par_level_simd: optional<unit>);
+    Assembly   { oilist("par_level_simd" par_level_simd) attr-dict region }
+  }
+
+  op taskyield {
+    Doc "Suspends the current task in favor of another task.";
+    Assembly   { attr-dict }
+  }
+
+  op taskwait {
+    Doc "Waits for completion of child tasks, optionally narrowed by depend.";
+    Operands   (depend_vars: variadic<pointer_like>,
+                depend_iterated: variadic<iterated>);
+    Attributes (depend_kinds: optional<task_depend_array>,
+                depend_iterated_kinds: optional<task_depend_array>,
+                nowait: optional<unit>);
+    Properties [operand_segments_by_attribute, memory_effect(read),
+                memory_effect(write)];
+    Assembly   { oilist("depend" "(" custom<DependVarList>(depend_vars, depend_kinds, depend_iterated, depend_iterated_kinds) ")"
+                      | "nowait" nowait)
+                 attr-dict }
+  }
+
+  op masked from TerminatedRegion {
+    Doc "Structured block executed by a subset of the team selected by filter.";
+    Operands   (filtered_thread_id: optional<int_like>);
+    Properties [recursive_effects];
+    Assembly   { oilist("filter" "(" filtered_thread_id ":" type(filtered_thread_id) ")")
+                 attr-dict region }
+  }
+
+  op dispatch from TerminatedRegion {
+    Doc "Dispatches a base or variant procedure; the region materializes the selection.";
+    Operands   (nocontext: optional<i1>, novariants: optional<i1>);
+    Attributes (nowait: optional<unit>);
+    Properties [no_region_args, operand_segments_by_attribute];
+    Assembly   { oilist("nocontext" "(" nocontext ")"
+                      | "novariants" "(" novariants ")"
+                      | "nowait" nowait)
+                 attr-dict region }
+  }
+
+  op workdistribute from SimpleRegion {
+    Doc "Divides a structured block into units executed once by each initial thread.";
+  }
+
+  // ------------------------------------------------------------------
+  // 循环包装与循环体
+  // ------------------------------------------------------------------
+
+  op workshare.loop_wrapper from NoTerminatorWrapper {
+    Doc "Wraps the loop nest to be divided by an enclosing omp.workshare.";
+    Properties [recursive_effects];
+  }
+
+  op loop_nest {
+    Doc "Rectangular loop nest with lower bounds, upper bounds and steps; the body may have multiple blocks and ends in omp.yield.";
+    Operands   (loop_lower_bounds: variadic<int_like>,
+                loop_upper_bounds: variadic<int_like>,
+                loop_steps: variadic<int_like>);
+    Attributes (collapse_num_loops: optional<i64> [positive] = 1,
+                tile_sizes: optional<i64_array>,
+                loop_inclusive: optional<unit>);
+    Regions    (region: region [implicit_terminator(yield)]);
+    Properties [recursive_effects, same_variadic_operand_size];
+    Assembly Custom;
+  }
+
+  op loop from NoTerminatorRegion {
+    Doc "Loop construct with bind, private, order and reduction clauses.";
+    Operands   (private_vars: variadic<any>,
+                reduction_vars: variadic<pointer_like>);
+    Attributes (bind_kind: optional<BindKind>,
+                order: optional<OrderKind>,
+                order_mod: optional<OrderModifier>,
+                private_syms: optional<symbol_array>,
+                private_needs_barrier: optional<unit>,
+                reduction_mods: optional<reduction_mod_array>,
+                reduction_byref: optional<bool_array>,
+                reduction_syms: optional<symbol_array>);
+    Properties [operand_segments_by_attribute];
+    Assembly   { oilist("bind" "(" custom<ClauseAttr>(bind_kind) ")"
+                      | "private" "(" custom<PrivateClause>(private_vars, private_syms) ")"
+                      | "reduction" "(" custom<ReductionClause>(reduction_vars, reduction_mods, reduction_byref, reduction_syms) ")"
+                      | "order" "(" order if order_mod { ":" order_mod } ")")
+                 attr-dict region }
+  }
+
+  op wsloop from NoTerminatorRegion {
+    Doc "Worksharing loop distributed across the threads of the enclosing parallel region.";
+    Operands   (allocate_vars: variadic<any>,
+                allocator_vars: variadic<any>,
+                linear_vars: variadic<any>,
+                linear_step_vars: variadic<integer>,
+                private_vars: variadic<any>,
+                reduction_vars: variadic<pointer_like>,
+                schedule_chunk: optional<any>);
+    Attributes (allocate_alignments: optional<i64_array>,
+                allocate_private_indices: optional<i64_array>,
+                linear_var_types: optional<type_array>,
+                linear_modifiers: optional<linear_mod_array>,
+                linear_syms: optional<symbol_array>,
+                nowait: optional<unit>,
+                order: optional<OrderKind>,
+                order_mod: optional<OrderModifier>,
+                ordered: optional<i64> [non_negative],
+                private_syms: optional<symbol_array>,
+                private_needs_barrier: optional<unit>,
+                reduction_mods: optional<reduction_mod_array>,
+                reduction_byref: optional<bool_array>,
+                reduction_syms: optional<symbol_array>,
+                schedule_kind: optional<ScheduleKind>,
+                schedule_mod: optional<ScheduleModifier>,
+                schedule_simd: optional<unit>);
+    Properties [recursive_effects, operand_segments_by_attribute];
+    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, allocator_vars) ")"
+                        if allocate_alignments { "allocate_alignments" "(" allocate_alignments ")" }
+                        if allocate_private_indices { "allocate_private_indices" "(" allocate_private_indices ")" }
+                      | "linear" "(" custom<LinearClause>(linear_vars, linear_step_vars) ")"
+                      | "nowait" nowait
+                      | "order" "(" order if order_mod { ":" order_mod } ")"
+                      | "ordered" "(" ordered ")"
+                      | "private" "(" custom<PrivateClause>(private_vars, private_syms) ")"
+                      | "reduction" "(" custom<ReductionClause>(reduction_vars, reduction_mods, reduction_byref, reduction_syms) ")"
+                      | "schedule" "(" custom<ScheduleClause>(schedule_kind, schedule_mod, schedule_simd, schedule_chunk) ")")
+                 attr-dict region }
+  }
+
+  op simd from NoTerminatorRegion {
+    Doc "SIMD loop wrapper with alignment, linear, order, private and reduction clauses.";
+    Operands   (aligned_vars: variadic<pointer_like>,
+                if_expr: optional<i1>,
+                linear_vars: variadic<any>,
+                linear_step_vars: variadic<integer>,
+                nontemporal_vars: variadic<pointer_like>,
+                private_vars: variadic<any>,
+                reduction_vars: variadic<pointer_like>);
+    Attributes (alignments: optional<i64_array>,
+                linear_var_types: optional<type_array>,
+                linear_modifiers: optional<linear_mod_array>,
+                linear_syms: optional<symbol_array>,
+                order: optional<OrderKind>,
+                order_mod: optional<OrderModifier>,
+                private_syms: optional<symbol_array>,
+                private_needs_barrier: optional<unit>,
+                reduction_mods: optional<reduction_mod_array>,
+                reduction_byref: optional<bool_array>,
+                reduction_syms: optional<symbol_array>,
+                safelen: optional<i64> [positive],
+                simdlen: optional<i64> [positive]);
+    Properties [recursive_effects, operand_segments_by_attribute];
+    Assembly   { oilist("aligned" "(" custom<AlignedClause>(aligned_vars, alignments) ")"
+                      | "if" "(" if_expr ")"
+                      | "linear" "(" custom<LinearClause>(linear_vars, linear_step_vars) ")"
+                      | "nontemporal" "(" nontemporal_vars ":" type(nontemporal_vars) ")"
+                      | "order" "(" order if order_mod { ":" order_mod } ")"
+                      | "private" "(" custom<PrivateClause>(private_vars, private_syms) ")"
+                      | "reduction" "(" custom<ReductionClause>(reduction_vars, reduction_mods, reduction_byref, reduction_syms) ")"
+                      | "safelen" "(" safelen ")"
+                      | "simdlen" "(" simdlen ")")
+                 attr-dict region }
+  }
+
+  op distribute from NoTerminatorRegion {
+    Doc "Distributes loop iterations across the initial teams of the enclosing teams region.";
+    Operands   (allocate_vars: variadic<any>,
+                allocator_vars: variadic<any>,
+                dist_schedule_chunk_size: optional<int_like>,
+                private_vars: variadic<any>);
+    Attributes (allocate_alignments: optional<i64_array>,
+                allocate_private_indices: optional<i64_array>,
+                dist_schedule_static: optional<unit>,
+                order: optional<OrderKind>,
+                order_mod: optional<OrderModifier>,
+                private_syms: optional<symbol_array>,
+                private_needs_barrier: optional<unit>);
+    Properties [recursive_effects, operand_segments_by_attribute];
+    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, allocator_vars) ")"
+                        if allocate_alignments { "allocate_alignments" "(" allocate_alignments ")" }
+                        if allocate_private_indices { "allocate_private_indices" "(" allocate_private_indices ")" }
+                      | "dist_schedule_static" dist_schedule_static
+                      | "dist_schedule_chunk_size" "(" dist_schedule_chunk_size ":" type(dist_schedule_chunk_size) ")"
+                      | "order" "(" order if order_mod { ":" order_mod } ")"
+                      | "private" "(" custom<PrivateClause>(private_vars, private_syms) ")")
+                 attr-dict region }
+  }
+
+  op task from TerminatedRegion {
+    Doc "Explicit task with affinity, depend, final, if, in_reduction, private and detach clauses.";
+    Operands   (iterated: variadic<iterated>,
+                affinity_vars: variadic<affinity_entry_ty>,
+                allocate_vars: variadic<any>,
+                allocator_vars: variadic<any>,
+                depend_vars: variadic<pointer_like>,
+                depend_iterated: variadic<iterated>,
+                final: optional<i1>,
+                if_expr: optional<i1>,
+                in_reduction_vars: variadic<pointer_like>,
+                private_vars: variadic<any>,
+                event_handle: optional<pointer_like>,
+                priority: optional<integer>);
+    Attributes (allocate_alignments: optional<i64_array>,
+                allocate_private_indices: optional<i64_array>,
+                depend_kinds: optional<task_depend_array>,
+                depend_iterated_kinds: optional<task_depend_array>,
+                in_reduction_byref: optional<bool_array>,
+                in_reduction_syms: optional<symbol_array>,
+                mergeable: optional<unit>,
+                private_syms: optional<symbol_array>,
+                private_needs_barrier: optional<unit>,
+                private_assume_bounded_recipe_effects: optional<unit>,
+                threadset: optional<ThreadsetPolicy>,
+                untied: optional<unit>);
+    Properties [automatic_allocation_scope,
+                operand_segments_by_attribute];
+    Assembly   { oilist("affinity" "(" custom<AffinityClause>(iterated, affinity_vars) ")"
+                      | "allocate" "(" custom<AllocateAndAllocator>(allocate_vars, allocator_vars) ")"
+                        if allocate_alignments { "allocate_alignments" "(" allocate_alignments ")" }
+                        if allocate_private_indices { "allocate_private_indices" "(" allocate_private_indices ")" }
+                      | "depend" "(" custom<DependVarList>(depend_vars, depend_kinds, depend_iterated, depend_iterated_kinds) ")"
+                      | "final" "(" final ")"
+                      | "if" "(" if_expr ")"
+                      | "in_reduction" "(" custom<InReductionClause>(in_reduction_vars, in_reduction_byref, in_reduction_syms) ")"
+                      | "mergeable" mergeable
+                      | "priority" "(" priority ":" type(priority) ")"
+                      | "private" "(" custom<PrivateClause>(private_vars, private_syms) ")"
+                      | "threadset" "(" custom<ClauseAttr>(threadset) ")"
+                      | "untied" untied
+                      | "detach" "(" event_handle ":" type(event_handle) ")")
+                 attr-dict region }
+  }
+
+  op taskloop.context from SingleBlockTerminatedRegion {
+    Doc "Outlinable taskloop context; holds one omp.taskloop.wrapper and carries the taskloop clause set.";
+    Operands   (allocate_vars: variadic<any>,
+                allocator_vars: variadic<any>,
+                final: optional<i1>,
+                grainsize: optional<int_like>,
+                if_expr: optional<i1>,
+                in_reduction_vars: variadic<pointer_like>,
+                num_tasks: optional<int_like>,
+                private_vars: variadic<any>,
+                reduction_vars: variadic<pointer_like>,
+                priority: optional<integer>);
+    Attributes (allocate_alignments: optional<i64_array>,
+                allocate_private_indices: optional<i64_array>,
+                grainsize_mod: optional<GrainsizeType>,
+                in_reduction_byref: optional<bool_array>,
+                in_reduction_syms: optional<symbol_array>,
+                mergeable: optional<unit>,
+                nogroup: optional<unit>,
+                num_tasks_mod: optional<NumTasksType>,
+                private_syms: optional<symbol_array>,
+                private_needs_barrier: optional<unit>,
+                reduction_mods: optional<reduction_mod_array>,
+                reduction_byref: optional<bool_array>,
+                reduction_syms: optional<symbol_array>,
+                threadset: optional<ThreadsetPolicy>,
+                untied: optional<unit>);
+    Properties [recursive_effects, automatic_allocation_scope,
+                operand_segments_by_attribute];
+    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, allocator_vars) ")"
+                        if allocate_alignments { "allocate_alignments" "(" allocate_alignments ")" }
+                        if allocate_private_indices { "allocate_private_indices" "(" allocate_private_indices ")" }
+                      | "final" "(" final ")"
+                      | "grainsize" "(" custom<GrainsizeClause>(grainsize_mod, grainsize) ")"
+                      | "if" "(" if_expr ")"
+                      | "in_reduction" "(" custom<InReductionClause>(in_reduction_vars, in_reduction_byref, in_reduction_syms) ")"
+                      | "mergeable" mergeable
+                      | "nogroup" nogroup
+                      | "num_tasks" "(" custom<NumTasksClause>(num_tasks_mod, num_tasks) ")"
+                      | "priority" "(" priority ":" type(priority) ")"
+                      | "private" "(" custom<PrivateClause>(private_vars, private_syms) ")"
+                      | "reduction" "(" custom<ReductionClause>(reduction_vars, reduction_mods, reduction_byref, reduction_syms) ")"
+                      | "threadset" "(" custom<ClauseAttr>(threadset) ")"
+                      | "untied" untied)
+                 attr-dict region }
+  }
+
+  op taskloop.wrapper from NoTerminatorWrapper {
+    Doc "Loop wrapper part of a taskloop; the enclosing omp.taskloop.context carries the clauses.";
+    Properties [recursive_effects];
+  }
+
+  op taskgroup from TerminatedRegion {
+    Doc "Waits for child tasks and descendant tasks; may open a task_reduction.";
+    Operands   (allocate_vars: variadic<any>,
+                allocator_vars: variadic<any>,
+                task_reduction_vars: variadic<pointer_like>);
+    Attributes (allocate_alignments: optional<i64_array>,
+                allocate_private_indices: optional<i64_array>,
+                task_reduction_byref: optional<bool_array>,
+                task_reduction_syms: optional<symbol_array>,
+                task_reduction_assume_bounded_recipe_effects: optional<unit>);
+    Properties [recursive_effects, automatic_allocation_scope,
+                operand_segments_by_attribute];
+    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, allocator_vars) ")"
+                        if allocate_alignments { "allocate_alignments" "(" allocate_alignments ")" }
+                        if allocate_private_indices { "allocate_private_indices" "(" allocate_private_indices ")" }
+                      | "task_reduction" "(" custom<TaskReductionClause>(task_reduction_vars, task_reduction_byref, task_reduction_syms) ")")
+                 attr-dict region }
+  }
+
+  // ------------------------------------------------------------------
+  // target 族
+  // ------------------------------------------------------------------
+
+  op target_data from TerminatedRegion {
+    Doc "Maps variables into a device data environment for the extent of the region.";
+    Operands   (device: optional<integer>,
+                if_expr: optional<i1>,
+                map_vars: variadic<pointer_like>,
+                map_iterated: variadic<iterated>,
+                use_device_addr_vars: variadic<pointer_like>,
+                use_device_ptr_vars: variadic<pointer_like>);
+    Properties [operand_segments_by_attribute];
+    Assembly   { oilist("device" "(" device ":" type(device) ")"
+                      | "if" "(" if_expr ")"
+                      | "map_entries" "(" map_vars ":" type(map_vars) ")"
+                      | "map_iterated" "(" map_iterated ":" type(map_iterated) ")"
+                      | "use_device_addr" "(" use_device_addr_vars ":" type(use_device_addr_vars) ")"
+                      | "use_device_ptr" "(" use_device_ptr_vars ":" type(use_device_ptr_vars) ")")
+                 attr-dict region }
+  }
+
+  op target_enter_data from TargetDataStandalone {
+    Doc "Maps variables to a device data environment without a region.";
+  }
+
+  op target_exit_data from TargetDataStandalone {
+    Doc "Unmaps variables from a device data environment without a region.";
+  }
+
+  op target_update from TargetDataStandalone {
+    Doc "Makes device list items consistent with their host originals.";
+  }
+
+  op target from TerminatedRegion {
+    Doc "Region executed on a device; kernel_type selects bare, generic or SPMD execution, and clauses control mapping, privatization and reductions.";
+    Operands   (allocate_vars: variadic<any>,
+                allocator_vars: variadic<any>,
+                depend_vars: variadic<pointer_like>,
+                depend_iterated: variadic<iterated>,
+                device: optional<integer>,
+                dyn_groupprivate_size: optional<integer>,
+                has_device_addr_vars: variadic<pointer_like>,
+                host_eval_vars: variadic<any>,
+                if_expr: optional<i1>,
+                in_reduction_vars: variadic<pointer_like>,
+                is_device_ptr_vars: variadic<pointer_like>,
+                map_vars: variadic<pointer_like>,
+                map_iterated: variadic<iterated>,
+                private_vars: variadic<any>,
+                thread_limit_vars: variadic<int_like>);
+    Attributes (allocate_alignments: optional<i64_array>,
+                allocate_private_indices: optional<i64_array>,
+                depend_kinds: optional<task_depend_array>,
+                depend_iterated_kinds: optional<task_depend_array>,
+                dyn_groupprivate_access_group: optional<AccessGroupModifier>,
+                dyn_groupprivate_fallback: optional<FallbackModifier>,
+                in_reduction_byref: optional<bool_array>,
+                in_reduction_syms: optional<symbol_array>,
+                nowait: optional<unit>,
+                private_syms: optional<symbol_array>,
+                private_needs_barrier: optional<unit>,
+                private_maps: optional<i64_array>,
+                kernel_type: TargetExecMode);
+    Properties [isolated_from_above, operand_segments_by_attribute];
+    Assembly   { "kernel_type" "(" kernel_type ")"
+                 oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, allocator_vars) ")"
+                        if allocate_alignments { "allocate_alignments" "(" allocate_alignments ")" }
+                        if allocate_private_indices { "allocate_private_indices" "(" allocate_private_indices ")" }
+                      | "depend" "(" custom<DependVarList>(depend_vars, depend_kinds, depend_iterated, depend_iterated_kinds) ")"
+                      | "device" "(" device ":" type(device) ")"
+                      | "dyn_groupprivate" "(" custom<DynGroupprivateClause>(dyn_groupprivate_access_group, dyn_groupprivate_fallback, dyn_groupprivate_size) ")"
+                      | "has_device_addr" "(" has_device_addr_vars ":" type(has_device_addr_vars) ")"
+                      | "host_eval" "(" host_eval_vars ":" type(host_eval_vars) ")"
+                      | "if" "(" if_expr ")"
+                      | "in_reduction" "(" custom<InReductionClause>(in_reduction_vars, in_reduction_byref, in_reduction_syms) ")"
+                      | "is_device_ptr" "(" is_device_ptr_vars ":" type(is_device_ptr_vars) ")"
+                      | "map_entries" "(" map_vars ":" type(map_vars) ")"
+                      | "map_iterated" "(" map_iterated ":" type(map_iterated) ")"
+                      | "nowait" nowait
+                      | "private" "(" custom<PrivateClause>(private_vars, private_syms) ")"
+                      | "thread_limit" "(" thread_limit_vars ":" type(thread_limit_vars) ")")
+                 attr-dict region }
+  }
+
+  // ------------------------------------------------------------------
+  // 原子与线程/组私有存储
+  // ------------------------------------------------------------------
+
+  op atomic.read {
+    Doc "Atomically reads the value at x into v.";
+    Operands   (x: pointer_like, v: pointer_like);
+    Attributes (element_type: type,
+                hint: i64 = 0,
+                memory_order: optional<MemoryOrderKind>);
+    Properties [memory_effect(read), memory_effect(write)];
+    Assembly   { v "=" x
+                 oilist("hint" "(" hint ")"
+                      | "memory_order" "(" custom<ClauseAttr>(memory_order) ")")
+                 ":" type(v) "," type(x) "," element_type attr-dict }
+  }
+
+  op atomic.write {
+    Doc "Atomically writes expr to the address x.";
+    Operands   (x: pointer_like, expr: any);
+    Attributes (hint: i64 = 0,
+                memory_order: optional<MemoryOrderKind>);
+    Properties [memory_effect(write)];
+    Assembly   { x "=" expr
+                 oilist("hint" "(" hint ")"
+                      | "memory_order" "(" custom<ClauseAttr>(memory_order) ")")
+                 ":" type(x) "," type(expr) attr-dict }
+  }
+
+  op atomic.update from AtomicRMWRegion {
+    Doc "Atomically updates the value at x using the computation in the region; the region yields the updated value.";
+    Operands   (x: pointer_like);
+    Attributes (atomic_control: optional<atomic_control>,
+                hint: i64 = 0,
+                memory_order: optional<MemoryOrderKind>);
+    Properties [recursive_effects, memory_effect(read), memory_effect(write)];
+    Assembly   { oilist("hint" "(" hint ")"
+                      | "memory_order" "(" custom<ClauseAttr>(memory_order) ")")
+                 x ":" type(x) region
+                 if atomic_control { "atomic_control" atomic_control }
+                 attr-dict }
+  }
+
+  op atomic.capture {
+    Doc "Atomic capture region containing an atomic update and one of read, write or compare; the region ends in omp.terminator.";
+    Attributes (hint: i64 = 0,
+                memory_order: optional<MemoryOrderKind>,
+                fail_only: optional<unit>);
+    Regions    (region: region [single_block, implicit_terminator(terminator)]);
+    Properties [recursive_effects];
+    Assembly   { oilist("hint" "(" hint ")"
+                      | "memory_order" "(" custom<ClauseAttr>(memory_order) ")")
+                 region if fail_only { "fail_only" fail_only } attr-dict }
+  }
+
+  op atomic.compare from AtomicRMWRegion {
+    Doc "Atomic compare-and-swap; the region describes the comparison and update and yields the updated value.";
+    Operands   (x: pointer_like);
+    Attributes (weak: optional<unit>,
+                hint: i64 = 0,
+                memory_order: optional<MemoryOrderKind>,
+                fail_memory_order: optional<MemoryOrderKind>);
+    Properties [recursive_effects, memory_effect(read), memory_effect(write)];
+    Assembly   { oilist("hint" "(" hint ")"
+                      | "memory_order" "(" custom<ClauseAttr>(memory_order) ")")
+                 x ":" type(x) region
+                 oilist("weak" weak
+                      | "fail_memory_order" "(" fail_memory_order ")")
+                 attr-dict }
+  }
+
+  op threadprivate {
+    Doc "Returns the thread-local address corresponding to sym_addr.";
+    Operands   (sym_addr: pointer_like);
+    Results    (tls_addr: pointer_like);
+    Properties [same_type];
+    Assembly   { sym_addr ":" type(sym_addr) "->" type(tls_addr) attr-dict }
+  }
+
+  op groupprivate {
+    Doc "Returns the group-private copy of a global symbol; device_type selects host, nohost or any.";
+    Attributes (sym_name: flat_symbol_ref,
+                device_type: optional<DeclareTargetDeviceType>);
+    Results    (gp_addr: pointer_like);
+    Properties [pure];
+    Assembly   { sym_name
+                 if device_type { "device_type" "(" device_type ")" }
+                 ":" type(gp_addr) attr-dict }
+  }
+
+  // ------------------------------------------------------------------
+  // map 辅助 op
+  // ------------------------------------------------------------------
+
+  op map.bounds {
+    Doc "Normalized bounds of one mapped section; lower_bound, upper_bound, extent, stride and start_idx are mutually optional.";
+    Operands   (lower_bound: optional<int_like>,
+                upper_bound: optional<int_like>,
+                extent: optional<int_like>,
+                stride: optional<int_like>,
+                start_idx: optional<int_like>);
+    Results    (result: map_bounds_ty);
+    Attributes (stride_in_bytes: bool = false);
+    Properties [no_memory_effect, operand_segments_by_attribute];
+    Assembly   { oilist("lower_bound" "(" lower_bound ":" type(lower_bound) ")"
+                      | "upper_bound" "(" upper_bound ":" type(upper_bound) ")"
+                      | "extent" "(" extent ":" type(extent) ")"
+                      | "stride" "(" stride ":" type(stride) ")"
+                      | "start_idx" "(" start_idx ":" type(start_idx) ")")
+                 if stride_in_bytes { "stride_in_bytes" "(" stride_in_bytes ")" }
+                 attr-dict }
+  }
+
+  op map.info {
+    Doc "One map entry: variable pointer, map flags, capture kind, and optional pointer, members, bounds, mapper and name.";
+    Operands   (var_ptr: pointer_like,
+                var_ptr_ptr: optional<pointer_like>,
+                members: variadic<pointer_like>,
+                bounds: variadic<map_bounds_ty>);
+    Results    (omp_ptr: pointer_like);
+    Attributes (var_ptr_type: type,
+                map_type: ClauseMapFlags,
+                map_capture_type: VariableCaptureKind,
+                var_ptr_ptr_type: optional<type>,
+                members_index: optional<member_index_array>,
+                mapper_id: optional<flat_symbol_ref>,
+                name: optional<string>,
+                partial_map: bool = false);
+    Properties [operand_segments_by_attribute];
+    Assembly   { "var_ptr" "(" var_ptr ":" type(var_ptr) "," var_ptr_type ")"
+                 "map_clauses" "(" custom<MapClause>(map_type) ")"
+                 "capture" "(" custom<CaptureType>(map_capture_type) ")"
+                 oilist(if var_ptr_ptr { "var_ptr_ptr" "(" var_ptr_ptr ":" type(var_ptr_ptr) "," var_ptr_ptr_type ")" }
+                      | if mapper_id { "mapper" "(" mapper_id ")" }
+                      | if members { "members" "(" members ":" custom<MembersIndex>(members_index) ":" type(members) ")" }
+                      | if bounds { "bounds" "(" bounds ")" }
+                      | if name { "name" "(" name ")" }
+                      | if partial_map { "partial_map" "(" partial_map ")" })
+                 "->" type(omp_ptr) attr-dict }
+  }
+
+  // ------------------------------------------------------------------
+  // 声明类 op
+  // ------------------------------------------------------------------
+
+  op declare_mapper {
+    Doc "Declares a user-defined mapper: name, mapped type, and a single-block body ending in omp.declare_mapper.info.";
+    Attributes (sym_name: string,
+                sym_visibility: optional<string>,
+                decl_type: type);
+    Regions    (body: region [single_block, implicit_terminator(declare_mapper.info)]);
+    Properties [isolated_from_above, symbol, symbol_visibility];
+    Assembly   { if sym_visibility { sym_visibility } sym_name ":" decl_type
+                 body attr-dict }
+  }
+
+  op declare_mapper.info {
+    Doc "Terminator of an omp.declare_mapper body; carries the map entries of the mapper.";
+    Operands   (map_vars: variadic<pointer_like>,
+                map_iterated: variadic<iterated>);
+    Properties [terminator, operand_segments_by_attribute,
+                has_parent(declare_mapper)];
+    Assembly   { oilist("map_entries" "(" map_vars ":" type(map_vars) ")"
+                      | "map_iterated" "(" map_iterated ":" type(map_iterated) ")")
+                 attr-dict }
+  }
+
+  op declare_reduction {
+    Doc "Declares a reduction recipe: allocated type, optional byref element type, and optional alloc/init/combiner/atomic/cleanup/data_ptr_ptr regions.";
+    Attributes (sym_name: string,
+                sym_visibility: optional<string>,
+                decl_type: type,
+                byref_element_type: optional<type>);
+    Regions    (alloc: region [max_blocks(1), implicit_terminator(yield)],
+                initializer: region [implicit_terminator(yield)],
+                reduction: region [implicit_terminator(yield)],
+                atomic: region [implicit_terminator(yield)],
+                cleanup: region [implicit_terminator(yield)],
+                data_ptr_ptr: region [max_blocks(1), implicit_terminator(yield)]);
+    Properties [isolated_from_above, symbol, symbol_visibility];
+    Assembly   { if sym_visibility { sym_visibility } sym_name
+                 if byref_element_type { "byref_element_type" "(" byref_element_type ")" }
+                 ":" decl_type attr-dict-with-keyword
+                 if alloc { "alloc" alloc }
+                 "init" initializer
+                 "combiner" reduction
+                 if atomic { "atomic" atomic }
+                 if cleanup { "cleanup" cleanup }
+                 if data_ptr_ptr { "data_ptr_ptr" data_ptr_ptr } }
+  }
+
+  op declare_simd {
+    Doc "Declarative declare-simd directive attached to the enclosing function.";
+    Operands   (aligned_vars: variadic<pointer_like>,
+                linear_vars: variadic<any>,
+                linear_step_vars: variadic<integer>,
+                uniform_vars: variadic<pointer_like>);
+    Attributes (alignments: optional<i64_array>,
+                linear_var_types: optional<type_array>,
+                linear_modifiers: optional<linear_mod_array>,
+                linear_syms: optional<symbol_array>,
+                inbranch: optional<unit>,
+                notinbranch: optional<unit>,
+                simdlen: optional<i64> [positive]);
+    Properties [operand_segments_by_attribute];
+    Assembly   { oilist("aligned" "(" custom<AlignedClause>(aligned_vars, alignments) ")"
+                      | "inbranch" inbranch
+                      | "linear" "(" custom<LinearClause>(linear_vars, linear_step_vars) ")"
+                      | "notinbranch" notinbranch
+                      | "simdlen" "(" simdlen ")"
+                      | "uniform" "(" uniform_vars ":" type(uniform_vars) ")")
+                 attr-dict }
+  }
+
+  // ------------------------------------------------------------------
+  // 独立指令与辅助句柄
+  // ------------------------------------------------------------------
+
+  op flush {
+    Doc "Flushes the listed variables, or all variables when the list is absent.";
+    Operands   (var_list: variadic<any>);
+    Assembly   { if var_list { "(" var_list ":" type(var_list) ")" } attr-dict }
+  }
+
+  op cancel {
+    Doc "Activates cancellation of the innermost enclosing construct of the named type, optionally under a condition.";
+    Operands   (if_expr: optional<i1>);
+    Attributes (cancel_directive: CancellationConstructType);
+    Assembly   { "cancellation_construct_type" "(" cancel_directive ")"
+                 oilist("if" "(" if_expr ")") attr-dict }
+  }
+
+  op cancellation_point {
+    Doc "Introduces a cancellation point for the innermost enclosing construct of the named type.";
+    Attributes (cancel_directive: CancellationConstructType);
+    Assembly   { "cancellation_construct_type" "(" cancel_directive ")" attr-dict }
+  }
+
+  op scan {
+    Doc "Splits a block into input and scan phases for an inclusive or exclusive scan.";
+    Operands   (inclusive_vars: variadic<any>,
+                exclusive_vars: variadic<any>);
+    Properties [operand_segments_by_attribute, memory_effect(write)];
+    Assembly   { oilist("inclusive" "(" inclusive_vars ":" type(inclusive_vars) ")"
+                      | "exclusive" "(" exclusive_vars ":" type(exclusive_vars) ")")
+                 attr-dict }
+  }
+
+  op allocate_dir {
+    Doc "Allocate directive: allocates each list item with the selected allocator and alignment.";
+    Operands   (var_list: variadic<any>, allocator: optional<integer>);
+    Attributes (align: optional<i64> [positive]);
+    Properties [operand_segments_by_attribute];
+    Assembly   { "(" var_list ":" type(var_list) ")"
+                 oilist("align" "(" align ")"
+                      | "allocator" "(" allocator ":" type(allocator) ")")
+                 attr-dict }
+  }
+
+  op allocate_free {
+    Doc "Frees list items allocated by omp.allocate_dir.";
+    Operands   (var_list: variadic<any>, allocator: optional<integer>);
+    Properties [operand_segments_by_attribute];
+    Assembly   { "(" var_list ":" type(var_list) ")"
+                 oilist("allocator" "(" allocator ":" type(allocator) ")")
+                 attr-dict }
+  }
+
+  op target_allocmem {
+    Doc "Allocates storage for an object of in_type on the selected device and returns an i64 device pointer.";
+    Operands   (device: integer,
+                typeparams: variadic<int_like>,
+                shape: variadic<int_like>);
+    Results    (result: i64);
+    Attributes (in_type: type,
+                uniq_name: optional<string>,
+                bindc_name: optional<string>);
+    Properties [operand_segments_by_attribute];
+    Assembly   { device ":" type(device) ","
+                 custom<HeapAllocClause>(in_type, typeparams, type(typeparams),
+                                         shape, type(shape))
+                 if uniq_name { "uniq_name" "(" uniq_name ")" }
+                 if bindc_name { "bindc_name" "(" bindc_name ")" }
+                 attr-dict }
+  }
+
+  op target_freemem {
+    Doc "Frees device memory previously returned by omp.target_allocmem.";
+    Operands   (device: integer, heapref: i64);
+    Assembly   { device "," heapref attr-dict ":" type(device) ","
+                 qualified(type(heapref)) }
+  }
+
+  op alloc_shared_mem {
+    Doc "Allocates mem_array_size objects of mem_elem_type in shared memory and returns a pointer.";
+    Operands   (mem_array_size: integer);
+    Results    (result: pointer_like);
+    Attributes (mem_elem_type: type,
+                mem_alignment: optional<i64> [positive]);
+    Properties [memory_effect(allocate)];
+    Assembly   { mem_array_size "x" mem_elem_type ":" "(" type(mem_array_size) ")"
+                 oilist("align" "(" mem_alignment ")")
+                 "->" type(result) attr-dict }
+  }
+
+  op free_shared_mem {
+    Doc "Frees shared memory allocated by omp.alloc_shared_mem.";
+    Operands   (mem_array_size: integer, heapref: pointer_like);
+    Attributes (mem_elem_type: type,
+                mem_alignment: optional<i64> [positive]);
+    Assembly   { "[" mem_array_size "x" mem_elem_type ":" "(" type(mem_array_size) ")"
+                 oilist("align" "(" mem_alignment ")") "]"
+                 heapref ":" type(heapref) attr-dict }
+  }
+
+  op affinity_entry {
+    Doc "One affinity locator: address, length, and the resulting !omp.affinity_entry_ty.";
+    Operands   (addr: pointer_like, len: int_like);
+    Results    (entry: affinity_entry_ty);
+    Properties [pure];
+    Assembly   { addr "," len ":" "(" type(addr) "," type(len) ")"
+                 "->" qualified(type(entry)) attr-dict }
+  }
+
+  op iterator {
+    Doc "OpenMP iterator modifier: a multi-block region yielding one value per iteration, used as an !omp.iterated<T> handle.";
+    Operands   (loop_lower_bounds: variadic<int_like>,
+                loop_upper_bounds: variadic<int_like>,
+                loop_steps: variadic<int_like>);
+    Results    (iterated: iterated);
+    Attributes (loop_inclusive: optional<unit>);
+    Regions    (region: region [min_blocks(1), implicit_terminator(yield)]);
+    Properties [operand_segments_by_attribute];
+    Assembly   { custom<IteratorHeader>(region, loop_lower_bounds,
+                                        loop_upper_bounds, loop_steps)
+                 if loop_inclusive { "inclusive" }
+                 "->" qualified(type(iterated)) attr-dict }
+  }
+
+  op interop.init {
+    Doc "Initializes an interop object and records its foreign runtime types and preferred type.";
+    Operands   (interop_var: pointer_like,
+                device: optional<integer>,
+                depend_vars: variadic<pointer_like>,
+                depend_iterated: variadic<iterated>);
+    Attributes (interop_types: interop_type_array,
+                prefer_type: optional<i64_array>,
+                depend_kinds: optional<task_depend_array>,
+                depend_iterated_kinds: optional<task_depend_array>,
+                nowait: optional<unit>);
+    Properties [operand_segments_by_attribute];
+    Assembly   { interop_var ":" type(interop_var)
+                 "interop_types" "(" interop_types ")"
+                 if prefer_type { "prefer_type" "(" prefer_type ")" }
+                 if device { "device" "(" device ":" type(device) ")" }
+                 oilist("depend" "(" custom<DependVarList>(depend_vars, depend_kinds, depend_iterated, depend_iterated_kinds) ")"
+                      | "nowait" nowait)
+                 attr-dict }
+  }
+
+  op interop.use from InteropUseLike {
+    Doc "Marks use of an interop object, optionally synchronized through depend or nowait.";
+  }
+
+  op interop.destroy from InteropUseLike {
+    Doc "Releases an interop object and its foreign runtime resources.";
+  }
+}

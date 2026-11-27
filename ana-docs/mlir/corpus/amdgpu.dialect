@@ -1,0 +1,858 @@
+/// amdgpu —— AMD GPU 方言：缓冲、LDS 屏障、波前置换与矩阵乘累加。
+///
+/// 领域：本方言把 GCN/RDNA 的硬件资源显式暴露给 MLIR：原始缓冲与胖缓冲、
+/// LDS/DS 屏障、DPP 与 permlane 波前置换、MFMA/WMMA/SWMMAC 矩阵指令、
+/// TDM/DMA 描述符与异步搬运、以及全局预取。多数 op 对应一条硬件指令。
+///
+/// 类型：本方言有四个真实 TypeDef，全部声明如下：
+///   - tdm_base、tdm_gather_base 带参数（元素类型，gather 额外带索引类型）；
+///   - tdm_descriptor、ds_barrier_state 无参数，文本是裸类型名。
+/// tdm_gather_base 的上游校验器要求元素类型与索引类型同宽；文法写不出这个
+/// 关系，只在 Doc 里说明。
+///
+/// 属性：AMDGPUAttrs 只有四个 EnumAttr（address_space、dpp_perm、
+/// load_temporal_hint、cache_scope）。本语料只声明被 op 直接使用的三个：
+/// dpp_perm、load_temporal_hint、cache_scope。address_space 只作为 memref
+/// 的内存空间出现，而本语法不能在类型表达式里写属性（见 GAP），故不声明。
+///
+/// 文本通道：47 个 op 中 44 个用块格式，3 个用 Custom（packed_trunc_2xfp8、
+/// packed_scaled_trunc、packed_stoch_round_fp8），0 个 Generic。上游这三个
+/// op 用可选操作数的默认文本 undef，文法没有“缺失时打印字面量”的可选组。
+/// 上游的 MNKDimensionList 与 DynamicIndexList 是局部钩子，用 custom 写出。
+///
+/// 事实：本文件只使用核心词表（pure、memory_effect、same_type、same_shape、
+/// element_type_matches、operand_segments_by_attribute、
+/// same_variadic_operand_size、positive、non_negative），没有方言本地事实。
+///
+/// 计数：AMDGPUOps.td 里匹配 AMDGPU_Op 加尖括号得到 46 处，其中 3 处是基类
+/// 定义（AMDGPU_Op、AMDGPU_DmaBaseOp、AMDGPU_MakeDescriptorOp）；具体 op 是
+/// 47 个，本文件逐个覆盖，不重复、不虚构。
+///
+/// GAP:
+///   - memref 的内存空间无法在类型表达式里写出，故 fat_raw_buffer、global、
+///     workgroup 等地址空间只出现在 Doc 中；胖缓冲的 memref 统一写 any。
+///   - 元素位宽上界（至多 64 位）与向量长度区间（1 到 4、4 到 8、8 到 32 等）
+///     文法写不出；约束取 rank-1 形态或最接近的定长向量，Doc 记录真实区间。
+///   - 8 位、6 位与 8 位指数的浮点标量（f8e5m2fnuz、f8e4m3fnuz、f6e2m3fn、
+///     f6e3m2fn、f8e8m0fnu）以及 i6、i14 不在核心内建词表里；本文件按原名
+///     使用，并在类型域里登记。i14 直接出现在操作数类型上，审计会把它列为
+///     外部类型名。
+///   - ROCDL 的 sched group mask 属性不属于本方言，sched_barrier 的 opts
+///     取 attribute，Doc 说明其枚举取值。
+///   - ds_barrier_state 的 MemRefElementTypeInterface 是 TypeDef 的 trait，
+///     本语法的 type_def 没有 Implements 子句，只在 Doc 说明。
+///   - 上游的 IntIsOneOf、IntMaxValue 等取值集合不在核心事实词表里，本文件
+///     只用 positive/non_negative 或默认值记录，Doc 写出真实集合。
+///   - transpose_load 要求非零 rank 的 vector，文法没有 rank 下界，写裸 vector。
+
+dialect amdgpu {
+  Doc "AMD GPU hardware dialect: buffers, LDS barriers, wave permutations, matrix ops and DMA descriptors.";
+
+  // ---- 类型域 ----
+
+  // 标量 lane：无符号位整数或浮点。dpp/permlane 的上游还要求位宽至多 64，
+  // 文法没有位宽谓词，故只写类型类，Doc 记录上界。
+  constraint scalar = signless_integer | float;
+  constraint vector1 = vector<scalar, 1>;
+  constraint lane = scalar | vector1;
+
+  // 8 位浮点：fnuz 变体不在核心内建词表里，按上游名字使用。
+  constraint f8 = f8e5m2 | f8e4m3fn;
+  constraint f8_fnuz = f8e5m2fnuz | f8e4m3fnuz;
+  constraint f8_all = f8 | f8_fnuz;
+  constraint f6 = f6e2m3fn | f6e3m2fn;
+  constraint f8_scale = f8e8m0fnu;
+
+  // 打包/窄化族的源与结果。上游长度是区间（1 到 4、1 到 8），文法写不出，
+  // 这里取 rank-1（长度不限）或列出的定长形态。
+  constraint fp8_packed_source = f8_all | vector<f8_all, 1>;
+  constraint fp32_pair = f32 | vector<f32, 2>;
+  constraint mx_source = vector<f4e2m1fn, 8> | vector<f8, 8> | vector<f6, 16>;
+  constraint mx_result = vector<f32, 8> | vector<f16, 8> | vector<bf16, 8>
+                       | vector<f32, 16> | vector<f16, 16> | vector<bf16, 16>;
+  constraint scaled_source = vector<f8, 1> | vector<f4e2m1fn, 1>;
+  constraint scaled_pair_result = vector<f32, 2> | vector<f16, 2> | vector<bf16, 2>;
+  constraint fp8_quad = vector<f8_all, 4>;
+  constraint scaled_trunc_source = vector<f32, 1> | vector<f16, 1> | vector<bf16, 1>;
+  constraint scaled_trunc_result = vector<f8, 4> | vector<f4e2m1fn, 8>;
+
+  // 矩阵指令的源与结果类型域，逐个镜像上游的类型并集。
+  constraint mfma_source = f32 | f64 | i32 | i64
+                         | vector<f32, 2>
+                         | vector<f16, 4> | vector<f16, 8>
+                         | vector<bf16, 2> | vector<bf16, 4> | vector<bf16, 8>
+                         | vector<i8, 4> | vector<i8, 8> | vector<i8, 16>
+                         | vector<f8_fnuz, 8>
+                         | vector<f8, 8> | vector<f8, 32>
+                         | vector<f6e2m3fn, 32> | vector<f6e3m2fn, 32>
+                         | vector<f4e2m1fn, 32>;
+  constraint mfma_result = f64
+                         | vector<f32, 4> | vector<f32, 16> | vector<f32, 32>
+                         | vector<i32, 4> | vector<i32, 16> | vector<i32, 32>
+                         | vector<f64, 4>;
+  constraint smfma_sparse_source = vector<f16, 4> | vector<f16, 8>
+                                 | vector<bf16, 4> | vector<bf16, 8>
+                                 | vector<i8, 8> | vector<i8, 16>
+                                 | vector<f8, 8> | vector<f8, 16>
+                                 | vector<f8_fnuz, 8> | vector<f8_fnuz, 16>;
+  constraint smfma_dense_source = vector<f16, 8> | vector<f16, 16>
+                                | vector<bf16, 8> | vector<bf16, 16>
+                                | vector<i8, 16> | vector<i8, 32>
+                                | vector<f8, 16> | vector<f8, 32>
+                                | vector<f8_fnuz, 16> | vector<f8_fnuz, 32>;
+  constraint smfma_result = vector<f32, 4> | vector<f32, 16>
+                          | vector<i32, 4> | vector<i32, 16>;
+  constraint smfma_idx = vector<i8, 4> | vector<i16, 2> | i32;
+  constraint scaled_mfma_source = vector<f8, 32>
+                                | vector<f6e2m3fn, 32> | vector<f6e3m2fn, 32>
+                                | vector<f4e2m1fn, 32>;
+  constraint scaled_mfma_result = vector<f32, 4> | vector<f32, 16>;
+  constraint scaled_wmma_source = vector<f8, 64>
+                                | vector<f6e2m3fn, 64> | vector<f6e3m2fn, 64>
+                                | vector<f4e2m1fn, 64> | vector<f4e2m1fn, 128>;
+  constraint scaled_wmma_result = vector<f32, 8> | vector<f32, 16>;
+  constraint scale_pair = vector<f8_scale, 4> | vector<f8_scale, 8>
+                        | vector<f8e4m3fn, 4> | vector<f8e4m3fn, 8>;
+  constraint scale_operand = f8_scale | vector<f8_scale, 4>;
+  constraint wmma_source = vector<f32, 2>
+                         | vector<f16, 4> | vector<f16, 8> | vector<f16, 16>
+                         | vector<bf16, 4> | vector<bf16, 8> | vector<bf16, 16>
+                         | vector<i8, 4> | vector<i8, 8> | vector<i8, 16> | vector<i8, 32>
+                         | vector<integer, 4> | vector<integer, 8>
+                         | vector<integer, 16> | vector<integer, 32>
+                         | vector<f8, 4> | vector<f8, 8> | vector<f8, 32> | vector<f8, 64>
+                         | vector<i4, 4> | vector<i4, 8> | vector<i4, 16>;
+  constraint wmma_result = vector<f32, 4> | vector<f32, 8>
+                         | vector<i32, 4> | vector<i32, 8>
+                         | vector<f16, 4> | vector<f16, 8> | vector<f16, 16>
+                         | vector<bf16, 4> | vector<bf16, 8> | vector<bf16, 16>;
+  constraint dot_source = vector<f16, 2> | vector<bf16, 2> | vector<i16, 2>
+                        | vector<i8, 4> | vector<f8, 4>
+                        | vector<i4, 8>;
+  constraint dot_result = f32 | f16 | bf16 | i32;
+  constraint swmmac_sparse_source = vector<f16, 4> | vector<f16, 8> | vector<f16, 16>
+                                  | vector<bf16, 4> | vector<bf16, 8> | vector<bf16, 16>
+                                  | vector<i8, 4> | vector<i8, 8> | vector<i8, 32>
+                                  | vector<i4, 8> | vector<i4, 16>
+                                  | vector<f8, 4> | vector<f8, 8>
+                                  | vector<f8, 16> | vector<f8, 32>
+                                  | vector<f8_fnuz, 4> | vector<f8_fnuz, 8>
+                                  | vector<f8_fnuz, 16> | vector<f8_fnuz, 32>;
+  constraint swmmac_dense_source = vector<f16, 8> | vector<f16, 16> | vector<f16, 32>
+                                 | vector<bf16, 8> | vector<bf16, 16> | vector<bf16, 32>
+                                 | vector<i8, 4> | vector<i8, 8>
+                                 | vector<i8, 16> | vector<i8, 64>
+                                 | vector<i4, 8> | vector<i4, 16> | vector<i4, 32>
+                                 | vector<f8, 4> | vector<f8, 8>
+                                 | vector<f8, 16> | vector<f8, 64>
+                                 | vector<f8_fnuz, 4> | vector<f8_fnuz, 8>
+                                 | vector<f8_fnuz, 16> | vector<f8_fnuz, 64>;
+  constraint swmmac_result = vector<f32, 4> | vector<f32, 8> | vector<f32, 16>
+                           | vector<f16, 4> | vector<f16, 8>
+                           | vector<bf16, 4> | vector<bf16, 8>
+                           | vector<i32, 4> | vector<i32, 8>;
+  constraint swmmac_idx = vector<i8, 4>;
+
+  // 转置读、LDS 屏障与 gather 索引的类型域。
+  constraint any_vector = vector;
+  constraint transpose_result = vector<i8, 8> | vector<f8_fnuz, 8> | vector<f8, 8>
+                              | vector<f16, 8> | vector<bf16, 8> | vector<i16, 8>
+                              | vector<i4, 16> | vector<f4e2m1fn, 16> | vector<i6, 16>
+                              | vector<f6e2m3fn, 16> | vector<f6e3m2fn, 16>;
+  constraint ds_barrier_memref = memref<ds_barrier_state>;
+  constraint gather_indices = vector<i32, 1> | vector<i16, 1>;
+
+  // ---- 枚举与属性 ----
+
+  // 枚举声明沿用上游枚举名；Cases 里的名字就是文本打印的助记符。
+  enum DPPPerm {
+    Doc "DPP lane permutation modes; the case names are the printed mnemonics.";
+    Cases [ quad_perm = 0, row_shl = 1, row_shr = 2, row_ror = 3,
+            wave_shl = 4, wave_shr = 5, wave_ror = 6, wave_rol = 7,
+            row_mirror = 8, row_half_mirror = 9,
+            row_bcast_15 = 10, row_bcast_31 = 11 ];
+  }
+
+  enum LoadTemporalHint {
+    Doc "Prefetch temporal hints; the case names are the printed mnemonics.";
+    Cases [ RT = 0, NT = 1, HT = 2, LU = 3, NT_RT = 4, RT_NT = 5, NT_HT = 6 ];
+  }
+
+  enum CacheScope {
+    Doc "Prefetch cache scopes; the case names are the printed mnemonics.";
+    Cases [ WGP = 0, SE = 1, DEV = 2, SYS = 3 ];
+  }
+
+  // 三个被 op 使用的 EnumAttr；名字即打印助记符。通用属性形式是带尖括号的
+  // #amdgpu.dpp_perm<quad_perm> 等；op 文本里上游用 enum 指令打印裸助记符，
+  // 语料也按裸名引用部件。
+  attr_def dpp_perm {
+    Doc "#amdgpu.dpp_perm selects a DPP permutation; printed as angle brackets around the case mnemonic.";
+    Parameters (value: DPPPerm);
+    Assembly { "<" value ">" }
+  }
+
+  attr_def load_temporal_hint {
+    Doc "#amdgpu.load_temporal_hint carries one of RT, NT, HT, LU, NT_RT, RT_NT or NT_HT.";
+    Parameters (value: LoadTemporalHint);
+    Assembly { "<" value ">" }
+  }
+
+  attr_def cache_scope {
+    Doc "#amdgpu.cache_scope carries one of WGP, SE, DEV or SYS.";
+    Parameters (value: CacheScope);
+    Assembly { "<" value ">" }
+  }
+
+  // ---- 类型定义 ----
+
+  type_def tdm_base {
+    Doc "Opaque pair of LDS and global base addresses; parameterized by the element type.";
+    Parameters (elementType: type);
+    Assembly { "<" elementType ">" }
+  }
+
+  type_def tdm_gather_base {
+    Doc "Gather-mode pair of LDS and global base addresses; element and index types must be the same width, which this grammar cannot state.";
+    Parameters (elementType: type, indexType: type);
+    Assembly { "<" elementType "," indexType ">" }
+  }
+
+  type_def tdm_descriptor {
+    Doc "Opaque tensor DMA descriptor used by tensor_load_to_lds and tensor_store_from_lds; no parameters, so it prints as a bare type name.";
+  }
+
+  type_def ds_barrier_state {
+    Doc "State of an in-LDS barrier: 29-bit pending count, 3-bit phase and 32-bit init count; no parameters, so it prints as a bare type name.";
+  }
+
+  // ---- 共享骨架 ----
+
+  // 七个 buffer op 共享 boundsCheck/indexOffset 两个修饰属性，以及
+  // sgprOffset 这个可选操作数（它是 SSA 值，不是属性）；
+  // 各 op 的载荷操作数与文本顺序不同，文本仍写在 op 上。
+  schema BufferAccess {
+    Doc "Common modifiers of the raw and fat buffer operations: two attributes and the sgprOffset operand.";
+    Attributes (boundsCheck: bool = true,
+                indexOffset: optional<i32>);
+  }
+
+  // 四个单值原子 op 的文本形状完全相同；操作数与结果类型由各 op 收窄。
+  schema RawBufferAtomic extends BufferAccess {
+    Doc "Common read-modify-write shape of the single-value raw buffer atomics.";
+    Operands   (value: any, memref: any, indices: variadic<i32>,
+                sgprOffset: optional<i32>);
+    Results    (oldValue: any);
+    Properties [memory_effect(read), memory_effect(write),
+                same_type(oldValue, value), operand_segments_by_attribute];
+    Assembly   { "boundsCheck" "(" boundsCheck ")" attr-dict
+                 value "->" memref "[" indices "]"
+                 oilist("indexOffset" "(" indexOffset ")"
+                        | "sgprOffset" "(" sgprOffset ")")
+                 ":" type(value) "->" type(memref) "," type(indices) }
+  }
+
+  // 三个波前置换 op 共享 src 与 result；dpp 另有 old，permlane_var 另有选择器。
+  schema PermuteOp {
+    Doc "Common source and result of the lane-permutation operations.";
+    Operands   (src: lane);
+    Results    (result: lane);
+    Properties [pure, same_type(result, src)];
+  }
+
+  // 四个就地 LDS 屏障 op 共享屏障基址与下标；参与者/计数与结果由各 op 补。
+  schema DsBarrierAccess {
+    Doc "Common LDS barrier address and indices of the mutating in-LDS barrier operations.";
+    Operands   (base: ds_barrier_memref, indices: variadic<index>);
+    Properties [memory_effect(read), memory_effect(write)];
+  }
+
+  // 四个状态查询 op 的文本与部件完全相同，只有结果类型不同。
+  schema DsBarrierQuery {
+    Doc "Common shape of the in-LDS barrier state queries.";
+    Operands   (state: ds_barrier_state);
+    Results    (res: i32);
+    Properties [pure];
+    Assembly   { state attr-dict ":" type(state) "->" type(res) }
+  }
+
+  // 六个矩阵 op 共享 m/n/k 三个维度属性；各自的文本与载荷不同。
+  schema MatrixOp {
+    Doc "Common m, n and k dimension attributes of the matrix operations.";
+    Attributes (m: i32 [positive], n: i32 [positive], k: i32 [positive]);
+  }
+
+  // 两个 make base op 的文本完全相同，只有结果类型不同。
+  schema DmaBase {
+    Doc "Common shape of the TDM base-address constructors.";
+    Operands   (global: any, global_indices: variadic<index>,
+                lds: any, lds_indices: variadic<index>);
+    Results    (base: tdm_base | tdm_gather_base);
+    Properties [pure, element_type_matches(global, lds),
+                operand_segments_by_attribute];
+    Assembly   { global "[" global_indices "]" "," lds "[" lds_indices "]"
+                 attr-dict ":" type(global) "," type(lds) "->" type(base) }
+  }
+
+  // 两个描述符 op 共享全部尺寸/步长/填充/屏障/迭代部件；文本不同。
+  schema DmaDescriptor {
+    Doc "Common parts of the TDM descriptor constructors: sizes, strides, padding, mask, barrier and iteration.";
+    Operands   (global_dynamic_sizes: variadic<index>,
+                global_dynamic_strides: variadic<index>,
+                shared_dynamic_sizes: variadic<index>,
+                workgroup_mask: optional<vector<i1, 16>>,
+                early_timeout: optional<i1>,
+                pad_amount: optional<i32>,
+                pad_interval: optional<i32>,
+                atomic_barrier_address: optional<ds_barrier_memref>,
+                atomic_barrier_indices: variadic<index>,
+                global_increment: optional<index>,
+                lds_increment: optional<i32>,
+                iteration_count: optional<index>);
+    Attributes (global_static_sizes: array<i64>,
+                global_static_strides: array<i64>,
+                shared_static_sizes: array<i64>);
+    Results    (desc: tdm_descriptor);
+    Properties [operand_segments_by_attribute];
+  }
+
+  // 两个 tensor 搬运 op 的文本完全相同。
+  schema TensorTransfer {
+    Doc "Common shape of the tensor load/store operations that consume a TDM descriptor.";
+    Operands   (desc: tdm_descriptor);
+    Properties [memory_effect(read), memory_effect(write)];
+    Assembly   { desc attr-dict ":" qualified(type(desc)) }
+  }
+
+  // 两个转置读 op 的文本完全相同，只有结果类型不同。
+  schema TransposeLoad {
+    Doc "Common shape of the transpose-load operations.";
+    Operands   (src: any, srcIndices: variadic<index>);
+    Results    (result: vector);
+    Properties [same_variadic_operand_size];
+    Assembly   { src "[" srcIndices "]" attr-dict
+                 ":" type(src) "->" type(result) }
+  }
+
+  // 两个异步搬运 op 共享源/目标与 transferType；文本不同。
+  schema MemCopy {
+    Doc "Common parts of the asynchronous memory-copy operations.";
+    Operands   (src: any, srcIndices: variadic<index>,
+                dst: any, dstIndices: variadic<index>);
+    Attributes (transferType: type);
+    Properties [operand_segments_by_attribute];
+  }
+
+  // ---- 打包与窄化 ----
+
+  op ext_packed_fp8 {
+    Doc "Extend one or two packed 8-bit floats at source[index] to f32 or a pair of f32; index is non-negative and at most 3.";
+    Operands   (source: fp8_packed_source);
+    Results    (res: fp32_pair);
+    Attributes (index: i32 [non_negative]);
+    Properties [pure];
+    Assembly   { attr-dict source "[" index "]" ":" type(source) "to" type(res) }
+  }
+
+  op scaled_ext_packed_matrix {
+    Doc "Extend a wave-wide matrix of 8 or 16 packed microfloats using per-lane scales; blockSize is 16 or 32, firstScaleLane is 0 or 16, firstScaleByte is 0 to 3.";
+    Operands   (source: mx_source, scale: vector<f8_scale, 4>);
+    Results    (res: mx_result);
+    Attributes (blockSize: i32 = 16, firstScaleLane: i32 = 0,
+                firstScaleByte: i32 = 0);
+    Properties [pure, same_shape(source, res)];
+    Assembly   { attr-dict source "scale" "(" scale ")"
+                 "blockSize" "(" blockSize ")"
+                 "firstScaleLane" "(" firstScaleLane ")"
+                 "firstScaleByte" "(" firstScaleByte ")"
+                 ":" type(source) "," type(scale) "->" type(res) }
+  }
+
+  op scaled_ext_packed {
+    Doc "Scale and extend one or two packed 8-bit floats selected by source[index]; index is non-negative and at most 7.";
+    Operands   (source: scaled_source, scale: f32);
+    Results    (res: scaled_pair_result);
+    Attributes (index: i32 [non_negative]);
+    Properties [pure];
+    Assembly   { attr-dict source "[" index "]" "," scale
+                 ":" type(source) "to" type(res) }
+  }
+
+  // GAP: 上游用可选操作数的默认文本 undef 打印缺失的 sourceB 与 existing，
+  //      文法没有带默认字面量的可选组，故文本整体交给 Custom。
+  op packed_trunc_2xfp8 {
+    Doc "Round two f32 values into a packed vector of four 8-bit floats; sourceB and existing are optional and print as undef when absent, wordIndex selects one of two words.";
+    Operands   (sourceA: f32, sourceB: optional<f32>,
+                existing: optional<fp8_quad>);
+    Results    (res: fp8_quad);
+    Attributes (wordIndex: i32 [non_negative]);
+    Properties [pure, operand_segments_by_attribute];
+    Assembly Custom;
+  }
+
+  // GAP: 同 packed_trunc_2xfp8，existing 缺失时上游打印 undef。
+  op packed_scaled_trunc {
+    Doc "Scale a one- or two-element f32/f16/bf16 vector and round it into four 8-bit floats or eight 4-bit floats; existing is optional and prints as undef when absent.";
+    Operands   (source: scaled_trunc_source, scale: f32,
+                existing: optional<scaled_trunc_result>);
+    Results    (res: scaled_trunc_result);
+    Attributes (index: i32 [non_negative]);
+    Properties [pure];
+    Assembly Custom;
+  }
+
+  // GAP: 同 packed_trunc_2xfp8，existing 缺失时上游打印 undef。
+  op packed_stoch_round_fp8 {
+    Doc "Stochastically round one f32 into four packed 8-bit floats; existing is optional and prints as undef when absent, storeIndex selects the byte position.";
+    Operands   (source: f32, stochiasticParam: i32,
+                existing: optional<fp8_quad>);
+    Results    (res: fp8_quad);
+    Attributes (storeIndex: i32 [non_negative]);
+    Properties [pure];
+    Assembly Custom;
+  }
+
+  // ---- 原始缓冲与胖缓冲 ----
+
+  op fat_raw_buffer_cast {
+    Doc "Create a raw buffer fat pointer matching a memref; the source is in the global address space and the result in the fat_raw_buffer address space. validBytes and cacheSwizzleStride are optional, boundsCheck defaults true, resetOffset is a flag.";
+    Operands   (source: any, validBytes: optional<i64>,
+                cacheSwizzleStride: optional<i14>);
+    Results    (result: any);
+    Attributes (boundsCheck: bool = true, resetOffset: optional<unit>);
+    Properties [pure, operand_segments_by_attribute];
+    Implements [InferTypeOpInterface, ReifyRankedShapedTypeOpInterface,
+                ViewLikeOpInterface];
+    Assembly   { source
+                 oilist("validBytes" "(" validBytes ")"
+                        | "cacheSwizzleStride" "(" cacheSwizzleStride ")"
+                        | "boundsCheck" "(" boundsCheck ")"
+                        | "resetOffset" resetOffset)
+                 attr-dict ":" type(source) "to" type(result) }
+  }
+
+  op raw_buffer_load from BufferAccess {
+    Doc "Load a value through a raw buffer; the memref is a fat pointer in the fat_raw_buffer address space, indices are i32, and indexOffset plus optional sgprOffset refine the address.";
+    Operands   (memref: any, indices: variadic<i32>, sgprOffset: optional<i32>);
+    Results    (value: any);
+    Properties [memory_effect(read), element_type_matches(value, memref),
+                operand_segments_by_attribute];
+    Assembly   { "boundsCheck" "(" boundsCheck ")" attr-dict
+                 memref "[" indices "]"
+                 oilist("indexOffset" "(" indexOffset ")"
+                        | "sgprOffset" "(" sgprOffset ")")
+                 ":" type(memref) if indices { "," type(indices) }
+                 "->" type(value) }
+  }
+
+  op raw_buffer_store from BufferAccess {
+    Doc "Store a value through a raw buffer; the memref is a fat pointer in the fat_raw_buffer address space, indices are i32, and indexOffset plus optional sgprOffset refine the address.";
+    Operands   (value: any, memref: any, indices: variadic<i32>,
+                sgprOffset: optional<i32>);
+    Properties [memory_effect(write), element_type_matches(value, memref),
+                operand_segments_by_attribute];
+    Assembly   { "boundsCheck" "(" boundsCheck ")" attr-dict
+                 value "->" memref "[" indices "]"
+                 oilist("indexOffset" "(" indexOffset ")"
+                        | "sgprOffset" "(" sgprOffset ")")
+                 ":" type(value) "->" type(memref)
+                 if indices { "," type(indices) } }
+  }
+
+  op raw_buffer_atomic_cmpswap from BufferAccess {
+    Doc "Atomically compare and swap through a raw buffer; src, cmp and the returned value share one type, and indexOffset plus optional sgprOffset refine the address.";
+    Operands   (src: any, cmp: any, memref: any, indices: variadic<i32>,
+                sgprOffset: optional<i32>);
+    Results    (value: any);
+    Properties [memory_effect(read), memory_effect(write),
+                element_type_matches(value, memref),
+                same_type(src, cmp, value), operand_segments_by_attribute];
+    Assembly   { "boundsCheck" "(" boundsCheck ")" attr-dict
+                 src "," cmp "->" memref "[" indices "]"
+                 oilist("indexOffset" "(" indexOffset ")"
+                        | "sgprOffset" "(" sgprOffset ")")
+                 ":" type(value) "->" type(memref) "," type(indices) }
+  }
+
+  op raw_buffer_atomic_fadd from RawBufferAtomic {
+    Doc "Atomically add an f32 value or a two-lane half/bfloat pair through a raw buffer and return the old value.";
+    Operands   (value: f32 | vector<f16, 2> | vector<bf16, 2>);
+    Results    (oldValue: f32 | vector<f16, 2> | vector<bf16, 2>);
+    Properties [element_type_matches(value, memref)];
+  }
+
+  op raw_buffer_atomic_fmax from RawBufferAtomic {
+    Doc "Atomically take the maximum with an f32 or f64 value through a raw buffer and return the old value.";
+    Operands   (value: f32 | f64);
+    Results    (oldValue: f32 | f64);
+    Properties [element_type_matches(value, memref)];
+  }
+
+  op raw_buffer_atomic_smax from RawBufferAtomic {
+    Doc "Atomically take the signed 32-bit maximum through a raw buffer and return the old value.";
+    Operands   (value: i32);
+    Results    (oldValue: i32);
+  }
+
+  op raw_buffer_atomic_umin from RawBufferAtomic {
+    Doc "Atomically take the unsigned 32-bit minimum through a raw buffer and return the old value.";
+    Operands   (value: i32);
+    Results    (oldValue: i32);
+  }
+
+  // ---- 波前置换 ----
+
+  op dpp from PermuteOp {
+    Doc "Data Parallel Primitives permutation of src within a wavefront; old is the fallback for masked lanes, kind selects the mode, and permArgument is present only for quad_perm and the row shifts. Row and bank masks, plus bound_ctrl, are optional.";
+    Operands   (old: lane, src: lane);
+    Results    (result: lane);
+    Attributes (kind: dpp_perm, permArgument: optional<attribute>,
+                row_mask: i32 = 15, bank_mask: i32 = 15,
+                bound_ctrl: bool = false);
+    Properties [same_type(old, src)];
+    Assembly   { old src kind if permArgument { "(" permArgument ")" }
+                 oilist("row_mask" "(" row_mask ")"
+                        | "bank_mask" "(" bank_mask ")"
+                        | "bound_ctrl" "(" bound_ctrl ")")
+                 attr-dict ":" type(result) }
+  }
+
+  op swizzle_bitmode {
+    Doc "Bitwise swizzle of a lane value with the given and, or and xor masks.";
+    Operands   (src: lane);
+    Results    (result: lane);
+    Attributes (and_mask: i32, or_mask: i32, xor_mask: i32);
+    Properties [pure, same_type(result, src)];
+    Assembly   { src and_mask or_mask xor_mask attr-dict ":" type(result) }
+  }
+
+  op permlane_swap from PermuteOp {
+    Doc "Swap lanes within the fixed row length; fetch_inactive and bound_ctrl are optional flags.";
+    Attributes (row_length: i32 [positive],
+                fetch_inactive: bool = false, bound_ctrl: bool = false);
+    Assembly   { src row_length
+                 oilist("fetch_inactive" "(" fetch_inactive ")"
+                        | "bound_ctrl" "(" bound_ctrl ")")
+                 attr-dict ":" type(result) }
+  }
+
+  op permlane_var from PermuteOp {
+    Doc "Read the lane selected by the i32 selector; cross, fetch_inactive and bound_ctrl are optional flags.";
+    Operands   (selector: i32);
+    Attributes (cross: bool = false,
+                fetch_inactive: bool = false, bound_ctrl: bool = false);
+    Assembly   { src "," selector
+                 oilist("cross" "(" cross ")"
+                        | "fetch_inactive" "(" fetch_inactive ")"
+                        | "bound_ctrl" "(" bound_ctrl ")")
+                 attr-dict ":" type(result) }
+  }
+
+  // ---- 屏障与计数 ----
+
+  op lds_barrier {
+    Doc "Barrier across the LDS of a workgroup; it carries no operands and only an attribute dictionary.";
+    Assembly { attr-dict }
+  }
+
+  op sched_barrier {
+    Doc "Scheduling barrier that prevents instruction reordering across it; opts is the ROCDL sched group mask enum, printed with its bare mnemonic after allow =.";
+    Attributes (opts: attribute);
+    Assembly   { "allow" "=" opts attr-dict }
+  }
+
+  op memory_counter_wait {
+    Doc "Wait until the selected hardware memory counters, each an optional i32 threshold, are exhausted.";
+    Attributes (load: optional<i32>, store: optional<i32>, ds: optional<i32>,
+                exp: optional<i32>, tensor: optional<i32>);
+    Assembly   { oilist("load" "(" load ")"
+                        | "store" "(" store ")"
+                        | "ds" "(" ds ")"
+                        | "exp" "(" exp ")"
+                        | "tensor" "(" tensor ")")
+                 attr-dict }
+  }
+
+  // ---- 矩阵乘累加 ----
+
+  op mfma from MatrixOp {
+    Doc "Matrix fused multiply-add: sourceA times sourceB plus destC, with destD sharing destC's type. blocks, cbsz, abid and blgp are optional controls; reducePrecision and the three negate flags are unit flags.";
+    Operands   (sourceA: mfma_source, sourceB: mfma_source,
+                destC: mfma_result);
+    Results    (destD: mfma_result);
+    Attributes (blocks: i32 = 1, cbsz: i32 = 0, abid: i32 = 0,
+                blgp: attribute = none,
+                reducePrecision: optional<unit>, negateA: optional<unit>,
+                negateB: optional<unit>, negateC: optional<unit>);
+    Properties [pure, same_type(destC, destD)];
+    Assembly   { if blocks { "blocks" "(" blocks ")" }
+                 custom<MNKDimensionList>(m, n, k)
+                 sourceA "*" sourceB "+" destC
+                 oilist("abid" "(" abid ")" | "blgp" "(" blgp ")"
+                        | "cbsz" "(" cbsz ")"
+                        | "reducePrecision" reducePrecision
+                        | "negateA" negateA | "negateB" negateB
+                        | "negateC" negateC)
+                 attr-dict ":" type(sourceA) "," type(sourceB)
+                 "," type(destC) }
+  }
+
+  op wmma from MatrixOp {
+    Doc "Wave-level matrix multiply-add of sourceA times sourceB plus destC; destD shares destC's type. subwordOffset is optional, and unsignedA, unsignedB and clamp are unit flags.";
+    Operands   (sourceA: wmma_source, sourceB: wmma_source,
+                destC: wmma_result);
+    Results    (destD: wmma_result);
+    Attributes (subwordOffset: i32 = 0, unsignedA: optional<unit>,
+                unsignedB: optional<unit>, clamp: optional<unit>);
+    Properties [pure, same_type(destC, destD)];
+    Assembly   { custom<MNKDimensionList>(m, n, k)
+                 sourceA "*" sourceB "+" destC
+                 oilist("subwordOffset" "(" subwordOffset ")"
+                        | "unsignedA" unsignedA | "unsignedB" unsignedB
+                        | "clamp" clamp)
+                 attr-dict ":" type(sourceA) "," type(sourceB)
+                 "," type(destC) }
+  }
+
+  op dot {
+    Doc "Dot-product accumulate of sourceA and sourceB into destC; destD shares destC's type, and unsignedA, unsignedB and clamp are unit flags.";
+    Operands   (sourceA: dot_source, sourceB: dot_source, destC: dot_result);
+    Results    (destD: dot_result);
+    Attributes (unsignedA: optional<unit>, unsignedB: optional<unit>,
+                clamp: optional<unit>);
+    Properties [pure, same_type(destC, destD)];
+    Assembly   { sourceA "*" sourceB "+" destC
+                 oilist("unsignedA" unsignedA | "unsignedB" unsignedB
+                        | "clamp" clamp)
+                 attr-dict ":" type(sourceA) "," type(sourceB)
+                 "," type(destC) }
+  }
+
+  op sparse_mfma from MatrixOp {
+    Doc "Sparse matrix fused multiply-add: sourceA is the sparse operand, sourceB the dense operand, and sparseIdx carries the sparse indices. cbsz and abid are optional controls.";
+    Operands   (sourceA: smfma_sparse_source, sourceB: smfma_dense_source,
+                destC: smfma_result, sparseIdx: smfma_idx);
+    Results    (destD: smfma_result);
+    Attributes (cbsz: i32 = 0, abid: i32 = 0);
+    Properties [pure, same_type(destC, destD)];
+    Assembly   { custom<MNKDimensionList>(m, n, k)
+                 sourceA "*" sourceB "+" destC
+                 "sparse" "(" sparseIdx ":" type(sparseIdx) ")"
+                 oilist("abid" "(" abid ")" | "cbsz" "(" cbsz ")")
+                 attr-dict ":" type(sourceA) "," type(sourceB)
+                 "," type(destC) }
+  }
+
+  op sparse_wmma from MatrixOp {
+    Doc "Sparse wave-level matrix multiply-add with sourceA sparse, sourceB dense and sparseIdx the indices. unsignedA, unsignedB, reuseA, reuseB, clamp and wave64 are unit flags.";
+    Operands   (sourceA: swmmac_sparse_source,
+                sourceB: swmmac_dense_source, destC: swmmac_result,
+                sparseIdx: swmmac_idx);
+    Results    (destD: swmmac_result);
+    Attributes (unsignedA: optional<unit>, unsignedB: optional<unit>,
+                reuseA: optional<unit>, reuseB: optional<unit>,
+                clamp: optional<unit>, wave64: optional<unit>);
+    Properties [pure, same_type(destC, destD)];
+    Assembly   { custom<MNKDimensionList>(m, n, k)
+                 sourceA "*" sourceB "+" destC
+                 "sparse" "(" sparseIdx ":" type(sparseIdx) ")"
+                 oilist("unsignedA" unsignedA | "unsignedB" unsignedB
+                        | "reuseA" reuseA | "reuseB" reuseB
+                        | "clamp" clamp | "wave64" wave64)
+                 attr-dict ":" type(sourceA) "," type(sourceB)
+                 "," type(destC) }
+  }
+
+  op scaled_mfma from MatrixOp {
+    Doc "Scaled matrix fused multiply-add: each of sourceA and sourceB is multiplied by a scale selected by scalesIdxA or scalesIdxB before the product is added to destC.";
+    Operands   (sourceA: scaled_mfma_source, sourceB: scaled_mfma_source,
+                destC: scaled_mfma_result,
+                scalesA: scale_operand, scalesB: scale_operand);
+    Results    (destD: scaled_mfma_result);
+    Attributes (scalesIdxA: i32 [non_negative],
+                scalesIdxB: i32 [non_negative]);
+    Properties [pure, same_type(destC, destD)];
+    Assembly   { custom<MNKDimensionList>(m, n, k) " "
+                 "(" scalesA "[" scalesIdxA "]" "*" sourceA ")"
+                 "*"
+                 "(" scalesB "[" scalesIdxB "]" "*" sourceB ")"
+                 "+" destC
+                 attr-dict ":" type(scalesA) "," type(sourceA)
+                 "," type(scalesB) "," type(sourceB) "," type(destC) }
+  }
+
+  op scaled_wmma from MatrixOp {
+    Doc "Scaled wave-level matrix multiply-add: scaleA and scaleB multiply sourceA and sourceB before the product is added to destC; the two first-scale-lane attributes are printed by name.";
+    Operands   (sourceA: scaled_wmma_source, sourceB: scaled_wmma_source,
+                destC: scaled_wmma_result,
+                scaleA: scale_pair, scaleB: scale_pair);
+    Results    (destD: scaled_wmma_result);
+    Attributes (a_first_scale_lane: i32, b_first_scale_lane: i32);
+    Properties [pure, same_type(destC, destD)];
+    Assembly   { custom<MNKDimensionList>(m, n, k) " "
+                 "(" scaleA "*" sourceA ")"
+                 "*"
+                 "(" scaleB "*" sourceB ")"
+                 "+" destC
+                 "a_first_scale_lane" "=" a_first_scale_lane
+                 "b_first_scale_lane" "=" b_first_scale_lane
+                 attr-dict ":" type(scaleA) "," type(sourceA)
+                 "," type(scaleB) "," type(sourceB) "," type(destC) }
+  }
+
+  // ---- 异步搬运与转置读 ----
+
+  op gather_to_lds from MemCopy {
+    Doc "Gather from a global memref into an LDS memref; transferType is the element type moved, and async is an optional flag.";
+    Attributes (async: optional<unit>);
+    Properties [memory_effect(read), memory_effect(write)];
+    Assembly   { if async { "async" }
+                 src "[" srcIndices "]" "," dst "[" dstIndices "]"
+                 attr-dict ":" transferType "," type(src) "," type(dst) }
+  }
+
+  op global_load_async_to_lds from MemCopy {
+    Doc "Asynchronously load from a global memref into an LDS memref; transferType is the element type moved and mask is an optional i1 predicate.";
+    Operands   (mask: optional<i1>);
+    Properties [memory_effect(read), memory_effect(write)];
+    Assembly   { src "[" srcIndices "]" "," dst "[" dstIndices "]"
+                 if mask { "," mask }
+                 attr-dict ":" transferType "," type(src) "," type(dst) }
+  }
+
+  op transpose_load from TransposeLoad {
+    Doc "Transpose load from an LDS memref into a non-zero-rank vector, assembled from the i32 lane data.";
+    Results    (result: any_vector);
+  }
+
+  op global_transpose_load from TransposeLoad {
+    Doc "Transpose load from a global memref into one of the fixed-width element vectors supported by the hardware.";
+    Results    (result: transpose_result);
+  }
+
+  // ---- TDM 与 DMA 描述符 ----
+
+  op make_gather_dma_base from DmaBase {
+    Doc "Build the gather-mode base pair from global and LDS memrefs and their indices.";
+    Results    (base: tdm_gather_base);
+  }
+
+  op make_dma_base from DmaBase {
+    Doc "Build the base pair from global and LDS memrefs and their indices.";
+    Results    (base: tdm_base);
+  }
+
+  op make_gather_dma_descriptor from DmaDescriptor {
+    Doc "Build a gather-mode TDM descriptor from a base pair, a lane-index vector, dynamic and static sizes and strides, and optional padding, workgroup mask, atomic barrier and iteration controls.";
+    Operands   (base: tdm_gather_base, indices: gather_indices);
+    Properties [pure];
+    Assembly   { base "[" indices "]"
+                 "globalSize" custom<DynamicIndexList>(global_dynamic_sizes, global_static_sizes)
+                 "globalStride" custom<DynamicIndexList>(global_dynamic_strides, global_static_strides)
+                 "sharedSize" custom<DynamicIndexList>(shared_dynamic_sizes, shared_static_sizes)
+                 if pad_amount {
+                   "padShared" "(" pad_amount "every" pad_interval ")" }
+                 if workgroup_mask {
+                   "workgroupMask" workgroup_mask
+                   if early_timeout { "earlyTimeout" early_timeout } }
+                 if atomic_barrier_address {
+                   "atomicBarrier" "(" atomic_barrier_address
+                   "[" atomic_barrier_indices "]"
+                   ":" type(atomic_barrier_address) ")" }
+                 if global_increment {
+                   "iterate" global_increment "," lds_increment ","
+                   iteration_count }
+                 attr-dict ":" qualified(type(base)) "," type(indices)
+                 "->" type(desc) }
+  }
+
+  op make_dma_descriptor from DmaDescriptor {
+    Doc "Build a TDM descriptor from a base pair plus dynamic and static sizes and strides, with optional padding, workgroup mask, atomic barrier and iteration controls.";
+    Operands   (base: tdm_base);
+    Properties [pure];
+    Assembly   { base
+                 "globalSize" custom<DynamicIndexList>(global_dynamic_sizes, global_static_sizes)
+                 "globalStride" custom<DynamicIndexList>(global_dynamic_strides, global_static_strides)
+                 "sharedSize" custom<DynamicIndexList>(shared_dynamic_sizes, shared_static_sizes)
+                 if pad_amount {
+                   "padShared" "(" pad_amount "every" pad_interval ")" }
+                 if workgroup_mask {
+                   "workgroupMask" workgroup_mask
+                   if early_timeout { "earlyTimeout" early_timeout } }
+                 if atomic_barrier_address {
+                   "atomicBarrier" "(" atomic_barrier_address
+                   "[" atomic_barrier_indices "]"
+                   ":" type(atomic_barrier_address) ")" }
+                 if global_increment {
+                   "iterate" global_increment "," lds_increment ","
+                   iteration_count }
+                 attr-dict ":" qualified(type(base)) "->" type(desc) }
+  }
+
+  op tensor_load_to_lds from TensorTransfer {
+    Doc "Load a tensor from global memory to LDS using a TDM descriptor.";
+  }
+
+  op tensor_store_from_lds from TensorTransfer {
+    Doc "Store a tensor from LDS to global memory using a TDM descriptor.";
+  }
+
+  // ---- LDS 屏障 ----
+
+  op ds_barrier_init from DsBarrierAccess {
+    Doc "Initialize the in-LDS barrier at base[indices] with the given participant count.";
+    Operands   (participants: i32);
+    Assembly   { base "[" indices "]" "," participants
+                 attr-dict ":" type(base) "," type(participants) }
+  }
+
+  op ds_barrier_poll_state from DsBarrierAccess {
+    Doc "Atomically read the state of the in-LDS barrier at base[indices].";
+    Results    (out: ds_barrier_state);
+    Assembly   { base "[" indices "]" attr-dict
+                 ":" type(base) "->" type(out) }
+  }
+
+  op ds_async_barrier_arrive from DsBarrierAccess {
+    Doc "Asynchronously arrive at the in-LDS barrier at base[indices], without returning state.";
+    Assembly   { base "[" indices "]" attr-dict ":" type(base) }
+  }
+
+  op ds_barrier_arrive from DsBarrierAccess {
+    Doc "Atomically arrive at the in-LDS barrier at base[indices], subtracting count per executing lane, and return the old state.";
+    Operands   (count: i64);
+    Results    (out: ds_barrier_state);
+    Assembly   { base "[" indices "]" "," count attr-dict
+                 ":" type(base) "," type(count) "->" type(out) }
+  }
+
+  op ds_barrier_state_phase from DsBarrierQuery {
+    Doc "Extract the 3-bit phase of a barrier state as an i32.";
+  }
+
+  op ds_barrier_state_pending_count from DsBarrierQuery {
+    Doc "Extract the 29-bit pending count of a barrier state as an i32.";
+  }
+
+  op ds_barrier_state_init_count from DsBarrierQuery {
+    Doc "Extract the 32-bit init count of a barrier state as an i32.";
+  }
+
+  op ds_barrier_state_phase_parity from DsBarrierQuery {
+    Doc "Return the parity of the phase of a barrier state as an i1.";
+    Results    (res: i1);
+  }
+
+  // ---- 全局预取 ----
+
+  op global_prefetch {
+    Doc "Prefetch a cache line from a global memref using the element indices; temporalHint and cacheScope are printed by their bare enum mnemonics, and speculative allows out-of-bounds access.";
+    Operands   (src: any, indices: variadic<i64>);
+    Attributes (temporalHint: load_temporal_hint,
+                cacheScope: cache_scope, speculative: optional<unit>);
+    Properties [memory_effect(read), memory_effect(write)];
+    Assembly   { src "[" indices "]" temporalHint cacheScope
+                 if speculative { "speculative" }
+                 attr-dict ":" qualified(type(src)) }
+  }
+}
