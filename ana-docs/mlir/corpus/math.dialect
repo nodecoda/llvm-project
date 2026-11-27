@@ -1,18 +1,46 @@
 /// math —— 浮点与整数数学函数。
 ///
-/// 领域特点：几十个 op 只有三种形状（一元/二元/三元），差别在函数本身；
-/// fastmath 与 roundingmode 复用 arith 的两个枚举。
+/// 领域分层（46 个 op，45 个从 schema 继承形状，clampf 因文本特殊独立定义）：
+///   - 一元浮点 30：absf/acos/.../trunc，共用 math.Unary；
+///   - 二元浮点 3：atan2/copysign/powf，共用 math.Binary；
+///   - 三元浮点 2：fma 用 math.Ternary（带 optional roundingmode），
+///     clampf 独立（文本是 value to [min, max]，且没有 roundingmode）；
+///   - 谓词返回 4：isfinite/isinf/isnan/isnormal，共用 math.IsClass
+///     （结果是 i1，与操作数同 shape）；
+///   - 双结果 1：sincos，共用 math.Sincos（sin、cos 与操作数同类型）；
+///   - 整数一元 1：absi；位计数 3：ctlz/cttz/ctpop（math.CountZeros /
+///     math.CountSetBits）；整数二元 1：ipowi（math.IntBinary）；
+///   - 混合类型 1：fpowi（浮点底数 + 整数指数，结果同底数）。
+///
+/// 文本通道：46 个 op 全部为块格式——45 个继承 schema 的 Assembly，1 个
+///   （clampf）自带块格式；Assembly Custom 0，Generic 0。
+/// 属性：fastmath 挂在所有浮点 op（含谓词、sincos、fpowi、clampf）；
+///   roundingmode 只挂在 fma；整数 op 两者皆无。
+/// 事实：只用核心词表——pure、elementwise；谓词返回型额外用
+///   same_shape(operand, result)。无方言本地事实。
+///
+/// GAP（文法当前表达不了的，见 19 章 §6）：
+///   1. 谓词返回型需要“同 shape、i1 element type”的结果类型构造。文法只有
+///      type_of(x)，无法表达“同 shape 但换元素类型”，只能写裸 i1 再用
+///      same_shape 事实补，shape 关系没有进类型等式。理想是 bool_of(operand)。
+///   2. clampf 的 [min, max] 只能把方括号写成字符串字面量；文法不把 bracket
+///      当结构，无法检查配对。
+///   3. sincos 的两个结果同类型只能逐个 type_of，没有“同类型结果组”构造。
+///
+/// 注：上游 fma 的 rounding mode 属性实际是 arith 的 Arith_RoundingModeAttr，
+///   不是 math 自己的属性；本文件沿用 arith 的 RoundingMode 枚举。
 
 dialect math {
   Doc "Floating-point and integer math functions.";
 
   constraint math.float_like = f16 | f32 | f64 | bf16;
+  constraint math.int_like   = signless_integer | index;
 
   schema math.Unary {
     Operands   (operand: math.float_like);
     Results    (result: type_of(operand));
     Attributes (fastmath: FastMathFlags = none);
-    Properties [elementwise];
+    Properties [pure, elementwise];
     Assembly   { operand if fastmath { "fastmath" fastmath }
                  attr-dict ":" type(result) }
   }
@@ -21,7 +49,7 @@ dialect math {
     Operands   (lhs: math.float_like, rhs: math.float_like);
     Results    (result: type_of(lhs));
     Attributes (fastmath: FastMathFlags = none);
-    Properties [elementwise];
+    Properties [pure, elementwise];
     Assembly   { lhs "," rhs if fastmath { "fastmath" fastmath }
                  attr-dict ":" type(result) }
   }
@@ -31,7 +59,7 @@ dialect math {
     Results    (result: type_of(a));
     Attributes (fastmath: FastMathFlags = none,
                 roundingmode: optional<RoundingMode>);
-    Properties [elementwise];
+    Properties [pure, elementwise];
     Assembly   { a "," b "," c
                  if roundingmode { roundingmode }
                  if fastmath { "fastmath" fastmath }
@@ -39,28 +67,120 @@ dialect math {
   }
 
   schema math.IntBinary {
-    Operands (lhs: signless_integer, rhs: signless_integer);
+    Operands (lhs: math.int_like, rhs: math.int_like);
     Results  (result: type_of(lhs));
-    Properties [elementwise];
+    Properties [pure, elementwise];
     Assembly { lhs "," rhs attr-dict ":" type(result) }
   }
 
-  // ---- 一元 ----
-  op absf  from math.Unary { Doc "Absolute value of a float."; }
-  op ceil  from math.Unary { Doc "Round up to the nearest integer."; }
-  op floor from math.Unary { Doc "Round down to the nearest integer."; }
-  op sqrt  from math.Unary { Doc "Square root."; }
-  op rsqrt from math.Unary { Doc "Reciprocal square root."; }
-  op exp   from math.Unary { Doc "e raised to the operand."; }
-  op log   from math.Unary { Doc "Natural logarithm."; }
-  op log2  from math.Unary { Doc "Base-2 logarithm."; }
-  op sin   from math.Unary { Doc "Sine."; }
-  op cos   from math.Unary { Doc "Cosine."; }
-  op tanh  from math.Unary { Doc "Hyperbolic tangent."; }
+  // 整数一元：absi 与位计数共享同一部件形状；位计数再按“数零/数一”分域。
+  schema math.IntUnary {
+    Operands (operand: math.int_like);
+    Results  (result: type_of(operand));
+    Properties [pure, elementwise];
+    Assembly { operand attr-dict ":" type(result) }
+  }
 
-  // ---- 二元 / 三元 / 整数 ----
-  op atan2 from math.Binary { Doc "Two-argument arctangent."; }
-  op powf  from math.Binary { Doc "Raise the first operand to the second."; }
-  op fma   from math.Ternary { Doc "Fused multiply-add with rounding mode."; }
-  op ipowi from math.IntBinary { Doc "Integer power with a signed exponent."; }
+  schema math.CountZeros extends math.IntUnary { }
+
+  schema math.CountSetBits extends math.IntUnary { }
+
+  // 谓词返回型：结果与操作数同 shape，但元素类型换成 i1。
+  schema math.IsClass {
+    Operands   (operand: math.float_like);
+    Results    (result: i1);
+    Attributes (fastmath: FastMathFlags = none);
+    Properties [pure, elementwise, same_shape(operand, result)];
+    Assembly   { operand if fastmath { "fastmath" fastmath }
+                 attr-dict ":" type(operand) }
+  }
+
+  // 双结果：sin 与 cos 都等于操作数的类型。
+  schema math.Sincos {
+    Operands   (operand: math.float_like);
+    Results    (sin: type_of(operand), cos: type_of(operand));
+    Attributes (fastmath: FastMathFlags = none);
+    Properties [pure, elementwise];
+    Assembly   { operand if fastmath { "fastmath" fastmath }
+                 attr-dict ":" type(operand) }
+  }
+
+  // 混合类型：浮点底数与整数指数，结果类型跟底数走。
+  schema math.FPowI {
+    Operands   (lhs: math.float_like, rhs: math.int_like);
+    Results    (result: type_of(lhs));
+    Attributes (fastmath: FastMathFlags = none);
+    Properties [pure, elementwise];
+    Assembly   { lhs "," rhs if fastmath { "fastmath" fastmath }
+                 attr-dict ":" type(lhs) "," type(rhs) }
+  }
+
+  // ---- 一元浮点（30）----
+  op absf     from math.Unary { Doc "Absolute value of a float."; }
+  op acos     from math.Unary { Doc "Arc cosine."; }
+  op acosh    from math.Unary { Doc "Hyperbolic arc cosine."; }
+  op asin     from math.Unary { Doc "Arc sine."; }
+  op asinh    from math.Unary { Doc "Hyperbolic arc sine."; }
+  op atan     from math.Unary { Doc "Arc tangent."; }
+  op atanh    from math.Unary { Doc "Hyperbolic arc tangent."; }
+  op cbrt     from math.Unary { Doc "Cube root."; }
+  op ceil     from math.Unary { Doc "Round up to the nearest integer."; }
+  op cos      from math.Unary { Doc "Cosine."; }
+  op cosh     from math.Unary { Doc "Hyperbolic cosine."; }
+  op erf      from math.Unary { Doc "Error function."; }
+  op erfc     from math.Unary { Doc "Complementary error function."; }
+  op exp      from math.Unary { Doc "e raised to the operand."; }
+  op exp2     from math.Unary { Doc "2 raised to the operand."; }
+  op expm1    from math.Unary { Doc "exp(x) - 1."; }
+  op floor    from math.Unary { Doc "Round down to the nearest integer."; }
+  op log      from math.Unary { Doc "Natural logarithm."; }
+  op log10    from math.Unary { Doc "Base-10 logarithm."; }
+  op log1p    from math.Unary { Doc "log(1 + x)."; }
+  op log2     from math.Unary { Doc "Base-2 logarithm."; }
+  op round    from math.Unary { Doc "Round to nearest, halfway away from zero."; }
+  op roundeven from math.Unary { Doc "Round to nearest, halfway to even."; }
+  op rsqrt    from math.Unary { Doc "Reciprocal square root."; }
+  op sin      from math.Unary { Doc "Sine."; }
+  op sinh     from math.Unary { Doc "Hyperbolic sine."; }
+  op sqrt     from math.Unary { Doc "Square root."; }
+  op tan      from math.Unary { Doc "Tangent."; }
+  op tanh     from math.Unary { Doc "Hyperbolic tangent."; }
+  op trunc    from math.Unary { Doc "Round toward zero."; }
+
+  // ---- 二元浮点（3）----
+  op atan2    from math.Binary { Doc "Two-argument arctangent."; }
+  op copysign from math.Binary { Doc "Magnitude of the first operand with the sign of the second."; }
+  op powf     from math.Binary { Doc "Raise the first operand to the second."; }
+
+  // ---- 三元浮点（2）----
+  op fma from math.Ternary { Doc "Fused multiply-add with rounding mode."; }
+
+  op clampf {
+    Doc "Clamp a value between a minimum and a maximum.";
+    Operands   (value: math.float_like, min: math.float_like,
+                max: math.float_like);
+    Results    (result: type_of(value));
+    Attributes (fastmath: FastMathFlags = none);
+    Properties [pure, elementwise];
+    Assembly   { value "to" "[" min "," max "]"
+                 if fastmath { "fastmath" fastmath }
+                 attr-dict ":" type(result) }
+  }
+
+  // ---- 整数（5）----
+  op absi  from math.IntUnary    { Doc "Absolute value of a signless integer."; }
+  op ctlz  from math.CountZeros  { Doc "Count leading zero bits."; }
+  op cttz  from math.CountZeros  { Doc "Count trailing zero bits."; }
+  op ctpop from math.CountSetBits { Doc "Count set bits."; }
+  op ipowi from math.IntBinary   { Doc "Integer power with a signed exponent."; }
+
+  // ---- 谓词返回（4）----
+  op isfinite from math.IsClass { Doc "True when the operand is finite."; }
+  op isinf    from math.IsClass { Doc "True when the operand is infinite."; }
+  op isnan    from math.IsClass { Doc "True when the operand is NaN."; }
+  op isnormal from math.IsClass { Doc "True when the operand is normal."; }
+
+  // ---- 双结果 / 混合类型（2）----
+  op sincos from math.Sincos { Doc "Sine and cosine of the same operand."; }
+  op fpowi  from math.FPowI  { Doc "Floating-point base raised to an integer power."; }
 }

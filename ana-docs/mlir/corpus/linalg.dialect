@@ -2,6 +2,8 @@
 ///
 /// 命名算符不是手写的：它们由同一份结构化描述生成，只有输入/输出元数与
 /// 迭代语义不同。领域里这就是 "一个 schema + 每个 op 的定元事实"。
+/// softmax 与 winograd_* 是另一形态：TD 里它们不继承 structured base，没有
+/// combiner region，只带维度/tile 属性，所以在此各自独立建模。
 
 dialect linalg {
   Doc "Structured linear-algebra operations: generic, named, yield.";
@@ -9,6 +11,31 @@ dialect linalg {
   enum IteratorType {
     Doc "Iterator kind of a structured-op dimension.";
     Cases [ parallel = 0, reduction = 1 ];
+  }
+
+  /// elementwise 的 kind 把 unary/binary/ternary 三族拼成一个枚举，值与 TD 的
+  /// ElementwiseKind 一致：UnaryFn 0..24、BinaryFn 25..34、TernaryFn 35。
+  enum ElementwiseKind {
+    Doc "Arithmetic function of an elementwise structured op.";
+    Cases [ exp = 0, log = 1, abs = 2, ceil = 3, floor = 4, negf = 5,
+            reciprocal = 6, round = 7, sqrt = 8, rsqrt = 9, square = 10,
+            tanh = 11, erf = 12, sin = 13, cos = 14, tan = 15, acos = 16,
+            acosh = 17, asin = 18, asinh = 19, atan = 20, atanh = 21,
+            log10 = 22, log1p = 23, log2 = 24,
+            add = 25, sub = 26, mul = 27, div = 28, div_unsigned = 29,
+            max_signed = 30, min_signed = 31, max_unsigned = 32,
+            min_unsigned = 33, powf = 34,
+            select = 35 ];
+  }
+
+  enum TypeFn {
+    Doc "Numeric cast mode applied to the inner multiply of a contraction.";
+    Cases [ cast_signed = 0, cast_unsigned = 1 ];
+  }
+
+  enum WinogradConv2DFmr {
+    Doc "Winograd tile shapes F(m, r): output m x m, filter r x r.";
+    Cases [ F_2_3 = 0, F_4_3 = 1, F_2_5 = 2 ];
   }
 
   /// 所有 structured op 的共同形状：ins/outs、单块 region、隐式 yield。
@@ -29,7 +56,7 @@ dialect linalg {
     Operands   (inputs: variadic<any>, outputs: variadic<any>);
     Results    (result_tensors: variadic<any>);
     Attributes (indexing_maps: array<affine_map>,
-                iterator_types: array<iterator_type>,
+                iterator_types: array<IteratorType>,
                 doc: optional<string>,
                 library_call: optional<string>);
     Regions    (body: region);
@@ -106,6 +133,88 @@ dialect linalg {
   op batch_matmul from Structured {
     Doc "Batched matrix multiplication.";
     Properties [arity(inputs, 2), arity(outputs, 1), contraction];
+  }
+
+  op elementwise from Structured {
+    Doc "Elementwise structured op; kind selects the arithmetic and all iterators are parallel.";
+    Attributes (kind: ElementwiseKind,
+                indexing_maps: optional<array<affine_map>>);
+    Properties [elementwise];
+  }
+
+  op contract from Structured {
+    Doc "Contraction of two inputs accumulated into a third; maps fix the iteration space.";
+    Attributes (indexing_maps: array<affine_map>, cast: TypeFn = cast_signed);
+    Properties [contraction];
+  }
+
+  op batch_reduce_matmul from Structured {
+    Doc "Batch-reduce matmul: partial products over a batch dim reduce into a 2-D output.";
+    Attributes (indexing_maps: optional<array<affine_map>>,
+                cast: TypeFn = cast_signed);
+    Properties [contraction];
+  }
+
+  op scaled_contract from Structured {
+    Doc "Contraction with a scale input per data input; scale maps describe tensor/dim/block scaling.";
+    Attributes (indexing_maps: array<affine_map>, cast: TypeFn = cast_signed);
+    Properties [contraction];
+  }
+
+  // ---- 非 structured 形态：聚合算符与 Winograd 变换 ----
+  // TD 里 softmax/winograd_* 都不是 structured base：没有 combiner region，
+  // 操作数直接是具名的 input/filter/value + output，只有维度/tile 属性。
+
+  op softmax {
+    Doc "Numerically stable softmax along one dimension; an aggregate op that decomposes into a DAG of structured ops.";
+    Operands   (input: any, output: any);
+    Results    (result: variadic<any>);
+    Attributes (dimension: i64);
+    Properties [destination_style, same_element_type(input, output)];
+    Implements [DestinationStyleOpInterface];
+    Assembly   { attr-dict "dimension" "(" dimension ")"
+                 "ins" "(" input ":" type(input) ")"
+                 "outs" "(" output ":" type(output) ")"
+                 "->" type(result) }
+  }
+
+  op winograd_filter_transform {
+    Doc "Winograd filter transform G g G^T on a 4-D filter; fmr picks the tile shape.";
+    Operands   (filter: any, output: any);
+    Results    (result: any);
+    Attributes (fmr: WinogradConv2DFmr);
+    Properties [destination_style, same_element_type(filter, output)];
+    Implements [DestinationStyleOpInterface];
+    Assembly   { attr-dict "fmr" "(" fmr ")"
+                 "ins" "(" filter ":" type(filter) ")"
+                 "outs" "(" output ":" type(output) ")"
+                 "->" type(result) }
+  }
+
+  op winograd_input_transform {
+    Doc "Winograd input transform B^T d B on a 4-D input; fmr picks the tile shape.";
+    Operands   (input: any, output: any);
+    Results    (result: any);
+    Attributes (fmr: WinogradConv2DFmr);
+    Properties [destination_style, same_element_type(input, output)];
+    Implements [DestinationStyleOpInterface];
+    Assembly   { attr-dict "fmr" "(" fmr ")"
+                 "ins" "(" input ":" type(input) ")"
+                 "outs" "(" output ":" type(output) ")"
+                 "->" type(result) }
+  }
+
+  op winograd_output_transform {
+    Doc "Winograd output transform A^T y A on a 6-D value; fmr picks the tile shape.";
+    Operands   (value: any, output: any);
+    Results    (result: any);
+    Attributes (fmr: WinogradConv2DFmr);
+    Properties [destination_style, same_element_type(value, output)];
+    Implements [DestinationStyleOpInterface];
+    Assembly   { attr-dict "fmr" "(" fmr ")"
+                 "ins" "(" value ":" type(value) ")"
+                 "outs" "(" output ":" type(output) ")"
+                 "->" type(result) }
   }
 
   // ---- 区域内操作 ----

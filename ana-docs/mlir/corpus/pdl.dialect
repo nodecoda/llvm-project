@@ -1,6 +1,54 @@
-/// pdl —— 模式描述语言的内建类型。
+/// pdl —— 模式描述语言（Pattern Descriptor Language）：声明"匹配什么 + 改写什么"，
+/// 由 pdl_interp 降成解释器原语后执行。
+///
+/// 领域分层：
+///   1. 骨架：pattern 是可选符号 + 单块 region，region 以 rewrite 隐式终结；
+///      rewrite 带可选 root，正文或外部函数二选一，正文允许整体缺省。
+///   2. 匹配侧实体：operand/operands/attribute/type/types/operation 给输入 IR
+///      建 handle；apply_native_constraint 在 pattern 内调用外部约束。
+///   3. 改写侧构造：replace/erase/range/apply_native_rewrite 只在 rewrite region
+///      内出现，是真正修改 IR 的原语。
+///   4. 通用投影：result/results 是纯读取，匹配与改写两侧都能用。
+///   句柄种类由下方 type_def 给出：attribute/operation/type/value，以及带元素
+///   参数的 range<T>。
+///
+/// 文本通道：15 个 op 全部是块格式（Assembly { ... }）；op 里 0 个
+/// Assembly Custom、0 个 Assembly Generic。文件里另有 1 个 Custom，属于
+/// type_def range（既有声明，保留）。3 处局部列表交给 custom<>（都是上游真的
+/// 用了 custom 钩子的）：operation 的
+/// 属性表、range 的元素类型、results 的可选索引。
+///
+/// 事实：只用核心词表 —— symbol/symbol_visibility/
+/// isolated_from_above（pattern）、single_block + implicit_terminator(rewrite)
+/// （pattern region）、max_blocks(1) + no_terminator（rewrite region）、
+/// terminator + no_region_args + has_parent(pattern)（rewrite）、
+/// has_parent(pattern|rewrite)（区域内成员）、operand_segments_by_attribute
+/// （分段操作数）、pure（result/results/range）、non_negative（benefit 的
+/// 值域）。没有本方言本地事实。
+///
+/// GAP：
+///   - ref(type($x))：pdl.range/pdl.results 的上游钩子实参是这种形态，本语法
+///     只有 type(x)；这里退化为 type(x)，实参省略与否交给块格式的 if。
+///   - 常量字面量与 PDL handle 同名：pdl.attribute 的 value 是任意 MLIR 属性、
+///     pdl.type/pdl.types 的 constant_type(s) 是真实 MLIR 类型，但本文件的
+///     type_def 已占用 attribute/type 两个名字；类型解析按 R7 本方言优先，
+///     无法在 Attributes 位置区分字面量与 !pdl.attribute/!pdl.type。value 用
+///     any 回避同名，constant_type 仍沿用 type 拼写并接受这一歧义。
+///   - 互斥：pdl.attribute 的 value_type/value、pdl.rewrite 的 name/body、
+///     pdl.replace 的 repl_values/repl_operation 都是至多一个；事实只有合取
+///     与析取，没有互斥谓词，只能写在 Doc/注释里。
+///   - 可选 region：pdl.rewrite 的 body 可整体缺省；Regions 子句只声明 region
+///     存在，块数事实用 max_blocks(1) 表达"0 或 1 块"。
+///   - pattern 不写 symbol_table：上游 PatternOp 只有 Symbol/SymbolName/
+///     SymbolVisibility，没有 SymbolTable；写它就是把 trait 当注释。
+///     只有 Symbol/SymbolName/SymbolVisibility trait，没有显式 SymbolTable。
+
 dialect pdl {
-  Doc "Pattern descriptor types.";
+  Doc "Pattern descriptor language for matching and rewriting IR.";
+
+  // ------------------------------------------------------------------
+  // 句柄类型
+  // ------------------------------------------------------------------
 
   type_def attribute {
     Doc "handle to an attribute";
@@ -18,5 +66,204 @@ dialect pdl {
 
   type_def type {
     Doc "handle to a type";
+  }
+
+  // operand/result 等 op 产出 !pdl.value；上游 PDLTypes.td 也声明了这个类型。
+  type_def value {
+    Doc "handle to an SSA value";
+  }
+
+  // PDL handle 的四种单值、它们的 range，以及"单值或同种 range"的常用形状。
+  // 多数 op 的 variadic 实参是 PDL_AnyType，range 也算一种 handle。
+  constraint pdl_entity     = attribute | operation | type | value;
+  constraint pdl_sequence   = range<attribute> | range<operation> |
+                              range<type> | range<value>;
+  constraint pdl_any        = pdl_entity | pdl_sequence;
+  constraint value_or_range = value | range<value>;
+  constraint type_or_range  = type | range<type>;
+
+  // ------------------------------------------------------------------
+  // 骨架
+  // ------------------------------------------------------------------
+
+  // 匹配区是单块 region，末尾由 pdl.rewrite 隐式终结；benefit 大的先试。
+  // 符号名与可见性都可选，所以 pattern 是可选符号而不是必选符号。
+  op pattern {
+    Doc "Define a rewrite pattern with a match region and a rewrite terminator.";
+    Attributes (benefit: i16 [non_negative],
+                sym_name: optional<string>,
+                sym_visibility: optional<string>);
+    Regions (body: region [single_block, implicit_terminator(rewrite)]);
+    Properties [symbol, symbol_visibility, isolated_from_above];
+    Implements [OpAsmOpInterface];
+    Assembly { if sym_visibility { sym_visibility }
+               if sym_name { sym_name }
+               ":" "benefit" "(" benefit ")"
+               attr-dict-with-keyword body }
+  }
+
+  // 正文与外部函数二选一：有 name 走外部，有 body 走内联；root 省略时由
+  // 降级过程自动挑选。正文是 0 或 1 块，且不引入块参数。
+  op rewrite {
+    Doc "Terminate a pattern region with an inline or external rewrite.";
+    Operands (root: optional<operation>,
+              external_args: variadic<pdl_any>);
+    Attributes (name: optional<string>);
+    Regions (body: region [max_blocks(1), no_terminator]);
+    Properties [terminator, no_region_args, has_parent(pattern)];
+    Implements [OpAsmOpInterface];
+    Assembly { if root { root }
+               if name { "with" name
+                         if external_args { "(" external_args
+                                            ":" type(external_args) ")" } }
+               if body { body }
+               attr-dict-with-keyword }
+  }
+
+  // ------------------------------------------------------------------
+  // 匹配侧实体
+  // ------------------------------------------------------------------
+
+  op operand {
+    Doc "Define an external input operand, optionally typed.";
+    Operands (value_type: optional<type>);
+    Results (value: value);
+    Properties [has_parent(pattern)];
+    Assembly { if value_type { ":" value_type } attr-dict }
+  }
+
+  op operands {
+    Doc "Define an external range of input operands, optionally typed.";
+    Operands (value_type: optional<range<type>>);
+    Results (value: range<value>);
+    Properties [has_parent(pattern)];
+    Assembly { if value_type { ":" value_type } attr-dict }
+  }
+
+  // 常量值(value)与期望类型(value_type)互斥：给了常量，类型由常量给出。
+  op attribute {
+    Doc "Define an input attribute, constrained by a type handle or a constant.";
+    Operands (value_type: optional<type>);
+    Attributes (value: optional<any>);
+    Results (attr: attribute);
+    Assembly { if value_type { ":" value_type }
+               if value { "=" value }
+               attr-dict-with-keyword }
+  }
+
+  op type {
+    Doc "Define a type handle, optionally pinned to a constant type.";
+    Attributes (constant_type: optional<type>);
+    Results (result: type);
+    Assembly { attr-dict if constant_type { ":" constant_type } }
+  }
+
+  op types {
+    Doc "Define a range of type handles, optionally pinned to constant types.";
+    Attributes (constant_types: optional<array<type>>);
+    Results (result: range<type>);
+    Assembly { attr-dict if constant_types { ":" constant_types } }
+  }
+
+  // 三个 variadic 部件按操作数分段属性区分：输入操作数、输入属性、结果类型。
+  // 属性名与属性 handle 按位置配对；name 在匹配区可省略。
+  op operation {
+    Doc "Define an operation node from a name, operand handles, attribute handles and result types.";
+    Operands (operand_values: variadic<value_or_range>,
+              attribute_values: variadic<attribute>,
+              type_values: variadic<type_or_range>);
+    Results (op: operation);
+    Attributes (op_name: optional<string>,
+                attribute_value_names: array<string>);
+    Properties [operand_segments_by_attribute];
+    Assembly { if op_name { op_name }
+               if operand_values { "(" operand_values ":" type(operand_values) ")" }
+               custom<OperationOpAttributes>(attribute_values, attribute_value_names)
+               if type_values { "->" "(" type_values ":" type(type_values) ")" }
+               attr-dict }
+  }
+
+  // 约束由外部按名字注册；is_negated 为真时反转成功/失败含义，可返回 handle。
+  op apply_native_constraint {
+    Doc "Apply a registered native constraint to positional handles.";
+    Operands (args: variadic<pdl_any>);
+    Results (results: variadic<pdl_any>);
+    Attributes (name: string, is_negated: bool = false);
+    Properties [has_parent(pattern)];
+    Assembly { name "(" args ":" type(args) ")"
+               if is_negated { "is_negated" "=" is_negated }
+               if results { ":" type(results) }
+               attr-dict }
+  }
+
+  // ------------------------------------------------------------------
+  // 改写侧构造
+  // ------------------------------------------------------------------
+
+  // 替换值可以是若干单值/range，也可以直接是另一个操作；两者按分段区分。
+  op replace {
+    Doc "Mark an operation as replaced by value handles or another operation.";
+    Operands (input_op: operation,
+              repl_values: variadic<value_or_range>,
+              repl_operation: optional<operation>);
+    Properties [operand_segments_by_attribute, has_parent(rewrite)];
+    Assembly { input_op "with"
+               if repl_values { "(" repl_values ":" type(repl_values) ")" }
+               if repl_operation { repl_operation }
+               attr-dict }
+  }
+
+  op erase {
+    Doc "Mark an operation as erased.";
+    Operands (input_op: operation);
+    Properties [has_parent(rewrite)];
+    Assembly { input_op attr-dict }
+  }
+
+  // 实参是同种类的单值或 range；结果元素种类由结果类型给出。
+  /// 上游钩子用 ref(type($arguments))，本语法只能写 type(arguments)，见 GAP。
+  op range {
+    Doc "Construct a range from handles sharing one element kind.";
+    Operands (arguments: variadic<pdl_any>);
+    Results (result: range<type> | range<value>);
+    Properties [pure, has_parent(rewrite)];
+    Assembly { if arguments { arguments ":" type(arguments) }
+               custom<RangeType>(type(arguments), type(result))
+               attr-dict }
+  }
+
+  op apply_native_rewrite {
+    Doc "Invoke a registered native rewriter inside a rewrite region.";
+    Operands (args: variadic<pdl_any>);
+    Results (results: variadic<pdl_any>);
+    Attributes (name: string);
+    Properties [has_parent(rewrite)];
+    Assembly { name "(" args ":" type(args) ")" attr-dict ":" type(results) }
+  }
+
+  // ------------------------------------------------------------------
+  // 通用投影（匹配与改写两侧都可用）
+  // ------------------------------------------------------------------
+
+  op result {
+    Doc "Extract one result of an operation by index.";
+    Operands (parent: operation);
+    Results (val: value);
+    Attributes (index: i32);
+    Properties [pure];
+    Assembly { index "of" parent attr-dict }
+  }
+
+  // 无索引取全部结果；有索引取一个 ODS 结果组，可能是单值或 range。
+  /// 上游钩子用 ref($index)，本语法只能传 index，见 GAP。
+  op results {
+    Doc "Extract one result group of an operation, or all results.";
+    Operands (parent: operation);
+    Results (val: value_or_range);
+    Attributes (index: optional<i32>);
+    Properties [pure];
+    Assembly { if index { index } "of" parent
+               custom<ResultsValueType>(index, type(val))
+               attr-dict }
   }
 }

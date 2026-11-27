@@ -1,0 +1,656 @@
+/// arm_sme —— Arm SME（Scalable Matrix Extension）方言：ZA tile、切片访问、
+/// 外积累加与 aarch64_sme intrinsic 层。
+///
+/// 领域分六层：
+///   1. ZA tile 值层：tile_creation（get_tile、zero）与 copy_tile。值是 2-D
+///      scalable 向量，代表 ZA 存储里的一块虚拟 tile；tile_id 不是 ODS 属性，
+///      见 GAP。
+///   2. tile 与内存的整体传输：tile_load、tile_store，索引为变长 index，
+///      可选 padding/mask 成对出现。
+///   3. tile 与 1-D 向量的切片通道：slice_access 家族，load / store / insert /
+///      extract 四条路径共享 tile、tile_slice_index 与可选 layout。
+///   4. 外积累加：outer_product（非加宽）与 outer_product_widening 下的
+///      2-way / 4-way 两个融合族，共 15 个 op。
+///   5. intrinsic 层：intr.* 43 个 op，一个 op 对一条 aarch64_sme_* 指令，
+///      没有声明式文本，全部是 generic；用 mop / 加载 / 存储 / 写入 / 读出 /
+///      str / cntsd / zero 这几种形状收敛。
+///   6. 流式向量长度查询：streaming_vl。
+///
+/// 类型：本方言没有自定义类型。上游的 SVEVector、SVEPredicate、MOPVector、
+/// MOPPredicate、SMETile 都是 TypeConstraint，本文件用 constraint 声明其
+/// 名字与元素域；真的形状（lane 数与 scalable 标记）文法写不出，见 GAP。
+///
+/// 属性：本方言只有三个 EnumAttr（tile 切片布局、combining kind、type size），
+/// 用 enum 加 Attributes 子句表达；没有数据携带型的属性声明。
+///
+/// 文本通道：68 个 op，25 个块格式（4 个自带 Assembly，21 个经 from 继承），
+/// 43 个 Generic，0 个 Custom。
+///   - intrinsic op 由 LLVM_IntrOpBase 生成，没有 assemblyFormat，按 R1 逐个
+///     显式写 Assembly Generic，既交代来源也让通道可数。
+///   - 核心 op 的 assemblyFormat 都是声明式的，块格式足以逐字还原。
+///
+/// 事实：核心词表 pure、same_type、element_type_matches、same_shape、
+/// same_element_type、memory_effect(x)。本地事实一个：
+///   - widening_factor(n)：n 路外积融合，tile 元素位宽是输入位宽的 n 倍，
+///     n ∈ {2, 4}，见 outer_product_2way / outer_product_4way。
+///     arm_neon 语料的 element_width_doubled 只覆盖 n=2 且不记录融合路数；
+///     这里参数化是同一个概念轴。按 R5 记账：若下一轮升级进核心词表，
+///     arm_neon 那唯一一处应与本文件一起迁移。
+///
+/// GAP:
+///   - scalable 形状写不出：SVE 的 vector<[N]xT> 与 tile 的
+///     vector<[M]x[N]xT> 都退化成带元素域的 vector；lane 数与 scalable 性质
+///     只写在 constraint 注释和 op 的 Doc 里。
+///   - tile_id 是 ArmSMETileOpInterface 的 discardable attribute，由 tile 分配
+///     之后写入，不是 ODS 属性；所以核心 op 的 Attributes 子句里没有 tile_id。
+///     只有 intrinsic op 的 tile_id 是真正的 i32 立即属性。
+///   - 条件性关系文法只有合取/析取事实，没有条件谓词：tile_load 的 padding 与
+///     mask 必须同时出现；mask 的形状等于对应 tile 形状去掉首维后换成 i1；
+///     outer_product 的 result/acc tile 类型由 lhs/rhs 的 lane 数导出。这些
+///     逐条写进 op 的 Doc。
+///   - ArmSMETileType 只服务 tile 分配与 lowering（genSpecializedAttr=0），
+///     从不作为 IR 属性出现；声明它会是死声明，故只在此记录取值
+///     za.b、za.h、za.s、za.d、za.q。
+///   - LLVM_AnyPointer 来自 LLVMIR 方言，本语料没有 llvm 方言的声明，按 R7
+///     声明本地词 llvm_pointer = any。
+///   - vector<[1]xi128> 与 tile 的 [1]x[1]xi128 是真实取值；i128 属内建
+///     任意位宽整型（iN），不另声明。
+///   - intrinsic 的 operand 名与核心 op 不同（intr.write.* 用 vector/predicate，
+///     insert_tile_slice 用 vector/tile），但类型域相同；各自照录上游参数名。
+
+dialect arm_sme {
+  Doc "Arm SME scalable matrix tiles: ZA tile values, tile and tile-slice memory access, outer products, and the aarch64_sme intrinsic layer.";
+
+  // ---- 类型域 ----
+
+  // i128 是内建整型：MLIR 的整型是任意位宽的 iN，i128 与 i8 同一族，
+  // 不需要本地声明。
+
+  // SVE 数据向量与 SME tile 的元素域相同：8/16/32/64/128-bit 整数与
+  // f16/bf16/f32/f64。上游 SVEVector 允许 [16]xi8 到 [1]xi128 的长度集合，
+  // MOPVector 只取其中 i8/i16/f16/bf16/f32/f64 的子集。
+  constraint sve_element = i8 | i16 | i32 | i64 | i128 | f16 | bf16 | f32 | f64;
+
+  // 1-D scalable 向量：真实类型是 vector<[16]xi8>、vector<[8]xf16>、
+  // vector<[4]xf32>、vector<[2]xf64> 这类写法，元素与 lane 数联动，文法写不出
+  // <[N]xT>，只能保留元素域。
+  constraint sve_vector = vector<sve_element>;
+
+  // SVE 谓词：vector<[16]xi1> 到 vector<[1]xi1>，元素恒为 i1。
+  constraint sve_predicate = vector<i1>;
+
+  // ZA tile：2-D scalable 向量 vector<[16]x[16]xi8>、vector<[8]x[8]xi16>、
+  // vector<[4]x[4]xi32>、vector<[2]x[2]xi64>、vector<[1]x[1]xi128>、
+  // vector<[8]x[8]xf16>、vector<[8]x[8]xbf16>、vector<[4]x[4]xf32>、
+  // vector<[2]x[2]xf64>。二维与 scalable 都退化，元素域保留。
+  constraint sme_tile = vector<sve_element>;
+
+  // MOP intrinsic 的输入：i8、i16、f16、bf16、f32、f64（无 i32/i64/i128）。
+  constraint mop_element = i8 | i16 | f16 | bf16 | f32 | f64;
+  constraint mop_vector = vector<mop_element>;
+
+  // MOP intrinsic 的谓词：vector<[16]xi1> 到 vector<[2]xi1>，没有 [1]。
+  constraint mop_predicate = vector<i1>;
+
+  // 2-way 融合的输入：F16/BF16/I16 的满 SVL 向量 vector<[8]xT>；结果 tile
+  // 是 4x4 的 32-bit 元素（f32 或 i32）。文法里 vector<T, n> 的 n 读作 lane
+  // 数（与 amdgpu 语料同一约定），2-D tile 只保留元素域。
+  constraint widening_element_2way = f16 | bf16 | i16;
+  constraint widening_source_2way = vector<widening_element_2way, 8>;
+  constraint widening_tile_2way = vector<f32 | i32>;
+
+  // 4-way 融合的输入：8-bit 的 vector<[16]xT> 或 16-bit 的 vector<[8]xT>；
+  // 结果 tile 是 4x4 i32 或 2x2 i64。
+  constraint widening_source_4way = vector<i8, 16> | vector<i16, 8>;
+  constraint widening_tile_4way = vector<i32 | i64>;
+
+  // LLVM_AnyPointer：LLVMIR 方言的不透明指针，本语料没有该方言的声明。
+  constraint llvm_pointer = any;
+
+  // ---- 枚举 ----
+
+  // 上游 cases 的 C++ 名是 Horizontal/Vertical，打印助记符是 horizontal/
+  // vertical；语料按 R7 的"名字即打印文本"记账。
+  enum TileSliceLayout {
+    Doc "Layout of a tile slice: horizontal slices run along a tile row, vertical slices along a column; the case names are the printed mnemonics.";
+    Cases [ horizontal = 0, vertical = 1 ];
+  }
+
+  enum CombiningKind {
+    Doc "How a new outer product combines with the accumulator: add accumulates (MOPA), sub subtracts (MOPS); the case names are the printed mnemonics.";
+    Cases [ add = 0, sub = 1 ];
+  }
+
+  enum TypeSize {
+    Doc "Granularity of streaming_vl: byte, half, word or double; the case names are the printed mnemonics.";
+    Cases [ byte = 0, half = 1, word = 2, double = 3 ];
+  }
+
+  // ---- ZA tile 值 ----
+
+  // get_tile 与 zero 只差"内容未指定"还是"全零"：形状完全一致，文本是
+  // attr-dict 加结果类型。
+  schema tile_creation {
+    Doc "Create a tile value of the given 2-D scalable tile type; the text carries only the result type.";
+    Results (tile: sme_tile);
+    Properties [pure];
+    Implements [ArmSMETileOpInterface];
+    Assembly { attr-dict ":" type(tile) }
+  }
+
+  op get_tile from tile_creation {
+    Doc "Create a tile value whose contents are unspecified; the caller must write every element before reading.";
+  }
+
+  op zero from tile_creation {
+    Doc "Create a tile value whose contents are all zero.";
+  }
+
+  op copy_tile {
+    Doc "Copy a tile value to a new SSA value; the copy normalizes the IR before tile allocation.";
+    Operands (tile: sme_tile);
+    Results (result: sme_tile);
+    Properties [pure, same_type(tile, result)];
+    Implements [ArmSMETileOpInterface];
+    Assembly { tile attr-dict ":" type(result) }
+  }
+
+  // ---- tile 与内存 ----
+
+  // 两个 op 的 memref 都要求 rank 1 或 2、维长可为动态（因为结果是 scalable），
+  // 元素类型必须等于 tile 元素类型。padding 与 mask 成对出现，块格式用一个
+  // if 组表达这个共同条件；mask 的形状是"按 tile 切片方式读出的元素"的 i1
+  // 伴生形状，文法写不出，见 Doc 与文件头 GAP。
+  op tile_load {
+    Doc "Load a 2-D tile from memory at base[indices]; the result tile type fixes the scalable shape, the memref must be rank 1 or 2, and padding plus mask are either both present or both absent. The mask has i1 element type and the shape of the elements read through the tile slice. The layout attribute selects horizontal (implicit) or vertical slices.";
+    Operands (base: memref, indices: variadic<index>,
+              padding: optional<any>, mask: optional<vector>);
+    Attributes (layout: TileSliceLayout = horizontal);
+    Results (result: sme_tile);
+    Properties [memory_effect(read), element_type_matches(result, base),
+                element_type_matches(padding, result)];
+    Implements [ArmSMETileOpInterface];
+    Assembly { base "[" indices "]" if padding { "," padding "," mask }
+               if layout { "layout" layout }
+               attr-dict ":" type(base) "," type(result) }
+  }
+
+  op tile_store {
+    Doc "Store a 2-D tile to memory at base[indices]; the mask selects the written elements and has i1 element type with the shape of the elements written through the tile slice. The layout attribute selects horizontal (implicit) or vertical slices.";
+    Operands (value_to_store: sme_tile, base: memref,
+              indices: variadic<index>, mask: optional<vector>);
+    Attributes (layout: TileSliceLayout = horizontal);
+    Properties [memory_effect(write), element_type_matches(value_to_store, base)];
+    Implements [ArmSMETileOpInterface];
+    Assembly { value_to_store "," base "[" indices "]" if mask { "," mask }
+               if layout { "layout" layout }
+               attr-dict ":" type(base) "," type(value_to_store) }
+  }
+
+  // ---- tile 切片访问 ----
+
+  // 四条切片路径共享同一组寻址部件：2-D tile、切片下标、可选布局（缺省为
+  // horizontal）。子 schema 只补自己的操作数、结果与文本顺序，所以 op 只剩
+  // Doc 一句话。这里的"切片"是领域概念：ZA tile 的一行（horizontal）或
+  // 一列（vertical），在 IR 里是 1-D scalable 向量。
+  schema slice_access {
+    Doc "Shared tile-slice addressing: the 2-D tile, the index of the 1-D slice inside it, and an optional slice layout (absent means horizontal).";
+    Operands (tile: sme_tile, tile_slice_index: index);
+    Attributes (layout: TileSliceLayout = horizontal);
+    Implements [ArmSMETileOpInterface];
+  }
+
+  schema slice_load extends slice_access {
+    Doc "Load a 1-D tile slice from memory into the tile, replacing that slice; base and indices address a contiguous run whose element type matches the tile element type, and the mask (i1, slice shape) selects the loaded elements.";
+    Operands (base: memref, mask: sve_predicate, indices: variadic<index>);
+    Results (result: sme_tile);
+    Properties [memory_effect(read), element_type_matches(tile, base),
+                same_type(tile, result)];
+    Assembly { base "[" indices "]" "," mask "," tile "," tile_slice_index
+               if layout { "layout" layout }
+               attr-dict ":" type(base) "," type(mask) "," type(result) }
+  }
+
+  schema slice_store extends slice_access {
+    Doc "Store one 1-D tile slice to memory; base and indices address a contiguous run whose element type matches the tile element type, and the mask (i1, slice shape) selects the stored elements.";
+    Operands (mask: sve_predicate, base: memref, indices: variadic<index>);
+    Properties [memory_effect(write), element_type_matches(tile, base)];
+    Assembly { tile "," tile_slice_index "," mask "," base "[" indices "]"
+               if layout { "layout" layout }
+               attr-dict ":" type(base) "," type(mask) "," type(tile) }
+  }
+
+  schema slice_insert extends slice_access {
+    Doc "Insert a 1-D scalable vector into the selected slice and return the updated tile; the vector type is the tile type with the first dimension dropped, which this grammar cannot state.";
+    Operands (vector: sve_vector);
+    Results (result: sme_tile);
+    Properties [pure, same_type(tile, result)];
+    Assembly { vector "," tile "[" tile_slice_index "]"
+               if layout { "layout" layout }
+               attr-dict ":" type(vector) "into" type(result) }
+  }
+
+  schema slice_extract extends slice_access {
+    Doc "Extract the selected slice as a 1-D scalable vector; the result type is the tile type with the first dimension dropped, which this grammar cannot state.";
+    Results (result: sve_vector);
+    Properties [pure];
+    Assembly { tile "[" tile_slice_index "]"
+               if layout { "layout" layout }
+               attr-dict ":" type(result) "from" type(tile) }
+  }
+
+  op load_tile_slice from slice_load {
+    Doc "Load a 1-D tile slice from memory into the tile at tile_slice_index and return the updated tile.";
+  }
+
+  op store_tile_slice from slice_store {
+    Doc "Store the 1-D tile slice at tile_slice_index to memory.";
+  }
+
+  op insert_tile_slice from slice_insert {
+    Doc "Insert a 1-D scalable vector into the tile slice at tile_slice_index and return the updated tile.";
+  }
+
+  op extract_tile_slice from slice_extract {
+    Doc "Extract the tile slice at tile_slice_index as a 1-D scalable vector.";
+  }
+
+  // ---- 外积 ----
+
+  // 非加宽外积：两个 1-D 向量，可选 acc 与可选 masks（masks 只掩操作数，
+  // 不掩结果），kind 决定累加还是减。文本用 oilist 表达三组可选修饰。
+  schema outer_product {
+    Doc "Outer product of two 1-D scalable vectors accumulated into a 2-D tile; an optional accumulator carries a previous tile, the optional masks apply to the two operands, and kind selects accumulate or subtract. The result and acc tile types follow the lane count of lhs and rhs, so their shape is not written.";
+    Operands (lhs: sve_vector, rhs: sve_vector,
+              lhs_mask: optional<sve_predicate>,
+              rhs_mask: optional<sve_predicate>, acc: optional<sme_tile>);
+    Attributes (kind: CombiningKind = add);
+    Results (result: sme_tile);
+    Properties [pure, same_type(lhs, rhs)];
+    Implements [ArmSMETileOpInterface];
+    Assembly { lhs "," rhs
+               oilist("kind" kind
+                      | "acc" "(" acc ")"
+                      | "masks" "(" lhs_mask "," rhs_mask ")")
+               attr-dict ":" type(lhs) "," type(rhs) }
+  }
+
+  op outerproduct from outer_product {
+    Doc "Outer product with optional fused accumulate or subtract; unlike the vector dialect, masking is on the operands, matching the SME instructions.";
+  }
+
+  // 加宽外积的公共骨架：n 路融合，tile 元素位宽是输入位宽的 n 倍；结果与 acc
+  // 同型，输入两两同型。2-way 与 4-way 只差输入/结果类型域与 n。
+  schema outer_product_widening {
+    Doc "Sum of n widened outer products: two 1-D scalable vectors, optional masks and accumulator, producing a 2-D tile whose element width is n times the input element width; result and acc share one type.";
+    Operands (lhs: sve_vector, rhs: sve_vector,
+              lhs_mask: optional<sve_predicate>,
+              rhs_mask: optional<sve_predicate>, acc: optional<sme_tile>);
+    Results (result: sme_tile);
+    Properties [pure, same_type(lhs, rhs), same_type(result, acc)];
+    Implements [ArmSMETileOpInterface];
+    Assembly { lhs "," rhs
+               oilist("acc" "(" acc ")" | "masks" "(" lhs_mask "," rhs_mask ")")
+               attr-dict ":" type(lhs) "," type(rhs) "into" type(result) }
+  }
+
+  // 2-way：输入是打包好的 16-bit 对，lane 数是 4 维 tile 的两倍；tile 元素
+  // 加宽到 32 位。6 个 op 只有 Doc 与符号解释不同。
+  schema outer_product_2way extends outer_product_widening {
+    Doc "Two fused outer products: 16-bit inputs on 8 lanes into a 4x4 tile of 32-bit elements.";
+    Operands (lhs: widening_source_2way, rhs: widening_source_2way,
+              lhs_mask: optional<sve_predicate>,
+              rhs_mask: optional<sve_predicate>, acc: optional<widening_tile_2way>);
+    Results (result: widening_tile_2way);
+    Properties [widening_factor(2)];
+  }
+
+  // 4-way：输入是 8-bit 的 16 lane 或 16-bit 的 8 lane；tile 元素加宽到 32 位
+  // （4x4）或 64 位（2x2）。8 个 op 只有符号解释与加减不同。
+  schema outer_product_4way extends outer_product_widening {
+    Doc "Four fused outer products: 8-bit inputs on 16 lanes or 16-bit inputs on 8 lanes into a 4x4 tile of 32-bit elements or a 2x2 tile of 64-bit elements.";
+    Operands (lhs: widening_source_4way, rhs: widening_source_4way,
+              lhs_mask: optional<sve_predicate>,
+              rhs_mask: optional<sve_predicate>, acc: optional<widening_tile_4way>);
+    Results (result: widening_tile_4way);
+    Properties [widening_factor(4)];
+  }
+
+  op fmopa_2way from outer_product_2way {
+    Doc "FMOPA/BFMOPA widening 2-way: sum of two FP16 or BF16 outer products, accumulated into an FP32 tile.";
+  }
+
+  op fmops_2way from outer_product_2way {
+    Doc "FMOPS/BFMOPS widening 2-way: sum of two FP16 or BF16 outer products, subtracted from an FP32 tile.";
+  }
+
+  op smopa_2way from outer_product_2way {
+    Doc "SMOPA 2-way: sum of two signed i16 outer products, accumulated into an i32 tile.";
+  }
+
+  op smops_2way from outer_product_2way {
+    Doc "SMOPS 2-way: sum of two signed i16 outer products, subtracted from an i32 tile.";
+  }
+
+  op umopa_2way from outer_product_2way {
+    Doc "UMOPA 2-way: sum of two unsigned i16 outer products, accumulated into an i32 tile.";
+  }
+
+  op umops_2way from outer_product_2way {
+    Doc "UMOPS 2-way: sum of two unsigned i16 outer products, subtracted from an i32 tile.";
+  }
+
+  op smopa_4way from outer_product_4way {
+    Doc "SMOPA 4-way: sum of four signed outer products, accumulated into an i32 (i8 inputs) or i64 (i16 inputs) tile.";
+  }
+
+  op smops_4way from outer_product_4way {
+    Doc "SMOPS 4-way: sum of four signed outer products, subtracted from an i32 (i8 inputs) or i64 (i16 inputs) tile.";
+  }
+
+  op umopa_4way from outer_product_4way {
+    Doc "UMOPA 4-way: sum of four unsigned outer products, accumulated into an i32 (i8 inputs) or i64 (i16 inputs) tile.";
+  }
+
+  op umops_4way from outer_product_4way {
+    Doc "UMOPS 4-way: sum of four unsigned outer products, subtracted from an i32 (i8 inputs) or i64 (i16 inputs) tile.";
+  }
+
+  op sumopa_4way from outer_product_4way {
+    Doc "SUMOPA 4-way: sum of four signed-by-unsigned outer products, accumulated into an i32 (i8 inputs) or i64 (i16 inputs) tile.";
+  }
+
+  op sumops_4way from outer_product_4way {
+    Doc "SUMOPS 4-way: sum of four signed-by-unsigned outer products, subtracted from an i32 (i8 inputs) or i64 (i16 inputs) tile.";
+  }
+
+  op usmopa_4way from outer_product_4way {
+    Doc "USMOPA 4-way: sum of four unsigned-by-signed outer products, accumulated into an i32 (i8 inputs) or i64 (i16 inputs) tile.";
+  }
+
+  op usmops_4way from outer_product_4way {
+    Doc "USMOPS 4-way: sum of four unsigned-by-signed outer products, subtracted from an i32 (i8 inputs) or i64 (i16 inputs) tile.";
+  }
+
+  // ---- 流式向量长度 ----
+
+  op streaming_vl {
+    Doc "Return the streaming vector length in units of the given type size; the value does not change with streaming mode and has index type.";
+    Attributes (type_size: TypeSize);
+    Results (res: index);
+    Properties [pure];
+    Assembly { type_size attr-dict }
+  }
+
+  // ---- intrinsic ----
+  //
+  // 这 43 个 op 由 LLVM_IntrOpBase 与它的四个子类生成，一个 op 对应一条
+  // aarch64_sme_* 指令。它们没有 assemblyFormat，因此每个 op 显式写
+  // Assembly Generic（含从 schema 继承结构的那些），让通道统计保持真实。
+  //
+  // 参数一律照录上游的 operand 名：tile_id 是立即属性，tile_slice_index 是
+  // i32 操作数（不是立即数），地址是 LLVM_AnyPointer。
+
+  // MOP 家族：16 条指令共享"立即 tile_id + 两个谓词 + 两个向量"的形状。
+  schema mop_intrinsic {
+    Doc "Overloaded SME MOP intrinsic: an immediate virtual tile id and two predicate/vector pairs; the mnemonic selects the instruction and the text is generic.";
+    Operands (lhs_predicate: mop_predicate, rhs_predicate: mop_predicate,
+              lhs_vector: mop_vector, rhs_vector: mop_vector);
+    Attributes (tile_id: i32);
+  }
+
+  // 切片加载：谓词、地址、切片下标，加立即 tile_id；唯一的副作用通道留给
+  // 真正的写者（存储），与上游一致。
+  schema slice_load_intrinsic {
+    Doc "Tile-slice load intrinsic: an i1 predicate, the load address and an i32 tile-slice index, with the virtual tile id as an immediate attribute; the text is generic.";
+    Operands (predicate: sve_predicate, load_address: llvm_pointer,
+              tile_slice_index: i32);
+    Attributes (tile_id: i32);
+  }
+
+  schema slice_store_intrinsic {
+    Doc "Tile-slice store intrinsic: an i1 predicate, the store address and an i32 tile-slice index, with the virtual tile id as an immediate attribute; the store writes memory.";
+    Operands (predicate: sve_predicate, store_address: llvm_pointer,
+              tile_slice_index: i32);
+    Attributes (tile_id: i32);
+    Properties [memory_effect(write)];
+  }
+
+  // 向量写入切片：谓词与向量同形（上游 AllShapesMatch）。
+  schema slice_insert_intrinsic {
+    Doc "Vector-to-tile-slice intrinsic: an i1 predicate and an SVE vector of the same shape, plus an i32 slice index and an immediate tile id; the text is generic.";
+    Operands (tile_slice_index: i32, predicate: sve_predicate,
+              vector: sve_vector);
+    Attributes (tile_id: i32);
+    Properties [same_shape];
+  }
+
+  // 切片读出到向量：谓词与向量同形，结果与输入向量同形同元素类型。
+  schema slice_extract_intrinsic {
+    Doc "Tile-slice-to-vector intrinsic: a predicate and a vector of the same shape, returning a vector with the same shape and element type; the slice index and tile id are the remaining operands.";
+    Operands (vector: sve_vector, predicate: sve_predicate,
+              tile_slice_index: i32);
+    Attributes (tile_id: i32);
+    Results (res: sve_vector);
+    Properties [same_shape, same_element_type];
+  }
+
+  op intr.zero {
+    Doc "ZERO: clear the ZA tiles named by the tile_mask bitmask; there are no SSA operands or results.";
+    Attributes (tile_mask: i32);
+    Assembly Generic;
+  }
+
+  op intr.mopa from mop_intrinsic {
+    Doc "MOPA: non-widening outer product and accumulate into the tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.mops from mop_intrinsic {
+    Doc "MOPS: non-widening outer product and subtract from the tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.mopa.wide from mop_intrinsic {
+    Doc "MOPA widening: accumulate the widened outer product into the tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.mops.wide from mop_intrinsic {
+    Doc "MOPS widening: subtract the widened outer product from the tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.smopa.wide from mop_intrinsic {
+    Doc "SMOPA widening: signed integer outer products, accumulated into the tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.smops.wide from mop_intrinsic {
+    Doc "SMOPS widening: signed integer outer products, subtracted from the tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.umopa.wide from mop_intrinsic {
+    Doc "UMOPA widening: unsigned integer outer products, accumulated into the tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.umops.wide from mop_intrinsic {
+    Doc "UMOPS widening: unsigned integer outer products, subtracted from the tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.sumopa.wide from mop_intrinsic {
+    Doc "SUMOPA widening: signed-by-unsigned outer products, accumulated into the tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.sumops.wide from mop_intrinsic {
+    Doc "SUMOPS widening: signed-by-unsigned outer products, subtracted from the tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.usmopa.wide from mop_intrinsic {
+    Doc "USMOPA widening: unsigned-by-signed outer products, accumulated into the tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.usmops.wide from mop_intrinsic {
+    Doc "USMOPS widening: unsigned-by-signed outer products, subtracted from the tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.smopa.za32 from mop_intrinsic {
+    Doc "SMOPA: signed integer outer products, accumulated into the 32-bit ZA tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.umopa.za32 from mop_intrinsic {
+    Doc "UMOPA: unsigned integer outer products, accumulated into the 32-bit ZA tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.smops.za32 from mop_intrinsic {
+    Doc "SMOPS: signed integer outer products, subtracted from the 32-bit ZA tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.umops.za32 from mop_intrinsic {
+    Doc "UMOPS: unsigned integer outer products, subtracted from the 32-bit ZA tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.ld1b.horiz from slice_load_intrinsic {
+    Doc "LD1B horizontal: load i8 elements from load_address into a horizontal tile slice of the tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.ld1h.horiz from slice_load_intrinsic {
+    Doc "LD1H horizontal: load i16 elements from load_address into a horizontal tile slice of the tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.ld1w.horiz from slice_load_intrinsic {
+    Doc "LD1W horizontal: load i32 elements from load_address into a horizontal tile slice of the tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.ld1d.horiz from slice_load_intrinsic {
+    Doc "LD1D horizontal: load i64 elements from load_address into a horizontal tile slice of the tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.ld1q.horiz from slice_load_intrinsic {
+    Doc "LD1Q horizontal: load 128-bit elements from load_address into a horizontal tile slice of the tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.ld1b.vert from slice_load_intrinsic {
+    Doc "LD1B vertical: load i8 elements from load_address into a vertical tile slice of the tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.ld1h.vert from slice_load_intrinsic {
+    Doc "LD1H vertical: load i16 elements from load_address into a vertical tile slice of the tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.ld1w.vert from slice_load_intrinsic {
+    Doc "LD1W vertical: load i32 elements from load_address into a vertical tile slice of the tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.ld1d.vert from slice_load_intrinsic {
+    Doc "LD1D vertical: load i64 elements from load_address into a vertical tile slice of the tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.ld1q.vert from slice_load_intrinsic {
+    Doc "LD1Q vertical: load 128-bit elements from load_address into a vertical tile slice of the tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.st1b.horiz from slice_store_intrinsic {
+    Doc "ST1B horizontal: store i8 elements from a horizontal tile slice of the tile selected by tile_id to store_address.";
+    Assembly Generic;
+  }
+
+  op intr.st1h.horiz from slice_store_intrinsic {
+    Doc "ST1H horizontal: store i16 elements from a horizontal tile slice of the tile selected by tile_id to store_address.";
+    Assembly Generic;
+  }
+
+  op intr.st1w.horiz from slice_store_intrinsic {
+    Doc "ST1W horizontal: store i32 elements from a horizontal tile slice of the tile selected by tile_id to store_address.";
+    Assembly Generic;
+  }
+
+  op intr.st1d.horiz from slice_store_intrinsic {
+    Doc "ST1D horizontal: store i64 elements from a horizontal tile slice of the tile selected by tile_id to store_address.";
+    Assembly Generic;
+  }
+
+  op intr.st1q.horiz from slice_store_intrinsic {
+    Doc "ST1Q horizontal: store 128-bit elements from a horizontal tile slice of the tile selected by tile_id to store_address.";
+    Assembly Generic;
+  }
+
+  op intr.st1b.vert from slice_store_intrinsic {
+    Doc "ST1B vertical: store i8 elements from a vertical tile slice of the tile selected by tile_id to store_address.";
+    Assembly Generic;
+  }
+
+  op intr.st1h.vert from slice_store_intrinsic {
+    Doc "ST1H vertical: store i16 elements from a vertical tile slice of the tile selected by tile_id to store_address.";
+    Assembly Generic;
+  }
+
+  op intr.st1w.vert from slice_store_intrinsic {
+    Doc "ST1W vertical: store i32 elements from a vertical tile slice of the tile selected by tile_id to store_address.";
+    Assembly Generic;
+  }
+
+  op intr.st1d.vert from slice_store_intrinsic {
+    Doc "ST1D vertical: store i64 elements from a vertical tile slice of the tile selected by tile_id to store_address.";
+    Assembly Generic;
+  }
+
+  op intr.st1q.vert from slice_store_intrinsic {
+    Doc "ST1Q vertical: store 128-bit elements from a vertical tile slice of the tile selected by tile_id to store_address.";
+    Assembly Generic;
+  }
+
+  op intr.str {
+    Doc "STR: store one i32 value at store_address offset by offset; the store writes memory.";
+    Operands (index: i32, store_address: llvm_pointer, offset: i32);
+    Properties [memory_effect(write)];
+    Assembly Generic;
+  }
+
+  op intr.write.horiz from slice_insert_intrinsic {
+    Doc "Intrinsic form of insert_tile_slice for a horizontal slice: write the vector into the tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.write.vert from slice_insert_intrinsic {
+    Doc "Intrinsic form of insert_tile_slice for a vertical slice: write the vector into the tile selected by tile_id.";
+    Assembly Generic;
+  }
+
+  op intr.read.horiz from slice_extract_intrinsic {
+    Doc "Intrinsic form of extract_tile_slice for a horizontal slice: read the tile selected by tile_id into a vector.";
+    Assembly Generic;
+  }
+
+  op intr.read.vert from slice_extract_intrinsic {
+    Doc "Intrinsic form of extract_tile_slice for a vertical slice: read the tile selected by tile_id into a vector.";
+    Assembly Generic;
+  }
+
+  op intr.cntsd {
+    Doc "CNTSD: the number of 64-bit elements in the streaming vector, as an i64.";
+    Results (res: i64);
+    Assembly Generic;
+  }
+}

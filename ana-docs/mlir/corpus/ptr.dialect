@@ -37,15 +37,8 @@ dialect ptr {
   constraint mask_1d = tensor<i1, 1> | vector<i1, 1>;
   constraint ptr_1d = tensor<ptr, 1> | vector<ptr, 1>;
 
-  /// 原子二元操作：与 LLVM atomicrmw 的操作码同名；and/or/xor 为避开关键字
-  /// 在枚举里拼成 _and/_or/_xor，文本也是这三个拼写。
-  enum AtomicBinOp {
-    Doc "Read-modify-write binary selectors, spelled like LLVM atomicrmw opcodes.";
-    Cases [ xchg = 0, add = 1, sub = 2, _and = 3, nand = 4, _or = 5,
-            _xor = 6, max = 7, min = 8, umax = 9, umin = 10,
-            fadd = 11, fsub = 12, fmax = 13, fmin = 14,
-            uinc_wrap = 15, udec_wrap = 16 ];
-  }
+  // AtomicBinOp（xchg/add/sub/…/uinc_wrap/udec_wrap）在本树只被内存空间
+  // 接口的原子钩子使用，没有 op 承载它；按 R3 不留死声明，概念记在这里。
 
   /// 内存序：not_atomic 是默认值，因此从不出现在文本里。
   enum AtomicOrdering {

@@ -1,7 +1,36 @@
-/// gpu —— GPU 执行模型：launch、kernel 内建、同步与集团操作。
+/// gpu —— GPU 执行模型：launch、kernel 内建、同步/集团、异步访存、
+/// subgroup MMA 与 host 侧稀疏 BLAS 句柄。
 ///
-/// 领域事实：网格/块尺寸是普通 operand；异步依赖是 token；region 是
-/// kernel body；内建 id/dim 只有"哪一维"这一个参数，用枚举属性表达。
+/// 领域分层：
+///   1. 启动层：launch / launch_func 把网格、块、集群尺寸作为普通 operand，
+///      body region 是 kernel；async_dependencies 是 token，异步模式再返回 token。
+///   2. kernel 内建层：block/thread/grid/cluster/lane/subgroup 的 id 与 dim，
+///      唯一参数是"哪一维"（Dimension 枚举）；只需上界时用 upper_bound。
+///   3. 同步与集团层：barrier / named barrier / shuffle / reduce / broadcast /
+///      ballot / warp_execute_on_lane_0；作用域、置换模式、广播源都用枚举属性。
+///   4. 异步访存层：wait / alloc / dealloc / memcpy / memset。依赖列表是
+///      variadic<async_token>，完成 token 与依赖同型。
+///   5. subgroup MMA 层：mma_matrix 的 load/store/compute/thread-local/elementwise。
+///   6. sparse host BLAS 层：dense tensor 与 sparse matrix 句柄，SpMV/SpMM/SDDMM/
+///      SpGEMM 及 buffer-size 查询；句柄类型用 type_def 建模。
+///
+/// 文本通道统计：67 个 op —— block 63 / Custom 4 / Generic 0。
+/// custom<AsyncDependencies> 与 custom<OffloadingHandler> 是块格式内的局部钩子，
+/// 走"块格式"通道，不计入整体 Custom。
+///
+/// 事实：只用核心词表（15 个：element_type_matches、elementwise、has_parent、
+/// isolated_from_above、memory_effect、no_memory_effect、
+/// operand_segments_by_attribute、pure、recursive_effects、same_type、single_block、
+/// speculatable、symbol、symbol_visibility、terminator），无方言本地事实。
+/// 异步 token 关系由 same_type(async_token, async_dependencies) 表达：完成 token
+/// 与每个依赖同型，wait/launch_func 的结果只是依赖列表的别名。
+///
+/// GAP：
+///   - dealloc 的"释放"在核心词表里没有对应词（只有 read/write/allocate），
+///     故只写结构、不写 memory_effect（与 memref.dealloc 一致）。
+///   - leadDimension 是 IndexAttr，词表只有 integer，无法区分"index 值"。
+///   - 默认转置模式（NON_TRANSPOSE）在文本里省略花括号组，模型用 if 表达。
+///   - binary 的 #gpu.object 数组元素没有独立产生式，只能用 array<any> 承载。
 
 dialect gpu {
   Doc "GPU execution model: kernels, launches, builtins and collectives.";
@@ -28,6 +57,127 @@ dialect gpu {
   enum BarrierScope {
     Doc "Execution scope synchronized by a barrier.";
     Cases [ workgroup = 0, subgroup = 1, cluster = 2 ];
+  }
+
+  // ---- 枚举：转置模式、2:4 剪枝、SpGEMM 阶段、MMA 逐元素、广播源 ----
+
+  enum TransposeMode {
+    Doc "Sparse 矩阵/张量的转置方式，镜像 cuSparse 的 cusparseOperation_t。";
+    Cases [ non_transpose = 0 "NON_TRANSPOSE",
+            transpose = 1 "TRANSPOSE",
+            conjugate_transpose = 2 "CONJUGATE_TRANSPOSE" ];
+  }
+
+  enum Prune2To4SpMatFlag {
+    Doc "2:4 稀疏化的剪枝策略：不剪、只剪、剪并校验。";
+    Cases [ none = 0 "NONE", prune_only = 1 "PRUNE_ONLY",
+            prune_and_check = 2 "PRUNE_AND_CHECK" ];
+  }
+
+  enum SpGEMMWorkEstimationOrComputeKind {
+    Doc "spgemm_work_estimation_or_compute 的两个阶段：估算工作区或真正计算。";
+    Cases [ work_estimation = 0 "WORK_ESTIMATION", compute = 1 "COMPUTE" ];
+  }
+
+  enum MMAElementwiseOp {
+    Doc "subgroup_mma_elementwise 的逐元素运算，打印为小写助记符。";
+    Cases [ addf = 0 "addf", mulf = 1 "mulf", subf = 2 "subf",
+            maxf = 3 "maxf", minf = 4 "minf", divf = 5 "divf",
+            addi = 6 "addi", muli = 7 "muli", subi = 8 "subi",
+            divs = 9 "divs", divu = 10 "divu", negatef = 11 "negatef",
+            negates = 12 "negates", extf = 13 "extf", truncf = 14 "truncf" ];
+  }
+
+  enum BroadcastType {
+    Doc "subgroup_broadcast 的源 lane 选择：第一个活跃 lane，或指定 lane。";
+    Cases [ first_active_lane = 0, specific_lane = 1 ];
+  }
+
+  // ---- GPU 自有类型：异步 token 已有 constraint；以下是句柄与 MMA 片段 ----
+
+  // sparse host BLAS 的三种句柄：dense tensor、sparse matrix、SpGEMM 描述符。
+  // 打印拼写分别是 !gpu.sparse.dntensor_handle、!gpu.sparse.spmat_handle、
+  // !gpu.sparse.spgemmop_handle；关键字本身即全部文本，没有参数。
+  type_def sparse_dn_tensor {
+    Doc "dense tensor 句柄；由 create_dn_tensor 产生。";
+  }
+
+  type_def sparse_sp_mat {
+    Doc "sparse matrix 句柄；由 create_* 稀疏格式构造器产生。";
+  }
+
+  type_def sparse_spgemm_handle {
+    Doc "SpGEMM 运算描述符句柄；贯穿 spgemm_* 各阶段。";
+  }
+
+  // 三种句柄的并集：销毁与查询只关心"是某个 sparse 句柄"。
+  constraint sparse_handle = sparse_dn_tensor | sparse_sp_mat
+                           | sparse_spgemm_handle;
+
+  // mma_matrix 的文本是 <MxNx元素类型, "操作数角色">；角色是 AOp/BOp/COp
+  // 这样的字符串，不是类型。布局由 lowering 决定，语义上只暴露 M/N/元素类型。
+  type_def mma_matrix {
+    Doc "subgroup 协作持有的矩阵片段：MxN 形状、元素类型与 A/B/C 操作数角色。";
+    Parameters (rows: integer, cols: integer,
+                element_type: any, operand: string);
+    Assembly { "<" rows "x" cols "x" element_type "," operand ">" }
+  }
+
+  // ---- schema：host 侧异步骨架与三个高重复族 ----
+
+  // 所有 host 侧异步 op 共享：依赖 token 列表 + 可选完成 token。完成 token
+  // 与依赖同型（都是 !gpu.async.token），wait/launch_func 的"结果只是依赖
+  // 列表的别名"就用 core 的 same_type 表达，不再造本地事实。
+  schema AsyncHostOp {
+    Doc "host 侧异步 op 的公共骨架：async_dependencies 与可选完成 token 同型。";
+    Operands   (async_dependencies: variadic<async_token>);
+    Results    (async_token: optional<async_token>);
+    Properties [same_type(async_token, async_dependencies)];
+  }
+
+  // CSR 与 CSC 的内存布局互为转置：外维的位置数组 + 内维下标 + 值。
+  schema CreateCsxMatrix extends AsyncHostOp {
+    Doc "CSR/CSC 稀疏矩阵构造：rows、cols、nnz 三个标量加三段存储。";
+    Operands (rows: index, cols: index, nnz: index,
+              outer_pos: memref, inner_idxs: memref, values: memref);
+    Results  (spmat: sparse_sp_mat);
+    Assembly { custom<AsyncDependencies>(type(async_token), async_dependencies)
+               rows "," cols "," nnz "," outer_pos "," inner_idxs "," values
+               attr-dict ":" type(outer_pos) "," type(inner_idxs) ","
+               type(values) }
+  }
+
+  // 销毁三种句柄的文本完全相同：依赖列表后跟一个句柄。
+  schema DestroySparseHandle extends AsyncHostOp {
+    Doc "释放任一 sparse 句柄；销毁后可返回新的完成 token。";
+    Operands (handle: sparse_handle);
+    Assembly { custom<AsyncDependencies>(type(async_token), async_dependencies)
+               handle attr-dict }
+  }
+
+  // 稀疏 BLAS 的单/双矩阵 op 共享计算类型与 A 侧转置模式。
+  schema SparseComputeOp extends AsyncHostOp {
+    Doc "稀疏 BLAS 公共部分：A 侧转置模式与计算类型。";
+    Attributes (mode_a: TransposeMode = non_transpose, compute_type: type);
+  }
+
+  // 双矩阵形式（SpMM/SDDMM/SpGEMM）再追加 B 侧转置模式。
+  schema SparseComputeOpB extends SparseComputeOp {
+    Doc "双矩阵稀疏 BLAS 追加 B 侧转置模式。";
+    Attributes (mode_b: TransposeMode = non_transpose);
+  }
+
+  // load/store 共享"线程本地下标 + leadDimension + 可选 transpose"。
+  schema MmaLeadDimensionAccess {
+    Doc "以 leadDimension 定位的 mma_matrix 块访问；transpose 表示转置读写。";
+    Operands   (indices: variadic<index>);
+    Attributes (lead_dimension: integer, transpose: optional<unit>);
+  }
+
+  // extract/insert 共享"按线程本地下标访问共享片段"这一操作数。
+  schema MmaThreadLocalAccess {
+    Doc "按线程本地下标访问 mma_matrix 的共享片段。";
+    Operands (indices: variadic<index>);
   }
 
   op launch {
@@ -62,9 +212,26 @@ dialect gpu {
                 async_object: optional<any>);
     Results    (token: optional<async_token>);
     Attributes (kernel: symbol_ref, cooperative: optional<unit>);
-    Properties [recursive_effects];
+    // 上游是 MemoryEffects<[MemRead, MemWrite, MemAlloc]>，不是
+    // RecursiveMemoryEffects；token 与 async_dependencies 同为 async token。
+    Properties [same_type(token, async_dependencies)];
     Implements [SymbolUserOpInterface];
-    Assembly Custom;
+    // 上游是 declarative assemblyFormat。唯一写不出的是
+    // custom<LaunchDimType>(..., ref(cluster_size_x), ...)：`ref` 还没有产生式
+    // （19 章 §6 的缺口）；其余逐字照写，并用单参形式近似该钩子。
+    Assembly { custom<AsyncDependencies>(type(token), async_dependencies)
+               if async_object { "<" async_object ":" type(async_object) ">" }
+               kernel
+               if cluster_size_x { "clusters" "in" "(" cluster_size_x ","
+                                   cluster_size_y "," cluster_size_z ")" }
+               "blocks" "in" "(" grid_size_x "," grid_size_y "," grid_size_z ")"
+               "threads" "in" "(" block_size_x "," block_size_y "," block_size_z ")"
+               custom<LaunchDimType>(type(grid_size_x))
+               if dynamic_shared_memory_size {
+                 "dynamic_shared_memory_size" dynamic_shared_memory_size }
+               if cooperative { "cooperative" cooperative }
+               custom<LaunchFuncOperands>(kernel_operands, type(kernel_operands))
+               attr-dict }
   }
 
   op func {
@@ -184,6 +351,18 @@ dialect gpu {
                  ":" type(value) }
   }
 
+  /// 与 shuffle 同名参数不同位置：rotate 的 offset/width 是属性，结果多一个
+  /// 有效位。width 是 2 的幂、offset 在 [0,width) 内，都由校验器保证。
+  op rotate {
+    Doc "Rotate values across lanes of one subgroup; offset and width are attributes.";
+    Operands   (value: any);
+    Results    (rotate_result: type_of(value), valid: i1);
+    // width 必须是 2 的幂（上游 IntPowerOf2）；核心词表没有幂次词，记在 Doc。
+    Attributes (offset: i32 [non_negative], width: i32 [positive]);
+    Properties [pure];
+    Assembly   { value "," offset "," width attr-dict ":" type(value) }
+  }
+
   op all_reduce {
     Doc "Reduce a value across the workgroup.";
     Operands   (value: any);
@@ -220,6 +399,465 @@ dialect gpu {
     Regions  (warp_region: region [single_block]);
     Properties [recursive_effects];
     Assembly Custom;
+  }
+
+  // ---- 集群 / 全局 / lane / subgroup 内建 ----
+
+  op cluster_dim {
+    Doc "Grid 每维的 cluster 数；与 grid_dim 同形，只是索引空间是 cluster。";
+    Attributes (dimension: Dimension, upper_bound: optional<integer>);
+    Results    (result: index);
+    Properties [pure];
+    Assembly   { dimension
+                 if upper_bound { "upper_bound" upper_bound }
+                 attr-dict }
+  }
+
+  op cluster_dim_blocks {
+    Doc "每个 cluster 每维的线程块数。";
+    Attributes (dimension: Dimension, upper_bound: optional<integer>);
+    Results    (result: index);
+    Properties [pure];
+    Assembly   { dimension
+                 if upper_bound { "upper_bound" upper_bound }
+                 attr-dict }
+  }
+
+  op cluster_id {
+    Doc "当前 cluster 在 grid 内的索引。";
+    Attributes (dimension: Dimension, upper_bound: optional<integer>);
+    Results    (result: index);
+    Properties [pure];
+    Assembly   { dimension
+                 if upper_bound { "upper_bound" upper_bound }
+                 attr-dict }
+  }
+
+  op cluster_block_id {
+    Doc "当前 block 在所属 cluster 内的索引。";
+    Attributes (dimension: Dimension, upper_bound: optional<integer>);
+    Results    (result: index);
+    Properties [pure];
+    Assembly   { dimension
+                 if upper_bound { "upper_bound" upper_bound }
+                 attr-dict }
+  }
+
+  op global_id {
+    Doc "当前 work item 在整张 grid 内的全局索引；上界可由块/网格尺寸推出。";
+    Attributes (dimension: Dimension, upper_bound: optional<integer>);
+    Results    (result: index);
+    Properties [pure];
+    Assembly   { dimension
+                 if upper_bound { "upper_bound" upper_bound }
+                 attr-dict }
+  }
+
+  // 以下内建没有 dimension：值本身是标量；只有 subgroup_* 显式打印结果类型。
+
+  op lane_id {
+    Doc "线程在 subgroup（warp/wave）内的 lane 序号；不打印结果类型。";
+    Attributes (upper_bound: optional<integer>);
+    Results    (result: index);
+    Properties [pure];
+    Assembly   { if upper_bound { "upper_bound" upper_bound } attr-dict }
+  }
+
+  op subgroup_id {
+    Doc "当前 subgroup 在 workgroup 内的索引。";
+    Attributes (upper_bound: optional<integer>);
+    Results    (result: index);
+    Properties [pure];
+    Assembly   { if upper_bound { "upper_bound" upper_bound }
+                 attr-dict ":" type(result) }
+  }
+
+  op num_subgroups {
+    Doc "workgroup 内的 subgroup 数。";
+    Attributes (upper_bound: optional<integer>);
+    Results    (result: index);
+    Properties [pure];
+    Assembly   { if upper_bound { "upper_bound" upper_bound }
+                 attr-dict ":" type(result) }
+  }
+
+  op subgroup_size {
+    Doc "一个 subgroup 内的线程数。";
+    Attributes (upper_bound: optional<integer>);
+    Results    (result: index);
+    Properties [pure];
+    Assembly   { if upper_bound { "upper_bound" upper_bound }
+                 attr-dict ":" type(result) }
+  }
+
+  // ---- 设备内存、host 句柄与默认设备 ----
+
+  op dynamic_shared_memory {
+    Doc "kernel 启动时分配的动态共享内存（workgroup 空间）的基址 memref。";
+    Results    (result_memref: memref);
+    Properties [pure];
+    Assembly   { attr-dict ":" type(result_memref) }
+  }
+
+  op host_register {
+    Doc "把 host memref 映射到 device 地址空间，之后的 kernel 可见。";
+    Operands (value: memref);
+    Assembly { value attr-dict ":" type(value) }
+  }
+
+  op host_unregister {
+    Doc "撤销 host_register 建立的映射。";
+    Operands (value: memref);
+    Assembly { value attr-dict ":" type(value) }
+  }
+
+  op set_default_device {
+    Doc "按零基索引设置后续 op 的默认 GPU；设置可能是线程本地的。";
+    Operands   (dev_index: i32);
+    Properties [memory_effect(write)];
+    Assembly   { attr-dict dev_index }
+  }
+
+  // ---- 异步访存：wait / alloc / dealloc / memcpy / memset ----
+
+  op wait from AsyncHostOp {
+    Doc "阻塞到依赖 token 全部完成；async 形式返回一个与依赖同型的 token，作为依赖列表的别名。";
+    Assembly { custom<AsyncDependencies>(type(async_token), async_dependencies)
+               attr-dict }
+  }
+
+  op alloc from AsyncHostOp {
+    Doc "在 device 上分配 memref；host_shared 表示 host/device 都可访问。";
+    Operands   (dynamic_sizes: variadic<index>,
+                symbol_operands: variadic<index>);
+    Results    (memref: any);
+    Attributes (host_shared: optional<unit>);
+    Properties [memory_effect(allocate), operand_segments_by_attribute];
+    Assembly   { custom<AsyncDependencies>(type(async_token), async_dependencies)
+                 if host_shared { "host_shared" }
+                 "(" dynamic_sizes ")"
+                 if symbol_operands { "[" symbol_operands "]" }
+                 attr-dict ":" type(memref) }
+  }
+
+  op dealloc from AsyncHostOp {
+    Doc "释放 gpu.alloc 分配的 memref；只保留结构，不写 memory_effect（核心词表无 free）。";
+    Operands (memref: memref);
+    Assembly { custom<AsyncDependencies>(type(async_token), async_dependencies)
+               memref attr-dict ":" type(memref) }
+  }
+
+  op memcpy from AsyncHostOp {
+    Doc "把 src 的内容拷贝到 dst；两者元素类型与形状必须兼容。";
+    Operands   (dst: memref, src: memref);
+    Properties [memory_effect(read), memory_effect(write),
+                element_type_matches(dst, src)];
+    Assembly   { custom<AsyncDependencies>(type(async_token), async_dependencies)
+                 dst "," src ":" type(dst) "," type(src) attr-dict }
+  }
+
+  op memset from AsyncHostOp {
+    Doc "把 dst 的每个元素设为标量 value；value 与 dst 元素类型相同。";
+    Operands   (dst: memref, value: any);
+    Properties [memory_effect(write), element_type_matches(dst, value)];
+    Assembly   { custom<AsyncDependencies>(type(async_token), async_dependencies)
+                 dst "," value ":" type(dst) "," type(value) attr-dict }
+  }
+
+  // ---- 二进制工件 ----
+
+  op binary {
+    Doc "存放序列化 GPU 二进制对象；offloading_handler 决定翻译时选哪个对象。";
+    Attributes (sym_name: string, sym_visibility: optional<string>,
+                offloading_handler: optional<any>, objects: array<any>);
+    Properties [symbol, symbol_visibility];
+    Assembly   { if sym_visibility { sym_visibility } sym_name
+                 custom<OffloadingHandler>(offloading_handler)
+                 attr-dict objects }
+  }
+
+  // ---- subgroup 集团：广播与 ballot ----
+
+  op subgroup_broadcast {
+    Doc "把指定 lane 的值广播到 subgroup 的所有活跃 lane；specific_lane 时附 lane 操作数。";
+    Operands   (src: any, lane: optional<i32>);
+    Results    (result: any);
+    Attributes (broadcast_type: BroadcastType);
+    // 上游是 ConditionallySpeculatable，且 first_active_lane 模式不可推测；
+    // 核心词 speculatable 表达不了"条件性"，故只记无副作用与形状关系。
+    Properties [no_memory_effect, elementwise, same_type(result, src)];
+    Assembly   { src "," broadcast_type if lane { lane } attr-dict
+                 ":" type(result) }
+  }
+
+  op ballot {
+    Doc "收集 subgroup 内所有线程的谓词，第 N 位对应第 N 个线程；结果是无符号整数。";
+    Operands   (predicate: i1);
+    Results    (result: signless_integer);
+    Properties [no_memory_effect];
+    Assembly   { predicate attr-dict ":" type(result) }
+  }
+
+  // ---- subgroup MMA：加载 / 存储 / 计算 / 线程本地 / 逐元素 ----
+
+  op subgroup_mma_load_matrix from MmaLeadDimensionAccess {
+    Doc "子组协作地从 memref 加载 mma_matrix；leadDimension 给出源矩阵行跨度。";
+    Operands   (src_memref: memref);
+    Results    (res: mma_matrix);
+    // 元素类型一致是语义约定；上游只声明 MemRead，没有类型 trait。
+    Properties [memory_effect(read)];
+    Assembly   { src_memref "[" indices "]" "leadDimension" lead_dimension
+                 if transpose { "transpose" } attr-dict
+                 ":" type(src_memref) "->" type(res) }
+  }
+
+  op subgroup_mma_store_matrix from MmaLeadDimensionAccess {
+    Doc "把 mma_matrix 协作地存回 memref；leadDimension 给出目标矩阵行跨度。";
+    Operands   (src: mma_matrix, dst_memref: memref);
+    // 同上：MemWrite 之外没有类型 trait。
+    Properties [memory_effect(write)];
+    Assembly   { src "," dst_memref "[" indices "]" "leadDimension"
+                 lead_dimension if transpose { "transpose" } attr-dict
+                 ":" type(src) "," type(dst_memref) }
+  }
+
+  op subgroup_mma_compute {
+    Doc "子组矩阵乘加 C += A * B；op_c 与结果同型，转置标志可选。";
+    Operands   (op_a: mma_matrix, op_b: mma_matrix, op_c: mma_matrix);
+    Results    (res: mma_matrix);
+    Attributes (a_transpose: optional<unit>, b_transpose: optional<unit>);
+    Properties [pure, same_type(op_c, res)];
+    Assembly   { op_a "," op_b "," op_c
+                 if a_transpose { "a_transpose" }
+                 if b_transpose { "b_transpose" } attr-dict
+                 ":" type(op_a) "," type(op_b) "->" type(res) }
+  }
+
+  op subgroup_mma_constant_matrix {
+    Doc "用标量 value 填满一个 mma_matrix；value 类型是矩阵元素类型。";
+    Operands   (value: any);
+    Results    (res: mma_matrix);
+    Properties [pure, element_type_matches(res, value)];
+    Assembly   { value attr-dict ":" type(res) }
+  }
+
+  op subgroup_mma_extract_thread_local from MmaThreadLocalAccess {
+    Doc "按线程本地下标从 mma_matrix 取出一个标量；下标不是矩阵坐标。";
+    Operands   (matrix: mma_matrix);
+    Results    (res: any);
+    Properties [pure, element_type_matches(matrix, res)];
+    Assembly   { matrix "[" indices "]" attr-dict
+                 ":" type(matrix) "->" type(res) }
+  }
+
+  op subgroup_mma_insert_thread_local from MmaThreadLocalAccess {
+    Doc "把标量 value 写入 mma_matrix 的线程本地片段，返回更新后的矩阵。";
+    Operands   (value: any, matrix: mma_matrix);
+    Results    (res: mma_matrix);
+    // 上游只有 TypesMatchWith(matrix, value, elementType)；matrix 与 res
+    // 同型是语义约定，TD 没有 AllTypesMatch。
+    Properties [pure, element_type_matches(matrix, value)];
+    Assembly   { value "," matrix "[" indices "]" attr-dict
+                 ":" type(value) "," type(matrix) "->" type(res) }
+  }
+
+  op subgroup_mma_elementwise {
+    Doc "对 mma_matrix 逐元素应用 op_type；所有 args 同型，结果另为 mma_matrix。";
+    Operands   (args: variadic<mma_matrix>);
+    Results    (res: mma_matrix);
+    Attributes (op_type: MMAElementwiseOp);
+    Properties [pure];
+    Assembly   { op_type args attr-dict ":" functional-type(args, res) }
+  }
+
+  // ---- sparse host BLAS：句柄构造与销毁 ----
+
+  op create_dn_tensor from AsyncHostOp {
+    Doc "从设备上的 values buffer 与各维尺寸构造 dense tensor 句柄。";
+    Operands   (memref: memref, dims: variadic<index>);
+    Results    (dn_tensor: sparse_dn_tensor);
+    Properties [operand_segments_by_attribute];
+    Assembly   { custom<AsyncDependencies>(type(async_token), async_dependencies)
+                 memref "," dims attr-dict ":" type(dims) "into" type(memref) }
+  }
+
+  op create_coo from AsyncHostOp {
+    Doc "构造 COO（SoA）稀疏矩阵：行/列下标各一段，加值段。";
+    Operands   (rows: index, cols: index, nnz: index,
+                row_idxs: memref, col_idxs: memref, values: memref);
+    Results    (spmat: sparse_sp_mat);
+    Assembly   { custom<AsyncDependencies>(type(async_token), async_dependencies)
+                 rows "," cols "," nnz "," row_idxs "," col_idxs "," values
+                 attr-dict ":" type(row_idxs) "," type(col_idxs) ","
+                 type(values) }
+  }
+
+  op create_coo_aos from AsyncHostOp {
+    Doc "构造 COO（AoS）稀疏矩阵：行/列下标打包在同一段里。";
+    Operands   (rows: index, cols: index, nnz: index,
+                idxs: memref, values: memref);
+    Results    (spmat: sparse_sp_mat);
+    Assembly   { custom<AsyncDependencies>(type(async_token), async_dependencies)
+                 rows "," cols "," nnz "," idxs "," values attr-dict
+                 ":" type(idxs) "," type(values) }
+  }
+
+  op create_csr from CreateCsxMatrix {
+    Doc "构造 CSR 稀疏矩阵；外维是行位置，内维是列下标。";
+  }
+
+  op create_csc from CreateCsxMatrix {
+    Doc "构造 CSC 稀疏矩阵；外维是列位置，内维是行下标。";
+  }
+
+  op create_bsr from AsyncHostOp {
+    Doc "构造 BSR 稀疏矩阵：列下标指向块，块尺寸分开给出。";
+    Operands   (brows: index, bcols: index, bnnz: index,
+                r_block_size: index, c_block_size: index,
+                b_row_pos: memref, b_col_idxs: memref, values: memref);
+    Results    (spmat: sparse_sp_mat);
+    Assembly   { custom<AsyncDependencies>(type(async_token), async_dependencies)
+                 brows "," bcols "," bnnz "," r_block_size "," c_block_size ","
+                 b_row_pos "," b_col_idxs "," values attr-dict
+                 ":" type(b_row_pos) "," type(b_col_idxs) "," type(values) }
+  }
+
+  op create_2to4_spmat from AsyncHostOp {
+    Doc "构造 2:4 结构化稀疏矩阵；prune_flag 选择剪枝策略。";
+    Operands   (rows: index, cols: index, memref: memref);
+    Attributes (prune_flag: Prune2To4SpMatFlag = prune_and_check);
+    Results    (spmat: sparse_sp_mat);
+    Assembly   { custom<AsyncDependencies>(type(async_token), async_dependencies)
+                 "{" prune_flag "}" rows "," cols "," memref attr-dict
+                 ":" type(memref) }
+  }
+
+  op destroy_dn_tensor from DestroySparseHandle {
+    Doc "释放 create_dn_tensor 产生的 dense tensor 句柄。";
+  }
+
+  op destroy_sp_mat from DestroySparseHandle {
+    Doc "释放任一 create_* 稀疏格式构造器产生的稀疏矩阵句柄。";
+  }
+
+  // ---- sparse host BLAS：buffer-size 查询与执行 ----
+
+  op spmv_buffer_size from SparseComputeOp {
+    Doc "查询 SpMV 所需工作区字节数；mode_a 是矩阵的转置方式。";
+    Operands   (spmat_a: sparse_sp_mat, dn_x: sparse_dn_tensor,
+                dn_y: sparse_dn_tensor);
+    Results    (buffer_sz: index);
+    Assembly   { custom<AsyncDependencies>(type(async_token), async_dependencies)
+                 spmat_a if mode_a { "{" mode_a "}" } "," dn_x "," dn_y
+                 attr-dict "into" compute_type }
+  }
+
+  op spmv from SparseComputeOp {
+    Doc "在给定的稀疏矩阵与两个 dense 向量上执行 SpMV；buffer 由调用方分配。";
+    Operands   (spmat_a: sparse_sp_mat, dn_x: sparse_dn_tensor,
+                dn_y: sparse_dn_tensor, buffer: memref);
+    Assembly   { custom<AsyncDependencies>(type(async_token), async_dependencies)
+                 spmat_a if mode_a { "{" mode_a "}" } "," dn_x "," dn_y ","
+                 buffer attr-dict ":" type(buffer) "into" compute_type }
+  }
+
+  op spmm_buffer_size from SparseComputeOpB {
+    Doc "查询 SpMM 所需工作区字节数；结果可以是多个尺寸。";
+    Operands   (spmat_a: sparse_sp_mat, dnmat_b: sparse_dn_tensor,
+                dnmat_c: sparse_dn_tensor);
+    Results    (buffer_szs: variadic<index>);
+    // 上游是 AttrSizedResultSegments（结果按属性数组分段），不是操作数分段；
+    // 核心词表只有 operand_segments_by_attribute，故不写事实，记在 GAP 里。
+    Assembly   { custom<AsyncDependencies>(type(async_token), async_dependencies)
+                 spmat_a if mode_a { "{" mode_a "}" } "," dnmat_b
+                 if mode_b { "{" mode_b "}" } "," dnmat_c attr-dict
+                 ":" type(buffer_szs) "into" compute_type }
+  }
+
+  op spmm from SparseComputeOpB {
+    Doc "稀疏矩阵乘 dense 矩阵；buffers 是 spmm_buffer_size 查询到的若干工作区。";
+    Operands   (spmat_a: sparse_sp_mat, dnmat_b: sparse_dn_tensor,
+                dnmat_c: sparse_dn_tensor, buffers: variadic<memref>);
+    Properties [operand_segments_by_attribute];
+    Assembly   { custom<AsyncDependencies>(type(async_token), async_dependencies)
+                 spmat_a if mode_a { "{" mode_a "}" } "," dnmat_b
+                 if mode_b { "{" mode_b "}" } "," dnmat_c "," buffers
+                 attr-dict ":" type(buffers) "into" compute_type }
+  }
+
+  op sddmm_buffer_size from SparseComputeOpB {
+    Doc "查询 SDDMM 所需工作区字节数；两个 dense 矩阵与一个稀疏结果为输入。";
+    Operands   (dnmat_a: sparse_dn_tensor, dnmat_b: sparse_dn_tensor,
+                spmat_c: sparse_sp_mat);
+    Results    (buffer_sz: index);
+    Assembly   { custom<AsyncDependencies>(type(async_token), async_dependencies)
+                 dnmat_a if mode_a { "{" mode_a "}" } "," dnmat_b
+                 if mode_b { "{" mode_b "}" } "," spmat_c attr-dict
+                 "into" compute_type }
+  }
+
+  op sddmm from SparseComputeOpB {
+    Doc "dense × dense → sparse 的 SDDMM；buffer 由调用方分配。";
+    Operands   (dnmat_a: sparse_dn_tensor, dnmat_b: sparse_dn_tensor,
+                spmat_c: sparse_sp_mat, buffer: memref);
+    Assembly   { custom<AsyncDependencies>(type(async_token), async_dependencies)
+                 dnmat_a if mode_a { "{" mode_a "}" } "," dnmat_b
+                 if mode_b { "{" mode_b "}" } "," spmat_c "," buffer
+                 attr-dict ":" type(buffer) "into" compute_type }
+  }
+
+  // ---- sparse host BLAS：SpGEMM 描述符与三阶段 ----
+
+  op spgemm_create_descr from AsyncHostOp {
+    Doc "创建 SpGEMM 运算描述符，贯穿 work_estimation/compute/copy。";
+    Results  (desc: sparse_spgemm_handle);
+    Assembly { custom<AsyncDependencies>(type(async_token), async_dependencies)
+               attr-dict }
+  }
+
+  op spgemm_destroy_descr from DestroySparseHandle {
+    Doc "销毁 SpGEMM 运算描述符。";
+  }
+
+  op spgemm_work_estimation_or_compute from SparseComputeOpB {
+    Doc "SpGEMM 的 work-estimation 或 compute 阶段；kind 选择阶段，返回新工作区大小。";
+    Operands   (desc: sparse_spgemm_handle, spmat_a: sparse_sp_mat,
+                spmat_b: sparse_sp_mat, spmat_c: sparse_sp_mat,
+                buffer_sz: index, buffer: memref);
+    Results    (buffer_sz_new: index);
+    Attributes (kind: SpGEMMWorkEstimationOrComputeKind);
+    Assembly   { custom<AsyncDependencies>(type(async_token), async_dependencies)
+                 "{" kind "}" spmat_a if mode_a { "{" mode_a "}" } ","
+                 spmat_b if mode_b { "{" mode_b "}" } "," spmat_c ","
+                 desc "," buffer_sz "," buffer attr-dict
+                 ":" compute_type "into" type(buffer) }
+  }
+
+  op spgemm_copy from SparseComputeOpB {
+    Doc "把 SpGEMM 结果复制到输出稀疏矩阵。";
+    Operands   (desc: sparse_spgemm_handle, spmat_a: sparse_sp_mat,
+                spmat_b: sparse_sp_mat, spmat_c: sparse_sp_mat);
+    Assembly   { custom<AsyncDependencies>(type(async_token), async_dependencies)
+                 spmat_a if mode_a { "{" mode_a "}" } "," spmat_b
+                 if mode_b { "{" mode_b "}" } "," spmat_c "," desc attr-dict
+                 ":" compute_type }
+  }
+
+  op spmat_get_size from AsyncHostOp {
+    Doc "读取稀疏矩阵的行数、列数与非零元数。";
+    Operands (spmat: sparse_sp_mat);
+    Results  (rows: index, cols: index, nnz: index);
+    Assembly { custom<AsyncDependencies>(type(async_token), async_dependencies)
+               spmat attr-dict }
+  }
+
+  op set_csr_pointers from AsyncHostOp {
+    Doc "把设备上的 CSR 位置/坐标/值段直接绑定到稀疏矩阵描述符。";
+    Operands (spmat: sparse_sp_mat, positions: memref, coordinates: memref,
+              values: memref);
+    Assembly { custom<AsyncDependencies>(type(async_token), async_dependencies)
+               spmat "," positions "," coordinates "," values attr-dict
+               ":" type(positions) "," type(coordinates) "," type(values) }
   }
 
   // ---- terminator ----

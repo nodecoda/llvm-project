@@ -3,7 +3,7 @@
 本目录有两个主题：
 
 - **A. 文本解析**（01–09）：`mlir/lib/AsmParser/` 如何把 MLIR 文本变成内存中的 IR。
-- **B. 声明层**（10–22）：`mlir/**/*.td` 如何通过 `include` 组成 ODS 依赖图，
+- **B. 声明层**（10–23）：`mlir/**/*.td` 如何通过 `include` 组成 ODS 依赖图，
   这张图如何经 `mlir-tblgen` 变成 `.inc` 再进入 C++，寄生在 TD 语法里的
   ODS 语义结构是什么样子（13 章给出两门可编译的语义文法），如果只描述
   方言领域本身、不描述代码生成这门定义语言应该长什么样（14 章），以及
@@ -14,17 +14,20 @@
   五种受约束的逃逸点，20 章用 emitc/sparse_tensor 压测这套规则，并用
   单次事实复审把本地词表从 26 压回 19，21 章再用 ub/ptr/shard/arm_sve
   证明 81 个新 op 可以只换来 1 个核心词、0 条新产生式，22 章再用
-  amdgpu/openmp/smt 把规模推到 173 个 op：最复杂的 openmp 用了 0 个本地词）。
+  amdgpu/openmp/smt 把规模推到 173 个 op：最复杂的 openmp 用了 0 个本地词，
+  23 章换方向：先把"死声明/类型名/覆盖"三条恒真的检查修成会失败的检查，
+  再用覆盖审计量出 258 个缺失 op 并补账，共 31 个方言、1036 个 op，
+  文法只多一条产生式：带引号的名字）。
 
 - 分析基线：worktree `/home/ubuntu/llvm/trees/pr-ctpop`，分支 `research/mlir`。
-  01–09 基于 `5f7f36636abe`；10–22 基于 `53a80edfeb2e`（2026-11-27）。
+  01–09 基于 `5f7f36636abe`；10–23 基于 `53a80edfeb2e`（2026-11-27）。
 - 所有 `file:line` 引用均以对应提交为准；上游演进后行号可能漂移，函数名相对稳定。
 - 01–09 的范围以 `mlir/lib/AsmParser/` 为中心；为解释边界，少量引用
   `mlir/include/mlir/Parser/Parser.h`、`mlir/include/mlir/AsmParser/*`、
   `mlir/include/mlir/IR/OpImplementation.h` 与 `mlir/lib/Parser/Parser.cpp`。
-- 10–22 的范围是 `mlir/include`、`mlir/lib`、`mlir/python` 下的 412 个 `.td`
+- 10–23 的范围是 `mlir/include`、`mlir/lib`、`mlir/python` 下的 412 个 `.td`
   （不含 `mlir/test`、`mlir/examples`、`mlir/unittests`）；14 章的样例在
-  `sketch/`，15–22 章的语料在 `corpus/`，v1 归档在 `design-first-v1/`。
+  `sketch/`，15–23 章的语料在 `corpus/`，v1 归档在 `design-first-v1/`。
 
 ## 章节
 
@@ -213,8 +216,8 @@
 | `ods-asm-format.y` | `assemblyFormat` 子语言文法（bison，0 冲突） |
 | `14-dialect-domain-model.md` | 领域模型：定义/生成边界、三投影、trait 分类、约束语义、schema refinement、v1 逐项判决 |
 | `15-corpus-driven-grammar.md` | 语料优先：方法论、语料统计、见证表、8 个修正、机械核对、与 v1/v2 差异、下一轮语料 |
-| `corpus/*.dialect` | 28 个方言源程序（8509 行）：692 op、105 schema、63 enum、122 constraint、19 attr_def、47 type_def |
-| `dialect-grammar.y` | 从语料归纳的文法（bison，58 条规则 / 138 条产生式，0 冲突，`28/28 parse OK`） |
+| `corpus/*.dialect` | 31 个方言源程序（12063 行）：1036 op、157 schema、73 enum、149 constraint、20 attr_def、53 type_def；31/31 覆盖缺口为 0 |
+| `dialect-grammar.y` | 从语料归纳的文法（bison，58 条规则 / 140 条产生式，0 冲突，`31/31 parse OK`） |
 | `16-corpus-round-two.md` | 第二轮：10 项扩展、谓词组合、region 约束搬家、软关键字、见证表、机械核对 |
 | `corpus/gpu.dialect` | gpu：launch/module/func、内建 id/dim、barrier/printf/shuffle/all_reduce/subgroup_reduce/warp（18 op） |
 | `corpus/linalg.dialect` | linalg：`Structured` schema + 5 个命名算符 + generic/map/reduce/transpose/broadcast/index/yield（12 op） |
@@ -245,7 +248,15 @@
 | `corpus/openmp.dialect` | omp：72 op、24 enum、70 个 `custom<>` 子句钩子、0 本地事实 |
 | `corpus/smt.dialect` | smt：6 个 sort 类型、42 op、13 个二元位向量 op 共 1 schema |
 | `tools/dialect-corpus.py` | 语料统计与审计：子句×实体矩阵、Assembly 频次、region 注解、悬挂引用、死声明、C++ 泄漏，以及逃逸点三段报告（`escape points` / `text channels` / `fact vocabulary`） |
+| `23-corpus-round-eight.md` | 第八轮：三条恒真检查的修复、覆盖审计（258 op 欠账）、补账到 1036 op、带引号的 `name`、pdl 两处逃逸点修正、schema 名全局解析缺陷 |
+| `corpus/arm_neon.dialect` | arm_neon：7 op、3 schema；`"2d.sdot"` 用带引号名字保留以数字开头的打印名 |
+| `corpus/arm_sme.dialect` | arm_sme：68 op（25 核心 + 43 intrinsic）、15 schema；intrinsic 全部显式 `Assembly Generic;` |
+| `corpus/ml_program.dialect` | ml_program：11 op、4 schema；符号表 + SSACFG/Graph 两种 region 种类（种类本身无核心词） |
+| `tools/dialect-coverage.py` | 覆盖审计：47 个方言 → TD 文件的显式映射，助记符集合与语料 `op` 集合对差；missing 非空则退出码 1 |
 | `tools/dialect-lex.c` | 参考词法器（normal / assembly 两模式） |
 | `sketch/arith.dialect` | 领域描述样例：3 约束 + 4 schema + 8 op，无 C++/namespace/class |
 | `design-first-v1/` | 归档：先定文法再凑样例的 v1（`dialect-dsl.y` + 5 个 `.mdl` + 词法器），仅作对照 |
 | `tools/td-dependency-graph.py` | 扫描脚本：统计 + `--mermaid` + `--json`，可复现全部数字 |
+
+> 表中 `corpus/*.dialect` 一行的括号内数字是**该轮引入时**的规模；当前规模以
+> `corpus/*.dialect` 合计行、23 章 §8 与 `python3 tools/dialect-corpus.py` 为准。

@@ -1,10 +1,236 @@
 /// complex —— 复数属性。
+///
+/// 本文件在属性层之上补齐 ComplexOps.td 的 29 个复数运算 op。
+///
+/// 领域分层：
+///   1. 数据层：`attr_def number` 描述复数常量属性的存储形态；
+///   2. 同型算子层：`UnaryFunction` / `BinaryArithmetic` / `EqualityComparison`
+///      收敛 complex<T> -> complex<T>（或 -> i1）的规整 family，共 21 个 op；
+///   3. 类型关系不对称层：create/constant/bitcast/powi 与 abs/angle/re/im
+///      单独声明，因为操作数与结果不是同一种类型，塞进同型 schema 会撒谎。
+///
+/// 文本通道统计（29 op）：block=29（21 个 `from` schema 继承块格式，
+/// 8 个本地 `Assembly { ... }`），Custom=0，Generic=0；每个 op 都显式
+/// 交代了文本来源（`attr_def number` 的 Custom 不属于 op 通道）。
+///
+/// 事实：全部取自核心词表 —— pure、commutative、elementwise、constant_like、
+/// same_type、element_type_matches、unwraps_element_type、cardinality；
+/// 无方言本地事实。
+///
+/// GAP（文法无法表达、只在此记账，不伪造成事实）：
+///   - bitcast 的“恰好一侧是 complex，且两侧位宽相等”是类型互斥关系加
+///     位宽等式；当前谓词只有 same_type，表达不了，留给 op verifier。
+///   - constant 的 value 元素类型必须等于结果 complex 的元素类型；属性容器
+///     array<..> 的元素类型与结果元素类型之间没有关系谓词，同样留给 verifier。
+///   - complex 的元素类型投影（complex<T> -> T）在类型位置没有构造器；
+///     本文件用核心事实 unwraps_element_type(operand) 记录结果关系。
+
 dialect complex {
-  Doc "Complex number attributes.";
+  Doc "Complex number attributes and elementwise operations over complex values.";
 
   attr_def number {
     Doc "A complex number attribute";
     Parameters (real: float, imag: float, self_type: type);
     Assembly Custom;
+  }
+
+  // 复数值的元素类型：只列 ComplexOps.td 中 Complex<AnyFloat> 的常用浮点宽度。
+  constraint complex_element = f16 | bf16 | f32 | f64;
+  constraint complex_float   = complex<f16> | complex<bf16> | complex<f32>
+                             | complex<f64>;
+  // bitcast 的两侧只允许复数或整数/浮点标量；位宽与“恰好一侧为复数”
+  // 这两条关系见文件头 GAP，由 verifier 检查。
+  constraint bitcast_repr    = complex_float | integer | float;
+
+  // ---- 同型元素级算子：complex<T> -> complex<T> ----
+
+  // 一元函数族：结果直接引用操作数类型，故完整类型相同；fastmath 与
+  // ComplexUnaryOp 的 DefaultValuedAttr 对齐。
+  schema UnaryFunction {
+    Doc "One complex operand and one result of the same complex type.";
+    Operands   (operand: complex_float);
+    Results    (result: type_of(operand));
+    Attributes (fastmath: FastMathFlags = none);
+    Properties [pure, elementwise];
+    Assembly   { operand if fastmath { "fastmath" fastmath }
+                 attr-dict ":" type(result) }
+  }
+
+  // 二元算术族：rhs 与 result 都写成 type_of(lhs)，因此三条 SameOperands-
+  // AndResultType 的结构约束都在类型里，不需要额外的 same_type 事实。
+  schema BinaryArithmetic {
+    Doc "Two complex operands of the same type and one result of that type.";
+    Operands   (lhs: complex_float, rhs: type_of(lhs));
+    Results    (result: type_of(lhs));
+    Attributes (fastmath: FastMathFlags = none);
+    Properties [pure, elementwise];
+    Assembly   { lhs "," rhs if fastmath { "fastmath" fastmath }
+                 attr-dict ":" type(result) }
+  }
+
+  // 比较族：只比较值，不产生复数；文本只打印操作数类型，结果 i1 由语义决定。
+  schema EqualityComparison {
+    Doc "Equality comparison of two complex values; the result is i1.";
+    Operands (lhs: complex_float, rhs: type_of(lhs));
+    Results  (result: i1);
+    Properties [pure, elementwise];
+    Assembly { lhs "," rhs attr-dict ":" type(lhs) }
+  }
+
+  // ---- 一元函数：complex<T> -> complex<T> ----
+
+  op cos from UnaryFunction {
+    Doc "Cosine of a complex value.";
+  }
+  op exp from UnaryFunction {
+    Doc "e raised to a complex value.";
+  }
+  op expm1 from UnaryFunction {
+    Doc "e raised to a complex value, minus one.";
+  }
+  op log from UnaryFunction {
+    Doc "Natural logarithm of a complex value.";
+  }
+  op log1p from UnaryFunction {
+    Doc "Natural logarithm of one plus a complex value.";
+  }
+  op neg from UnaryFunction {
+    Doc "Negation of a complex value.";
+  }
+  op rsqrt from UnaryFunction {
+    Doc "Reciprocal square root of a complex value.";
+  }
+  op sign from UnaryFunction {
+    Doc "Sign (phase direction) of a complex value.";
+  }
+  op sin from UnaryFunction {
+    Doc "Sine of a complex value.";
+  }
+  op sqrt from UnaryFunction {
+    Doc "Square root of a complex value.";
+  }
+  op tan from UnaryFunction {
+    Doc "Tangent of a complex value.";
+  }
+  op tanh from UnaryFunction {
+    Doc "Hyperbolic tangent of a complex value.";
+  }
+  op conj from UnaryFunction {
+    Doc "Complex conjugate.";
+  }
+
+  // ---- 二元算术：complex<T> x complex<T> -> complex<T> ----
+
+  op add from BinaryArithmetic {
+    Doc "Complex addition.";
+    Properties [commutative];
+  }
+  op atan2 from BinaryArithmetic {
+    Doc "Complex two-argument arctangent.";
+  }
+  op div from BinaryArithmetic {
+    Doc "Complex division.";
+  }
+  op mul from BinaryArithmetic {
+    Doc "Complex multiplication.";
+    Properties [commutative];
+  }
+  op pow from BinaryArithmetic {
+    Doc "Raise a complex value to a complex power.";
+  }
+  op sub from BinaryArithmetic {
+    Doc "Complex subtraction.";
+  }
+
+  // ---- 相等比较：complex<T> x complex<T> -> i1 ----
+
+  op eq from EqualityComparison {
+    Doc "Whether two complex values are equal.";
+  }
+  op neq from EqualityComparison {
+    Doc "Whether two complex values are not equal.";
+  }
+
+  // ---- 类型关系不对称的构造、投影与位操作 ----
+
+  // real 与 imaginary 同为元素类型，结果的元素类型分别与两者相等。
+  op create {
+    Doc "Create a complex value from its real and imaginary parts.";
+    Operands   (real: complex_element, imaginary: complex_element);
+    Results    (complex: complex_float);
+    Properties [pure, same_type(real, imaginary),
+                element_type_matches(complex, real),
+                element_type_matches(complex, imaginary)];
+    Assembly   { real "," imaginary attr-dict ":" type(complex) }
+  }
+
+  // value 固定两个 float 属性；其元素类型与结果元素类型的一致性见文件头 GAP。
+  op constant {
+    Doc "A complex constant stored as an array of two attributes.";
+    Results    (complex: complex_float);
+    Attributes (value: array<float> [cardinality(2)]);
+    Properties [pure, constant_like];
+    Assembly   { value attr-dict ":" type(complex) }
+  }
+
+  // 位模式重解释：两侧类型没有等式关系，只有位宽/互斥约束（见文件头 GAP）。
+  op bitcast {
+    Doc "Reinterpret a complex value as an integer/float bit pattern, or back.";
+    Operands   (operand: bitcast_repr);
+    Results    (result: bitcast_repr);
+    Properties [pure];
+    Assembly   { operand attr-dict ":" type(operand) "to" type(result) }
+  }
+
+  // 整数指数是独立类型；结果与底数同型，文本额外打印指数类型。
+  op powi {
+    Doc "Raise a complex value to a signed integer power.";
+    Operands   (lhs: complex_float, rhs: signless_integer);
+    Results    (result: type_of(lhs));
+    Attributes (fastmath: optional<FastMathFlags>);
+    Properties [pure, elementwise];
+    Assembly   { lhs "," rhs if fastmath { "fastmath" fastmath }
+                 attr-dict ":" type(result) "," type(rhs) }
+  }
+
+  // 幅值/相位/实部/虚部：结果都是操作数的元素类型，文本仍打印复数操作数类型。
+  op abs {
+    Doc "Absolute value (magnitude) of a complex value.";
+    Operands   (operand: complex_float);
+    Results    (result: complex_element);
+    Attributes (fastmath: FastMathFlags = none);
+    Properties [pure, elementwise, unwraps_element_type(operand)];
+    Assembly   { operand if fastmath { "fastmath" fastmath }
+                 attr-dict ":" type(operand) }
+  }
+
+  op angle {
+    Doc "Argument (phase) of a complex value, with a branch cut on the negative real axis.";
+    Operands   (operand: complex_float);
+    Results    (result: complex_element);
+    Attributes (fastmath: FastMathFlags = none);
+    Properties [pure, elementwise, unwraps_element_type(operand)];
+    Assembly   { operand if fastmath { "fastmath" fastmath }
+                 attr-dict ":" type(operand) }
+  }
+
+  op re {
+    Doc "Real part of a complex value.";
+    Operands   (operand: complex_float);
+    Results    (real: complex_element);
+    Attributes (fastmath: FastMathFlags = none);
+    Properties [pure, elementwise, unwraps_element_type(operand)];
+    Assembly   { operand if fastmath { "fastmath" fastmath }
+                 attr-dict ":" type(operand) }
+  }
+
+  op im {
+    Doc "Imaginary part of a complex value.";
+    Operands   (operand: complex_float);
+    Results    (imaginary: complex_element);
+    Attributes (fastmath: FastMathFlags = none);
+    Properties [pure, elementwise, unwraps_element_type(operand)];
+    Assembly   { operand if fastmath { "fastmath" fastmath }
+                 attr-dict ":" type(operand) }
   }
 }

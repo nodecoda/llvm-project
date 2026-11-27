@@ -1,12 +1,57 @@
-/// vector —— 定长向量：内存传输、逐元素运算、规约与掩码。
+/// vector —— 定长/可扩展向量：内存传输、掩码、元素重排、收缩与规约。
+///
+/// 领域分层（按 op 的角色）：
+///   1. 内存/传输层：transfer_read、transfer_write、load、store、maskedload、
+///      maskedstore、gather、scatter、expandload、compressstore、type_cast；
+///   2. 掩码层：create_mask、constant_mask、mask、yield（mask region 出口）；
+///   3. 算术/收缩层：fma、outerproduct、contract、reduction、multi_reduction、scan；
+///   4. 元素/形状重排层：broadcast、step、bitcast、interleave、deinterleave、
+///      extract、insert、insert_strided_slice、extract_strided_slice、shuffle、
+///      shape_cast、transpose、to_elements、from_elements；
+///   5. 环境/诊断层：vscale、print。
 ///
 /// 领域特点：
 ///   - transfer_read/write 的语义由 permutation_map + in_bounds 描述；
 ///   - 访问类 op 的可选修饰用 oilist；
-///   - mask 是一个带单块 region 的"作用域"，被掩码的 op 写在里面。
+///   - mask 是一个带单块 region 的"作用域"，被掩码的 op 写在里面；
+///   - gather/scatter 用"偏移列表 + 索引向量 + 掩码 + 载荷"四段描述随机访问。
+///
+/// 文本通道（37 个 op）：块格式 32，`Assembly Custom;` 5，`Assembly Generic;` 0。
+/// 5 个 Custom 全部对应上游 hasCustomAssemblyFormat：
+/// transfer_read、transfer_write、contract、mask、outerproduct。
+/// broadcast/shape_cast/transpose 共享 shape_manipulation 的文本，
+/// gather/scatter、expandload/compressstore、insert/extract_strided_slice
+/// 分别共享 indexed_memory、stream_compaction、strided_subvector 的部件。
+///
+/// 事实：只用核心词表（pure、same_element_type、same_type、memory_effect、
+/// contraction），没有方言本地事实。
+///
+/// GAP（文法表达不了、只记录不绕过）：
+///   - contract 的 indexing_maps/iterator_types 与各操作数 rank 的对应没有
+///     位置，文本由上游手写打印器给出（hasCustomAssemblyFormat），故走 Custom；
+///   - gather/scatter 的 offsets 个数 = base rank、indices 尾维 = 被索引维数，
+///     核心词表没有这种结构事实；
+///   - expandload/compressstore 的"下标只在 mask 位为 1 时前进"是顺序语义，
+///     不是可枚举结构，只能写进 Doc；
+///   - insert/extract_strided_slice 的 offsets 长度 = dest/source rank、
+///     strides 长度 = 子向量 rank，无"数组长度与 rank 对齐"的事实；
+///   - shuffle 的 mask 长度 = 结果首维、取值域 [0, s1+t1)、-1 表示 poison，
+///     文法只有 array<integer>，没有长度/取值约束；
+///   - shape_cast 保持可扩展维的个数，核心词表没有 scalable 维事实
+///     （scalable_boundary 没有 ≥2 个结构同形的 op 可收敛，故不设 schema）；
+///   - scan 的 reduction_dim 是维号、inclusive 是布尔，核心词表没有"axis 属性"
+///     事实，只能作为普通 Attributes 声明；
+///   - constant_mask 的 mask_dim_sizes 上界不超过对应维、可扩展维隐式乘
+///     vscale，无法表达；
+///   - to_elements/from_elements 的元素个数等于向量元素数，核心词表没有
+///     "变长元数 = 元素个数"的事实；
+///   - multi_reduction 的 reduction_dims 决定结果 rank = 源 rank - |dims|，
+///     没有逐维消除事实；
+///   - outerproduct 上游 hasCustomAssemblyFormat：可选 acc 与 kind 的打印顺序
+///     由手写打印器决定，块格式没有对应位置。
 
 dialect vector {
-  Doc "Fixed-size vectors: transfers, elementwise ops, reductions, masking.";
+  Doc "Fixed-size and scalable vectors: transfers, masking, element rearrangement, contraction and reductions.";
 
   enum CombiningKind {
     Doc "Reduction/contraction combinator.";
@@ -19,6 +64,40 @@ dialect vector {
     Cases [ newline = 0, no_newline = 1, open = 2, close = 3 ];
   }
 
+  // ---- 共享骨架 ----
+
+  // broadcast/shape_cast/transpose 都"保持元素类型、只改形状或布局"，
+  // 共享 source->result 文本；transpose 另有 permutation，覆盖自己的文本。
+  schema shape_manipulation {
+    Doc "保持元素类型、只改变形状或维序的 op 共有的 source->result 部件与文本。";
+    Operands   (source: any);
+    Results    (result: any);
+    Properties [pure, same_element_type(source, result)];
+    Assembly   { source attr-dict ":" type(source) "to" type(result) }
+  }
+
+  // gather/scatter 的地址四段（base、偏移列表、索引向量、掩码）相同，
+  // 载荷方向与副作用相反，文本收尾不同。
+  schema indexed_memory {
+    Doc "按索引向量 + 掩码访问内存/张量的 gather 与 scatter 共有的地址、索引与掩码部件。";
+    Operands   (base: any, offsets: variadic<index>, indices: vector, mask: vector);
+    Attributes (alignment: optional<integer>);
+  }
+
+  // expandload/compressstore 只作用于最内维，共享 memref 基址、下标与掩码。
+  schema stream_compaction {
+    Doc "expandload/compressstore 共有的 memref 基址、下标与掩码。";
+    Operands   (base: memref, indices: variadic<index>, mask: vector);
+    Attributes (alignment: optional<integer>);
+  }
+
+  // strided 子向量的插入/抽取共享 offsets/strides 静态数组。
+  schema strided_subvector {
+    Doc "strided 子向量插入/抽取共有的 offsets/strides 静态数组。";
+    Attributes (offsets: array<integer>, strides: array<integer>);
+    Properties [pure];
+  }
+
   // ---- 内存与传输 ----
 
   op transfer_read {
@@ -28,6 +107,8 @@ dialect vector {
     Results    (result: any);
     Attributes (permutation_map: affine_map, in_bounds: array<bool>);
     Properties [destination_style];
+    // 上游 TD 只有 hasCustomAssemblyFormat：permutation_map、in_bounds、mask
+    // 与 padding 的条件打印由手写打印器决定，块格式没有对应位置。
     Assembly Custom;
   }
 
@@ -38,6 +119,7 @@ dialect vector {
     Results    (result: optional<any>);
     Attributes (permutation_map: affine_map, in_bounds: array<bool>);
     Properties [destination_style];
+    // 同上：上游只有 hasCustomAssemblyFormat。
     Assembly Custom;
   }
 
@@ -84,13 +166,163 @@ dialect vector {
                  type(value_to_store) }
   }
 
-  // ---- 逐元素与形状 ----
+  op gather from indexed_memory {
+    Doc "从 base 按 indices 向量 + mask 抽取元素，未命中位取 pass_thru。";
+    Operands   (pass_thru: vector);
+    Results    (result: vector);
+    Properties [memory_effect(read)];
+    Assembly   { base "[" offsets "]" "[" indices "]" "," mask "," pass_thru
+                 if alignment { "alignment" "=" alignment }
+                 attr-dict ":" type(base) "," type(indices) "," type(mask)
+                 "," type(pass_thru) "into" type(result) }
+  }
 
-  op broadcast {
+  op scatter from indexed_memory {
+    Doc "按 indices 向量 + mask 把 value_to_store 写入 base；结果可选，若存在与 base 同型。";
+    Operands   (value_to_store: vector);
+    Results    (result: optional<vector>);
+    Properties [memory_effect(write)];
+    Assembly   { base "[" offsets "]" "[" indices "]" "," mask "," value_to_store
+                 if alignment { "alignment" "=" alignment }
+                 attr-dict ":" type(base) "," type(indices) "," type(mask)
+                 "," type(value_to_store) if result { "->" type(result) } }
+  }
+
+  op expandload from stream_compaction {
+    Doc "按 mask 从 base 顺序读取元素、展开到向量，未命中位取 pass_thru；下标只在 mask 位为 1 时前进。";
+    Operands   (pass_thru: vector);
+    Results    (result: vector);
+    Properties [memory_effect(read)];
+    Assembly   { base "[" indices "]" "," mask "," pass_thru
+                 if alignment { "alignment" "=" alignment }
+                 attr-dict ":" type(base) "," type(mask) "," type(pass_thru)
+                 "into" type(result) }
+  }
+
+  op compressstore from stream_compaction {
+    Doc "按 mask 把 value_to_store 压缩写入 base 的最内维；下标只在 mask 位为 1 时前进。";
+    Operands   (value_to_store: vector);
+    Properties [memory_effect(write)];
+    Assembly   { base "[" indices "]" "," mask "," value_to_store
+                 if alignment { "alignment" "=" alignment }
+                 attr-dict ":" type(base) "," type(mask) "," type(value_to_store) }
+  }
+
+  op type_cast {
+    Doc "把标量 memref 重解释为以单个向量为元素的 memref（视图，不拷贝），形状搬进向量类型。";
+    Operands (memref: memref);
+    Results  (result: memref);
+    Properties [pure];
+    Assembly { memref attr-dict ":" type(memref) "to" type(result) }
+  }
+
+  // ---- 掩码 ----
+
+  op create_mask {
+    Doc "Create an all-ones mask of the given dynamic sizes.";
+    Operands (mask_dim_sizes: variadic<index>);
+    Results  (result: variadic<any>);
+    Assembly { mask_dim_sizes attr-dict ":" type(result) }
+  }
+
+  op constant_mask {
+    Doc "由静态 mask_dim_sizes 生成超矩形全 1 掩码；每项是各维的独占上界。";
+    Attributes (mask_dim_sizes: array<integer>);
+    Results    (result: vector);
+    Properties [pure];
+    Assembly   { mask_dim_sizes attr-dict ":" type(result) }
+  }
+
+  op mask {
+    Doc "Wrap a maskable op with a lane mask.";
+    Operands (mask: any, passthru: optional<any>);
+    Results  (result: variadic<any>);
+    Regions  (mask_region: region [single_block]);
+    Properties [recursive_effects, no_region_args];
+    // 上游只有 hasCustomAssemblyFormat：region 里包的 op 无法用块格式的
+    // 部件引用表达。
+    Assembly Custom;
+  }
+
+  op yield {
+    Doc "Terminator of a vector.mask region.";
+    Operands   (values: variadic<any>);
+    Properties [terminator, has_parent(mask)];
+    Assembly   { attr-dict if values { ":" type(values) } }
+  }
+
+  // ---- 算术与收缩 ----
+
+  op fma {
+    Doc "Fused multiply-add.";
+    Operands (lhs: any, rhs: any, acc: any);
+    Results  (result: type_of(lhs));
+    Assembly { lhs "," rhs "," acc attr-dict ":" type(lhs) }
+  }
+
+  op outerproduct {
+    Doc "两个 1-D 向量（或 1-D 与标量）的外积，可选地与 acc 相加；kind 默认 add。";
+    Operands   (lhs: any, rhs: any, acc: optional<any>);
+    Results    (result: any);
+    Attributes (kind: CombiningKind = add);
+    Properties [pure, same_element_type(lhs, result), same_element_type(rhs, result)];
+    // 上游 hasCustomAssemblyFormat：可选 acc 与 kind 的打印顺序由手写打印器
+    // 决定，且 `: type(lhs), type(rhs) [, type(acc)]` 的分组没有块格式位置。
+    Assembly Custom;
+  }
+
+  op contract {
+    Doc "沿 iterator_types 指定的收缩维对 lhs/rhs 求积并加到 acc，indexing_maps 描述维映射。";
+    Operands   (lhs: any, rhs: any, acc: any);
+    Results    (result: any);
+    Attributes (indexing_maps: array<affine_map>,
+                iterator_types: array<iterator_type>,
+                kind: CombiningKind = add, fastmath: FastMathFlags = none);
+    Properties [pure, contraction, same_element_type(lhs, result),
+                same_element_type(rhs, result)];
+    // 上游 hasCustomAssemblyFormat：indexing_maps 与 iterator_types 由手写
+    // 打印器按固定顺序输出，块格式无法表达 map 列表与省略默认 kind/fastmath。
+    Assembly Custom;
+  }
+
+  op reduction {
+    Doc "Horizontally reduce a vector with a combinator.";
+    Operands   (kind: CombiningKind, vector: any, acc: optional<any>);
+    Results    (result: any);
+    Attributes (fastmath: FastMathFlags = none);
+    Assembly   { kind "," vector if acc { "," acc }
+                 if fastmath { "fastmath" fastmath }
+                 attr-dict ":" type(vector) "into" type(result) }
+  }
+
+  op multi_reduction {
+    Doc "沿 reduction_dims 把 n-D 向量降为 (n-k)-D 向量或标量，acc 与结果同型。";
+    Operands   (kind: CombiningKind, source: any, acc: any);
+    Results    (result: any);
+    Attributes (reduction_dims: array<integer>, fastmath: FastMathFlags = none);
+    Properties [pure, same_type(result, acc), same_element_type(source, result)];
+    Assembly   { kind "," source "," acc
+                 if fastmath { "fastmath" fastmath }
+                 reduction_dims attr-dict ":" type(source) "to" type(result) }
+  }
+
+  op scan {
+    Doc "沿 reduction_dim 做 inclusive/exclusive 前缀扫描，返回扫描结果与最后一个累积值；kind 给出结合运算。";
+    Operands   (kind: CombiningKind, source: any, initial_value: any);
+    Results    (result: any, accumulated_value: any);
+    Attributes (reduction_dim: integer, inclusive: bool);
+    Properties [pure, same_type(source, result),
+                same_type(initial_value, accumulated_value)];
+    Assembly   { kind "," source "," initial_value
+                 "reduction_dim" "=" reduction_dim
+                 "," "inclusive" "=" inclusive
+                 attr-dict ":" type(source) "," type(initial_value) }
+  }
+
+  // ---- 元素 / 形状重排 ----
+
+  op broadcast from shape_manipulation {
     Doc "Broadcast a scalar or lower-rank vector to the result shape.";
-    Operands (source: any);
-    Results  (result: any);
-    Assembly { source attr-dict ":" type(source) "to" type(result) }
   }
 
   op step {
@@ -98,13 +330,6 @@ dialect vector {
     Results  (result: any);
     Properties [pure];
     Assembly { attr-dict ":" type(result) }
-  }
-
-  op fma {
-    Doc "Fused multiply-add.";
-    Operands (lhs: any, rhs: any, acc: any);
-    Results  (result: type_of(lhs));
-    Assembly { lhs "," rhs "," acc attr-dict ":" type(lhs) }
   }
 
   op bitcast {
@@ -149,51 +374,69 @@ dialect vector {
                  attr-dict ":" type(value_to_store) "into" type(dest) }
   }
 
-  op create_mask {
-    Doc "Create an all-ones mask of the given dynamic sizes.";
-    Operands (mask_dim_sizes: variadic<index>);
-    Results  (result: variadic<any>);
-    Assembly { mask_dim_sizes attr-dict ":" type(result) }
-  }
-
-  // ---- 规约与收缩 ----
-
-  op reduction {
-    Doc "Horizontally reduce a vector with a combinator.";
-    Operands   (kind: CombiningKind, vector: any, acc: optional<any>);
+  op insert_strided_slice from strided_subvector {
+    Doc "把 k-D value_to_store 按 offsets/strides（当前只支持单位步长）插到 n-D dest 的对应位置。";
+    Operands   (value_to_store: any, dest: any);
     Results    (result: any);
-    Attributes (fastmath: FastMathFlags = none);
-    Assembly   { kind "," vector if acc { "," acc }
-                 if fastmath { "fastmath" fastmath }
-                 attr-dict ":" type(vector) "into" type(result) }
+    Properties [same_type(dest, result), same_element_type(value_to_store, result)];
+    Assembly   { value_to_store "," dest
+                 "offsets" "=" offsets "," "strides" "=" strides
+                 attr-dict ":" type(value_to_store) "into" type(dest) }
   }
 
-  op contraction {
-    Doc "Sum of products over contracting dimensions.";
-    Operands   (lhs: any, rhs: any, acc: any);
+  op extract_strided_slice from strided_subvector {
+    Doc "从 n-D source 按 offsets/sizes/strides 抽出 k-D 子向量。";
+    Operands   (source: any);
+    Attributes (sizes: array<integer>);
     Results    (result: any);
-    Attributes (indexing_maps: array<affine_map>,
-                iterator_types: array<iterator_type>,
-                kind: CombiningKind = add, fastmath: FastMathFlags = none);
-    Assembly Custom;
+    Properties [same_element_type(source, result)];
+    Assembly   { source "offsets" "=" offsets "," "sizes" "=" sizes
+                 "," "strides" "=" strides
+                 attr-dict ":" type(source) "to" type(result) }
   }
 
-  // ---- 掩码作用域 ----
-
-  op mask {
-    Doc "Wrap a maskable op with a lane mask.";
-    Operands (mask: any, passthru: optional<any>);
-    Results  (result: variadic<any>);
-    Regions  (mask_region: region [single_block]);
-    Properties [recursive_effects, no_region_args];
-    Assembly Custom;
+  op shuffle {
+    Doc "按 mask（长度 = 结果首维，-1 为 poison）从 v1、v2 选择元素。";
+    Operands   (v1: any, v2: any);
+    Attributes (mask: array<integer>);
+    Results    (result: any);
+    Properties [pure, same_element_type(v1, result), same_element_type(v2, result)];
+    Assembly   { operands mask attr-dict ":" type(operands) }
   }
 
-  op yield {
-    Doc "Terminator of a vector.mask region.";
-    Operands   (values: variadic<any>);
-    Properties [terminator, has_parent(mask)];
-    Assembly   { attr-dict if values { ":" type(values) } }
+  op shape_cast from shape_manipulation {
+    Doc "保持元素类型、元素个数与可扩展维个数的形状重解释，不搬运数据。";
+  }
+
+  op transpose from shape_manipulation {
+    Doc "按 permutation（[0, n-1] 的置换）重排 n-D 向量的维。";
+    Attributes (permutation: array<integer>);
+    Assembly   { source "," permutation attr-dict ":" type(source) "to" type(result) }
+  }
+
+  op to_elements {
+    Doc "把向量按行主序拆成全部标量元素；结果个数等于向量元素数。";
+    Operands (source: any);
+    Results  (elements: variadic<any>);
+    Properties [pure];
+    Assembly { source attr-dict ":" type(source) }
+  }
+
+  op from_elements {
+    Doc "由一组按行主序排列的标量元素构造向量；元素个数必须等于结果元素数。";
+    Operands (elements: variadic<any>);
+    Results  (result: any);
+    Properties [pure];
+    Assembly { elements attr-dict ":" type(result) }
+  }
+
+  // ---- 环境与诊断 ----
+
+  op vscale {
+    Doc "返回可扩展向量的运行期缩放因子：vector<[4]xi32> 等价于 vscale 个 vector<4xi32>。";
+    Results  (result: index);
+    Properties [pure];
+    Assembly { attr-dict }
   }
 
   op print {

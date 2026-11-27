@@ -18,16 +18,28 @@ dialect index {
     Assembly { lhs "," rhs attr-dict }
   }
 
+  /* signed/unsigned 变体只是同一二元形状的两条语义轴，全部复用 index.Binary；
+   * 只有 commutative 的 max/min 额外标事实。 */
   op add from index.Binary { Doc "Addition."; Properties [commutative]; }
   op sub from index.Binary { Doc "Subtraction."; }
   op mul from index.Binary { Doc "Multiplication."; Properties [commutative]; }
   op divs from index.Binary { Doc "Signed division."; }
   op divu from index.Binary { Doc "Unsigned division."; }
+  op ceildivs from index.Binary { Doc "Signed ceiling division."; }
+  op ceildivu from index.Binary { Doc "Unsigned ceiling division."; }
+  op floordivs from index.Binary { Doc "Signed floor division."; }
   op rems from index.Binary { Doc "Signed remainder."; }
+  op remu from index.Binary { Doc "Unsigned remainder."; }
+  op maxs from index.Binary { Doc "Signed maximum."; Properties [commutative]; }
+  op maxu from index.Binary { Doc "Unsigned maximum."; Properties [commutative]; }
+  op mins from index.Binary { Doc "Signed minimum."; Properties [commutative]; }
+  op minu from index.Binary { Doc "Unsigned minimum."; Properties [commutative]; }
   op and from index.Binary { Doc "Bitwise and."; Properties [commutative]; }
   op or from index.Binary { Doc "Bitwise or."; Properties [commutative]; }
   op xor from index.Binary { Doc "Bitwise xor."; Properties [commutative]; }
   op shl from index.Binary { Doc "Shift left."; }
+  op shrs from index.Binary { Doc "Signed (arithmetic) shift right."; }
+  op shru from index.Binary { Doc "Unsigned (logical) shift right."; }
 
   op cmp {
     Doc "Compare two index values.";

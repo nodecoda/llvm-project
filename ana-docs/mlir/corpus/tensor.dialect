@@ -1,10 +1,80 @@
-/// tensor —— ranked tensor 的元素访问、切片、填充与生成。
+/// tensor —— ranked tensor 的构造、形状变换、元素/切片访问与拼接填充。
 ///
-/// 切片类 op 的偏移/尺寸/步长是"静态数组 + 动态 operand"两份数据，
-/// 其文本形式是一个混合列表，交给具名的局部格式钩子。
+/// 领域分层（按 op 的角色）：
+///   1. 构造/生成层：empty、splat、from_elements、generate；
+///   2. 形状/类型层：cast、bitcast、reshape、expand_shape、collapse_shape、rank；
+///   3. 元素访问层：extract、insert、gather、scatter；
+///   4. 切片层：extract_slice、insert_slice、parallel_insert_slice；
+///   5. 拼接/填充层：concat、pad；
+///   6. 元数据层：dim；
+///   7. 终结符：yield（generate/pad region 的出口）。
+///
+/// 领域特点：
+///   - 切片类 op 的偏移/尺寸/步长是"静态数组 + 动态 operand"两份数据，
+///     其文本形式是一个混合列表，交给具名的局部格式钩子 custom<DynamicIndexList>；
+///   - gather/scatter 用"坐标张量 + dims 数组"描述随机访问，unique 是可选
+///     UnitAttr，打印为裸关键字；
+///   - expand_shape/collapse_shape 用嵌套的 reassociation 数组描述维分组；
+///   - concat 沿一个静态维拼接，其余维必须相同。
+///
+/// 文本通道（21 个 op）：块格式 21，`Assembly Custom;` 0，`Assembly Generic;` 0。
+/// 其中 extract_slice/insert_slice/parallel_insert_slice 共享 slice_spec，
+/// expand_shape/collapse_shape 共享 shape_reassociation，gather/scatter 共享
+/// gather_scatter 的部件；各自仍显式给出文本。
+///
+/// 事实：只用核心词表（pure、same_element_type、element_type_matches、
+/// same_type、return_like、no_memory_effect），没有方言本地事实。
+///
+/// GAP（文法表达不了、只记录不绕过）：
+///   - concat 的 dim 是 I64Attr，"结果在 dim 上的长度 = 各输入长度之和、其余
+///     维相同"是逐维形状等式，核心词表没有求和/逐维约束；
+///   - gather/scatter 的 gather_dims/scatter_dims 长度、indices 尾维与源/目标
+///     rank 的对应是结构约束，文法没有位置也没有事实可写；
+///   - expand_shape/collapse_shape 的 reassociation 只能写成
+///     array<array<integer>>；"每组是连续区间、合起来覆盖全部维"的分区约束
+///     无法在文法里断言；
+///   - splat 的 dynamic_sizes 个数等于结果类型的动态维数，核心词表没有
+///     "变长 operand 数 = 某类型动态维数"的事实；
+///   - parallel_insert_slice 上游刻意不标 Pure（会被 DCE），本语料用
+///     return_like + no_memory_effect 近似"把子张量交回父 op 且无内存副作用"，
+///     没有单独的"不可 DCE"事实；
+///   - bitcast 只要求元素位宽相同（元素类型可不同），核心词表有
+///     same_element_type 却没有 same_bitwidth，故只写 pure 并在 Doc 说明。
 
 dialect tensor {
-  Doc "Ranked tensor operations: element access, slicing, padding, generation.";
+  Doc "Ranked tensor operations: construction, shape change, element/slice access, concatenation and padding.";
+
+  // ---- 共享骨架 ----
+
+  // 三个切片 op 共享 offset/size/stride 的"静态数组 + 动态 operand"两份数据；
+  // 文本顺序随 op 不同（extract 用 to、insert 用 into），文本仍写在 op 上。
+  schema slice_spec {
+    Doc "共享的切片描述：源张量，以及 offsets/sizes/strides 的动态 operand 与静态数组。";
+    Operands   (source: any, offsets: variadic<index>, sizes: variadic<index>,
+                strides: variadic<index>);
+    Attributes (static_offsets: array<integer>, static_sizes: array<integer>,
+                static_strides: array<integer>);
+  }
+
+  // 两个 reassociation 视图 op 共享 src、result、reassociation 与元素类型关系。
+  schema shape_reassociation {
+    Doc "共享的重关联形状变换：源张量、结果同元素类型，reassociation 是嵌套维分组。";
+    Operands   (src: any);
+    Results    (result: any);
+    Attributes (reassociation: array<array<integer>>);
+    Properties [pure, same_element_type(src, result)];
+  }
+
+  // gather/scatter 互为读写对：源、坐标张量、unique 与元素类型关系相同。
+  schema gather_scatter {
+    Doc "共享的坐标式随机访问：源张量、整数坐标张量、可选 unique 标记，结果同元素类型。";
+    Operands   (source: any, indices: tensor);
+    Results    (result: any);
+    Attributes (unique: optional<unit>);
+    Properties [pure, element_type_matches(source, result)];
+  }
+
+  // ---- 构造 / 生成 ----
 
   op empty {
     Doc "A tensor of the given shape with unspecified contents.";
@@ -14,36 +84,13 @@ dialect tensor {
     Assembly { "(" dynamic_sizes ")" attr-dict ":" type(result) }
   }
 
-  op dim {
-    Doc "The size of one dimension.";
-    Operands (source: any, index: index);
-    Results  (result: index);
+  op splat {
+    Doc "把标量 input 广播到结果张量的每个元素；结果的动态维按顺序由 dynamic_sizes 给出。";
+    Operands (input: any, dynamic_sizes: variadic<index>);
+    Results  (aggregate: any);
     Properties [pure];
-    Assembly { attr-dict source "," index ":" type(source) }
-  }
-
-  op cast {
-    Doc "Cast between tensor types, including rank changes.";
-    Operands (source: any);
-    Results  (dest: any);
-    Properties [pure];
-    Assembly { source attr-dict ":" type(source) "to" type(dest) }
-  }
-
-  op extract {
-    Doc "Read one element at a multi-dimensional index.";
-    Operands (tensor: any, indices: variadic<index>);
-    Results  (result: any);
-    Properties [pure];
-    Assembly { tensor "[" indices "]" attr-dict ":" type(tensor) }
-  }
-
-  op insert {
-    Doc "Write one element at a multi-dimensional index.";
-    Operands (scalar: any, dest: any, indices: variadic<index>);
-    Results  (result: any);
-    Properties [pure];
-    Assembly { scalar "into" dest "[" indices "]" attr-dict ":" type(dest) }
+    Assembly { input if dynamic_sizes { "[" dynamic_sizes "]" } attr-dict
+               ":" type(aggregate) }
   }
 
   op from_elements {
@@ -63,6 +110,139 @@ dialect tensor {
     Assembly { dynamic_extents body attr-dict ":" type(result) }
   }
 
+  // ---- 形状 / 类型 ----
+
+  op cast {
+    Doc "Cast between tensor types, including rank changes.";
+    Operands (source: any);
+    Results  (dest: any);
+    Properties [pure];
+    Assembly { source attr-dict ":" type(source) "to" type(dest) }
+  }
+
+  op bitcast {
+    Doc "按元素位宽相等的原则重解释张量（元素类型可变，静态维必须一致），不搬运数据。";
+    Operands (source: any);
+    Results  (dest: any);
+    Properties [pure];
+    Assembly { source attr-dict ":" type(source) "to" type(dest) }
+  }
+
+  op reshape {
+    Doc "Reshape to a shape supplied as a 1-D tensor.";
+    Operands (source: any, shape: any);
+    Results  (result: any);
+    Properties [pure];
+    Assembly { source "(" shape ")" attr-dict
+               ":" functional-type(operands, results) }
+  }
+
+  op expand_shape from shape_reassociation {
+    Doc "把源维按 reassociation 分组展开成更高 rank 的视图，不分配不拷贝；output_shape 只写动态结果维，static_output_shape 与之一一对应（动态维记 -1）。";
+    Operands   (output_shape: variadic<index>);
+    Attributes (static_output_shape: array<integer>);
+    Assembly   { src reassociation "output_shape"
+                 custom<DynamicIndexList>(output_shape, static_output_shape)
+                 attr-dict ":" type(src) "into" type(result) }
+  }
+
+  op collapse_shape from shape_reassociation {
+    Doc "把相邻连续维按 reassociation 分组折叠成更少 rank 的视图，不分配不拷贝；组内维必须连续。";
+    Assembly { src reassociation attr-dict ":" type(src) "into" type(result) }
+  }
+
+  op rank {
+    Doc "返回张量的 rank（维数）；结果类型是 index。";
+    Operands (tensor: any);
+    Results  (result: index);
+    Properties [pure];
+    Assembly { tensor attr-dict ":" type(tensor) }
+  }
+
+  // ---- 元素访问 ----
+
+  op extract {
+    Doc "Read one element at a multi-dimensional index.";
+    Operands (tensor: any, indices: variadic<index>);
+    Results  (result: any);
+    Properties [pure];
+    Assembly { tensor "[" indices "]" attr-dict ":" type(tensor) }
+  }
+
+  op insert {
+    Doc "Write one element at a multi-dimensional index.";
+    Operands (scalar: any, dest: any, indices: variadic<index>);
+    Results  (result: any);
+    Properties [pure];
+    Assembly { scalar "into" dest "[" indices "]" attr-dict ":" type(dest) }
+  }
+
+  op gather from gather_scatter {
+    Doc "按 indices 张量给出的坐标从 source 抽取子张量；gather_dims 指定被索引的维，unique 断言坐标互异。";
+    Attributes (gather_dims: array<integer>);
+    Assembly   { source "[" indices "]" "gather_dims" "(" gather_dims ")"
+                 if unique { "unique" } attr-dict
+                 ":" functional-type(operands, results) }
+  }
+
+  op scatter from gather_scatter {
+    Doc "按 indices 张量给出的坐标把 source 写入 dest；scatter_dims 指定被索引的维，unique 断言坐标互异，结果与 dest 同型。";
+    Operands   (dest: any);
+    Attributes (scatter_dims: array<integer>);
+    Properties [same_type(dest, result)];
+    Assembly   { source "into" dest "[" indices "]" "scatter_dims" "(" scatter_dims ")"
+                 if unique { "unique" } attr-dict
+                 ":" functional-type(operands, results) }
+  }
+
+  // ---- 切片 ----
+
+  op extract_slice from slice_spec {
+    Doc "Take a slice out of a tensor.";
+    Results    (result: any);
+    Properties [pure];
+    Assembly   { source
+                 custom<DynamicIndexList>(offsets, static_offsets)
+                 custom<DynamicIndexList>(sizes, static_sizes)
+                 custom<DynamicIndexList>(strides, static_strides)
+                 attr-dict ":" type(source) "to" type(result) }
+  }
+
+  op insert_slice from slice_spec {
+    Doc "Write a slice into a destination tensor.";
+    Operands   (dest: any);
+    Results    (result: any);
+    Properties [pure];
+    Assembly   { source "into" dest
+                 custom<DynamicIndexList>(offsets, static_offsets)
+                 custom<DynamicIndexList>(sizes, static_sizes)
+                 custom<DynamicIndexList>(strides, static_strides)
+                 attr-dict ":" type(source) "into" type(dest) }
+  }
+
+  op parallel_insert_slice from slice_spec {
+    Doc "并行父 op 的切片写回：把 source 按 offsets/sizes/strides 写入 dest，结果返回给父 op（不产生新 SSA 值）；上游刻意不标 Pure 以免被 DCE。";
+    Operands   (dest: any);
+    Properties [return_like, no_memory_effect];
+    Assembly   { source "into" dest
+                 custom<DynamicIndexList>(offsets, static_offsets)
+                 custom<DynamicIndexList>(sizes, static_sizes)
+                 custom<DynamicIndexList>(strides, static_strides)
+                 attr-dict ":" type(source) "into" type(dest) }
+  }
+
+  // ---- 拼接 / 填充 ----
+
+  op concat {
+    Doc "沿静态维 dim 拼接一组同 rank 的输入张量，其余维与元素类型必须一致。";
+    Operands   (inputs: variadic<any>);
+    Attributes (dim: integer);
+    Results    (result: any);
+    Properties [pure];
+    Assembly   { "dim" "(" dim ")" inputs attr-dict
+                 ":" functional-type(operands, results) }
+  }
+
   op pad {
     Doc "Pad a tensor with low/high amounts, filled by a region.";
     Operands   (source: any, low: variadic<index>, high: variadic<index>);
@@ -78,44 +258,17 @@ dialect tensor {
                  region attr-dict ":" type(source) "to" type(result) }
   }
 
-  op extract_slice {
-    Doc "Take a slice out of a tensor.";
-    Operands   (source: any, offsets: variadic<index>, sizes: variadic<index>,
-                strides: variadic<index>);
-    Attributes (static_offsets: array<integer>, static_sizes: array<integer>,
-                static_strides: array<integer>);
-    Results    (result: any);
+  // ---- 元数据 ----
+
+  op dim {
+    Doc "The size of one dimension.";
+    Operands (source: any, index: index);
+    Results  (result: index);
     Properties [pure];
-    Assembly   { source
-                 custom<DynamicIndexList>(offsets, static_offsets)
-                 custom<DynamicIndexList>(sizes, static_sizes)
-                 custom<DynamicIndexList>(strides, static_strides)
-                 attr-dict ":" type(source) "to" type(result) }
+    Assembly { attr-dict source "," index ":" type(source) }
   }
 
-  op insert_slice {
-    Doc "Write a slice into a destination tensor.";
-    Operands   (source: any, dest: any, offsets: variadic<index>,
-                sizes: variadic<index>, strides: variadic<index>);
-    Attributes (static_offsets: array<integer>, static_sizes: array<integer>,
-                static_strides: array<integer>);
-    Results    (result: any);
-    Properties [pure];
-    Assembly   { source "into" dest
-                 custom<DynamicIndexList>(offsets, static_offsets)
-                 custom<DynamicIndexList>(sizes, static_sizes)
-                 custom<DynamicIndexList>(strides, static_strides)
-                 attr-dict ":" type(source) "into" type(dest) }
-  }
-
-  op reshape {
-    Doc "Reshape to a shape supplied as a 1-D tensor.";
-    Operands (source: any, shape: any);
-    Results  (result: any);
-    Properties [pure];
-    Assembly { source "(" shape ")" attr-dict
-               ":" functional-type(operands, results) }
-  }
+  // ---- 终结符 ----
 
   op yield {
     Doc "Yield one element from a generate/pad region.";

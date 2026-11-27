@@ -5,7 +5,7 @@
 ///   - 类型 `!emitc.<助记符>`：opaque 把 C 类型名原样带出；array/ptr/lvalue
 ///     是构造器；size_t/ssize_t/ptrdiff_t 是与指针同宽的标量 typedef。
 ///   - op `emitc.<助记符>`：多数是 C 表达式（可嵌进 expression），少数是语句
-///     容器（file/func/if/for/do/switch）。
+///     容器（file/func/class/if/for/do/switch）。
 ///
 /// 三条通用规则：
 ///   - 在 emitc.file 的 body 内，op 名可以省略 `emitc.` 前缀：file 声明了
@@ -46,6 +46,11 @@ dialect emitc {
   enum CmpPredicate {
     Doc "比较谓词；文本里写成 eq/ne/lt/le/gt/ge/three_way。";
     Cases [eq = 0, ne = 1, lt = 2, le = 3, gt = 4, ge = 5, three_way = 6];
+  }
+
+  enum ClassType {
+    Doc "C++ 聚合类型关键字；缺省是 class。";
+    Cases [class_ = 0 "class", struct_ = 1 "struct", union_ = 2 "union"];
   }
 
   /* 属性与类型同名、却是两个命名空间：`#emitc.opaque` 是属性，
@@ -324,6 +329,44 @@ dialect emitc {
     Properties [pure, c_expression];
  
     Assembly Generic;
+  }
+
+  /* ---- C++ 类与成员访问 ---- */
+
+  op class {
+    Doc "C++ 类定义：symbol table 容器，body 放 field 与 func；body 是声明图（graph_region）而非 CFG，且无终结符（no_terminator）。class_type 决定 class/struct/union，final_specifier 追加 final；`class` 只是 op 助记符（软关键字），不是声明关键字。";
+    Attributes (sym_name: flat_symbol_ref,
+                sym_visibility: optional<string>,
+                final_specifier: optional<unit>,
+                class_type: ClassType = class_);
+    Regions    (body: region [single_block, graph_region, no_terminator]);
+    Properties [symbol, symbol_table, isolated_from_above,
+                automatic_allocation_scope];
+    Implements [OpAsmOpInterface];
+    Assembly   { if class_type { class_type }
+                 if final_specifier { "final" }
+                 if sym_visibility { sym_visibility }
+                 sym_name attr-dict-with-keyword body }
+  }
+
+  op field {
+    Doc "类内字段：sym_name 是字段名，type 是字段类型（EmitC 类型），initial_value 是可选初值；打印为 name : type = init。";
+    Attributes (sym_name: flat_symbol_ref,
+                sym_visibility: optional<string>,
+                type: type,
+                initial_value: optional<attribute_value>);
+    Properties [symbol];
+    Assembly   { if sym_visibility { sym_visibility }
+                 sym_name ":" custom<EmitCFieldOpTypeAndInitialValue>(type, initial_value)
+                 attr-dict }
+  }
+
+  op get_field {
+    Doc "从类实例取出具名字段的 lvalue；field_name 引用同一作用域内的 emitc.field。";
+    Attributes (field_name: flat_symbol_ref);
+    Results    (result: emitc_type);
+    Properties [pure, c_expression, has_parent(class)];
+    Assembly   { field_name ":" type(result) attr-dict }
   }
 
   op conditional {

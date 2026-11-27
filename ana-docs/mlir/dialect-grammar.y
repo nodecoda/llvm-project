@@ -83,8 +83,13 @@ dialect_item
  *
  * 声明关键字是"软关键字"：只在声明/子句的起点有意义，出现在名字位置时
  * 仍是名字。gpu.all_reduce 的属性就叫 `op`，不能因此改语言。 */
+/* 名字一般就是 IDENT。但打印助记符不一定是合法标识符：arm_neon 的
+ * `2d.sdot` 以数字开头，`intr.` 这类前缀又必须逐字保留。所以名字还有
+ * 一种"带引号"的写法：引号里是打印出来的字面拼写，解析层不再拆它。
+ * 位置文法（op/dialect/type_ref/参数名）只在需要名字处接受 STRING。 */
 name
   : IDENT
+  | STRING
   | decl_keyword
   ;
 

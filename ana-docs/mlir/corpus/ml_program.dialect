@@ -1,0 +1,213 @@
+/// ml_program —— 编译后机器学习程序的结构方言：容器、全局与令牌排序。
+///
+/// 领域分层（MLProgramBase.td / MLProgramOps.td / MLProgramTypes.td /
+/// MLProgramAttributes.td）：
+///   - 结构层：func 是带 SSACFG region 的函数，subgraph 是带 Graph 单块
+///     region 的函数，global 是模块级全局变量，token 是给图内操作排序的
+///     令牌。func 与 subgraph 都只命名符号，不引入嵌套的符号表。
+///   - 访问层：按符号直接读写全局。global_load 读可写全局，global_load_const
+///     读不可写全局，global_store 写可写全局；graph 变体
+///     global_load_graph / global_store_graph 额外消费并产出 token，用显式
+///     顺序边替代 SSA 次序。
+///   - 终止层：output 终止 subgraph，return 终止 func；操作数的元数与类型
+///     必须匹配容器的 function_type。
+///   - 类型与属性层：无参数的 !ml_program.token，以及外部解析的全局初值
+///     #ml_program.extern。
+///
+/// 文本通道统计：11 个 op 中 9 个用块格式，其中 4 个经 schema 继承
+/// （global_load / global_load_const 继承 symbol_load，output / return
+/// 继承 callable_terminator），因此没有自己的 Assembly 子句；2 个交给
+/// 自定义打印器（func、subgraph 的函数签名不是块格式能拼出的）；0 个用
+/// Generic。custom 钩子共 4 处，落在 3 个 op 上：global 的 SymbolVisibility
+/// 与 TypedInitialValue，global_load_graph 与 global_store_graph 各一次
+/// TokenOrdering。
+///
+/// GAP:
+///   - func / subgraph 的文本由 FunctionOpInterface 的自定义打印器给出
+///     （可见性、@name、参数与结果类型），块格式无法拼出。external 声明
+///     没有 body，region 绑定没有“可选”形态，只能总写 body。
+///   - region 种类没有核心事实：subgraph 的 single_block 可写，Graph 与
+///     SSACFG 的区分只能靠 Implements [RegionKindInterface] 与 Doc 记录；
+///     func 的块数不固定，故不加块数事实。
+///   - ExternAttr 的材料里 assemblyFormat 为空，自类型参数打印成
+///     `#ml_program.extern : 类型`；块格式用 `":" type(self_type)` 表达。
+///     材料用 genMnemonicAlias 生成的 `#extern` 别名没有语法位置。
+///   - global 的 custom<TypedInitialValue> 把初值包进括号，并在冒号后打印
+///     声明的类型；custom<SymbolVisibility> 打印 public/private/nested
+///     关键字。两者都是钩子文本，不是本方言的 enum，故不声明 Cases。
+///   - token 排序钩子 custom<TokenOrdering> 打印
+///     `ordering (tokens -> !ml_program.token)`；箭头与列表布局属于钩子，
+///     可分析的部件只有 consume_tokens 与 produce_token。
+///   - 材料把 global_store_graph 的 symbol 属性标成 MemRead，操作语义却是
+///     写；语料记录真实的写效果，见该 op 上方的注释。
+///   - is_mutable 是 UnitAttr 而非 OptionalAttr，但语法上整段可省，故记为
+///     optional<unit>。
+///   - arg_attrs / res_attrs 是 DictArrayAttr，function_type 是不透明值；
+///     签名与字典内容都不拆开分析。
+///   - global 的校验（初值类型与声明类型相容、extern 只用于可写全局）在
+///     verifier 里，语料只记 Doc。
+///   - sym_name / global 是 SymbolNameAttr / SymbolRefAttr，打印时的符号前缀
+///     （@name）属于属性自身，块格式只引用部件名。
+///   - 材料里没有 enum；也不引入方言本地事实，全部用核心词表。
+///
+/// 类型名：本文件只声明 token；symbol_ref / function_type / attribute_value /
+/// dictionary / any / unit / string / region / type 都是内建类型，没有借用
+/// 其它方言的声明。
+
+dialect ml_program {
+  Doc "Structural operations and types for compiled machine-learning programs: callable containers, module-level globals, token-ordered global access, and the constructs that set a common programming model across ML frameworks.";
+
+  // ---- 类型与属性 ----
+
+  /// 无参数类型，文本就是助记符本身（!ml_program.token）。
+  type_def token {
+    Doc "A token that establishes execution ordering in a graph; the type has no parameters, so its text is the mnemonic alone.";
+  }
+
+  /// 外部解析的全局初值。冒号后的类型是属性自带的自类型参数
+  /// （AttributeSelfTypeParameter），不是额外的字段；材料里该属性还实现
+  /// TypedAttrInterface，而 attr_def 没有 Implements 子句，故只在这里说明。
+  attr_def extern {
+    Doc "#ml_program.extern : tensor<4xi32> — a global initial value resolved externally; the type after the colon is the attribute's own self type, and the global's symbol name is the key used to locate the value.";
+    Parameters (self_type: type);
+    Assembly { ":" type(self_type) }
+  }
+
+  // ---- 共享形状 ----
+
+  /// func / subgraph 共用的可调用签名。body region 与 region 种类恰好是两者
+  /// 的差异，故由各自 op 声明，schema 只收共同部分。
+  schema callable_signature {
+    Doc "A symbol naming a callable: a function signature, optional per-argument and per-result dictionaries, and visibility; the concrete op supplies the body region and the region kind.";
+    Attributes (sym_name: string,
+                function_type: function_type,
+                arg_attrs: optional<array<dictionary>>,
+                res_attrs: optional<array<dictionary>>,
+                sym_visibility: optional<string>);
+    Properties [symbol, symbol_visibility, isolated_from_above];
+    Implements [FunctionOpInterface, RegionKindInterface];
+  }
+
+  /// output / return 共用的终止符形状。父 op 约束不同，由具体 op 补充。
+  schema callable_terminator {
+    Doc "A terminator that yields the enclosing callable's results; the operand list prints with its type only when non-empty.";
+    Operands (operands: variadic<any>);
+    Assembly { attr-dict if operands { ":" type(operands) } }
+  }
+
+  /// 两个加载 op 共用的完整形状：符号引用加结果类型，文本只打印一次类型。
+  schema symbol_load {
+    Doc "A direct load of a global's value by symbol reference; the text is the symbol followed by the result type.";
+    Attributes (global: symbol_ref);
+    Results (result: any);
+    Implements [SymbolUserOpInterface, OpAsmOpInterface];
+    Assembly { global ":" type(result) attr-dict }
+  }
+
+  /// graph 变体共用的输入组：消费零或多个排序令牌。产出的新令牌属于各 op
+  /// 自己的 Results（加载还要再带一个值结果），故不并入本 schema。
+  /// op 只能 from 一个 schema，所以 store_graph 在继承 consume_tokens 之外
+  /// 还要声明自己的 value 操作数，于是有两个 Operands 子句；子句可重复，
+  /// 工具按子句种类合并部件。
+  schema ordering_tokens {
+    Doc "The ordering tokens a graph operation consumes; each token is an incoming edge that fixes when the operation may run, and the operation mints a fresh token for its consumers.";
+    Operands (consume_tokens: variadic<token>);
+  }
+
+  // ---- 结构层：可调用容器 ----
+
+  op func from callable_signature {
+    Doc "A function symbol whose body is an SSACFG region terminated by return; the body is absent for an external declaration. It names a symbol but does not introduce a nested symbol table.";
+    Regions (body: region);
+    Assembly Custom;
+  }
+
+  op subgraph from callable_signature {
+    Doc "A function symbol whose body is a single-block Graph region terminated by output; the body is absent for an external declaration. It names a symbol but does not introduce a nested symbol table.";
+    Regions (body: region [single_block]);
+    Assembly Custom;
+  }
+
+  // ---- 结构层：全局变量与令牌 ----
+
+  /// 声明的类型与初值的类型可以不同（窄类型初值可赋给更宽的声明类型），
+  /// 这一点由 verifier 检查，语料只记 Doc。
+  op global {
+    Doc "A module-level global variable or constant; mutable selects a writable global, value gives an optional initial value, and an extern value leaves resolution to external storage keyed by sym_name.";
+    Attributes (sym_name: string,
+                type: type,
+                is_mutable: optional<unit>,
+                value: optional<attribute_value>,
+                sym_visibility: optional<string>);
+    Properties [symbol, symbol_visibility];
+    Assembly { custom<SymbolVisibility>(sym_visibility)
+               if is_mutable { "mutable" }
+               sym_name
+               custom<TypedInitialValue>(type, value)
+               attr-dict }
+  }
+
+  op token {
+    Doc "Produce a fresh token; tokens chain side-effecting operations in a graph to establish their execution order.";
+    Results (token: token);
+    Properties [pure];
+    Assembly { attr-dict }
+  }
+
+  // ---- 访问层：直接读写全局 ----
+
+  op global_load from symbol_load {
+    Doc "A non-atomic, non-volatile load of a value from a global that may be mutable; this op carries a read effect and needs explicit ordering inside a graph region.";
+    Properties [memory_effect(read)];
+  }
+
+  op global_load_const from symbol_load {
+    Doc "A load of a constant (immutable) global by symbol; since the global cannot change, the load has no side effect.";
+    Properties [pure];
+  }
+
+  op global_store {
+    Doc "A non-atomic, non-volatile store of a value into a mutable global; this op carries a write effect and needs explicit ordering inside a graph region.";
+    Attributes (global: symbol_ref);
+    Operands (value: any);
+    Properties [memory_effect(write)];
+    Implements [SymbolUserOpInterface];
+    Assembly { global "=" value ":" type(value) attr-dict }
+  }
+
+  op global_load_graph from ordering_tokens {
+    Doc "Load a value from a mutable global inside a graph region, consuming ordering tokens and producing a fresh token so the access can be sequenced explicitly.";
+    Attributes (global: symbol_ref);
+    Results (result: any, produce_token: token);
+    Properties [memory_effect(read)];
+    Implements [SymbolUserOpInterface];
+    Assembly { global custom<TokenOrdering>(consume_tokens, type(produce_token))
+               ":" type(result) attr-dict }
+  }
+
+  /// 材料把本 op 的 symbol 属性标成 MemRead，但操作是 store；语料按真实的
+  /// 写效果记录（这也是它与 global_load_graph 的唯一效果差异）。
+  op global_store_graph from ordering_tokens {
+    Doc "Store a value into a mutable global inside a graph region, consuming ordering tokens and producing a fresh token so the access can be sequenced explicitly.";
+    Attributes (global: symbol_ref);
+    Operands (value: any);
+    Results (produce_token: token);
+    Properties [memory_effect(write)];
+    Implements [SymbolUserOpInterface];
+    Assembly { global "=" value
+               custom<TokenOrdering>(consume_tokens, type(produce_token))
+               ":" type(value) attr-dict }
+  }
+
+  // ---- 终止层 ----
+
+  op output from callable_terminator {
+    Doc "Terminate a subgraph by yielding values to the caller; operand count and types must match the enclosing function signature.";
+    Properties [pure, terminator, return_like, has_parent(subgraph)];
+  }
+
+  op return from callable_terminator {
+    Doc "Terminate a func by yielding values to the caller; operand count and types must match the enclosing function signature.";
+    Properties [pure, terminator, return_like, has_parent(func)];
+  }
+}

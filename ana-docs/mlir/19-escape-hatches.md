@@ -89,7 +89,7 @@ assembly
 | file | block | Custom | Generic |
 ops without a text channel: none
 
-## fact vocabulary: core=41 used, local(distinct)=17, local(single-use)=6
+## fact vocabulary: core=41 used, local(distinct)=20, local(single-use)=7
 ```
 
 `ops without a text channel: none` 是 R1 的自动检查。`distinct/facts` 接近 1
@@ -113,7 +113,7 @@ ops without a text channel: none
 事实分两层：
 
 - **核心词表**（41 个，§3）：语义在本章定义，任何方言可用，不需要再解释。
-- **方言本地事实**（17 个，§4）：只在一个方言出现，必须在该方言文件里被解释。
+- **方言本地事实**（20 个，§4）：只在一个方言出现，必须在该方言文件里被解释。
 
 升级与合并规则：
 
@@ -135,7 +135,7 @@ ops without a text channel: none
 | --- | --- | --- | --- |
 | `ops without a text channel` | 0 | 0 | 有 op 没交代文本，语料不完整 |
 | `Assembly Custom` 占 op 比 | 75/692 = 11% | 25% | 过高说明块格式表达力不足 |
-| 单次使用的本地事实 | 6/17 = 35% | 50% | 事实在替代注释 |
+| 单次使用的本地事实 | 7/20 = 35% | 50% | 事实在替代注释 |
 | 跨 ≥3 方言的非核心事实 | 0 | 0 | 词表失控 |
 
 预算的作用不是卡数字，而是**在扩语料前先怀疑构造**：一个方言里
@@ -200,7 +200,9 @@ cross-dialect references: 11
 | `writes_in_place`、`in_place_buffers` | `in_place` | 同一条轴：写回自身缓冲 |
 
 合并后 17 个本地事实、6 个单次使用（35%），回到红线内；剩下 6 个各有
-不可替代的理由（§5）。第六、七轮各升级一个词进核心表：`same_type`（pdl_interp
+不可替代的理由（§5）。第八轮补三个 SIMD 词（`dot_group`、`widening_factor`、
+`element_width_doubled`）后是 20 个、7 个单次使用（仍 35%）：位宽/融合路数的
+算术关系在类型文法里没有位置，只能记成事实。第六、七轮各升级一个词进核心表：`same_type`（pdl_interp
 与 shard）与 `speculatable`（sparse_tensor 与 smt），都是两个方言的独立见证。
 
 ## 4. 核心词表（41）
@@ -231,7 +233,7 @@ Attributes (count: i64 [positive]);                     /* 值域 */
 Operands   (operands: variadic<any> [arity(inputs, 2)]);/* 元数 */
 ```
 
-## 5. 方言本地事实（17）
+## 5. 方言本地事实（20）
 
 每个都必须在所属方言里被解释；跨方言借用要先升级为核心词。
 
@@ -254,6 +256,9 @@ Operands   (operands: variadic<any> [arity(inputs, 2)]);/* 元数 */
 | `matches_input_arity` | pdl_interp | 1 | 结果元数等于输入元数（符号元数，非常数） |
 | `same_size` | sparse_tensor | 1 | 两个 **变长部件** 等长（跨结果/操作数，不是元素类型） |
 | `yields_to_enclosing_region` | sparse_tensor | 1 | 该终结符把操作数交给外层 region |
+| `dot_group` | arm_neon | 2 | 每 n 个 i8 lane 归约成一个 i32 lane（`sdot` 族） |
+| `widening_factor` | arm_sme | 2 | n 路外积融合：tile 元素位宽是输入位宽的 n 倍 |
+| `element_width_doubled` | arm_neon | 1 | 结果与操作数同 shape、元素位宽翻倍（`smull`） |
 
 ## 6. 没有通道的缺口（诚实清单）
 
@@ -276,7 +281,7 @@ Operands   (operands: variadic<any> [arity(inputs, 2)]);/* 元数 */
    （单维）、能查余额（可数）。
 2. **省略是最坏的逃逸形式**，因为它不可见。`Assembly Generic;` 多一个 token，
    换来"每个 op 都交代了文本从哪来"。
-3. **事实的诱惑最大，因为最自由。** 41 个核心词 + 17 个本地词的上限，靠三条
+3. **事实的诱惑最大，因为最自由。** 41 个核心词 + 20 个本地词的上限，靠三条
    纪律维持：同一概念一个词、组合不造新词、跨方言借用要升级。
 4. **预算第一次告警就来自两个方言**：本地词表 8→34、单次使用 5→20。
    这不是意外，是默认趋势；规则的价值在于它先于失控被发现。

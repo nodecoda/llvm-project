@@ -1,8 +1,31 @@
-/// tosa —— 面向神经网络整张量算子的方言：卷积、池化、逐元素、形状与持久变量。
+/// tosa —— 面向神经网络整张量算子的方言：卷积、池化、逐元素、规约、矩阵乘、
+/// block-scaled、形状算术与持久变量。
 ///
 /// 本语料只写领域事实。tosa 的属性层很厚：算子参数大量是定长整数数组、
 /// 枚举、类型引用、稠密常量与符号名；卷积的零点是操作数而不是属性，
-/// reshape/slice/tile/pad 的形状也是操作数（!tosa.shape 类型）。
+/// reshape/slice/tile/pad 的形状，以及 shape 族的全部操作数与结果，都是
+/// !tosa.shape 类型。
+///
+/// 领域分层（自下而上）：
+///   1. 元素类型：number/int_number/float_number/int_or_float；block-scaled
+///      的 MX 值格式与共享指数格式 mx_value/mx_scale。
+///   2. 枚举：Profile/Extension/Level/SpecificationVersion（目标环境）、
+///      NanPropagationMode、RoundingMode、ResizeMode、BlockSize。
+///   3. 类型与属性：!tosa.shape<rank>、量化零点、符号名、目标环境、稠密载荷。
+///   4. schema：逐元素（含 NaN/round 变体）、形状算术、池化、卷积、规约、
+///      矩阵乘、逻辑、比较。
+///   5. op：逐元素/激活、规约、结构变换、信号变换、形状算术、卷积/池化、
+///      矩阵乘、block-scaled、转换/重缩放、控制流与持久变量、形状值生产。
+///
+/// 文本通道统计（103 op）：块格式 100、Assembly Custom 3、Generic 0。
+/// 局部钩子 custom<> 共 5 处：conv/transpose_conv2d/cast 共用的 LocalBound
+/// schema，以及 fft2d/rfft2d 各自的 LocalBound。
+///
+/// GAP：列表实参的 trait（all_shapes_match([..])）无法写出，只能拆成二元
+/// same_shape/same_type；枚举属性在块格式里记作 `name case`，上游实际打印
+/// `name<CASE>`；!tosa.block_scaled<..> 类型本身（BlockShape 枚举）没有进入
+/// 本语料——block-scaled 的 6 个 op 只按 block_size 枚举建模。block_size 在
+/// 上游是必选属性（Tosa_BlockSizeAttr 无默认值），语料不用 optional<>。
 
 dialect tosa {
   Doc "Tensor Operator Set Architecture: whole-tensor operators for neural networks.";
@@ -12,6 +35,11 @@ dialect tosa {
   constraint int_number  = signless_integer | unsigned_integer;
   constraint float_number = f16 | bf16 | f32;
   constraint int_or_float = int_number | float_number;
+
+  // block-scaled 的元素类型：MX 值格式与共享指数格式。f8e8m0fnu 是 MX 的
+  // 8 位指数类型（MLIR 内建浮点类型），scale 张量用它是这一族的定义特征。
+  constraint mx_value = f8e4m3fn | f8e5m2 | f4e2m1fn;
+  constraint mx_scale = f8e8m0fnu;
 
   // 定长整数数组是 tosa 属性层的主要形状：strides/dilations 按空间维数，
   // padding 是每维前后两份，所以是空间维数的两倍。
@@ -63,14 +91,13 @@ dialect tosa {
     Cases [ NEAREST_NEIGHBOR = 1, BILINEAR = 2 ];
   }
 
+  // BlockSize 只服务于 block-scaled 家族（matmul_t_block_scaled、
+  // conv2d_block_scaled、reshape/row_gather/cast_{from,to}_block_scaled）。
+  // BlockShape 是 !tosa.block_scaled<..> 类型的参数而非任何 op 属性，本语料
+  // 未建模该类型，故不声明，避免成为死声明。
   enum BlockSize {
     Doc "Block length along the innermost dimension for block-scaled data.";
     Cases [ BLOCK_SIZE_1 = 1, BLOCK_SIZE_32 = 32 ];
-  }
-
-  enum BlockShape {
-    Doc "Block shape for block-scaled data; only the innermost dimension is scaled.";
-    Cases [ BLOCK_SHAPE_32 = 32 ];
   }
 
   // ---- 类型：形状值 ----
@@ -348,8 +375,6 @@ dialect tosa {
     Doc "Gather batched rows from a 3D values tensor using 2D integer indices.";
     Operands (values: tensor<number, 3>, indices: tensor<index, 2>);
     Results  (output: tensor<number, 3>);
-    Operands   (values: tensor<number>, indices: tensor<int_number>);
-    Results    (output: tensor<number>);
     Properties [no_memory_effect];
     Implements [InferShapedTypeOpInterface, TosaOpInterface];
     Assembly   { operands attr-dict ":" functional-type(operands, results) }
@@ -357,12 +382,9 @@ dialect tosa {
 
   schema Scatter {
     Doc "Scatter batched rows into a 3D tensor; output indices must be unique.";
-    Operands (values: tensor<number, 3>, indices: tensor<index, 2>,
-              input1: tensor<number, 3>);
-    Results  (output: tensor<number, 3>);
-    Operands   (values_in: tensor<number>, indices: tensor<int_number>,
-                input1: tensor<number>);
-    Results    (values_out: tensor<number>);
+    Operands (values_in: tensor<number, 3>, indices: tensor<index, 2>,
+              input: tensor<number, 3>);
+    Results  (values_out: tensor<number, 3>);
     Properties [no_memory_effect];
     Implements [InferShapedTypeOpInterface, TosaOpInterface];
     Assembly   { operands attr-dict ":" functional-type(operands, results) }
@@ -389,6 +411,77 @@ dialect tosa {
     Implements [InferShapedTypeOpInterface, TosaOpInterface];
     Assembly   { operands custom<InputUnsigned>(input_unsigned)
                  attr-dict ":" functional-type(operands, results) }
+  }
+
+  // ---- schema：补充族。部件与文本一致，就收敛到一个 schema ----
+
+  schema ShapeUnary {
+    Doc "One shape operand and one shape result; the rank is preserved.";
+    Operands   (input: shape_value);
+    Results    (output: shape_value);
+    Properties [same_rank, shape_operator, pure];
+    Implements [TosaOpInterface];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema ShapeBinary {
+    Doc "Two shape operands and one shape result; elementwise shape arithmetic with matching ranks.";
+    Operands   (input1: shape_value, input2: shape_value);
+    Results    (output: shape_value);
+    Properties [same_rank, shape_operator, pure];
+    Implements [TosaOpInterface];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema ElementwiseUnaryFloat {
+    Doc "One floating-point tensor and one result; float-only unary math.";
+    Operands   (input1: tensor<float_number>);
+    Results    (output: tensor<float_number>);
+    Properties [elementwise, broadcastable, same_rank, same_shape,
+                same_element_type, no_memory_effect, pure];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema LogicalBinary {
+    Doc "Two i1 tensors and one i1 result; size-one axes broadcast, ranks match.";
+    Operands   (input1: tensor<i1>, input2: tensor<i1>);
+    Results    (output: tensor<i1>);
+    Properties [elementwise, broadcastable, same_rank, same_element_type,
+                commutative, pure];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema Comparison {
+    Doc "Two number tensors with a shared element type, broadcasting to an i1 result.";
+    Operands   (input1: tensor<number>, input2: tensor<number>);
+    Results    (output: tensor<i1>);
+    Properties [elementwise, broadcastable, same_rank,
+                element_type_matches(input1, input2), pure];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema LogicalReduction {
+    Doc "Reduce an i1 tensor along one axis with a logical AND/OR; the axis size becomes one.";
+    Operands   (input1: tensor<i1>);
+    Results    (output: tensor<i1>);
+    Attributes (axis: i32);
+    Properties [pure, no_memory_effect, infer_tensor_type];
+    Implements [TosaOpInterface];
+    Assembly   { operands "axis" "(" axis ")"
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema MatMul {
+    Doc "Batch matrix product over the two innermost dimensions; leading axes broadcast. Zero points are scalar operands, not attributes.";
+    Operands   (a: tensor<number>, b: tensor<number>,
+                a_zp: scalar<tensor<number>>, b_zp: scalar<tensor<number>>);
+    Results    (output: tensor<number>);
+    Properties [no_memory_effect];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
   }
 
   // ---- 逐元素与规约：同形算子由 schema 覆盖 ----
@@ -436,6 +529,23 @@ dialect tosa {
     Properties [pure];
   }
 
+  op reduce_min from ReductionWithNanMode {
+    Doc "Minimum along one axis, with a NaN propagation choice.";
+    Properties [pure];
+  }
+
+  op reduce_product from Reduction {
+    Doc "Product along one axis; overflow is undefined.";
+  }
+
+  op reduce_all from LogicalReduction {
+    Doc "Logical AND along one axis of an i1 tensor.";
+  }
+
+  op reduce_any from LogicalReduction {
+    Doc "Logical OR along one axis of an i1 tensor.";
+  }
+
   op argmax {
     Doc "Index of the largest value along one axis; ties choose the first index. The result is an ordinary number tensor, not a separate index type.";
     Operands   (input1: tensor<number>);
@@ -447,6 +557,200 @@ dialect tosa {
                  attr-dict ":" functional-type(operands, results) }
   }
 
+  op argmin {
+    Doc "Index of the smallest value along one axis; ties choose the first index. The result is an ordinary number tensor.";
+    Operands   (input1: tensor<number>);
+    Results    (output: tensor<number>);
+    Attributes (axis: i32, nan_mode: NanPropagationMode = PROPAGATE);
+    Properties [no_memory_effect];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands "axis" "(" axis ")" oilist("nan_mode" nan_mode)
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  // ---- 逐元素补充：激活、位运算、逻辑、比较与选择 ----
+  //
+  // 同形一元/二元算子继续复用 ElementwiseUnary/ElementwiseBinary；只有
+  // 浮点专用（cos/sin）、i1（logical_*）与多操作数（select/negate）需要
+  // 自己的 schema 或独立声明。
+
+  op abs from ElementwiseUnary {
+    Doc "Elementwise absolute value; integer underflow is undefined.";
+  }
+
+  op ceil from ElementwiseUnary {
+    Doc "Elementwise ceiling.";
+    Properties [pure];
+  }
+
+  op clz from ElementwiseUnary {
+    Doc "Elementwise count of leading zero bits.";
+    Properties [pure];
+  }
+
+  op exp from ElementwiseUnary {
+    Doc "Elementwise e raised to the input.";
+    Properties [pure];
+  }
+
+  op floor from ElementwiseUnary {
+    Doc "Elementwise floor.";
+    Properties [pure];
+  }
+
+  op log from ElementwiseUnary {
+    Doc "Elementwise natural logarithm.";
+    Properties [pure];
+  }
+
+  op reciprocal from ElementwiseUnary {
+    Doc "Elementwise reciprocal; quantized data should use table.";
+    Properties [pure];
+  }
+
+  op rsqrt from ElementwiseUnary {
+    Doc "Elementwise reciprocal square root.";
+    Properties [pure];
+  }
+
+  op sigmoid from ElementwiseUnary {
+    Doc "Elementwise logistic sigmoid.";
+    Properties [pure];
+  }
+
+  op tanh from ElementwiseUnary {
+    Doc "Elementwise hyperbolic tangent.";
+    Properties [pure];
+  }
+
+  op bitwise_not from ElementwiseUnary {
+    Doc "Elementwise bitwise NOT.";
+    Properties [pure];
+  }
+
+  op cos from ElementwiseUnaryFloat {
+    Doc "Elementwise cosine of an angle in radians.";
+  }
+
+  op sin from ElementwiseUnaryFloat {
+    Doc "Elementwise sine of an angle in radians.";
+  }
+
+  op logical_not {
+    Doc "Elementwise logical NOT on an i1 tensor.";
+    Operands   (input1: tensor<i1>);
+    Results    (output: tensor<i1>);
+    Properties [elementwise, broadcastable, same_rank, same_shape,
+                same_element_type, no_memory_effect, pure];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
+  }
+
+  op bitwise_and from ElementwiseBinary {
+    Doc "Elementwise bitwise AND; size-one axes broadcast.";
+    Properties [commutative, same_element_type, pure];
+  }
+
+  op bitwise_or from ElementwiseBinary {
+    Doc "Elementwise bitwise OR; size-one axes broadcast.";
+    Properties [commutative, same_element_type, pure];
+  }
+
+  op bitwise_xor from ElementwiseBinary {
+    Doc "Elementwise bitwise XOR; size-one axes broadcast.";
+    Properties [commutative, same_element_type, pure];
+  }
+
+  op logical_and from LogicalBinary {
+    Doc "Elementwise logical AND on i1 tensors.";
+  }
+
+  op logical_or from LogicalBinary {
+    Doc "Elementwise logical OR on i1 tensors.";
+  }
+
+  op logical_xor from LogicalBinary {
+    Doc "Elementwise logical XOR on i1 tensors.";
+  }
+
+  op logical_left_shift from ElementwiseBinary {
+    Doc "Elementwise logical left shift; an out-of-range shift is undefined.";
+    Properties [same_element_type];
+  }
+
+  op logical_right_shift from ElementwiseBinary {
+    Doc "Elementwise logical right shift; an out-of-range shift is undefined.";
+    Properties [same_element_type];
+  }
+
+  op minimum from ElementwiseBinaryWithNanMode {
+    Doc "Elementwise minimum; size-one axes broadcast.";
+    Properties [commutative, same_element_type];
+  }
+
+  op pow from ElementwiseBinary {
+    Doc "Elementwise input1 raised to input2; a negative exponent is undefined.";
+    Properties [same_element_type];
+  }
+
+  op sub from ElementwiseBinary {
+    Doc "Elementwise subtraction; a result below the element range is undefined.";
+    Properties [same_element_type];
+  }
+
+  op intdiv {
+    Doc "Elementwise integer division truncated toward zero; i32 or i64 only; division by zero is undefined.";
+    Operands   (input1: tensor<i32 | i64>, input2: tensor<i32 | i64>);
+    Results    (output: tensor<i32 | i64>);
+    Properties [elementwise, broadcastable, same_rank, same_element_type,
+                no_memory_effect];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
+  }
+
+  op equal from Comparison {
+    Doc "Elementwise equality producing i1; the operands share an element type.";
+    Properties [commutative];
+  }
+
+  op greater from Comparison {
+    Doc "Elementwise greater-than comparison producing i1.";
+  }
+
+  op greater_equal from Comparison {
+    Doc "Elementwise greater-or-equal comparison producing i1.";
+  }
+
+  op select {
+    Doc "Choose input2 where the i1 condition is true, else input3; size-one axes broadcast.";
+    Operands   (input1: tensor<i1>, input2: tensor<number>,
+                input3: tensor<number>);
+    Results    (output: tensor<number>);
+    Properties [elementwise, broadcastable, same_rank,
+                same_type(input2, input3), pure];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
+  }
+
+  op identity {
+    Doc "A tensor copy with the same shape, element type and contents.";
+    Operands   (input1: tensor<number>);
+    Results    (output: tensor<number>);
+    Properties [pure, same_type(input1, output)];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
+  }
+
+  op negate {
+    Doc "Elementwise negation around two quantized zero points; integer overflow is undefined.";
+    Operands   (input1: tensor<number>, input1_zp: scalar<tensor<number>>,
+                output_zp: scalar<tensor<number>>);
+    Results    (output: tensor<number>);
+    Properties [elementwise, broadcastable, same_rank, no_memory_effect];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
+  }
+
   // ---- 卷积与池化：定长数组属性的代表 ----
 
   op avg_pool2d from Pool2D {
@@ -455,6 +759,18 @@ dialect tosa {
 
   op max_pool2d from Pool2DPlain {
     Doc "2D max pooling over a 4D input.";
+  }
+
+  op max_pool2d_adaptive {
+    Doc "2D max pooling whose window, stride and padding are rank-2/rank-4 shape operands.";
+    Operands   (input1: tensor<number, 4>, kernel: shape<2>, stride: shape<2>,
+                pad: shape<4>);
+    Results    (output: tensor<number, 4>);
+    Attributes (nan_mode: NanPropagationMode = PROPAGATE);
+    Properties [pure, resolvable_shape_operands];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands oilist("nan_mode" nan_mode)
+                 attr-dict ":" functional-type(operands, results) }
   }
 
   // 同一件事的第二种领域形状：kernel/stride/pad 不是属性，而是 rank-2/rank-4
@@ -525,8 +841,250 @@ dialect tosa {
     Doc "Scatter batched index rows into a 3D tensor; output indices are unique.";
   }
 
+  op row_gather {
+    Doc "Gather row_count consecutive rows per index from a 3D values tensor; an out-of-range index is undefined.";
+    Operands   (values: tensor<number, 3>, indices: tensor<int_number, 2>,
+                row_count: scalar<tensor<i32>>);
+    Results    (output: tensor<number, 3>);
+    Properties [no_memory_effect];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
+  }
+
   op resize from Resize {
     Doc "Resize height and width; scale, offset and border are shape operands.";
+  }
+
+  // ---- 结构变换：拼接、反转与查表 ----
+
+  op concat {
+    Doc "Concatenate a variadic list of tensors along axis; element types match.";
+    Operands   (input1: variadic<tensor<number>>);
+    Results    (output: tensor<number>);
+    Attributes (axis: i32);
+    Properties [pure, same_element_type, infer_tensor_type];
+    Implements [TosaOpInterface];
+    Assembly   { operands "axis" "(" axis ")"
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  op reverse {
+    Doc "Reverse the elements along axis; shape and element type are preserved.";
+    Operands   (input1: tensor<number>);
+    Results    (output: tensor<number>);
+    Attributes (axis: i32);
+    Properties [pure, same_rank, same_shape, same_element_type];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands "axis" "(" axis ")"
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  op table {
+    Doc "Look up each input element in a 1D table; int16 inputs use fixed-point interpolation.";
+    Operands   (input1: tensor<number>, table: tensor<number, 1>);
+    Results    (output: tensor<number>);
+    Properties [no_memory_effect];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
+  }
+
+  // ---- 信号变换：FFT ----
+
+  op fft2d {
+    Doc "Batched complex 2D FFT over paired real/imaginary inputs; no normalization.";
+    Operands   (input_real: tensor<number, 3>,
+                input_imag: tensor<number, 3>);
+    Results    (output_real: tensor<number, 3>,
+                output_imag: tensor<number, 3>);
+    Attributes (inverse: bool, local_bound: bool = false);
+    Properties [pure, same_shape, same_element_type];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands "inverse" "(" inverse ")"
+                 custom<LocalBound>(local_bound)
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  op rfft2d {
+    Doc "Batched real-valued 2D FFT; Hermitian symmetry halves the last output axis.";
+    Operands   (input_real: tensor<number, 3>);
+    Results    (output_real: tensor<number, 3>,
+                output_imag: tensor<number, 3>);
+    Attributes (local_bound: bool = false);
+    Properties [pure, same_element_type];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands custom<LocalBound>(local_bound)
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  // ---- 矩阵乘：批量内积 ----
+
+  op matmul from MatMul {
+    Doc "Batched matrix product A x B over the innermost two dimensions.";
+  }
+
+  op matmul_t from MatMul {
+    Doc "Batched matrix product A x B^T: the last two dimensions of B are swapped.";
+  }
+
+  // ---- block-scaled：MX 值张量与共享指数张量 ----
+  //
+  // 上游把这 6 个 op 标为 deprecated，但助记符仍属 tosa。值张量的元素是
+  // mx_value，scale 张量是 mx_scale；block_size 给出最内维的块长。pad/
+  // stride/dilation/kernel 是 !tosa.shape 操作数，不是定长数组属性。
+
+  op conv2d_block_scaled {
+    Doc "2D convolution over block-scaled (MX) data and scale tensors; bias is a 1D tensor.";
+    Operands   (input_data: tensor<mx_value, 4>,
+                input_scale: tensor<mx_scale, 4>,
+                weight_data: tensor<mx_value, 4>,
+                weight_scale: tensor<mx_scale, 4>,
+                bias: tensor<number, 1>,
+                pad: shape<4>, stride: shape<2>, dilation: shape<2>);
+    Results    (output: tensor<number, 4>);
+    Attributes (block_size: BlockSize);
+    Properties [no_memory_effect, resolvable_shape_operands];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands "block_size" block_size
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  op matmul_t_block_scaled {
+    Doc "2D A x B^T matrix product over block-scaled (MX) 3D data and scale tensors.";
+    Operands   (a_data: tensor<mx_value, 3>, a_scale: tensor<mx_scale, 3>,
+                b_data: tensor<mx_value, 3>, b_scale: tensor<mx_scale, 3>);
+    Results    (output_data: tensor<number, 3>);
+    Attributes (block_size: BlockSize);
+    Properties [no_memory_effect];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands "block_size" block_size
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  op reshape_block_scaled {
+    Doc "Reshape a variadic values list (value or value+scale) with a shape operand, preserving block structure.";
+    Operands   (input: variadic<tensor<number>>,
+                new_value_shape: shape_value);
+    Results    (output: variadic<tensor<number>>);
+    Attributes (block_size: BlockSize);
+    Properties [pure, infer_tensor_type];
+    Implements [TosaOpInterface];
+    Assembly   { operands "block_size" block_size
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  op row_gather_block_scaled {
+    Doc "Gather rows from a variadic 3D values list (value or value+scale) with block_size.";
+    Operands   (values: variadic<tensor<number, 3>>,
+                indices: tensor<int_number, 2>,
+                row_count: scalar<tensor<i32>>);
+    Results    (output: variadic<tensor<number, 3>>);
+    Attributes (block_size: BlockSize);
+    Properties [no_memory_effect];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands "block_size" block_size
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  op cast_from_block_scaled {
+    Doc "Apply per-block scales to block-scaled values and cast the result to plain numbers.";
+    Operands   (input_data: tensor<mx_value>, input_scale: tensor<mx_scale>);
+    Results    (output_data: tensor<number>);
+    Attributes (block_size: BlockSize);
+    Properties [pure];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands "block_size" block_size
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  op cast_to_block_scaled {
+    Doc "Derive one scale per block, producing block-scaled values and scales.";
+    Operands   (input_data: tensor<number>);
+    Results    (output_data: tensor<mx_value>,
+                output_scale: tensor<mx_scale>);
+    Attributes (block_size: BlockSize);
+    Properties [pure];
+    Implements [InferShapedTypeOpInterface, TosaOpInterface];
+    Assembly   { operands "block_size" block_size
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  // ---- 形状算术：操作数与结果都是 !tosa.shape<N> ----
+  //
+  // rank 由 type_def shape 的参数给出；元素级算术收敛到 ShapeUnary/
+  // ShapeBinary，拼接/切片/断言各自独立。shape_operator 是本方言本地事实
+  // （19 章）：该 op 属于形状算子族。
+
+  op add_shape from ShapeBinary {
+    Doc "Elementwise addition of two shapes with equal rank.";
+  }
+
+  op sub_shape from ShapeBinary {
+    Doc "Elementwise subtraction of two shapes with equal rank.";
+  }
+
+  op mul_shape from ShapeBinary {
+    Doc "Elementwise multiplication of two shapes with equal rank.";
+  }
+
+  op min_shape from ShapeBinary {
+    Doc "Elementwise minimum of two shapes with equal rank.";
+  }
+
+  op max_shape from ShapeBinary {
+    Doc "Elementwise maximum of two shapes with equal rank.";
+  }
+
+  op mod_shape from ShapeBinary {
+    Doc "Elementwise modulo of two shapes with equal rank.";
+  }
+
+  op div_ceil_shape from ShapeBinary {
+    Doc "Elementwise divide rounded up; both shapes have equal rank.";
+  }
+
+  op div_floor_shape from ShapeBinary {
+    Doc "Elementwise divide rounded down; both shapes have equal rank.";
+  }
+
+  op exp2_shape from ShapeUnary {
+    Doc "Raise two to each element of the shape.";
+  }
+
+  op log2_ceil_shape from ShapeUnary {
+    Doc "Base-2 logarithm of each shape element, rounded up.";
+  }
+
+  op log2_floor_shape from ShapeUnary {
+    Doc "Base-2 logarithm of each shape element, rounded down.";
+  }
+
+  op concat_shape {
+    Doc "Concatenate a variadic list of shapes; the result length is the sum of the inputs.";
+    Operands   (input: variadic<shape_value>);
+    Results    (output: shape_value);
+    Properties [pure, shape_operator];
+    Implements [TosaOpInterface];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
+  }
+
+  op slice_shape {
+    Doc "Extract a shape slice starting at start with length size; start and size are scalar i32 tensors.";
+    Operands   (input: shape_value, start: scalar<tensor<i32>>,
+                size: scalar<tensor<i32>>);
+    Results    (output: shape_value);
+    Properties [pure, shape_operator];
+    Implements [TosaOpInterface];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
+  }
+
+  op assert_equal_shape {
+    Doc "Assert two same-rank shapes are equal, or broadcast-compatible when allow_broadcast is set; no result.";
+    Operands   (input1: shape_value, input2: shape_value);
+    Attributes (allow_broadcast: bool);
+    Properties [same_rank, shape_operator];
+    Implements [TosaOpInterface];
+    Assembly   { operands "allow_broadcast" "(" allow_broadcast ")"
+                 attr-dict ":" functional-type(operands, results) }
   }
 
   // ---- 转换、常量与自定义 ----
@@ -537,6 +1095,17 @@ dialect tosa {
 
   op rescale from Rescale {
     Doc "Fixed-point multiply, add and shift; multiplier and shift are 1D operands.";
+  }
+
+  op apply_scale {
+    Doc "Scalar fixed-point rescale: value times multiplier, shifted by shift and rounded by rounding_mode.";
+    Operands   (value: int_number, multiplier: int_number, shift: i8);
+    Results    (output: int_number);
+    Attributes (rounding_mode: RoundingMode);
+    Properties [pure, elementwise];
+    Implements [TosaOpInterface];
+    Assembly   { operands "rounding_mode" rounding_mode
+                 attr-dict ":" functional-type(operands, results) }
   }
 
   // GAP: 列表实参的 trait（如 all_shapes_match([values, output])）无法写出；

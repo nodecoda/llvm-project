@@ -1,0 +1,116 @@
+/// arm_neon —— Arm NEON（AArch64 Advanced SIMD）定长向量方言的领域描述。
+///
+/// 领域分层：
+///   1. 指令层（上游 ArmNeon.td）：一个 dialect 加七个具体 op。没有 region、
+///      没有 block、没有 symbol，也没有自定义类型或属性。每个 op 都是
+///      一条 NEON SIMD 指令的按名包装，最终映射到同名 LLVM intrinsic。
+///   2. 形状层：所有值都是内建定长 vector。smull 使用 2/4/8 lane 的一维
+///      窄向量；sdot、smmla、ummla、usmmla、bfmmla 使用 2/4 lane 的 i32
+///      （或 f32）累加器与 8/16 lane 的 i8（或 bf16）源；sdot.2d 的源是
+///      二维 2x4 或 4x4。元素类型与长度的具体组合随 op 固定，写在各 op
+///      的 Doc 里。
+///   3. 归约层：dot 族按每 4 个 i8 lane 一组归约成一个 i32 lane；乘长族
+///      把元素位宽翻倍。
+///
+/// 类型：上游没有自定义类型、属性定义或枚举；vector、i8、i16、i32、i64、
+/// f32、bf16 都是内建类型。下面的 neon_vector / neon_vector_2d 只是给
+/// “一维定长 NEON 向量”和“二维定长 NEON 向量”命名的 constraint，不是
+/// 新类型；rank 与长度组合写不进类型表达式，见 GAP。
+///
+/// 文本通道统计：7 个 op 全部是块格式（三个 schema 提供共享文本，7 个 op
+/// 通过 from 继承），0 个 Custom，0 个 Generic。
+///
+/// 事实使用：核心词表 pure、same_type、same_shape；本地方言事实两个：
+///   - dot_group(4)：dot 族每 4 个 i8 lane 归约成一个 i32 lane；
+///   - element_width_doubled(res, a)：乘长结果与输入同 shape，元素位宽翻倍。
+///
+/// GAP（语言表达不了的东西）：
+///   - FixedVectorOfLengthAndType<[8,4,2], [I8,I16,I32]> 这类长度与元素
+///     类型联动的约束：constraint 只能退化为 vector，具体组合见各 op Doc。
+///   - dot 结果 lane 数等于源 lane 数除以 4；2d 的 rank、列数、行数关系
+///     也没有形状投影可用，只能写进 Doc。
+///   - 上游 opName 是 intr.<mnemonic>（2d 变体是 2d.<mnemonic>），打印名
+///     还带 intr./2d. 段；本语料按助记符命名。2d 段不能作为标识符开头
+///     （数字打头），故 2d 变体用带引号的名字 `"2d.sdot"` 逐字保留打印拼写。
+///   - intrinsic 身份（aarch64_neon_* 枚举名、重载位图、access group /
+///     alias analysis 开关）是 lowering 元数据，不是 op 的结构或性质。
+///   - 上游的附加常量成员 kReductionSize 没有声明位置；它的值 4 由本地
+///     事实 dot_group(4) 记录。
+
+dialect arm_neon {
+  Doc "Arm NEON fixed-length vector instructions: widening multiply, dot-product accumulate, and matrix multiply-accumulate.";
+
+  // ---- 类型 ----
+  /// 一维定长 NEON 向量。内建 vector 已可解析；这里命名是为了让各 op 的
+  /// 部件类型读出领域含义，元素与长度的组合仍在各 op 的 Doc 里。
+  constraint neon_vector = vector;
+
+  /// 二维定长 NEON 向量，仅 sdot.2d 的 b/c 使用（2x4 或 4x4）。
+  /// 二维形状是内建 vector 的 rank 属性，不是本方言的新类型。
+  constraint neon_vector_2d = vector;
+
+  // ---- 乘长 ----
+  /// 本地事实 element_width_doubled(res, a)：SMULL 的结果 lane 数与输入
+  /// 相同、每个 lane 的元素位宽是输入的 2 倍；核心词表没有 widening。
+  schema widening_multiply {
+    Doc "两个同型窄向量逐 lane 相乘，结果 lane 数不变、元素位宽翻倍（SMULL，signed multiply long）。";
+    Operands (a: neon_vector, b: neon_vector);
+    Results  (res: neon_vector);
+    Properties [pure, same_type(a, b), same_shape(a, res),
+                element_width_doubled(res, a)];
+    Assembly { a "," b attr-dict ":" type(a) "to" type(res) }
+  }
+
+  op smull from widening_multiply {
+    Doc "有符号乘长：a、b 是 8/4/2 lane 的 i8/i16/i32 向量，结果是对应 lane 数的 i16/i32/i64 向量。";
+  }
+
+  // ---- 点积与矩阵乘累加 ----
+  /// acc、src1、src2 三个同 rank 向量，结果与 acc 同型；文本以 src1 与
+  /// res 的类型收尾。元素宽度与归约分组随 op 不同，见各 op 的 Doc。
+  schema multiply_accumulate {
+    Doc "acc、src1、src2 -> res：src1/src2 同型，acc/res 同型；逐 lane 或按组相乘后累加到 acc。";
+    Operands (acc: neon_vector, src1: neon_vector, src2: neon_vector);
+    Results  (res: neon_vector);
+    Properties [pure, same_type(src1, src2), same_type(acc, res)];
+    Assembly { acc "," src1 "," src2 attr-dict ":" type(src1) "to" type(res) }
+  }
+
+  /// 本地事实 dot_group(4)：源每 4 个 i8 lane 归约成结果的一个 i32 lane。
+  op sdot from multiply_accumulate {
+    Doc "有符号点积累加：src1、src2 是 8/16 lane 的 i8 向量，每 4 个 lane 求点积后加到 acc 的对应 i32 lane。";
+    Properties [dot_group(4)];
+  }
+
+  op smmla from multiply_accumulate {
+    Doc "有符号 8 位矩阵乘累加：2x8 乘 8x2 得 2x2 的 i32 矩阵，加到 acc 的 4 个 i32 lane。";
+  }
+
+  op ummla from multiply_accumulate {
+    Doc "无符号 8 位矩阵乘累加：形状与 smmla 相同，源按无符号解释。";
+  }
+
+  op usmmla from multiply_accumulate {
+    Doc "无符号乘有符号的 8 位矩阵乘累加：src1 无符号、src2 有符号，结果加到 acc。";
+  }
+
+  op bfmmla from multiply_accumulate {
+    Doc "bf16 矩阵乘累加：2x4 乘 4x2 的 bf16 矩阵，结果以 f32 累加到 acc。";
+  }
+
+  // ---- 二维点积 ----
+  /// 二维点积：a 是一维 i32 累加器，b、c 是 rank-2 的 i8 源。
+  schema row_dot_accumulate {
+    Doc "a 是 2/4 lane 的 i32 向量，b、c 是 2x4 或 4x4 的 i8 矩阵；res[i] = a[i] + dot(b[i, ...], c[i, ...])。";
+    Operands (a: neon_vector, b: neon_vector_2d, c: neon_vector_2d);
+    Results  (res: neon_vector);
+    Properties [pure, same_type(a, res), same_type(b, c)];
+    Assembly { a "," b "," c attr-dict ":" type(b) "," type(c) "to" type(res) }
+  }
+
+  /// 本地事实 dot_group(4) 的第二个见证：b、c 的每一行恰好 4 列。
+  op "2d.sdot" from row_dot_accumulate {
+    Doc "二维点积累加：对 b、c 的每一行做 4 元点积，再加到 a 的对应 i32 元素；行数只能是 2 或 4。";
+    Properties [dot_group(4)];
+  }
+}

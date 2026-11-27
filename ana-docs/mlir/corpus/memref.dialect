@@ -1,9 +1,45 @@
-/// memref —— 内存引用：分配、访问、视图与原子读改写。
+/// memref —— 内存引用：分配、访问、视图、元数据、原子读改写与 DMA。
 ///
-/// 两个领域特点：
+/// 领域分层（按 op 的角色）：
+///   1. 分配层：alloc、realloc、alloca、alloca_scope(+return)、dealloc、
+///      global、get_global；
+///   2. 访问层：load、store、copy、prefetch、dma_start、dma_wait；
+///   3. 视图层：cast、memory_space_cast、subview、reinterpret_cast、view、
+///      reshape、expand_shape、collapse_shape、transpose；
+///   4. 元数据层：dim、rank、extract_aligned_pointer_as_index、
+///      extract_strided_metadata；
+///   5. 原子层：atomic_rmw、generic_atomic_rmw、atomic_yield；
+///   6. 假设层：assume_alignment、distinct_objects（不改变语义的优化断言）。
+///
+/// 三个领域特点：
 ///   - load/store 的可选修饰是"互斥组"，文本上无论顺序都至多一个；
-///   - 视图类 op 的偏移/尺寸/步长是"静态数组 + 动态 operand"两份数据。
-
+///   - 视图类 op 的偏移/尺寸/步长是"静态数组 + 动态 operand"两份数据；
+///   - DMA 在这里是同步形式：完成点由 tag memref 的某个元素标识，dma_start 与
+///     dma_wait 靠同一 tag 索引配对，不产生 SSA token（对比 async 的 token 通道）。
+///
+/// 文本通道（32 个 op）：块格式 27，`Assembly Custom;` 5
+/// （alloca_scope、prefetch、dma_start、generic_atomic_rmw、transpose；五个都
+/// 对应上游 TD 的 hasCustomAssemblyFormat），`Assembly Generic;` 0。
+///
+/// 事实：只用核心词表（pure、same_type、same_shape、same_element_type、
+/// element_type_matches、memory_effect、terminator、return_like、has_parent、
+/// single_block、implicit_terminator、no_region_args、positive），没有方言本地事实。
+///
+/// GAP（文法表达不了、只记录不绕过）：
+///   - dma_start 的操作数按源/目标/tag 的 rank 与"可选 stride 对"分段的平坦
+///     variadic，文法无法给变长组标注位置；只声明一个 variadic 操作数，分段规则
+///     留在 Doc；
+///   - transpose 的 permutation 在文本里打印成 affine map 表达式（(i, j) -> (j, i)），
+///     不是 attr-dict 里的属性，故走 Custom；
+///   - generic_atomic_rmw 的入口块带"当前值"参数，但该参数不是操作数传入的 region
+///     参数；块参数的类型（memref 元素类型）文法没有位置；
+///   - extract_strided_metadata 的 sizes/strides 是变长结果组，长度由 source rank
+///     决定，核心词表没有"结果变长组等长"的事实；
+///   - reshape 的 shape 操作数是 rank-1 的 integer/index memref，文法无法在绑定上
+///     投影 rank 与元素类型；
+///   - realloc 的 dynamicResultSize 只在结果含动态维时出现，属条件结构；
+///   - distinct_objects 的结果与操作数一一同类型（InferTypeOpInterface），核心词表
+///     的 same_type 只比较两个命名部件，无法描述变长组的逐元素镜像。
 dialect memref {
   Doc "Memory references: allocation, access, views and atomics.";
 
@@ -173,11 +209,13 @@ dialect memref {
                ":" type(source) "to" type(result) }
   }
 
+  /// kind 在上游是 `AtomicRMWKindAttr`（属性），value/memref/indices 才是操作数：
+  /// 它决定文本里的组合子关键字，不是参与 SSA 的值。
   op atomic_rmw {
-    Doc "Atomic read-modify-write with a combinator.";
-    Operands   (kind: AtomicRMWKind, value: any, memref: any,
-                indices: variadic<index>);
+    Doc "Atomic read-modify-write with a combinator given by an attribute.";
+    Operands   (value: any, memref: any, indices: variadic<index>);
     Results    (result: type_of(value));
+    Attributes (kind: AtomicRMWKind);
     Assembly   { kind value "," memref "[" indices "]" attr-dict
                  ":" "(" type(value) "," type(memref) ")" "->" type(result) }
   }
@@ -185,8 +223,158 @@ dialect memref {
   op prefetch {
     Doc "Prefetch a memref location into a cache.";
     Operands   (memref: any, indices: variadic<index>);
-    Attributes (is_write: bool = false, locality: integer,
-                cache_type: integer, is_data_cache: bool = false);
+    // 上游只有 isWrite/localityHint/isDataCache 三个属性；`data`/`instr` 是
+    // 自定义打印器输出的字面量，不是属性，故不建部件。
+    // locality_hint 的 0..3 值域由 verifier 保证；核心词表没有区间词，
+    // 不为此造本地事实。
+    Attributes (is_write: bool = false, locality_hint: integer,
+                is_data_cache: bool = false);
     Assembly Custom;
+  }
+
+  // ---- 分配层补充：尺寸可变的重分配 ----
+
+  op realloc {
+    Doc "改变 1-D 缓冲区的尺寸：源与结果同为 1-D、同内存空间、同元素类型；可能移动缓冲区并保留新旧尺寸较小者范围内的内容，旧句柄随后失效。dynamicResultSize 只在结果含动态维时出现。";
+    Operands   (source: any, dynamicResultSize: optional<index>);
+    Results    (result: any);
+    Attributes (alignment: optional<integer> [positive]);
+    // 上游是 source 的 MemFree + result 的 MemAlloc；核心词表只有
+    // allocate/read/write，没有 free，故只记 allocate，free 见文件头 GAP。
+    Properties [memory_effect(allocate)];
+    Assembly   { source if dynamicResultSize { "(" dynamicResultSize ")" }
+                 if alignment { "alignment" "=" alignment }
+                 attr-dict ":" type(source) "to" type(results) }
+  }
+
+  // ---- 访问层补充：同步 DMA ----
+
+  op dma_start {
+    Doc "启动一次非阻塞 DMA：从源 memref[src_indices] 搬 num_elements 个元素到目标 memref[dst_indices]，完成点记录在 tag memref[tag_indices]；可选末尾一对 index 操作数给出 stride 与每 stride 元素数，二者同现或同缺。操作数按类型决定分段，操作数子句如实声明为单个 variadic。";
+    Operands   (operands: variadic<any>);
+    Properties [memory_effect(read), memory_effect(write)];
+    // 上游 TD 只有 hasCustomAssemblyFormat：源/下标/元素数/tag/可选 stride 对
+    // 平铺成一条操作数序列，类型三元组在 `:` 后，块格式无法表达这种位置分段。
+    Assembly Custom;
+  }
+
+  op dma_wait {
+    Doc "阻塞直到 tag memref[tag_indices] 记录的 DMA 完成；num_elements 是被等待传输的元素数。";
+    Operands   (tagMemRef: any, tagIndices: variadic<index>, numElements: index);
+    Properties [memory_effect(read)];
+    Assembly   { tagMemRef "[" tagIndices "]" "," numElements attr-dict
+                 ":" type(tagMemRef) }
+  }
+
+  // ---- 视图层补充：内存空间、形状与转置 ----
+
+  op memory_space_cast {
+    Doc "在内存空间之间转换 memref：源与结果共享形状、rank、元素类型和布局，只改内存空间。";
+    Operands (source: any);
+    Results  (dest: any);
+    Properties [pure, same_shape, same_element_type];
+    Assembly { source attr-dict ":" type(source) "to" type(dest) }
+  }
+
+  op reshape {
+    Doc "把 memref 改写成元素个数相同的另一种形状，不拷贝数据；shape 是 rank-1 的 integer/index memref，结果 ranked 当且仅当 shape 静态。文本按功能性类型打印全部操作数与结果。";
+    Operands (source: any, shape: any);
+    Results  (result: any);
+    Properties [pure, same_element_type(source, result)];
+    Assembly { source "(" shape ")" attr-dict
+               ":" functional-type(operands, results) }
+  }
+
+  op expand_shape {
+    Doc "把源维按 reassociation 分组展开成更高 rank 的视图，不分配不拷贝；reassociation 是“每个结果维对应的源维组”的嵌套数组，output_shape 只写动态结果维，static_output_shape 与之一一对应（动态维记 -1）。";
+    Operands   (src: any, output_shape: variadic<index>);
+    Results    (result: any);
+    Attributes (reassociation: array<array<integer>>,
+                static_output_shape: array<integer>);
+    Properties [pure, same_element_type(src, result)];
+    Assembly   { src reassociation "output_shape"
+                 custom<DynamicIndexList>(output_shape, static_output_shape)
+                 attr-dict ":" type(src) "into" type(result) }
+  }
+
+  op collapse_shape {
+    Doc "把相邻连续维按 reassociation 分组折叠成更少 rank 的视图，不分配不拷贝；reassociation 是“每个结果维对应的源维组”的嵌套数组，组内维必须连续。";
+    Operands   (src: any);
+    Results    (result: any);
+    Attributes (reassociation: array<array<integer>>);
+    Properties [pure, same_element_type(src, result)];
+    Assembly   { src reassociation attr-dict ":" type(src) "into" type(result) }
+  }
+
+  op transpose {
+    Doc "按 permutation 对换 memref 的维与步长，纯元数据变换；结果的 sizes/strides 是输入的置换。";
+    Operands   (in: any);
+    Results    (result: any);
+    Attributes (permutation: affine_map);
+    Properties [pure, same_element_type(in, result)];
+    // 上游 TD 只有 hasCustomAssemblyFormat：permutation 以 affine map 表达式
+    // 打印，不是 attr-dict 里的属性，块格式的部件引用无法表达 map 语法。
+    Assembly Custom;
+  }
+
+  // ---- 元数据层补充 ----
+
+  op extract_aligned_pointer_as_index {
+    Doc "把 memref 底层对齐指针暴露为 index；仅用于降低到低层方言的过渡，无副作用。";
+    Operands (source: any);
+    Results  (aligned_pointer: index);
+    Properties [pure];
+    Assembly { source ":" type(source) "->" type(results) attr-dict }
+  }
+
+  op extract_strided_metadata {
+    Doc "提取 strided memref 的基缓冲区、offset，以及每个维的 size 与 stride；sizes/strides 的长度等于源 rank，基缓冲区与源同元素类型。";
+    Operands (source: any);
+    Results  (base_buffer: any, offset: index, sizes: variadic<index>,
+              strides: variadic<index>);
+    Properties [pure, same_element_type(source, base_buffer)];
+    Assembly { source ":" type(source) "->" type(results) attr-dict }
+  }
+
+  // ---- 原子层补充：带 region 的读改写及其终结符 ----
+
+  op generic_atomic_rmw {
+    Doc "带 region 的原子读改写：原子读 memref[indices]，region 在入口块的当前值上计算，以 atomic_yield 交回新值并原子写回；结果类型是 memref 的元素类型。region 单块，入口块恰有一个与元素类型相同的参数（当前值）。";
+    Operands   (memref: any, indices: variadic<index>);
+    Results    (result: any);
+    // 入口块参数的类型是 memref 的元素类型；这个关系没有核心词，记在 GAP 里。
+    Regions    (atomic_body: region [single_block,
+                                     implicit_terminator(atomic_yield)]);
+    Properties [element_type_matches(memref, result),
+                memory_effect(read), memory_effect(write)];
+    // 上游 TD 只有 hasCustomAssemblyFormat：memref[indices] 后先写 `:` type，
+    // 再紧跟 region；没有 `->` 结果类型，块格式无法把 region 放在类型之后。
+    Assembly Custom;
+  }
+
+  op atomic_yield {
+    Doc "generic_atomic_rmw 的终结符：把 region 计算出的新元素交回父 op。";
+    Operands   (result: any);
+    Properties [pure, terminator, return_like, has_parent(generic_atomic_rmw)];
+    Assembly   { result attr-dict ":" type(result) }
+  }
+
+  // ---- 假设层：不改变语义的优化断言 ----
+
+  op assume_alignment {
+    Doc "断言 memref 的底层缓冲区按 alignment 字节对齐；结果与输入同类型，假设不成立时结果为 poison。";
+    Operands   (memref: any);
+    Results    (result: any);
+    Attributes (alignment: integer [positive]);
+    Properties [pure, same_type(memref, result)];
+    Assembly   { memref "," alignment attr-dict ":" type(memref) }
+  }
+
+  op distinct_objects {
+    Doc "断言一组 memref 两两不别名，并逐个返回同类型的 SSA 值；结果元数与类型由操作数推导，访问因此可安全重排。";
+    Operands (operands: variadic<any>);
+    Results  (results: variadic<any>);
+    Properties [pure];
+    Assembly { operands attr-dict ":" type(operands) }
   }
 }

@@ -60,11 +60,29 @@ dialect affine {
     Assembly Custom;
   }
 
+  op vector_load {
+    Doc "Load a contiguous vector slice from a memref at an affine index.";
+    Operands   (memref: any, indices: variadic<index>);
+    Results    (result: vector);
+    Attributes (map: affine_map, alignment: optional<integer>);
+    Properties [pure];
+    Assembly   { memref "[" indices "]" attr-dict
+                 ":" type(memref) "," type(result) }
+  }
+
   op store {
     Doc "Store to a memref at an affine index.";
     Operands   (value: any, memref: any, indices: variadic<index>);
     Attributes (map: affine_map, alignment: optional<integer>);
     Assembly Custom;
+  }
+
+  op vector_store {
+    Doc "Store a vector into a contiguous slice of a memref at an affine index.";
+    Operands   (value: vector, memref: any, indices: variadic<index>);
+    Attributes (map: affine_map, alignment: optional<integer>);
+    Assembly   { value "," memref "[" indices "]" attr-dict
+                 ":" type(memref) "," type(value) }
   }
 
   op min {
@@ -102,6 +120,41 @@ dialect affine {
     Assembly   { linear_index "into"
                  custom<DynamicIndexList>(dynamic_basis, static_basis)
                  attr-dict ":" type(multi_index) }
+  }
+
+  op linearize_index {
+    Doc "Linearize a multi-index against a (possibly one-shorter) basis.";
+    Operands   (multi_index: variadic<index>, dynamic_basis: variadic<index>);
+    Results    (linear_index: index);
+    Attributes (static_basis: array<integer>, disjoint: optional<unit>);
+    Properties [pure, elementwise];
+    Assembly   { if disjoint { "disjoint" }
+                 "[" multi_index "]" "by"
+                 custom<DynamicIndexList>(dynamic_basis, static_basis)
+                 attr-dict ":" type(linear_index) }
+  }
+
+  /* dma_start/dma_wait 用 tag memref 的元素做异步 token：start 写 tag，
+   * wait 读同一元素。这一关系就是 memory_effect(write)/memory_effect(read)，
+   * 不引入新事实。 */
+  op dma_start {
+    Doc "Start a non-blocking DMA copy; the tag element records completion for dma_wait.";
+    Operands   (src: any, src_indices: variadic<index>,
+                dst: any, dst_indices: variadic<index>,
+                tag: any, tag_indices: variadic<index>,
+                num_elements: index, stride: optional<index>,
+                elements_per_stride: optional<index>);
+    Attributes (src_map: affine_map, dst_map: affine_map, tag_map: affine_map);
+    Properties [memory_effect(read), memory_effect(write)];
+    Assembly Custom;
+  }
+
+  op dma_wait {
+    Doc "Block until the DMA tagged by the given tag element completes.";
+    Operands   (tag: any, tag_indices: variadic<index>, num_elements: index);
+    Attributes (tag_map: affine_map);
+    Properties [memory_effect(read)];
+    Assembly Custom;
   }
 
   op yield {
