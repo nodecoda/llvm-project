@@ -1,0 +1,125 @@
+/// scf —— 结构化控制流：区域、单块、terminator。
+dialect scf {
+  Doc "Structured control flow with regions.";
+
+  constraint integer_or_index = signless_integer | index;
+
+  op condition {
+    Doc "loop continuation condition";
+    Operands   (condition: i1, args: variadic<any>);
+    Properties [pure, terminator, has_parent(while)];
+    Assembly   { "(" condition ")" attr-dict if args { ":" type(args) } }
+  }
+
+  op execute_region {
+    Doc "execute a multi-block region exactly once";
+    Attributes (no_inline: optional<unit>);
+    Results    (results: variadic<any>);
+    Regions    (region: region);
+    Properties [recursive_effects];
+    Assembly Custom;
+  }
+
+  op for {
+    Doc "counted loop over [lower_bound, upper_bound) with carried values";
+    Operands   (lower_bound: integer_or_index,
+                upper_bound: type_of(lower_bound),
+                step: type_of(lower_bound),
+                init_args: variadic<any>);
+    Results    (results: variadic<any>);
+    Attributes (unsigned_cmp: optional<unit>);
+    Regions    (body: region);
+    Properties [single_block, recursive_effects, automatic_allocation_scope];
+    Implements [LoopLikeOpInterface, RegionBranchOpInterface];
+    Assembly Custom;
+  }
+
+  op forall {
+    Doc "evaluate a block multiple times in parallel";
+    Operands   (dynamic_lower_bound: variadic<index>,
+                dynamic_upper_bound: variadic<index>,
+                dynamic_step: variadic<index>);
+    Attributes (static_lower_bound: array<integer>,
+                static_upper_bound: array<integer>,
+                static_step: array<integer>);
+    Results    (results: variadic<any>);
+    Regions    (body: region);
+    Properties [single_block, recursive_effects, automatic_allocation_scope];
+    Assembly Custom;
+  }
+
+  op forall.in_parallel {
+    Doc "terminates a forall block";
+    Operands (values: variadic<any>);
+    Regions  (body: region);
+    Properties [terminator, has_parent(forall)];
+    Assembly Custom;
+  }
+
+  op if {
+    Doc "if-then-else with two regions";
+    Operands (condition: i1);
+    Results  (results: variadic<any>);
+    Regions  (then_region: region, else_region: optional<region>);
+    Properties [single_block, recursive_effects, no_region_args];
+    Implements [RegionBranchOpInterface];
+    Assembly Custom;
+  }
+
+  op parallel {
+    Doc "parallel for operation";
+    Operands   (lower_bound: variadic<index>,
+                upper_bound: variadic<index>,
+                step: variadic<index>,
+                init_values: variadic<any>);
+    Results    (results: variadic<any>);
+    Attributes (unsigned_cmp: optional<unit>);
+    Regions    (body: region);
+    Properties [single_block, recursive_effects];
+    Implements [LoopLikeOpInterface];
+    Assembly Custom;
+  }
+
+  op reduce {
+    Doc "reduction inside scf.parallel";
+    Operands (operands: variadic<any>);
+    Regions  (reductions: variadic<region>);
+    Properties [has_parent(parallel)];
+    Assembly Custom;
+  }
+
+  op reduce.return {
+    Doc "terminator for scf.reduce";
+    Operands   (result: any);
+    Properties [terminator, has_parent(reduce)];
+    Assembly Custom;
+  }
+
+  op while {
+    Doc "generic while/do-while loop with before and after regions";
+    Operands (inits: variadic<any>);
+    Results  (results: variadic<any>);
+    Regions  (before: region, after: region);
+    Properties [single_block, recursive_effects];
+    Implements [LoopLikeOpInterface, RegionBranchOpInterface];
+    Assembly Custom;
+  }
+
+  op index_switch {
+    Doc "switch on an index argument, one region per case";
+    Operands   (arg: index);
+    Attributes (cases: array<integer>);
+    Results    (results: variadic<any>);
+    Regions    (default_region: region, case_regions: variadic<region>);
+    Properties [single_block, recursive_effects];
+    Assembly Custom;
+  }
+
+  op yield {
+    Doc "loop yield and termination operation";
+    Operands   (values: variadic<any>);
+    Properties [pure, terminator,
+                parent_one_of(execute_region, for, if, index_switch, while)];
+    Assembly   { attr-dict if values { ":" type(values) } }
+  }
+}

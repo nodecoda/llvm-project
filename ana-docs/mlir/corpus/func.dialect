@@ -1,0 +1,48 @@
+/// func —— 函数与调用。
+dialect func {
+  Doc "Function-like operations: definitions, calls, returns.";
+
+  op call {
+    Doc "direct call to a symbol in the enclosing symbol table";
+    Operands   (operands: variadic<any>);
+    Results    (results: variadic<any>);
+    Attributes (callee: symbol_ref);
+    Implements [CallOpInterface, SymbolUserOpInterface];
+    Assembly Custom;
+  }
+
+  op call_indirect {
+    Doc "call through a value of function type";
+    Operands   (callee: function_type, callee_operands: variadic<any>);
+    Results    (results: variadic<any>);
+    Implements [CallOpInterface];
+    Assembly Custom;
+  }
+
+  op constant {
+    Doc "symbol reference to a function, usable as an SSA value";
+    Results    (result: function_type);
+    Attributes (value: symbol_ref);
+    Properties [pure, constant_like];
+    Implements [SymbolUserOpInterface];
+    Assembly   { attr-dict value ":" type(result) }
+  }
+
+  op func {
+    Doc "an operation with a name containing a single SSACFG region";
+    Attributes (sym_name: string,
+                function_type: function_type,
+                sym_visibility: optional<string>);
+    Regions    (body: region);
+    Properties [isolated_from_above, symbol];
+    Implements [FunctionOpInterface];
+    Assembly Custom;
+  }
+
+  op return {
+    Doc "return from the enclosing function";
+    Operands   (values: variadic<any>);
+    Properties [pure, terminator, has_parent(func)];
+    Assembly   { attr-dict if values { ":" type(values) } }
+  }
+}

@@ -1,0 +1,10 @@
+/// complex —— 复数属性。
+dialect complex {
+  Doc "Complex number attributes.";
+
+  attr_def number {
+    Doc "A complex number attribute";
+    Parameters (real: float, imag: float, self_type: type);
+    Assembly Custom;
+  }
+}

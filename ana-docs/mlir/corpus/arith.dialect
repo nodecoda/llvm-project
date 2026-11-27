@@ -1,0 +1,401 @@
+/// arith —— 算术方言的领域描述（corpus，不是最终语法）。
+///
+/// 只有领域事实：部件、约束、文本、语义。没有 namespace/class/builder。
+
+dialect arith {
+  Doc "Arithmetic operations over integers, floats and index.";
+
+  constraint int_like       = signless_integer | index;
+  constraint fixed_int_like = signless_integer;
+  constraint float_like     = f16 | f32 | f64 | bf16;
+  constraint bool_like      = i1;
+
+  enum CmpIPredicate {
+    Doc "Integer comparison predicates.";
+    Cases [ eq = 0, ne = 1, slt = 2, sle = 3, sgt = 4, sge = 5,
+            ult = 6, ule = 7, ugt = 8, uge = 9 ];
+  }
+
+  enum CmpFPredicate {
+    Doc "Floating point comparison predicates.";
+    Cases [ always_false = 0 "false", oeq = 1 "oeq", ogt = 2 "ogt",
+            oge = 3 "oge", olt = 4 "olt", ole = 5 "ole", one = 6 "one",
+            ord = 7 "ord", ueq = 8 "ueq", ugt = 9 "ugt", uge = 10 "uge",
+            ult = 11 "ult", ule = 12 "ule", une = 13 "une", uno = 14 "uno",
+            always_true = 15 "true" ];
+  }
+
+  enum OverflowFlags: bits {
+    Doc "Integer overflow flags.";
+    Cases [ none = 0, nsw = 1, nuw = 2 ];
+  }
+
+  enum RoundingMode {
+    Doc "Floating point rounding modes.";
+    Cases [ to_nearest = 0, down = 1, up = 2, toward_zero = 3 ];
+  }
+
+  enum FastMathFlags: bits {
+    Doc "Floating point fast-math flags.";
+    Cases [ none = 0, reassoc = 1, nnan = 2, ninf = 4, nsz = 8,
+            arcp = 16, contract = 32, afn = 64 ];
+    Groups [ fast = reassoc | nnan | ninf | nsz | arcp | contract | afn ];
+  }
+
+  schema FloatUnary {
+    Operands   (operand: float_like);
+    Results    (result: float_like);
+    Attributes (fastmath: FastMathFlags = none);
+    Properties [pure, elementwise];
+    Implements [FastMathInterface];
+    Assembly   { operand if fastmath { "fastmath" fastmath }
+                 attr-dict ":" type(result) }
+  }
+
+  schema FloatBinary {
+    Operands   (lhs: float_like, rhs: type_of(lhs));
+    Results    (result: type_of(lhs));
+    Attributes (fastmath: FastMathFlags = none);
+    Properties [pure, elementwise];
+    Implements [FastMathInterface];
+    Assembly   { lhs "," rhs if fastmath { "fastmath" fastmath }
+                 attr-dict ":" type(result) }
+  }
+
+  schema FloatBinaryWithRounding extends FloatBinary {
+    Attributes (roundingmode: optional<RoundingMode>);
+    Implements [RoundingModeInterface];
+    Assembly   { lhs "," rhs if roundingmode { roundingmode }
+                 if fastmath { "fastmath" fastmath }
+                 attr-dict ":" type(result) }
+  }
+
+  schema IntBinary {
+    Operands   (lhs: int_like, rhs: int_like);
+    Results    (result: type_of(lhs));
+    Properties [pure, elementwise];
+    Implements [InferIntRangeInterface];
+    Assembly   { lhs "," rhs attr-dict ":" type(result) }
+  }
+
+  schema IntBinaryWithOverflow extends IntBinary {
+    Attributes (overflow_flags: OverflowFlags = none);
+    Implements [IntegerOverflowFlagsInterface];
+    Assembly   { lhs "," rhs if overflow_flags { "overflow" overflow_flags }
+                 attr-dict ":" type(result) }
+  }
+
+  schema IntBinaryWithExact extends IntBinary {
+    Attributes (exact: optional<unit>);
+    Assembly   { lhs "," rhs if exact { "exact" }
+                 attr-dict ":" type(result) }
+  }
+
+  schema TotalIntBinary extends IntBinary { }
+
+  schema Compare<predicate_type: type> {
+    Operands   (lhs: any, rhs: type_of(lhs));
+    Results    (result: bool_like);
+    Attributes (predicate: predicate_type);
+    Properties [pure];
+    Assembly   { predicate "," lhs "," rhs attr-dict ":" type(lhs) }
+  }
+
+  schema Cast<source: type, target: type> {
+    Operands   (input: source);
+    Results    (output: target);
+    Properties [pure];
+    Assembly   { input attr-dict ":" type(input) "to" type(output) }
+  }
+
+  schema IntToIntCast extends Cast<fixed_int_like, fixed_int_like> {
+    Implements [InferIntRangeInterface];
+  }
+
+  schema IntToFloatCast extends Cast<fixed_int_like, float_like> { }
+  schema FloatToIntCast extends Cast<float_like, fixed_int_like> { }
+  schema FloatToFloatCast extends Cast<float_like, float_like> { }
+
+  // ---- IntBinaryWithOverflow ----
+  op addi from IntBinaryWithOverflow {
+    Doc "integer addition operation";
+    Properties [commutative];
+  }
+  op subi from IntBinaryWithOverflow {
+    Doc "Integer subtraction operation.";
+  }
+  op muli from IntBinaryWithOverflow {
+    Doc "Integer multiplication operation.";
+    Properties [commutative];
+  }
+  op shli from IntBinaryWithOverflow {
+    Doc "integer left-shift";
+  }
+
+  // ---- IntBinaryWithExact ----
+  op divui from IntBinaryWithExact {
+    Doc "unsigned integer division operation";
+  }
+  op divsi from IntBinaryWithExact {
+    Doc "signed integer division operation";
+  }
+  op shrui from IntBinaryWithExact {
+    Doc "unsigned integer right-shift";
+  }
+  op shrsi from IntBinaryWithExact {
+    Doc "signed integer right-shift";
+  }
+
+  // ---- IntBinary ----
+  op ceildivui from IntBinary {
+    Doc "unsigned ceil integer division operation";
+  }
+  op ceildivsi from IntBinary {
+    Doc "signed ceil integer division operation";
+  }
+  op floordivsi from IntBinary {
+    Doc "signed floor integer division operation";
+  }
+  op remui from IntBinary {
+    Doc "unsigned integer division remainder operation";
+  }
+  op remsi from IntBinary {
+    Doc "signed integer division remainder operation";
+  }
+
+  // ---- TotalIntBinary ----
+  op andi from TotalIntBinary {
+    Doc "integer binary and";
+    Properties [commutative];
+  }
+  op ori from TotalIntBinary {
+    Doc "integer binary or";
+    Properties [commutative];
+  }
+  op xori from TotalIntBinary {
+    Doc "integer binary xor";
+    Properties [commutative];
+  }
+  op maxsi from TotalIntBinary {
+    Doc "signed integer maximum operation";
+    Properties [commutative];
+  }
+  op maxui from TotalIntBinary {
+    Doc "unsigned integer maximum operation";
+    Properties [commutative];
+  }
+  op minsi from TotalIntBinary {
+    Doc "signed integer minimum operation";
+    Properties [commutative];
+  }
+  op minui from TotalIntBinary {
+    Doc "unsigned integer minimum operation";
+    Properties [commutative];
+  }
+
+  // ---- FloatUnary ----
+  op negf from FloatUnary {
+    Doc "floating point negation";
+  }
+  op flush_denormals from FloatUnary {
+    Doc "flush denormal floating-point values to zero";
+  }
+
+  // ---- FloatBinaryWithRounding ----
+  op addf from FloatBinaryWithRounding {
+    Doc "floating point addition operation";
+    Properties [commutative];
+  }
+  op subf from FloatBinaryWithRounding {
+    Doc "floating point subtraction operation";
+  }
+  op mulf from FloatBinaryWithRounding {
+    Doc "floating point multiplication operation";
+    Properties [commutative];
+  }
+  op divf from FloatBinaryWithRounding {
+    Doc "floating point division operation";
+  }
+
+  // ---- FloatBinary ----
+  op maximumf from FloatBinary {
+    Doc "floating-point maximum operation";
+    Properties [commutative];
+  }
+  op maxnumf from FloatBinary {
+    Doc "floating-point maximum operation";
+    Properties [commutative];
+  }
+  op maximumnumf from FloatBinary {
+    Doc "floating-point maximumNumber operation";
+    Properties [commutative];
+  }
+  op minimumf from FloatBinary {
+    Doc "floating-point minimum operation";
+    Properties [commutative];
+  }
+  op minnumf from FloatBinary {
+    Doc "floating-point minimum operation";
+    Properties [commutative];
+  }
+  op minimumnumf from FloatBinary {
+    Doc "floating-point minimumNumber operation";
+    Properties [commutative];
+  }
+  op remf from FloatBinary {
+    Doc "floating point division remainder operation";
+  }
+
+  // ---- IntToIntCast ----
+  op extui from IntToIntCast {
+    Doc "integer zero extension operation";
+  }
+  op extsi from IntToIntCast {
+    Doc "integer sign extension operation";
+  }
+
+  // ---- FloatToFloatCast ----
+  op extf from FloatToFloatCast {
+    Doc "cast from floating-point to wider floating-point";
+  }
+
+  // ---- IntToFloatCast ----
+  op uitofp from IntToFloatCast {
+    Doc "cast from unsigned integer type to floating-point";
+  }
+  op sitofp from IntToFloatCast {
+    Doc "cast from integer type to floating-point";
+  }
+
+  // ---- FloatToIntCast ----
+  op fptoui from FloatToIntCast {
+    Doc "cast from floating-point type to integer type";
+  }
+  op fptosi from FloatToIntCast {
+    Doc "cast from floating-point type to integer type";
+  }
+
+  // ---- Compare<CmpIPredicate> ----
+  op cmpi from Compare<CmpIPredicate> {
+    Doc "integer comparison operation";
+  }
+
+  // ---- Compare<CmpFPredicate> ----
+  op cmpf from Compare<CmpFPredicate> {
+    Doc "floating-point comparison operation";
+  }
+
+  // ---- 独立定义：结构或文本不共享 ----
+
+  op constant {
+    Doc "integer or floating point constant";
+    Results    (result: any);
+    Attributes (value: any_attribute);
+    Properties [pure, constant_like];
+    Assembly   { value attr-dict ":" type(result) }
+  }
+
+  op addui_extended {
+    Doc "extended unsigned integer addition returning sum and overflow bit";
+    Operands (lhs: int_like, rhs: type_of(lhs));
+    Results  (sum: type_of(lhs), overflow: bool_like);
+    Properties [pure, commutative];
+    Assembly { lhs "," rhs attr-dict ":" type(sum) "," type(overflow) }
+  }
+
+  op subui_extended {
+    Doc "extended unsigned integer subtraction";
+    Operands (lhs: int_like, rhs: type_of(lhs));
+    Results  (diff: type_of(lhs), overflow: bool_like);
+    Properties [pure];
+    Assembly { lhs "," rhs attr-dict ":" type(diff) "," type(overflow) }
+  }
+
+  op mulsi_extended {
+    Doc "extended signed integer multiplication";
+    Operands (lhs: int_like, rhs: type_of(lhs));
+    Results  (low: type_of(lhs), high: type_of(lhs));
+    Properties [pure, commutative];
+    Assembly { lhs "," rhs attr-dict ":" type(low) "," type(high) }
+  }
+
+  op mului_extended {
+    Doc "extended unsigned integer multiplication";
+    Operands (lhs: int_like, rhs: type_of(lhs));
+    Results  (low: type_of(lhs), high: type_of(lhs));
+    Properties [pure, commutative];
+    Assembly { lhs "," rhs attr-dict ":" type(low) "," type(high) }
+  }
+
+  op scaling_extf {
+    Doc "upcast floats using scale values";
+    Operands   (input: float_like, scale: float_like);
+    Results    (output: float_like);
+    Attributes (fastmath: FastMathFlags = none);
+    Assembly   { input "," scale if fastmath { "fastmath" fastmath }
+                 attr-dict ":" type(input) "," type(scale) "to" type(output) }
+  }
+
+  op trunci {
+    Doc "integer truncation";
+    Operands   (input: fixed_int_like);
+    Results    (output: fixed_int_like);
+    Attributes (overflow_flags: OverflowFlags = none);
+    Assembly   { input if overflow_flags { "overflow" overflow_flags }
+                 attr-dict ":" type(input) "to" type(output) }
+  }
+
+  op truncf {
+    Doc "cast from floating-point to narrower floating-point";
+    Operands   (input: float_like);
+    Results    (output: float_like);
+    Attributes (roundingmode: optional<RoundingMode>,
+                fastmath: FastMathFlags = none);
+    Assembly   { input if roundingmode { roundingmode }
+                 if fastmath { "fastmath" fastmath }
+                 attr-dict ":" type(input) "to" type(output) }
+  }
+
+  op convertf {
+    Doc "cast between floating-point types of the same bitwidth";
+    Operands   (input: float_like);
+    Results    (output: float_like);
+    Attributes (roundingmode: optional<RoundingMode>,
+                fastmath: FastMathFlags = none);
+    Assembly   { input if roundingmode { roundingmode }
+                 if fastmath { "fastmath" fastmath }
+                 attr-dict ":" type(input) "to" type(output) }
+  }
+
+  op scaling_truncf {
+    Doc "downcast floats using scale values";
+    Operands   (input: float_like, scale: float_like);
+    Results    (output: float_like);
+    Attributes (fastmath: FastMathFlags = none);
+    Assembly   { input "," scale if fastmath { "fastmath" fastmath }
+                 attr-dict ":" type(input) "," type(scale) "to" type(output) }
+  }
+
+  op index_cast from Cast<index, fixed_int_like> {
+    Doc "cast between index and integer types";
+  }
+
+  op index_castui from Cast<index, fixed_int_like> {
+    Doc "unsigned cast between index and integer types";
+  }
+
+  op bitcast from Cast<any, any> {
+    Doc "bitcast between values of equal bit width";
+  }
+
+  op select {
+    Doc "select one of two values";
+    Operands (condition: bool_like,
+              true_value: any,
+              false_value: type_of(true_value));
+    Results  (result: type_of(true_value));
+    Properties [pure];
+    Assembly { condition "," true_value "," false_value
+               attr-dict ":" type(result) }
+  }
+}

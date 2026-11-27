@@ -1,0 +1,22 @@
+/// pdl —— 模式描述语言的内建类型。
+dialect pdl {
+  Doc "Pattern descriptor types.";
+
+  type_def attribute {
+    Doc "handle to an attribute";
+  }
+
+  type_def operation {
+    Doc "handle to an operation";
+  }
+
+  type_def range {
+    Doc "handle to a range of a given element type";
+    Parameters (element: type);
+    Assembly Custom;
+  }
+
+  type_def type {
+    Doc "handle to a type";
+  }
+}

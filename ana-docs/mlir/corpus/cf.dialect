@@ -1,0 +1,44 @@
+/// cf —— 显式的块间控制流。
+dialect cf {
+  Doc "Explicit block-to-block control flow.";
+
+  op assert {
+    Doc "runtime assertion with a message";
+    Operands   (arg: i1);
+    Attributes (msg: string);
+    Assembly   { arg "," msg attr-dict }
+  }
+
+  op br {
+    Doc "unconditional branch forwarding operands to the target block";
+    Operands   (dest_operands: variadic<any>);
+    Successors (dest: successor);
+    Properties [terminator];
+    Implements [BranchOpInterface];
+    Assembly Custom;
+  }
+
+  op cond_br {
+    Doc "two-way branch on an i1";
+    Operands   (condition: i1,
+                true_dest_operands: variadic<any>,
+                false_dest_operands: variadic<any>);
+    Attributes (branch_weights: optional<array<integer>>);
+    Successors (true_dest: successor, false_dest: successor);
+    Properties [terminator];
+    Implements [BranchOpInterface];
+    Assembly Custom;
+  }
+
+  op switch {
+    Doc "multi-way branch on a signless integer";
+    Operands   (flag: signless_integer,
+                default_operands: variadic<any>,
+                case_operands: variadic<variadic<any>>);
+    Attributes (case_values: optional<array<integer>>);
+    Successors (default_dest: successor, case_dests: variadic<successor>);
+    Properties [terminator];
+    Implements [BranchOpInterface];
+    Assembly Custom;
+  }
+}
