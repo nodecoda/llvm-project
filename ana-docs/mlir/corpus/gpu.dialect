@@ -38,6 +38,19 @@ dialect gpu {
   constraint async_token = gpu_async_token;
   constraint named_barrier_type = gpu_named_barrier;
 
+  /// 内存空间：`#gpu.address_space<workgroup>`。属性值域是下面的枚举，
+  /// 文本是 `<` 枚举助记符 `>`（上游 assemblyFormat `< $value >`）。
+  enum AddressSpace {
+    Doc "GPU memory space of a buffer.";
+    Cases [ global = 1, workgroup = 2, private = 3, constant = 4 ];
+  }
+
+  attr_def address_space {
+    Doc "Address-space qualifier used in memref types and allocation ops.";
+    Parameters (value: AddressSpace);
+    Assembly { "<" value ">" }
+  }
+
   enum Dimension {
     Doc "x, y or z launch dimension.";
     Cases [ x = 0, y = 1, z = 2 ];
