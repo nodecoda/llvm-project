@@ -34,7 +34,7 @@ STRUCT = ["Operands", "Results", "Attributes", "Regions", "Successors"]
 # 必须被报告，否则拼错一个类型名会被静默当成"外部类型"。
 BUILTIN_TYPES = {
     "i1", "i8", "i16", "i32", "i64", "f16", "bf16", "f32", "f64",
-    "f8e4m3fn", "f8e5m2", "f4e2m1fn",
+    "f8e4m3fn", "f8e5m2", "f8e8m0fnu", "f6e2m3fn", "f6e3m2fn", "f4e2m1fn",
     "index", "any", "none", "unit", "string", "bool", "dict", "dictionary",
     "tensor", "vector", "memref", "complex", "tuple", "function_type",
     "flat_symbol_ref", "attribute_value", "successor", "region",
@@ -122,10 +122,12 @@ def entities(text, depth=0):
     out = []
     pos = 0
     while True:
-        m = re.search(r"(?m)^[ \t]*(\w+)[ \t]+([A-Za-z_][\w.]*)", text[pos:])
+        m = re.search(r"(?m)^[ \t]*(\w+)[ \t]+(?:(\"[^\"]+\")|([A-Za-z_][\w.]*))",
+                      text[pos:])
         if not m:
             break
-        kind, name = m.group(1), m.group(2)
+        kind = m.group(1)
+        name = m.group(3) if m.group(3) else m.group(2)[1:-1]
         if kind not in DECL:
             pos += m.end()
             continue
@@ -339,9 +341,17 @@ def main():
                            for t in re.findall(r"\bfrom\s+([A-Za-z_][\w.]*)", h)
                            if t not in schemas})
 
+    # 死声明检查：dialect 实体的 body 就是整段文本，若把它算进去，每个声明名
+    # 都会在自己方言的文本里被数到一次，检查恒为 none（第八轮实证）。因此跳过
+    # dialect 容器，并剥掉声明自身的名字一次。
     used_names = Counter()
     for fname, kind, name, header, body in all_entities:
-        for w in WORD.findall(body + " " + header):
+        if kind == "dialect":
+            continue
+        head = header
+        if kind == "schema" or kind == "enum":
+            head = re.sub(r"\b%s\b" % re.escape(name), "", head, count=1)
+        for w in WORD.findall(body + " " + head):
             if w in declared.get("schema", ()) or w in declared.get("constraint", ()) \
                or w in declared.get("enum", ()):
                 used_names[w] += 1
@@ -470,6 +480,8 @@ def main():
         for kind, name, header, body in entities(text):
             if kind == "dialect":
                 continue
+            # `constraint x = a | b;` 是 ; 结尾的声明：右侧在 header 里，body 为空。
+            body = body + "\n" + header
             for m in re.finditer(r"(?:Operands|Results|Attributes|Successors|"
                                  r"Parameters)\s*\((.*?)\)\s*;", body, re.S):
                 for part in split_top(m.group(1)):
@@ -487,6 +499,9 @@ def main():
 
         def resolved_here(n):
             if n in own or n in BUILTIN_TYPES or n in TYPE_KEYWORDS:
+                return True
+            # MLIR 的整型/浮点内建类型是任意位宽的 iN / fN（i14、i128 都真实存在）。
+            if re.fullmatch(r"(?:i|f|bf)\d+", n):
                 return True
             # 限定名 pdl.range 的头部 pdl 在别处声明，末段是类型名
             return "." in n and n.split(".")[-1] in own
