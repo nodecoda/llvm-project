@@ -11,15 +11,32 @@ Five channels are recognized in the corpus:
 
 The first three of the *claim* channels are checked against upstream TableGen:
 
+  L0  channel => every op names its text source (block, Custom or Generic)
   L1  Custom  => the op has hasCustomAssemblyFormat (own or inherited)
   L2  Generic => the op has neither assemblyFormat nor a custom printer
   L3  hook    => the hook name exists upstream (custom<Hook> in the TD closure),
-                 or is registered as a corpus-local label in hook-registry.tsv
+                 or is registered as a corpus-local label in hook-registry.tsv;
+                 its arguments must also match the upstream call shape (L3b:
+                 value / type / ref(type) position by position, string
+                 configuration dropped on both sides)
+  L4  gap     => registered, exact witness, scope matches the text, and a
+                 closed gap never comes back (tools/gap-registry.tsv)
+  L5  fact    => registered, and a local fact stays in its owning dialect
+  L6  budget  => global limits (Custom share, gap count, divergence)
+  L7  shape   => at most one Gap per op, and never inside if/oilist/hook args
+  L9  dialect => per-dialect limits (Custom share, gap count)
 
-Gap names are checked against tools/gap-registry.tsv, and facts against
-tools/fact-glossary.tsv.  Budgets are hard limits, not advice.
+Normalizations are total, mechanical rewrites of upstream spelling, not
+escapes.  N1: upstream `enum($x)` prints attribute x through its own enum
+printer; the DSL has no separate enum() element, so the block names x
+directly.  The rewrite is *checked*: if upstream prints `enum($x)`, the
+effective block must name x.
 
-Usage: tools/escape-audit.py [--verbose]
+Budgets are hard limits, not advice.  --selftest exercises every rejection
+path of L3b/L4/L7 with synthetic inputs, so a zero-gap corpus does not turn
+the ledger checks vacuously green.
+
+Usage: tools/escape-audit.py [--verbose | --selftest]
 Exit status is 1 on any failed rule.
 """
 
@@ -51,7 +68,27 @@ TD = coverage.TD
 # ---------------------------------------------------------------- upstream TD
 HEAD = re.compile(r"(?m)^\s*(def|defm|class)\s+([A-Za-z_]\w*)")
 CUSTOM_RE = re.compile(r"hasCustomAssemblyFormat\s*=\s*(?:1|true)")
-FORMAT_RE = re.compile(r"assemblyFormat\s*=")
+# `assemblyFormat = ?` means "unset", and `!if(cond, ?, fmt)` is a template
+# that some derived classes turn off; neither is evidence of a format.
+# A plain regex cannot see this (`\s*` backtracks past the lookahead), so the
+# decision is made on the stripped value.
+FMT_HEAD = re.compile(r"assemblyFormat\s*=\s*", re.S)
+
+
+def has_fmt(text):
+    """True / False / None: None means the value is a TableGen expression
+    (`!if(!empty(clausesAssemblyFormat), ?, ...)`) whose result depends on the
+    op's parameters, so it cannot be decided from the record text."""
+    unknown = False
+    for m in FMT_HEAD.finditer(text):
+        rest = text[m.end():].lstrip()
+        if not rest:
+            continue
+        if rest[0] in "?!":
+            unknown = True
+        else:
+            return True
+    return None if unknown else False
 HOOK_RE = re.compile(r"custom\s*<\s*([A-Za-z_]\w*)\s*>")
 HOOK_CALL_RE = re.compile(r"custom\s*<\s*([A-Za-z_]\w*)\s*>\s*\(")
 INCLUDE_RE = re.compile(r'(?m)^\s*include\s+"([^"]+)"')
@@ -77,22 +114,47 @@ def header_end(text, i):
 
 
 def body_text(text, k):
+    """Brace-matched body, ignoring braces inside strings and comments."""
     if k >= len(text) or text[k] != "{":
         return ""
-    depth = 0
-    e = k
-    while e < len(text):
-        if text[e] == "{":
+    depth, i, n = 0, k, len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            i += 1
+            while i < n:
+                if text[i] == "\\":
+                    i += 2
+                    continue
+                if text[i] == '"':
+                    break
+                i += 1
+        elif c == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        elif c == "[" and i + 1 < n and text[i + 1] == "{":
+            # `[{ ... }]` is an opaque code/description fragment in TableGen.
+            close = text.find("}]", i + 2)
+            if close < 0:
+                return text[k:]
+            i = close + 1
+        elif c == "/" and i + 1 < n and text[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i += 1
+        elif c == "{":
             depth += 1
-        elif text[e] == "}":
+        elif c == "}":
             depth -= 1
             if depth == 0:
-                return text[k:e + 1]
-        e += 1
+                return text[k:i + 1]
+        i += 1
     return text[k:]
 
 
-def parse_records(text, out):
+def parse_records(text, out, classes):
     for m in HEAD.finditer(text):
         kind, name = m.groups()
         q, depth, colon, stop = m.end(), 0, None, m.end() + 600
@@ -112,18 +174,22 @@ def parse_records(text, out):
         while hs < len(text) and text[hs] in " \t\r\n":
             hs += 1
         he = header_end(text, hs)
-        bm = re.match(r"\s*([A-Za-z_][\w:]*)", text[colon + 1:])
+        # The base name may sit after a comment line
+        # (`class X<...> :\n  // note\n  Base<...> {`), so strip comments.
+        tail = re.sub(r"//[^\n]*", "", text[colon + 1:])
+        bm = re.match(r"\s*([A-Za-z_][\w:]*)", tail)
         base = bm.group(1).split("::")[-1] if bm else None
         body = body_text(text, he)
         full = text[m.start():he] + body
-        out[name] = {
+        rec = {
             "kind": kind,
             "text": full,
             "base": base,
             "custom": bool(CUSTOM_RE.search(full)),
-            "fmt": bool(FORMAT_RE.search(full)),
+            "fmt": has_fmt(full),
             "hooks": set(HOOK_RE.findall(full)),
         }
+        (classes if kind == "class" else out)[name] = rec
 
 
 def include_closure(start):
@@ -146,11 +212,11 @@ def upstream_for(keyword):
     for rel in TD[keyword]:
         p = DIALECT_DIR / rel
         files += sorted(p.parent.glob(p.name))
-    records, closure_text = {}, []
+    records, classes, closure_text = {}, {}, []
     for f in include_closure(files):
         text = f.read_text(errors="ignore")
         closure_text.append(text)
-        parse_records(text, records)
+        parse_records(text, records, classes)
     hooks = set()
     for text in closure_text:
         hooks |= set(HOOK_RE.findall(text))
@@ -161,27 +227,51 @@ def upstream_for(keyword):
                              r'([A-Za-z_][\w:]*)\s*<\s*(?:[A-Za-z_][\w:]*\s*,\s*)?"([^"]+)"',
                              text):
             mnemonic[m.group(3)] = m.group(1)
-    return records, mnemonic, hooks
+    # Authoritative per-op fields from TableGen itself.  Mnemonics built by
+    # concatenation (`"convert." # !tolower(src) # "x2.to.f4x2"`), by
+    # `multiclass` expansion or by `foreach` are invisible to the text scan;
+    # without this map those ops would silently skip L1/L2/L3b, which is the
+    # escape-hatch black hole this audit exists to prevent.
+    up_ops = {}
+    tblgen = coverage.find_tblgen()
+    if tblgen:
+        up_ops, _ = coverage.tblgen_ops(tblgen, TD[keyword])
+    return records, classes, mnemonic, hooks, up_ops
 
 
-def resolve(records, name):
+def resolve(records, classes, name):
     seen, cur = set(), name
-    custom = fmt = False
+    custom = False
+    fmt = False          # False / True / None (unknown)
     hooks = set()
-    while cur and cur not in seen and len(seen) < 20:
-        seen.add(cur)
-        r = records.get(cur)
+    use_class = False
+    while cur and (cur, use_class) not in seen and len(seen) < 20:
+        seen.add((cur, use_class))
+        r = classes.get(cur) if use_class else (records.get(cur) or classes.get(cur))
         if not r:
             break
         custom |= r["custom"]
-        fmt |= r["fmt"]
+        if r["fmt"] is True or fmt is True:
+            fmt = True
+        elif r["fmt"] is None:
+            fmt = None
         hooks |= r["hooks"]
-        cur = r["base"]
+        base = r["base"]
+        # `def X : X<...>` reuses the class name; continue in the class record.
+        use_class = base == cur
+        cur = base
+    # OpDefinitionsGen::genParser/genPrinter return early when assemblyFormat
+    # is present, so a declarative format wins over a (possibly inherited)
+    # hasCustomAssemblyFormat.  This matters for dialects such as SPIR-V,
+    # whose base class sets hasCustomAssemblyFormat = 1 for every op while
+    # individual ops still carry declarative formats.
+    if fmt is True:
+        return ("block-hook" if hooks else "block"), hooks
     if custom:
         return "custom", hooks
-    if not fmt:
-        return "generic", hooks
-    return ("block-hook" if hooks else "block"), hooks
+    if fmt is None:
+        return "unknown", hooks
+    return "generic", hooks
 
 
 # ------------------------------------------------- hook argument shapes
@@ -251,7 +341,7 @@ def hook_calls(text):
 
 
 # ---------------------------------------------------------------- corpus
-OP_RE = re.compile(r'(?m)^  (?:(op) "?([a-z0-9_.]+)"?|(schema) ([A-Za-z_][\w.]*))')
+OP_RE = re.compile(r'(?m)^  (?:(op) "?([A-Za-z0-9_.]+)"?|(schema) ([A-Za-z_][\w.]*))')
 NEXT_RE = re.compile(r'(?m)^  (?:op|schema|enum|constraint|type_def|attr_def|dialect)\b')
 PARENT_RE = re.compile(r"\b(?:from|extends)\s+([A-Za-z_][\w.]*)")
 
@@ -324,17 +414,20 @@ def effective_block(table, name):
     return ""
 
 
-def fmt_text(records, name):
+def fmt_text(records, classes, name):
     """The nearest upstream record text that actually carries a format."""
     seen, cur = set(), name
-    while cur and cur not in seen:
-        seen.add(cur)
-        r = records.get(cur)
+    use_class = False
+    while cur and (cur, use_class) not in seen:
+        seen.add((cur, use_class))
+        r = classes.get(cur) if use_class else (records.get(cur) or classes.get(cur))
         if not r:
             return ""
         if r["fmt"] or r["custom"]:
             return r["text"]
-        cur = r["base"]
+        base = r["base"]
+        use_class = base == cur
+        cur = base
     return ""
 
 
@@ -498,6 +591,9 @@ def main():
     hook_registry = {r["hook"]: r for r in read_tsv(ROOT / "tools/hook-registry.tsv")}
 
     rows, gap_users, fact_users, unbacked_hooks = [], {}, {}, {}
+    div_groups = set()
+    unknown_ops = []
+    unresolved_ops = []
     gap_blocks, dstat = {}, {}
     fact_occ = Counter()
     totals = Counter()
@@ -507,7 +603,7 @@ def main():
             notes.append("%s: no TD mapping, licenses not checked" % dialect)
             continue
         dstat[dialect] = Counter()
-        records, mnemonic, upstream_hooks = upstream_for(dialect)
+        records, classes, mnemonic, upstream_hooks, up_ops = upstream_for(dialect)
         all_hooks_upstream = upstream_hooks
         table = dict(schemas)
         table.update(ops)
@@ -550,29 +646,70 @@ def main():
                 if ctx:
                     fails.append(["L7", dialect, name, "Gap() inside %s" % ctx])
 
-            rec = mnemonic.get(name) or mnemonic.get(name.split(".", 1)[-1]) or \
-                next((v for k, v in mnemonic.items()
-                      if name.endswith("." + k) or k.endswith("." + name)), None)
-            if not rec or rec not in records:
+            jrec = up_ops.get(name)
+            if up_ops and jrec is None:
+                # The corpus declares an op the dialect does not define.  A
+                # fabricated op is not an escape, it is a wrong description.
+                fails.append(["L0", dialect, name,
+                              "not in the upstream opName set"])
                 continue
-            up, _ = resolve(records, rec)
-            if ch == "custom" and up != "custom":
+            if jrec is not None:
+                fmt = jrec[1]
+                has_fmt = isinstance(fmt, str) and fmt.strip() not in ("", "?")
+                up = "block" if has_fmt else ("custom" if jrec[2] else "generic")
+                up_fmt = fmt if has_fmt else ""
+            else:
+                # No tblgen available: fall back to the text scan, and say so
+                # when the record cannot be found (rather than skipping).
+                rec = mnemonic.get(name) or mnemonic.get(name.split(".", 1)[-1]) or \
+                    next((v for k, v in mnemonic.items()
+                          if name.endswith("." + k) or k.endswith("." + name)), None)
+                if not rec or rec not in records:
+                    totals["unresolved"] += 1
+                    unresolved_ops.append("%s.%s" % (dialect, name))
+                    continue
+                up, _ = resolve(records, classes, rec)
+                up_fmt = fmt_text(records, classes, rec)
+            if up == "unknown":
+                # A template-computed assemblyFormat (OpenMP's clause format)
+                # cannot be decided from the record text; the corpus channel
+                # is a description here, not a claim.
+                totals["unknown"] += 1
+                unknown_ops.append("%s.%s" % (dialect, name))
+            elif ch == "custom" and up != "custom":
                 fails.append(["L1", dialect, name, "Custom, but upstream is %s" % up])
-            if ch == "generic" and up != "generic":
+            if up != "unknown" and ch == "generic" and up != "generic":
                 fails.append(["L2", dialect, name, "Generic, but upstream is %s" % up])
 
             # L3b: a hook call mirrors the upstream call's data arguments.
             # Quoted configuration (delimiters, builder names) is dropped on
             # both sides; ref()/type() keep their shape.
-            up_calls = hook_calls(fmt_text(records, rec))
+            up_calls = hook_calls(up_fmt)
             for h, shapes in hook_calls(eff):
                 ups = [sh for hh, sh in up_calls if hh == h]
                 if ups and shapes not in ups:
                     fails.append(["L3", dialect, name,
                                   "hook %s(%s), upstream %s"
                                   % (h, ", ".join(shapes), ups)])
-            if ch in ("block", "block-hook") and up in ("custom", "generic"):
+            # N1: `enum($x)` is a normalization, and it is checked, not
+            # assumed -- see the rule list at the top of this file.
+            if ch in ("block", "block-hook") and up_fmt:
+                # Component names are the corpus's choice (snake_case here);
+                # compare with separators and case folded away.
+                named = {re.sub(r"_", "", w).lower()
+                         for w in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", eff)}
+                for m in re.finditer(r"enum\(\s*\$(\w+)\s*\)", up_fmt):
+                    v = m.group(1)
+                    if re.sub(r"_", "", v).lower() not in named:
+                        fails.append(["N1", dialect, name,
+                                      "upstream prints enum($%s); block never names %s"
+                                      % (v, v)])
+
+            if up != "unknown" and ch in ("block", "block-hook") and up in ("custom", "generic"):
                 totals["divergence"] += 1
+                # One schema that converges a family is one design decision,
+                # not N anomalies: budget on decisions, report instances.
+                div_groups.add((dialect, up, ch, e.get("parent") or name))
                 rows.append([dialect, name, ch, up])
             if verbose and ch != "none":
                 rows.append([dialect, name, ch, up])
@@ -585,6 +722,14 @@ def main():
                 fact_occ[f] += 1
 
     fails += gap_findings(registry, gap_users, gap_blocks)
+
+    # An op whose upstream record cannot be located has no evidence for its
+    # channel claim.  Skipping those silently would make the audit a black
+    # hole, so a missing binary is a hard, named failure.
+    if unresolved_ops:
+        fails.append(["L0", "-", "upstream evidence",
+                      "%d ops have no upstream record; set LLVM_TBLGEN"
+                      % len(unresolved_ops)])
 
     # L3c: a registered label states its scope and when it can be retired.
     for hook, entry in hook_registry.items():
@@ -635,8 +780,9 @@ def main():
         ("Custom share", "%.1f%%" % custom_share, "<= 25%", custom_share <= 25.0),
         ("named gaps", totals["gap_ops"], "<= 12", totals["gap_ops"] <= 12),
         ("single-use local facts", "%.0f%%" % single_share, "<= 50%", single_share <= 50.0),
-        ("design divergences (block vs upstream)", totals["divergence"], "<= 30",
-         totals["divergence"] <= 30),
+        ("design divergences (block vs upstream)",
+         "%d decisions / %d ops" % (len(div_groups), totals["divergence"]), "<= 30",
+         len(div_groups) <= 30),
     ]
     for label, value, limit, ok in budgets:
         if not ok:
@@ -668,6 +814,13 @@ def main():
         print("| --- | --- | --- | --- |")
         for r in rows:
             print("| %s | %s | %s | %s |" % tuple(r))
+    if unknown_ops:
+        print("\n## template formats the tool cannot decide (%d ops)" % len(unknown_ops))
+        print("- " + ", ".join(unknown_ops))
+    if unresolved_ops:
+        print("\n## ops with no upstream record (tblgen missing, %d ops)"
+              % len(unresolved_ops))
+        print("- " + ", ".join(unresolved_ops))
     if unbacked_hooks:
         print("\n## hook names with no upstream custom<> (labels, check for typos)")
         for h in sorted(unbacked_hooks):

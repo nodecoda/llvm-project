@@ -307,25 +307,27 @@ def main():
                              "custom<>": hooks, "facts": len(fn),
                              "distinct": len(set(fn))}
 
+    # schema 名字是**方言内**的：arith/llvm/nvvm 都有 FloatBinary。按
+    # (文件, 名字) 建表，否则后一个方言会覆盖前一个，悬挂引用检查会假阳/假阴。
     schemas = {}
-    for _, kind, name, header, body in all_entities:
+    for fname, kind, name, header, body in all_entities:
         if kind == "schema":
             pm = re.search(r"\bextends\s+([A-Za-z_][\w.]*)", header)
-            schemas[name] = {"parts": parts_of(body), "parent": pm.group(1) if pm else None,
-                             "asm": asm_refs(body)}
+            schemas[(fname, name)] = {
+                "parts": parts_of(body),
+                "parent": pm.group(1) if pm else None,
+                "asm": asm_refs(body)}
 
-    def fold(name, seen=()):
-        s = schemas[name]
+    def fold(fname, name, seen=()):
+        s = schemas[(fname, name)]
         parts = {}
-        if s["parent"] in schemas and s["parent"] not in seen:
-            parts.update(fold(s["parent"], seen + (name,))[0])
+        key = (fname, s["parent"])
+        if s["parent"] and key in schemas and key not in seen:
+            parts.update(fold(fname, s["parent"], seen + (key,))[0])
         parts.update(s["parts"])
         return parts, s["asm"]
 
-    resolved = {n: fold(n)[0] for n in schemas}
-    for n in schemas:
-        if schemas[n]["parent"] and schemas[n]["parent"] not in schemas:
-            pass
+    resolved = {(f, n): fold(f, n)[0] for (f, n) in schemas}
 
     dangling = []
     for fname, kind, name, header, body in all_entities:
@@ -333,15 +335,15 @@ def main():
             continue
         own = parts_of(body)
         pm = re.search(r"\b(?:extends|from)\s+([A-Za-z_][\w.]*)", header)
-        inherited = resolved.get(pm.group(1), {}) if pm else {}
+        inherited = resolved.get((fname, pm.group(1)), {}) if pm else {}
         known = set(inherited) | set(own)
         for r in asm_refs(body):
             if r not in known:
                 dangling.append([fname, name, r])
 
-    missing_from = sorted({t for _, kind, name, h, b in all_entities if kind == "op"
+    missing_from = sorted({(f, t) for f, kind, name, h, b in all_entities if kind == "op"
                            for t in re.findall(r"\bfrom\s+([A-Za-z_][\w.]*)", h)
-                           if t not in schemas})
+                           if (f, t) not in schemas})
 
     # 死声明检查：dialect 实体的 body 就是整段文本，若把它算进去，每个声明名
     # 都会在自己方言的文本里被数到一次，检查恒为 none（第八轮实证）。因此跳过

@@ -1,34 +1,52 @@
 #!/usr/bin/env python3
-"""Coverage audit: corpus op set vs the upstream TD mnemonics of one dialect.
+"""Coverage audit: corpus op set vs the dialect's upstream op set.
 
 The corpus is a *model* of a dialect, but it is only evidence for the grammar
 if it is complete: an op that never appears is a construct the grammar was
 never tested against.  This tool makes the gap explicit and countable.
 
-Mapping is per dialect and explicit -- guessing a dialect's files from its
-directory would silently include the transform op sets, whose ops belong to
-the `transform` dialect, not to the dialect whose directory they live in.
+Ground truth is `llvm-tblgen --dump-json`: every `opName` a TableGen include
+closure actually produces.  A text scan of the `.td` files cannot do this,
+because mnemonics are routinely built by concatenation
+(`NVVM_Op<"convert." # !tolower(src) # "x2.to.f4x2">`), by `multiclass`
+expansion, or by `foreach`; a regex sees the class parameter, not the op.
 
-Usage: tools/dialect-coverage.py [--verbose]
+Mapping is per dialect and points at the *aggregate* TD file whose include
+closure is exactly that dialect: `LinalgAllOps.td`, `SMT.td`,
+`ArmSMEAllOps.td`, `SPIRVOps.td`.  Guessing a dialect's files from its
+directory would pull in transform op sets, whose ops belong to `transform`.
+
+Usage:
+  LLVM_TBLGEN=/path/to/llvm-tblgen \\
+  LLVM_BUILD_DIR=/path/to/build python3 tools/dialect-coverage.py [--verbose]
+
+Without a tblgen binary the tool falls back to a text scan and says so; the
+fallback under-reports concatenated and `foreach`-generated ops, so a green
+fallback run is weaker evidence than a green tblgen run.
 Exit status is 1 when any dialect file is missing ops.
 """
 
+import json
+import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+REPO = ROOT.parent.parent
 CORPUS = ROOT / "corpus"
-INC = ROOT.parent.parent / "mlir/include/mlir/Dialect"
+INC = REPO / "mlir/include/mlir/Dialect"
 
-# dialect keyword -> TD files (relative to mlir/include/mlir/Dialect)
+# dialect keyword -> aggregate TD entry points (relative to mlir/include/mlir/Dialect)
 TD = {
-    "acc": ["OpenACC/OpenACCOps.td", "OpenACC/OpenACCCGOps.td"],
+    "acc": ["OpenACC/OpenACCOps.td"],
     "affine": ["Affine/IR/AffineOps.td"],
     "amdgpu": ["AMDGPU/IR/AMDGPUOps.td"],
     "arith": ["Arith/IR/ArithOps.td"],
     "arm_neon": ["ArmNeon/ArmNeon.td"],
-    "arm_sme": ["ArmSME/IR/ArmSMEOps.td", "ArmSME/IR/ArmSMEIntrinsicOps.td"],
+    "arm_sme": ["ArmSME/IR/ArmSMEAllOps.td"],
     "arm_sve": ["ArmSVE/IR/ArmSVE.td"],
     "async": ["Async/IR/AsyncOps.td"],
     "bufferization": ["Bufferization/IR/BufferizationOps.td"],
@@ -41,7 +59,7 @@ TD = {
     "gpu": ["GPU/IR/GPUOps.td"],
     "index": ["Index/IR/IndexOps.td"],
     "irdl": ["IRDL/IR/IRDLOps.td"],
-    "linalg": ["Linalg/IR/LinalgOps.td", "Linalg/IR/LinalgStructuredOps.td"],
+    "linalg": ["Linalg/IR/LinalgAllOps.td"],
     "llvm": ["LLVMIR/LLVMOps.td", "LLVMIR/LLVMIntrinsicOps.td"],
     "math": ["Math/IR/MathOps.td"],
     "memref": ["MemRef/IR/MemRefOps.td"],
@@ -58,13 +76,13 @@ TD = {
     "scf": ["SCF/IR/SCFOps.td"],
     "shape": ["Shape/IR/ShapeOps.td"],
     "shard": ["Shard/IR/ShardOps.td"],
-    "smt": ["SMT/IR/SMTBitVectorOps.td", "SMT/IR/SMTIntOps.td",
-            "SMT/IR/SMTArrayOps.td", "SMT/IR/SMTOps.td"],
+    "smt": ["SMT/IR/SMT.td"],
     "sparse_tensor": ["SparseTensor/IR/SparseTensorOps.td"],
     "spirv": ["SPIRV/IR/SPIRVOps.td"],
+    "standalone": ["mlir/examples/standalone/include/Standalone/StandaloneOps.td"],
     "tensor": ["Tensor/IR/TensorOps.td"],
-    "tosa": ["Tosa/IR/TosaOps.td", "Tosa/IR/TosaShapeOps.td",
-              "Tosa/IR/TosaUtilOps.td"],
+    "toy": ["mlir/examples/toy/Ch7/include/toy/Ops.td"],
+    "tosa": ["Tosa/IR/TosaOps.td"],
     "transform": ["Transform/IR/TransformOps.td"],
     "ub": ["UB/IR/UBOps.td"],
     "vcix": ["LLVMIR/VCIXOps.td"],
@@ -75,25 +93,83 @@ TD = {
     "xevm": ["LLVMIR/XeVMOps.td"],
 }
 
-# Mnemonics come from `def`/`defm` records whose base class is given a printed
-# name: `def FooOp : Base<"foo", ...>`, `defm Foo : Base<"foo">`, possibly
-# across lines.  Template parameters built from other defs are not mnemonics.
-#   A record is an op when its name or its base class ends in `Op`; enum cases,
-#   interfaces and typedefs share the `def X : Y<"...">` shape but are not ops.
-#   Printed mnemonics are lowercase; this drops C++ strings and enum case names.
+# Mnemonics print lowercase except SPIR-V's `spirv.FAdd`.
+MNEMONIC_OK = re.compile(r"^[A-Za-z][A-Za-z0-9_.]*$")
+
+
+def find_tblgen():
+    for cand in (os.environ.get("LLVM_TBLGEN"),
+                 shutil.which("llvm-tblgen"),
+                 shutil.which("mlir-tblgen")):
+        if cand and Path(cand).exists():
+            return Path(cand)
+    return None
+
+
+def include_dirs():
+    dirs = [REPO / "mlir/include",
+            REPO / "mlir/include/mlir/Dialect/ArmSME/IR",
+            REPO / "mlir/examples/standalone/include",
+            REPO / "mlir/examples/toy/Ch7/include"]
+    build = os.environ.get("LLVM_BUILD_DIR")
+    if build:
+        dirs += [Path(build) / "include", Path(build) / "tools/mlir/include"]
+    return [d for d in dirs if d.is_dir()]
+
+
+def resolve(rel):
+    for base in (REPO, INC):
+        p = base / rel
+        if p.exists():
+            return p
+    return INC / rel
+
+
+def tblgen_ops(tblgen, files):
+    """Return ({opName: recordName}, failed).  The record name is what
+    escape-audit needs to find the definition text of a generated op."""
+    ops, failed = {}, []
+    incs = include_dirs()
+    for rel in files:
+        for f in sorted(resolve(rel).parent.glob(resolve(rel).name)):
+            cmd = [str(tblgen)]
+            for d in incs:
+                cmd += ["-I", str(d)]
+            cmd += ["--dump-json", str(f)]
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if r.returncode != 0:
+                failed.append((f.name, r.stderr.strip().splitlines()[:1]))
+                continue
+            for rec, v in json.loads(r.stdout).items():
+                if isinstance(v, dict) and "opName" in v:
+                    ops[v["opName"]] = (rec, v.get("assemblyFormat"),
+                                        bool(v.get("hasCustomAssemblyFormat")))
+    return ops, failed
+
+
+def tblgen_names(tblgen, files):
+    ops, failed = tblgen_ops(tblgen, files)
+    return set(ops), failed
+
+
+def op_names(dialect):
+    """Authoritative opName set for a dialect, or None when tblgen is absent."""
+    tblgen = find_tblgen()
+    if not tblgen:
+        return None
+    names, _ = tblgen_names(tblgen, TD[dialect])
+    return names
+
+
 RECORD = re.compile(r'(?ms)\b(?:def|defm)\s+([A-Za-z_]\w*)\s*:\s*([A-Za-z_][\w:]*)'
                     r'\s*<\s*(?:[A-Za-z_][\w:]*\s*,\s*)?"([^"]+)"')
-MNEMONIC_OK = re.compile(r"^[a-z][a-z0-9_.]*$")
 
 
-def upstream(dialect):
+def fallback_names(files):
+    """Text scan: sees literal `Base<"mnemonic">` only.  Under-reports."""
     names = set()
-    for rel in TD[dialect]:
-        p = INC / rel
-        if not p.exists():
-            p = ROOT.parent.parent / "mlir/include/mlir/Dialect" / rel
-        files = sorted(p.parent.glob(p.name))
-        for f in files:
+    for rel in files:
+        for f in sorted(resolve(rel).parent.glob(resolve(rel).name)):
             for rec, base, mnem in RECORD.findall(f.read_text(errors="ignore")):
                 if not (rec.endswith("Op") or base.endswith("Op")):
                     continue
@@ -104,30 +180,32 @@ def upstream(dialect):
 
 def main():
     verbose = "--verbose" in sys.argv
-    bad = 0
-    print("## coverage: upstream TD mnemonics vs corpus ops")
+    tblgen = find_tblgen()
+    engine = "tblgen opName" if tblgen else "text scan (fallback)"
+    print("## coverage vs upstream (%s)" % engine)
     print("| dialect | upstream | corpus | missing | extra |")
     print("| --- | --- | --- | --- | --- |")
-    details = []
+    bad, details = 0, []
     for f in sorted(CORPUS.glob("*.dialect")):
-        d = re.search(r"(?m)^\s*dialect\s+([a-z0-9_]+)", f.read_text()).group(1)
+        text = f.read_text()
+        d = re.search(r"(?m)^\s*dialect\s+([a-z0-9_]+)", text).group(1)
         if d not in TD:
             print("| %s | ? | ? | ? | ? |" % d)
             continue
-        up = upstream(d)
-        corpus = set(re.findall(r'(?m)^  op "?([a-z0-9_.]+)"?', f.read_text()))
+        if tblgen:
+            up, failed = tblgen_names(tblgen, TD[d])
+            if failed:
+                print("  ! %s: tblgen failed on %s" % (d, failed[0][0]))
+                print("    " + (failed[0][1][0] if failed[0][1] else ""))
+        else:
+            up = fallback_names(TD[d])
+        corpus = set(re.findall(r'(?m)^  op "?([A-Za-z0-9_.]+)"?', text))
 
-        # 名字按"末段"对齐：intrinsic 族在语料里写作 `intr.ld1b.horiz`，
-        # 上游助记符是 `ld1b.horiz`；同一条 op，不该算缺失。
-        def covered(m):
-            if m in corpus:
-                return True
-            return any(c.endswith("." + m) or m.endswith("." + c) for c in corpus)
-
-        missing = sorted(m for m in up if not covered(m))
-        extra = sorted(c for c in corpus
-                       if not any(c == m or c.endswith("." + m) or m.endswith("." + c)
-                                  for m in up))
+        # 严格集合相等：tblgen 的 opName 就是打印助记符（含 `intr.` 前缀），
+        # 语料声明名必须逐字相同。不做后缀对齐——那会让 `scalable.extract`
+        # 被 `extract` 掩盖、`llvm.add` 被 `intr.vp.add` 掩盖。
+        missing = sorted(up - corpus)
+        extra = sorted(corpus - up)
         print("| %s | %d | %d | %d | %d |" % (d, len(up), len(corpus),
                                               len(missing), len(extra)))
         if missing:
@@ -139,7 +217,6 @@ def main():
         print("\n## missing ops")
         for d, names in details:
             print("- %s: %s" % (d, ", ".join(names)))
-    print("\n## dialects with a corpus but no TD mapping: see TD table")
     return 1 if bad else 0
 
 

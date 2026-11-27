@@ -305,6 +305,10 @@ asm_list
   | asm_list asm_element
   ;
 
+/* 规范化 N1：上游 `enum($x)` 表示"用属性 x 的枚举打印器输出助记符"。本语言
+ * 没有单独的 enum() 指令：属性部件本来就由它自己的打印器输出，所以块里直接
+ * 引用 x。改写是全域、机械的，并由 escape-audit 的 N1 逐 op 验证——
+ * 上游打印 enum($x)，块里就必须出现 x。 */
 asm_element
   : STRING                       /* 字面量，含标点 */
   | IDENT                        /* 引用一个已声明的部件 */
@@ -314,6 +318,9 @@ asm_element
   | A_TYPE L_PAREN IDENT R_PAREN /* 打印某个部件的类型 */
   | A_QUALIFIED L_PAREN A_TYPE L_PAREN IDENT R_PAREN R_PAREN
                                  /* qualified(type(x))：强制带方言前缀打印 */
+  | A_QUALIFIED L_PAREN IDENT R_PAREN
+                                 /* qualified(x)：属性也带方言前缀
+                                  * （llvm.intr.dbg.*、nvvm.barrier.reduction） */
   | A_FUNCTIONAL_TYPE L_PAREN IDENT COMMA IDENT R_PAREN
                                  /* (T...) -> (U...)，实参是部件组 */
   | A_CUSTOM L_ANGLE IDENT R_ANGLE L_PAREN custom_arg_list R_PAREN
