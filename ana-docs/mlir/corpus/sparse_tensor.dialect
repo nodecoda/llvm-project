@@ -1,0 +1,544 @@
+/// sparse_tensor —— 稀疏张量的编码、存储分解与遍历。
+///
+/// 领域核心是 encoding 属性：它把语义维映射到存储级，并给每个级一个
+/// level-type（格式 + 非默认属性）。文本上 encoding 是一个字典：`map` 键的
+/// 值是一张维到级的仿射映射，映射结果逐级带上 level-type；其余键
+/// （posWidth、crdWidth、explicitVal、implicitVal）只在非默认时出现。
+/// 本语料按这个字典形状描述，而不是抄一遍花括号原文。
+///
+/// 第二个特点是存储是显式的：positions / coordinates / values 把一张稀疏
+/// 张量拆成若干 rank-1 memref，assemble / disassemble 是这两个方向上的桥。
+
+dialect sparse_tensor {
+  Doc "Sparse tensors as a built-in type: per-level storage formats, storage decomposition, and iteration over stored elements.";
+
+  // ---- 元素类型与稀疏张量类型 ----
+
+  // encoding 只接受这些主元素类型；复数只允许 f32/f64 两种组合。
+  constraint supported_element = signless_integer | f16 | bf16 | f32 | f64
+                               | complex<f32> | complex<f64>;
+
+  // 坐标、位置、各级下标都是 index 或无符号语义整数。
+  constraint signless_index = index | signless_integer;
+
+  // disassemble 的长度结果允许 0 维张量包一层的标量。
+  constraint indexing_scalar = signless_index | tensor<signless_index>;
+
+  // assemble / disassemble 的每级数组：元素是 index 或整数，rank 由级决定。
+  constraint level_array = tensor<signless_index>;
+
+  // 稀疏张量 = ranked tensor + 元素类型 + encoding。encoding 是它与普通
+  // tensor 的唯一差别，也是本方言全部 op 的类型见证。
+  constraint sparse_tensor = tensor<supported_element, Encoding>;
+
+  // slice 版：同一个类型，但 encoding 的维侧带了 slice 元数据。
+  constraint sparse_tensor_slice = sparse_tensor;
+
+  // ---- 枚举：级格式、级属性、specifier 字段、排序实现、坐标方向 ----
+
+  enum LevelFormat {
+    Doc "级格式；每种格式在存储里占一个独立的位，文本只打印关键字。";
+    Cases [ dense = 65536, batch = 131072, compressed = 262144,
+            singleton = 524288, loose_compressed = 1048576,
+            structured = 2097152 ];
+    Groups [ compressed_like = compressed | loose_compressed | singleton ];
+    Groups [ always_unique_ordered = dense | batch | structured ];
+  }
+
+  enum LevelProperty {
+    Doc "加在级格式后的非默认属性；默认级是有序且唯一的。soa 只对 singleton 有意义，它把该级拆成独立的坐标数组。";
+    Cases [ nonunique = 1, nonordered = 2, soa = 4 ];
+    Groups [ relaxes_default = nonunique | nonordered ];
+  }
+
+  enum StorageSpecifierKind {
+    Doc "storage specifier 的字段：各数组的字节大小，以及切片在某一维上的偏移与步长。";
+    Cases [ lvl_sz = 0, pos_mem_sz = 1, crd_mem_sz = 2, val_mem_sz = 3,
+            dim_offset = 4, dim_stride = 5 ];
+  }
+
+  enum SortKind {
+    Doc "sort / reorder_coo 的排序实现；只有 insertion_sort_stable 稳定，其余都是非稳定实现。";
+    Cases [ hybrid_quick_sort = 0, insertion_sort_stable = 1,
+            quick_sort = 2, heap_sort = 3 ];
+    Groups [ stable = insertion_sort_stable ];
+    Groups [ unstable = hybrid_quick_sort | quick_sort | heap_sort ];
+  }
+
+  enum CrdTransDirection {
+    Doc "坐标翻译方向：语义维到存储级，或反向。";
+    Cases [ dim_to_lvl = 0, lvl_to_dim = 1 ];
+  }
+
+  // ---- 属性：切片与 encoding ----
+
+  attr_def Slice {
+    Doc "某一维的切片元数据（offset, size, stride）。动态值存 -1，打印成问号；它嵌在 encoding 的维侧，不是独立属性。";
+    Parameters (offset: i64, size: i64, stride: i64);
+    Assembly { "<" "slice" "(" offset "," size "," stride ")" ">" }
+  }
+
+  // level-type 是 encoding 内部的取值对象，不单独出现在类型语法里，
+  // 因此用 type_def 而不是 constraint 表达它自己的文本形状。
+  type_def level_type {
+    Doc "一个级的完整描述：格式 + structured 的 n,m 尺寸 + 非默认属性表。n <= m，且只有 structured 带方括号尺寸。";
+    Parameters (format: LevelFormat,
+                n: optional<i64> [positive],
+                m: optional<i64> [at_least(n)],
+                properties: optional<array<LevelProperty>>);
+    Assembly { format
+               if n { "[" n "," m "]" }
+               if properties { "(" properties ")" } }
+  }
+
+  attr_def Encoding {
+    Doc "稀疏编码。字典形式：map 键的值是维到级的仿射映射，冒号后按级顺序列出 level-type；四个可选键只在非默认时打印，且顺序固定为 posWidth、crdWidth、explicitVal、implicitVal。lvl_to_dim 可省，缺省时由 dim_to_lvl 反推；dim_slices 与维一一对应。两个位宽只取 0、8、16、32、64，0 表示默认。";
+    Parameters (lvl_types: array<level_type>,
+                dim_to_lvl: affine_map,
+                lvl_to_dim: affine_map,
+                pos_width: i64 [non_negative],
+                crd_width: i64 [non_negative],
+                explicit_val: optional<supported_element>,
+                implicit_val: optional<supported_element>,
+                dim_slices: array<Slice>);
+    Assembly { "<" "{" "map" "=" dim_to_lvl ":" lvl_types
+               if pos_width { "," "posWidth" "=" pos_width }
+               if crd_width { "," "crdWidth" "=" crd_width }
+               if explicit_val { "," "explicitVal" "=" explicit_val }
+               if implicit_val { "," "implicitVal" "=" implicit_val }
+               "}" ">" }
+  }
+
+  // ---- 类型：存储元数据与迭代空间 ----
+
+  type_def storage_specifier {
+    Doc "一张稀疏张量的聚合存储元数据：各级大小、位置/坐标/值数组，切片时再加各维偏移与步长。参数就是它描述的 encoding，打印时打印该 encoding（若带别名则打印别名）。";
+    Parameters (encoding: Encoding);
+    Assembly { "<" encoding ">" }
+  }
+
+  type_def iter_space {
+    Doc "从一张稀疏张量的 [lo_lvl, hi_lvl) 级区间抽出的迭代空间，维数等于 hi_lvl - lo_lvl。区间只有一个级时 lvls 打印成单个整数。";
+    Parameters (encoding: Encoding,
+                lo_lvl: i64 [non_negative],
+                hi_lvl: i64 [non_negative]);
+    Assembly { "<" encoding "," "lvls" "=" custom<LevelRange>(lo_lvl, hi_lvl) ">" }
+  }
+
+  type_def iterator {
+    Doc "指向迭代空间中当前元素的光标；带同一张 encoding 与同一段级区间。";
+    Parameters (encoding: Encoding,
+                lo_lvl: i64 [non_negative],
+                hi_lvl: i64 [non_negative]);
+    Assembly { "<" encoding "," "lvls" "=" custom<LevelRange>(lo_lvl, hi_lvl) ">" }
+  }
+
+  // ---- schema：共享同一段文本形状的算子族 ----
+
+  // 从一种张量类型改写成另一种：文本两端都把类型写全，方向由类型本身表达。
+  schema FormatCast {
+    Doc "源张量、可选属性字典、冒号、源类型、关键字 to、结果类型。";
+    Operands   (source: ranked_tensor);
+    Results    (dest: ranked_tensor);
+    Properties [pure];
+    Assembly   { source attr-dict ":" type(source) "to" type(dest) }
+  }
+
+  // positions 与 coordinates 只差一个关键字：级号是属性，结果是该级的数组。
+  schema LevelArray {
+    Doc "取某一级的数组：级号是 index 属性（从 0 起），结果是 rank-1 memref。";
+    Operands   (tensor: sparse_tensor);
+    Results    (result: memref);
+    Attributes (level: index [non_negative]);
+    Properties [pure];
+    Assembly   { tensor "level" "=" level attr-dict ":" type(tensor) "to" type(result) }
+  }
+
+  // ---- 构造与转换 ----
+
+  op new {
+    Doc "从外部来源（文件名、缓冲区等不透明指针）物化一张带初值内容的稀疏张量；来源类型任意。";
+    Operands   (source: any);
+    Results    (result: sparse_tensor);
+    Properties [pure];
+    Assembly   { source attr-dict ":" type(source) "to" type(result) }
+  }
+
+  op convert from FormatCast {
+    Doc "在稀疏与稠密、或两种 encoding 之间转换；源与结果都是 ranked tensor。转换可能需要额外一次排序，由接口声明。";
+    Implements [StageWithSortSparseOpInterface];
+  }
+
+  op reinterpret_map from FormatCast {
+    Doc "只重解释维与级的映射，不移动存储；源与结果都是稀疏张量。";
+  }
+
+  // ---- 与外部数组之间的桥 ----
+
+  op assemble {
+    Doc "把逐级的位置/坐标数组与值数组拼成一张稀疏张量；级数组的顺序必须与目标的存储布局一致，调用方负责数据完整性。";
+    Operands   (levels: variadic<level_array>, values: ranked_tensor);
+    Results    (result: sparse_tensor);
+    Properties [pure];
+    Assembly   { "(" levels ")" "," values attr-dict ":"
+                 "(" type(levels) ")" "," type(values) "to" type(result) }
+  }
+
+  op disassemble {
+    Doc "assemble 的逆：把各级数组与值数组拷进调用方给的缓冲区，并返回实际使用长度。长度可以是标量，也可以是 0 维张量。";
+    Operands   (tensor: sparse_tensor,
+                out_levels: variadic<level_array>,
+                out_values: ranked_tensor);
+    Results    (ret_levels: variadic<level_array> [same_size(out_levels)],
+                ret_values: ranked_tensor,
+                lvl_lens: variadic<indexing_scalar> [cardinality(ret_levels)],
+                val_len: indexing_scalar);
+    Properties [pure];
+    Assembly   { tensor attr-dict ":" type(tensor)
+                 "out_lvls" "(" out_levels ":" type(out_levels) ")"
+                 "out_vals" "(" out_values ":" type(out_values) ")" "->"
+                 "(" type(ret_levels) ")" "," type(ret_values) ","
+                 "(" type(lvl_lens) ")" "," type(val_len) }
+  }
+
+  // ---- 存储分解：逐级数组与标量查询 ----
+
+  op positions from LevelArray {
+    Doc "抽出某一级的位置数组；写入结果属于未定义行为。";
+  }
+
+  op coordinates from LevelArray {
+    Doc "抽出某一级的坐标数组；写入结果属于未定义行为。";
+  }
+
+  op coordinates_buffer {
+    Doc "抽出尾部 COO 区（至少两级）的线性坐标缓冲：按数组之结构存成一份，而不是每级一份。";
+    Operands   (tensor: sparse_tensor);
+    Results    (result: memref);
+    Properties [pure];
+    Assembly   { tensor attr-dict ":" type(tensor) "to" type(result) }
+  }
+
+  op values {
+    Doc "抽出值数组，与维无关。";
+    Operands   (tensor: sparse_tensor);
+    Results    (result: memref);
+    Properties [pure];
+    Assembly   { tensor attr-dict ":" type(tensor) "to" type(result) }
+  }
+
+  op number_of_entries {
+    Doc "存储里实际存放的元素个数；通常是非零元数，但显式零也算，所以不叫 nonzero。";
+    Operands   (tensor: sparse_tensor);
+    Results    (result: index);
+    Properties [pure];
+    Assembly   { tensor attr-dict ":" type(tensor) }
+  }
+
+  // ---- 拼接与切片 ----
+
+  op concatenate {
+    Doc "按给定维拼接一串同秩张量；只有该维长度相加，其余维必须一致。输入必须是静态尺寸，结果可以动态。";
+    Operands   (inputs: variadic<ranked_tensor>);
+    Results    (result: ranked_tensor);
+    Attributes (dimension: index [non_negative]);
+    Properties [pure];
+    Implements [StageWithSortSparseOpInterface];
+    Assembly   { inputs "dimension" "=" dimension attr-dict
+                 ":" type(inputs) "to" type(result) }
+  }
+
+  op slice.offset {
+    Doc "稀疏切片在某一语义维上的偏移。";
+    Operands   (slice: sparse_tensor_slice);
+    Results    (offset: index);
+    Attributes (dim: index [non_negative]);
+    Properties [pure];
+    Assembly   { slice "at" dim attr-dict ":" type(slice) }
+  }
+
+  op slice.stride {
+    Doc "稀疏切片在某一语义维上的步长。";
+    Operands   (slice: sparse_tensor_slice);
+    Results    (stride: index);
+    Attributes (dim: index [non_negative]);
+    Properties [pure];
+    Assembly   { slice "at" dim attr-dict ":" type(slice) }
+  }
+
+  // ---- 存储元数据 ----
+
+  op storage_specifier.init {
+    Doc "新的 specifier。带来源时表示从一种 encoding 的元数据转成另一种（典型是普通张量到切片）。";
+    Operands   (source: optional<storage_specifier>);
+    Results    (result: storage_specifier);
+    Properties [pure];
+    Assembly   { attr-dict if source { "with" source } ":"
+                 if source { "from" type(source) "to" } type(result) }
+  }
+
+  op storage_specifier.get {
+    Doc "读 specifier 的一个字段；只有按级的字段带 at 级号。";
+    Operands   (specifier: storage_specifier);
+    Results    (result: index);
+    Attributes (specifier_kind: StorageSpecifierKind,
+                level: optional<index> [non_negative]);
+    Properties [pure];
+    Assembly   { specifier specifier_kind
+                 if level { "at" level } attr-dict ":" type(specifier) }
+  }
+
+  op storage_specifier.set {
+    Doc "写 specifier 的一个字段，返回更新后的 specifier。";
+    Operands   (specifier: storage_specifier, value: index);
+    Results    (result: storage_specifier);
+    Attributes (specifier_kind: StorageSpecifierKind,
+                level: optional<index> [non_negative]);
+    Properties [pure];
+    Assembly   { specifier specifier_kind
+                 if level { "at" level } "with" value
+                 attr-dict ":" type(result) }
+  }
+
+  // ---- 坐标与级的下标 ----
+
+  op lvl {
+    Doc "存储级的下标大小：取第 index 级（不是第 index 维）的长度，能被折叠成常量时折叠。";
+    Operands   (source: sparse_tensor, index: index);
+    Results    (result: index);
+    Properties [speculatable, no_memory_effect];
+    Assembly   { attr-dict source "," index ":" type(source) }
+  }
+
+  op crd_translate {
+    Doc "按 encoding 的映射在维空间与级空间之间翻译一组坐标；方向是关键字，编码作为属性写出。";
+    Operands   (in_crds: variadic<index>);
+    Results    (out_crds: variadic<index>);
+    Attributes (direction: CrdTransDirection, encoder: Encoding);
+    Properties [pure];
+    Assembly   { direction "[" in_crds "]" "as" encoder
+                 attr-dict ":" type(out_crds) }
+  }
+
+  // ---- 插入路径：缓冲区、扩容、压缩 ----
+
+  op push_back {
+    Doc "往存储缓冲尾部追加一个值（可重复 n 次），返回缓冲与新长度。inbounds 表示容量已够、可以省掉扩容检查；n 是常量时不得小于 1。";
+    Operands   (cur_size: index, in_buffer: memref, value: any,
+                n: optional<index> [positive]);
+    Results    (out_buffer: memref, new_size: index);
+    Attributes (inbounds: unit);
+    Properties [memory_effect(allocate)];
+    Assembly   { if inbounds { "inbounds" } cur_size "," in_buffer "," value
+                 if n { "," n }
+                 attr-dict ":" type(cur_size) "," type(in_buffer) ","
+                 type(value) if n { "," type(n) } }
+  }
+
+  op expand {
+    Doc "为最内层的插入展开访问模式：values/filled 按最内层当稠密时的长度分配，added/count 记录新出现的级坐标。结果由上下文成对设置与复位。";
+    Operands   (tensor: sparse_tensor);
+    Results    (values: memref, filled: memref, added: memref, count: index);
+    Properties [memory_effect(allocate), memory_effect(write)];
+    Assembly   { tensor attr-dict ":" type(tensor) "to" type(values)
+                 "," type(filled) "," type(added) }
+  }
+
+  op compress {
+    Doc "结束一次访问模式展开：把插入过的元素按其级坐标移进稀疏存储。级坐标比张量的级数少一个，最内层坐标由 added 给出。";
+    Operands   (values: memref, filled: memref, added: memref, count: index,
+                tensor: sparse_tensor, lvl_coords: variadic<index>);
+    Results    (result: sparse_tensor);
+    // in_place 与 sort 共用：写回自身缓冲 / 原地排序，是同一条轴。
+    Properties [in_place];
+    Assembly   { values "," filled "," added "," count
+                 "into" tensor "[" lvl_coords "]" attr-dict
+                 ":" type(values) "," type(filled) "," type(added)
+                 "," type(tensor) }
+  }
+
+  op load {
+    Doc "从底层稀疏存储重新物化张量值；has_inserts 表示期间可能有插入、需要收尾。";
+    Operands   (tensor: sparse_tensor);
+    Results    (result: any);
+    Attributes (has_inserts: optional<unit>);
+    Properties [memory_effect(read)];
+    Assembly   { tensor if has_inserts { "hasInserts" } attr-dict
+                 ":" type(tensor) }
+  }
+
+  op out {
+    Doc "把稀疏张量写到外部宿（文件名、缓冲区等）；行为只由副作用定义。";
+    Operands   (tensor: sparse_tensor, dest: any);
+    Properties [memory_effect(write)];
+    Assembly   { tensor "," dest attr-dict ":" type(tensor) "," type(dest) }
+  }
+
+  // ---- 排序与重排 ----
+
+  op sort {
+    Doc "按 xs 的整数值字典序排序 xy 线性缓冲，ys 随之一起动；perm_map 给出比较前作用在 xs 上的置换，其秩就是 xs 的个数，ny 是 ys 的个数（缺省 0）。";
+    Operands   (n: index, xy: memref, ys: variadic<memref>);
+    Attributes (perm_map: affine_map, ny: optional<index> [non_negative],
+                algorithm: SortKind);
+    Properties [in_place];
+    Assembly   { algorithm n "," xy
+                 if ys { "jointly" ys }
+                 "perm_map" "=" perm_map
+                 if ny { "ny" "=" ny }
+                 attr-dict ":" type(xy)
+                 if ys { "jointly" type(ys) } }
+  }
+
+  op reorder_coo {
+    Doc "重排输入 COO，使其级顺序与输出 encoding 一致（典型是把无序 COO 变成有序）。";
+    Operands   (input_coo: sparse_tensor);
+    Results    (result_coo: sparse_tensor);
+    Attributes (algorithm: SortKind);
+    Properties [pure];
+    Assembly   { algorithm input_coo attr-dict
+                 ":" type(input_coo) "to" type(result_coo) }
+  }
+
+  // ---- linalg.generic 内部的集合运算 ----
+
+  op binary {
+    Doc "二元集合运算。三个 region 按 overlap、left、right 顺序给出：重叠处两个入口参数，单边处一个；任一 region 可以留空表示不贡献输出，left/right 也可以直接写成 identity。";
+    Operands   (x: any, y: any);
+    Results    (output: any);
+    Attributes (left_identity: optional<unit>, right_identity: optional<unit>);
+    Properties [pure];
+    Regions    (overlap_region: region [max_blocks(1)],
+                left_region: region [max_blocks(1)],
+                right_region: region [max_blocks(1)]);
+    Assembly   { x "," y ":" attr-dict type(x) "," type(y) "to" type(output)
+                 "overlap" "=" overlap_region
+                 "left" "=" oilist("identity" | left_region)
+                 "right" "=" oilist("identity" | right_region) }
+  }
+
+  op unary {
+    Doc "一元集合运算：present 处理存储中出现的元素（一个入口参数），absent 处理缺失元素（无入口参数，只能产生常量或外部已算好的值）。两个 region 都可以留空。";
+    Operands   (x: any);
+    Results    (output: any);
+    Properties [pure];
+    Regions    (present_region: region [max_blocks(1)],
+                absent_region: region [max_blocks(1)]);
+    Assembly   { x attr-dict ":" type(x) "to" type(output)
+                 "present" "=" present_region
+                 "absent" "=" absent_region }
+  }
+
+  op reduce {
+    Doc "带自定义结合律的归约：region 恰好一块、两个入口参数，块尾用 yield 给出归约值；标准 add/sub/or/xor 之外的归约才需要它。";
+    Operands   (x: any, y: any, identity: any);
+    Results    (output: any);
+    Properties [pure, same_operands_and_result_type];
+    Regions    (region: region [single_block, implicit_terminator(yield),
+                                entry_args(2), yield_types_match(output)]);
+    Assembly   { x "," y "," identity attr-dict ":" type(output) region }
+  }
+
+  op select {
+    Doc "决定是否保留某个操作数：region 恰好一块、一个入口参数，块尾 yield 出布尔值。";
+    Operands   (x: any);
+    Results    (output: any);
+    Properties [pure, same_operands_and_result_type];
+    Regions    (region: region [single_block, implicit_terminator(yield),
+                                entry_args(1), yield_types_match(output)]);
+    Assembly   { x attr-dict ":" type(x) region }
+  }
+
+  op yield {
+    Doc "集合运算与循环 region 的终结符；携带交由外层的结果值。";
+    Operands   (results: variadic<any>);
+    Properties [terminator, yields_to_enclosing_region];
+    Assembly   { results attr-dict ":" type(results) }
+  }
+
+  // ---- 遍历：按存储顺序、按迭代空间 ----
+
+  op foreach {
+    Doc "按存储顺序遍历张量中存放的元素。region 入口参数是 n 个 index 维坐标、元素值，然后是各 iter_args；坐标永远是语义维坐标，与存储顺序无关。order 只对未编码的稠密张量有意义，用来指定访问维的顺序。";
+    Operands   (tensor: ranked_tensor, init_args: variadic<any>);
+    Results    (results: variadic<any>);
+    Attributes (order: optional<affine_map>);
+    Properties [recursive_effects];
+    Regions    (region: region [single_block, implicit_terminator(yield),
+                                entry_args(index_coords, element_value, iter_args),
+                                yield_types_match(results)]);
+    Assembly   { "in" tensor
+                 if init_args { "init" "(" init_args ")" }
+                 if order { "order" "=" order }
+                 attr-dict ":" type(tensor)
+                 if init_args { "," type(init_args) }
+                 if results { "->" type(results) }
+                 "do" region }
+  }
+
+  op extract_iteration_space {
+    Doc "从稀疏张量的 [lo_lvl, hi_lvl) 级区间抽出迭代空间。压缩级的区间就是父迭代器指向的那段位置区间；结果的 iter_space 类型必须与输入的 encoding 和区间一致。";
+    Operands   (tensor: sparse_tensor, parent_iter: optional<iterator>);
+    Results    (extracted_space: iter_space);
+    Attributes (lo_lvl: index [non_negative],
+                hi_lvl: index [non_negative]);
+    Properties [pure];
+    Assembly   { tensor if parent_iter { "at" parent_iter }
+                 "lvls" "=" custom<LevelRange>(lo_lvl, hi_lvl)
+                 attr-dict ":" type(tensor)
+                 if parent_iter { "," type(parent_iter) }
+                 "->" type(extracted_space) }
+  }
+
+  op extract_value {
+    Doc "用迭代器取出当前元素的值；结果类型就是张量的元素类型。";
+    Operands   (tensor: sparse_tensor, iterator: iterator);
+    Results    (result: supported_element);
+    Properties [pure];
+    Assembly   { tensor "at" iterator attr-dict ":" type(tensor) ","
+                 type(iterator) }
+  }
+
+  op iterate {
+    Doc "在一个迭代空间上循环一层：定义迭代器与该级被用到的坐标，坐标统一转成 index；未用到的坐标可跳过。region 入口参数依次是 iter_args、被用到的坐标、迭代器，块尾必须是 yield。crd_used_lvls 是各位表示该级坐标是否被引用的位集。";
+    Operands   (iter_space: iter_space, init_args: variadic<any>);
+    Results    (results: variadic<any>);
+    Attributes (crd_used_lvls: i64 [level_bitmask]);
+    Properties [recursive_effects, speculatable];
+    Regions    (region: region [single_block, implicit_terminator(yield),
+                                entry_args(iter_args, used_coords, iterator),
+                                yield_types_match(results)]);
+    Implements [LoopLikeOpInterface, RegionBranchOpInterface];
+    Assembly Custom;
+  }
+
+  op coiterate {
+    Doc "在一组迭代空间上共同循环，每个 region 是一种情形：情形只由这一轮哪些空间给出了元素决定，未给出的位置写成下划线。每个 region 的入口参数是 iter_args、被用到的坐标、本情形出现的迭代器；cases 与 region 一一对应，每项是表示该情形覆盖哪些空间的位集。";
+    Operands   (iter_spaces: variadic<iter_space>, init_args: variadic<any>);
+    Results    (results: variadic<any>);
+    Attributes (crd_used_lvls: i64 [level_bitmask],
+                cases: array<i64> [level_bitmask, cardinality(case_regions)]);
+    Properties [recursive_effects, operand_segments_by_attribute];
+    Regions    (case_regions: variadic<region> [single_block,
+                                                implicit_terminator(yield),
+                                                entry_args(iter_args, used_coords,
+                                                           iterators),
+                                                yield_types_match(results)]);
+    Assembly Custom;
+  }
+
+  // ---- 调试与测试 ----
+
+  op print {
+    Doc "把位置、坐标、值三部分打到 stdout，仅供测试与调试。";
+    Operands   (tensor: sparse_tensor);
+    Properties [debug_only];
+    Assembly   { tensor attr-dict ":" type(tensor) }
+  }
+
+  op has_runtime_library {
+    Doc "测试用：报告 sparsifier 是否跑在运行时库模式，而不是直接生成代码。";
+    Results    (result: i1);
+    Assembly   { attr-dict }
+  }
+}

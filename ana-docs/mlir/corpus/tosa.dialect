@@ -139,9 +139,8 @@ dialect tosa {
                 extensions: optional<array<Extension>>);
     Assembly { "<" "specification_version" "=" specification_version
                "," "level" "=" level
-               if profiles { "," "profiles" "=" "[" profiles "]" }
-               if extensions { "," "extensions" "=" "[" extensions "]" }
-               ">" }
+               "," "profiles" "=" "[" profiles "]"
+               "," "extensions" "=" "[" extensions "]" ">" }
   }
 
   // ---- schema：共享同一批部件与文本形状的算子族 ----
@@ -279,8 +278,8 @@ dialect tosa {
 
   schema Rescale {
     Operands   (input1: tensor<number>,
-                multiplier: tensor<int_number>,
-                shift: tensor<i8>,
+                multiplier: tensor<i16 | i32, 1>,
+                shift: tensor<i8, 1>,
                 input_zp: scalar<tensor<number>>,
                 output_zp: scalar<tensor<number>>);
     Results    (output: tensor<number>);
@@ -339,7 +338,7 @@ dialect tosa {
     Operands   (input1: tensor<number>);
     Results    (output: tensor<number>);
     Attributes (perms: array<i32>);
-    Properties [pure, all_element_types_match(input1, output)];
+    Properties [pure, same_element_type];
     Implements [InferShapedTypeOpInterface, TosaOpInterface];
     Assembly   { operands "perms" "(" perms ")"
                  attr-dict ":" functional-type(operands, results) }
@@ -438,9 +437,9 @@ dialect tosa {
   }
 
   op argmax {
-    Doc "Index of the largest value along one axis; ties choose the first index.";
+    Doc "Index of the largest value along one axis; ties choose the first index. The result is an ordinary number tensor, not a separate index type.";
     Operands   (input1: tensor<number>);
-    Results    (output: tensor<int_number>);
+    Results    (output: tensor<number>);
     Attributes (axis: i32, nan_mode: NanPropagationMode = PROPAGATE);
     Properties [no_memory_effect];
     Implements [InferShapedTypeOpInterface, TosaOpInterface];
@@ -574,8 +573,7 @@ dialect tosa {
     Results    (output_list: variadic<tensor<number>>);
     Regions    (then_graph: region [single_block],
                 else_graph: region [single_block]);
-    Properties [recursive_memory_effects,
-                single_block_implicit_terminator(Yield)];
+    Properties [recursive_effects, implicit_terminator(Yield)];
     Implements [InferShapedTypeOpInterface, TosaOpInterface];
     Assembly Custom;
   }
@@ -586,8 +584,7 @@ dialect tosa {
     Results    (output_list: variadic<tensor<number>>);
     Regions    (cond_graph: region [single_block],
                 body_graph: region [single_block]);
-    Properties [recursive_memory_effects,
-                single_block_implicit_terminator(Yield), loop_like];
+    Properties [recursive_effects, implicit_terminator(Yield)];
     Implements [LoopLikeOpInterface, InferShapedTypeOpInterface, TosaOpInterface];
     Assembly Custom;
   }

@@ -36,14 +36,14 @@ dialect pdl_interp {
   schema Predicate {
     Doc "Fused predicate and two-way branch; the result picks one of two blocks.";
     Successors (true_dest: successor, false_dest: successor);
-    Properties [terminator];
+    Properties [pure, terminator];
   }
 
   // 所有 switch 原语的共同形状：一个默认后继，外加与 case 值等长的后继组。
   schema Switch {
     Doc "Fused value selection and multi-way dispatch.";
     Successors (default_dest: successor, cases: variadic<successor>);
-    Properties [terminator];
+    Properties [pure, terminator];
   }
 
   // 操作数计数与结果计数共用同一段文本，op 名区分看的是哪一侧。
@@ -220,8 +220,9 @@ dialect pdl_interp {
 
   op get_operand {
     Doc "Get one operand of an operation by index; null when out of range.";
-    Operands   (input_op: pdl.operation, index: i32);
+    Operands   (input_op: pdl.operation);
     Results    (value: pdl.value);
+    Attributes (index: i32 [non_negative]);
     Properties [pure];
     Assembly   { index "of" input_op attr-dict }
   }
@@ -239,8 +240,9 @@ dialect pdl_interp {
 
   op get_result {
     Doc "Get one result of an operation by index; null when out of range.";
-    Operands   (input_op: pdl.operation, index: i32);
+    Operands   (input_op: pdl.operation);
     Results    (value: pdl.value);
+    Attributes (index: i32 [non_negative]);
     Properties [pure];
     Assembly   { index "of" input_op attr-dict }
   }
@@ -276,9 +278,10 @@ dialect pdl_interp {
   // range 的元素类型必须等于结果的类型；越界取到 null。
   op extract {
     Doc "Extract the element at an index from a range; null when out of range.";
-    Operands   (range: pdl_sequence, index: i32);
+    Operands   (range: pdl_sequence);
     Results    (result: pdl_any);
-    Properties [pure, element_type_is_result_type];
+    Attributes (index: i32 [non_negative]);
+    Properties [pure, element_type_matches(range, result)];
     Assembly   { index "of" range ":" type(result) attr-dict }
   }
 
@@ -344,8 +347,8 @@ dialect pdl_interp {
     Operands   (arguments: variadic<pdl_any>);
     Results    (result: pdl.range<value> | pdl.range<type>);
     Properties [pure];
-    // GAP: 空实参分支 —— 结果类型只在实参为空时印出。
-    Assembly   { if arguments { arguments ":" type(arguments) } attr-dict }
+    // 文本整体交给钩子：它既按"实参是否为空"分支，又用 ref(...) 包住实参的类型。
+    Assembly Custom;
   }
 
   // ------------------------------------------------------------------
@@ -443,7 +446,7 @@ dialect pdl_interp {
                 sym_visibility: optional<string>);
     // 至少一个块：与 single_block（恰好一块）同一根轴，用块数事实表达。
     Regions    (body: region [min_blocks(1)]);
-    Properties [isolated_from_above, symbol];
+    Properties [isolated_from_above, symbol, symbol_visibility];
     Implements [FunctionOpInterface];
     Assembly Custom;
   }

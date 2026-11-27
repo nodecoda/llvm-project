@@ -1,0 +1,519 @@
+/// emitc —— 把 C/C++ 当作输出语言的方言。
+///
+/// 领域事实：emitc 不描述计算，而描述“将被翻译成 C/C++ 的 IR”。所以语料的
+/// 主角是文本形状，而不是求值语义：
+///   - 类型 `!emitc.<助记符>`：opaque 把 C 类型名原样带出；array/ptr/lvalue
+///     是构造器；size_t/ssize_t/ptrdiff_t 是与指针同宽的标量 typedef。
+///   - op `emitc.<助记符>`：多数是 C 表达式（可嵌进 expression），少数是语句
+///     容器（file/func/if/for/do/switch）。
+///
+/// 三条通用规则：
+///   - 在 emitc.file 的 body 内，op 名可以省略 `emitc.` 前缀：file 声明了
+///     默认方言 emitc。
+///   - constant、variable、member、member_of_ptr 没有自定义文本形式，只有
+///     generic 形式；其余 op 的文本由 Assembly 给出。
+///   - 算术/位运算的“纯”取决于操作数是否基础类型：C++ 运算符可以重载，
+///     只有基础类型上的运算才无副作用。
+
+dialect emitc {
+  Doc "C/C++ emission: opaque types, values, lvalues and C expressions.";
+
+  /* 支持的整数宽度是 1/8/16/32/64 位，有符号与无符号各一套。 */
+  constraint integer = i1 | i8 | i16 | i32 | i64 | u8 | u16 | u32 | u64;
+  /* 支持的浮点只有 f16、bf16、f32、f64；没有更宽的浮点。 */
+  constraint float_like = f16 | bf16 | f32 | f64;
+  /* 与指针同宽的整数 typedef。 */
+  constraint pointer_wide = size_t | ssize_t | ptrdiff_t;
+
+  constraint storage = integer | float_like | index | pointer_wide;
+  /* 能出现在表达式位置的值类型（不含 array、lvalue）。 */
+  constraint plain_value = storage | opaque | ptr | tuple | static_tensor;
+  /* EmitCType：op 的普通操作数与结果。 */
+  constraint emitc_value = plain_value | array;
+  /* EmitCType 或 LValueType：既可传值也可传位置的部件。 */
+  constraint emitc_type = emitc_value | lvalue;
+  /* ptr 的 pointee 可以是任何 EmitCType，包括 array。 */
+  constraint pointee = emitc_value;
+  /* array 元素：浮点、整数/index/opaque/指针宽、ptr；不能再是 array。 */
+  constraint array_element = integer | float_like | index | pointer_wide | opaque | ptr;
+  /* 整数类：整数、index、opaque、指针宽类型。 */
+  constraint integer_like = integer | index | opaque | pointer_wide;
+  /* 乘除法接受浮点或整数类。 */
+  constraint float_or_integer = float_like | integer_like;
+  /* 常量/初值：带类型的属性，或原样输出的 #emitc.opaque。 */
+  constraint attribute_value = opaque | typed;
+
+  enum CmpPredicate {
+    Doc "比较谓词；文本里写成 eq/ne/lt/le/gt/ge/three_way。";
+    Cases [eq = 0, ne = 1, lt = 2, le = 3, gt = 4, ge = 5, three_way = 6];
+  }
+
+  /* 属性与类型同名、却是两个命名空间：`#emitc.opaque` 是属性，
+   * `!emitc.opaque` 是类型，文本形状相同。 */
+  attr_def opaque {
+    Doc "#emitc.opaque：属性值原样输出，例如 NULL 或 CHAR_MIN。";
+    Parameters (value: string);
+    Assembly { "<" value ">" }
+  }
+
+  /* ---- 类型 ---- */
+
+  type_def opaque {
+    Doc "原样输出的 C/C++ 类型名；值非空，且不得以 * 结尾（指针必须用 ptr）。";
+    Parameters (value: string);
+    Assembly { "<" value ">" }
+  }
+
+  type_def array {
+    Doc "定长数组：每个维度后跟一个 x，再跟元素类型，如 10x20xf32；shape 非空，维度非负，元素不能是 array。";
+    Parameters (shape: array<i64>, element: array_element);
+    Assembly { "<" shape "x" element ">" }
+  }
+
+  type_def ptr {
+    Doc "指针；pointee 不能是 lvalue。";
+    Parameters (pointee: pointee);
+    Assembly { "<" pointee ">" }
+  }
+
+  type_def lvalue {
+    Doc "可赋值、可取地址的位置；包裹一个值类型，不能是 array，也不能再套 lvalue。";
+    Parameters (value: plain_value);
+    Assembly { "<" value ">" }
+  }
+
+  type_def size_t {
+    Doc "无符号、与指针同宽，对应标准头里的 size_t。";
+  }
+
+  type_def ssize_t {
+    Doc "有符号、与指针同宽，可表示 -1，对应标准头里的 ssize_t；使用它即放弃 C99 合规。";
+  }
+
+  type_def ptrdiff_t {
+    Doc "有符号指针差类型，与 size_t 同宽，对应标准头里的 ptrdiff_t。";
+  }
+
+  /* ---- 文件、函数与调用 ---- */
+
+  op file {
+    Doc "一个 C/C++ 文件的容器：id 选择要翻译的文件，body 是符号表；body 前的属性字典带 attributes 关键字。";
+    Attributes (id: string);
+    Regions    (body: region [single_block, graph_region, no_terminator]);
+    Properties [isolated_from_above, symbol_table, default_dialect(emitc)];
+    Implements [OpAsmOpInterface];
+    Assembly Custom;
+  }
+
+  op func {
+    Doc "函数定义或声明：body 为空表示外部函数；参数与结果的属性分别放在 arg_attrs/res_attrs。specifiers 只是普通属性（static/inline/extern 等词供翻译阶段使用），文本里出现在属性字典中。参数不能是 lvalue，结果零或一个，且不能返回 array。";
+    Attributes (sym_name: string,
+                function_type: function_type,
+                sym_visibility: optional<string>,
+                specifiers: optional<array<string>>,
+                arg_attrs: optional<array<dictionary>>,
+                res_attrs: optional<array<dictionary>>);
+    Regions    (body: region [max_blocks(1)]);
+    Properties [symbol, isolated_from_above, automatic_allocation_scope,
+                default_dialect(emitc)];
+    Implements [FunctionOpInterface, OpAsmOpInterface];
+    Assembly Custom;
+  }
+
+  op return {
+    Doc "函数返回；至多一个操作数，数量与类型必须匹配函数签名。";
+    Operands   (operand: optional<emitc_value>);
+    Properties [pure, terminator, return_like, has_parent(func)];
+    Assembly   { attr-dict if operand { ":" type(operand) } }
+  }
+
+  op declare_func {
+    Doc "在当前位置插入对某个 emitc.func 的声明；只带被声明者的符号名。";
+    Attributes (sym_name: flat_symbol_ref);
+    Implements [SymbolUserOpInterface];
+    Assembly   { sym_name attr-dict }
+  }
+
+  op call {
+    Doc "对同符号作用域内 emitc.func 的直接调用；实参与结果严格对应函数类型，本树没有 varargs 形式。arg_attrs/res_attrs 只在存在时打印。";
+    Operands   (operands: variadic<emitc_value>);
+    Results    (results: variadic<emitc_value>);
+    Attributes (callee: flat_symbol_ref,
+                arg_attrs: optional<array<dictionary>>,
+                res_attrs: optional<array<dictionary>>);
+    Implements [CallOpInterface, CExpressionInterface, SymbolUserOpInterface];
+    Assembly   { callee "(" operands ")"
+                 /* 顺序无关；两支可以同时出现（各 0 或 1 次）。 */
+                 oilist("arg_attrs" "=" arg_attrs
+                        | "res_attrs" "=" res_attrs)
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  op call_opaque {
+    Doc "调用任意非空 C/C++ 函数名；args 记录实参与内联属性的顺序（index 整数是操作数下标，且必须在范围内；array 值被拒绝），template_args 只收类型/整数/浮点/opaque 属性，二者都不进入自定义文本。结果不能是 array。";
+    Operands   (arg_operands: variadic<emitc_type>);
+    Results    (results: variadic<plain_value>);
+    Attributes (callee: string,
+                args: optional<array<attribute_value>>,
+                template_args: optional<array<attribute_value>>);
+    Implements [CExpressionInterface];
+    Assembly Custom;
+  }
+
+  op member_call_opaque {
+    Doc "对接收者的具名成员函数调用；接收者类型写在参数组之前，后面再跟参数组的函数类型。args/template_args 的约束与 call_opaque 相同，结果不能是 array。";
+    Operands   (receiver: emitc_value, arg_operands: variadic<emitc_type>);
+    Results    (results: variadic<plain_value>);
+    Attributes (callee: string,
+                args: optional<array<attribute_value>>,
+                template_args: optional<array<attribute_value>>);
+    Implements [CExpressionInterface];
+    Assembly Custom;
+  }
+
+  op include {
+    Doc "源文件包含；is_standard_include 为真时打印成尖括号形式，否则打印成带引号的字符串。";
+    Attributes (include: string, is_standard_include: optional<unit>);
+    Assembly   { oilist("<" include ">" | include) }
+  }
+
+  /* ---- 值与位置 ---- */
+
+  op constant {
+    Doc "常量；value 是带类型的属性或 #emitc.opaque，类型必须与结果一致（result 是 lvalue 时比较其包裹类型，指针宽类型允许 index 属性）；字符串属性被拒绝，要原样输出只能写 #emitc.opaque。没有自定义文本形式，只有 generic 形式。";
+    Attributes (value: attribute_value);
+    Results    (result: emitc_value);
+    Properties [constant_like, c_expression];
+ 
+    Assembly Generic;
+  }
+
+  op literal {
+    Doc "把非空字符串原样当作 C 表达式，例如 M_PI。";
+    Attributes (value: string);
+    Results    (result: emitc_value);
+    Properties [pure, c_expression, always_inline];
+    Assembly   { value attr-dict ":" type(result) }
+  }
+
+  op variable {
+    Doc "局部变量；结果是 lvalue（或 array），value 是初值。没有自定义文本形式，只有 generic 形式。";
+    Attributes (value: attribute_value);
+    Results    (result: lvalue | array);
+    Properties [memory_effect(allocate)];
+ 
+    Assembly Generic;
+  }
+
+  op global {
+    Doc "具名全局变量；extern/static/const 三个修饰按此顺序打印，初值以 = 跟在类型之后。初值可以是元素属性（仅 array，形状与元素类型须匹配）、类型相同的整数或浮点属性，或 opaque；static 与 extern 互斥。";
+    Attributes (sym_name: string,
+                sym_visibility: optional<string>,
+                type: type,
+                initial_value: optional<attribute_value>,
+                extern_specifier: optional<unit>,
+                static_specifier: optional<unit>,
+                const_specifier: optional<unit>);
+    Properties [symbol];
+    Assembly   { if extern_specifier { "extern" }
+                 if static_specifier { "static" }
+                 if const_specifier { "const" }
+                 if sym_visibility { sym_visibility }
+                 sym_name ":" custom<GlobalTypeAndInitialValue>(type, initial_value)
+                 attr-dict }
+  }
+
+  op get_global {
+    Doc "取全局变量的位置：array 全局量时结果就是该 array，其余类型时结果是它的 lvalue；对 const 全局量写入未定义。";
+    Attributes (name: flat_symbol_ref);
+    Results    (result: array | lvalue);
+    Properties [pure, c_expression, always_inline];
+    Assembly   { name ":" type(result) attr-dict }
+  }
+
+  op load {
+    Doc "把 lvalue 的内容读成值；结果类型就是 lvalue 包裹的值类型。";
+    Operands   (operand: lvalue);
+    Results    (result: plain_value);
+    Properties [memory_effect(read), c_expression];
+    Assembly   { operand attr-dict ":" type(operand) }
+  }
+
+  /* 赋值与复合赋值同形：value 写到 var 指向的位置，value 类型必须等于
+   * var 包裹的类型；没有结果。 */
+  schema AssignLike {
+    Doc "赋值：value 写到 var 指向的位置；var 不能是块参数，必须由 variable/global 等 op 产生。";
+    Operands   (var: lvalue, value: emitc_value);
+    Properties [memory_effect(write)];
+    Assembly   { value ":" type(value) "to" var ":" type(var) attr-dict }
+  }
+
+  op assign from AssignLike {
+    Doc "普通赋值，打印成 C 的 =。";
+  }
+
+  op add_assign from AssignLike {
+    Doc "打印成 +=。";
+  }
+
+  op sub_assign from AssignLike {
+    Doc "打印成 -=。";
+  }
+
+  op mul_assign from AssignLike {
+    Doc "打印成 *=。";
+  }
+
+  op div_assign from AssignLike {
+    Doc "打印成 /=。";
+  }
+
+  op rem_assign from AssignLike {
+    Doc "打印成 %=。";
+  }
+
+  op address_of {
+    Doc "取 lvalue 的地址；结果是指向被包裹值类型的 ptr。";
+    Operands   (reference: lvalue);
+    Results    (result: ptr);
+    Properties [pure, c_expression];
+    Assembly   { reference ":" type(reference) attr-dict }
+  }
+
+  op dereference {
+    Doc "解引用 ptr，得到指向值的 lvalue；结果的值类型必须等于 pointee。";
+    Operands   (pointer: ptr);
+    Results    (result: lvalue);
+    Properties [pure, c_expression, always_inline];
+    Assembly   { pointer ":" type(pointer) attr-dict }
+  }
+
+  op cast {
+    Doc "C 风格显式转换；pure 声明该转换无副作用可推测。允许一维同元素 array 转 ptr，其余操作数与结果都限于整数/index/opaque/浮点/ptr。";
+    Operands   (source: emitc_value);
+    Results    (dest: emitc_value);
+    Attributes (pure: optional<unit>);
+    Implements [CastOpInterface, CExpressionInterface];
+    Assembly   { source if pure { "pure" } attr-dict ":" type(source) "to" type(dest) }
+  }
+
+  op subscript {
+    Doc "下标：array 时下标个数必须等于秩，ptr 时恰好一个，opaque 时不作假设；array/ptr 的下标类型须是整数类。结果是指向元素或 pointee 的 lvalue。";
+    Operands   (value: array | ptr | opaque, indices: variadic<emitc_value>);
+    Results    (result: lvalue);
+    Properties [pure, c_expression, always_inline];
+    Assembly   { value "[" indices "]" attr-dict
+                 ":" functional-type(operands, results) }
+  }
+
+  op member {
+    Doc "点号成员访问：operand 是 opaque 值或其 lvalue。位置与值必须一致：operand 是 lvalue 时结果必须也是 lvalue/array，operand 是值时不返回值以外的东西。没有自定义文本形式，只有 generic 形式。";
+    Attributes (member: string);
+    Operands   (operand: opaque | lvalue<opaque>);
+    Results    (result: emitc_value | lvalue);
+    Properties [pure, c_expression];
+ 
+    Assembly Generic;
+  }
+
+  op member_of_ptr {
+    Doc "箭头成员访问：operand 是 opaque 或 ptr 的 lvalue；结果只能是 array 或 lvalue。只有 generic 形式。";
+    Attributes (member: string);
+    Operands   (operand: lvalue<opaque> | lvalue<ptr>);
+    Results    (result: array | lvalue);
+    Properties [pure, c_expression];
+ 
+    Assembly Generic;
+  }
+
+  op conditional {
+    Doc "三元条件表达式；condition 是 i1，两个分支与结果类型相同。";
+    Operands   (condition: i1, true_value: emitc_value, false_value: emitc_value);
+    Results    (result: emitc_value);
+    Properties [pure, c_expression];
+    Assembly   { operands attr-dict ":" type(result) }
+  }
+
+  op expression {
+    Doc "把 region 内一棵 C 表达式树打包成一个值：region 单块、以 yield 结束，操作数成为 region 的块参数；body 内必须是一棵单一定义的表达式树（有副作用的 op 只能从根到达一次）；默认可内联到使用处，do_not_inline 关闭内联。";
+    Operands   (defs: variadic<emitc_type>);
+    Results    (result: emitc_type);
+    Attributes (do_not_inline: optional<unit>);
+    Regions    (region: region [single_block, implicit_terminator(yield)]);
+    Properties [isolated_from_above, graph_region, default_dialect(emitc)];
+    Assembly Custom;
+  }
+
+  op verbatim {
+    Doc "原样输出一段文本；带操作数时 value 是格式串，{} 按顺序被操作数替换，{{ 表示一个字面 {。";
+    Operands   (fmtArgs: variadic<emitc_type>);
+    Attributes (value: string);
+    Assembly   { value if fmtArgs { "args" fmtArgs ":" type(fmtArgs) } attr-dict }
+  }
+
+  /* ---- 控制流 ---- */
+
+  op if {
+    Doc "if/else：condition 是 i1，then 区一块，else 区零或一块；两区都以 yield 结束。";
+    Operands   (condition: i1);
+    Regions    (then_region: region [single_block, implicit_terminator(yield)],
+                else_region: region [max_blocks(1)]);
+    Implements [RegionBranchOpInterface];
+    Assembly Custom;
+  }
+
+  op for {
+    Doc "C 的 for：下界、上界、步长三者类型相同；归纳变量是 body 的第一块参数。";
+    Operands   (lower: integer_like, upper: integer_like, step: integer_like);
+    Regions    (body: region [single_block, implicit_terminator(yield)]);
+    Implements [RegionBranchOpInterface];
+    Assembly Custom;
+  }
+
+  op do {
+    Doc "do-while：body 至少执行一次；condition 区单块，先由 expression 算出 i1 再 yield。";
+    Regions    (body_region: region [single_block],
+                condition_region: region [single_block]);
+    Assembly Custom;
+  }
+
+  op switch {
+    Doc "按整数值分派：arg 是整数/index/opaque/指针宽类型；cases 是常量表，case 区顺序与之一一对应；default 区隐式 yield，case 区必须显式 yield。";
+    Operands   (arg: integer_like);
+    Attributes (cases: array<i64>);
+    Regions    (default_region: region [single_block],
+                case_regions: variadic<region> [single_block]);
+    Implements [RegionBranchOpInterface];
+    Assembly Custom;
+  }
+
+  op yield {
+    Doc "terminator：父 op 有结果时必须带操作数且类型匹配；只有 expression 允许 yield lvalue。";
+    Operands   (result: optional<emitc_type>);
+    Properties [pure, terminator,
+                has_parent(do) | has_parent(expression) | has_parent(for)
+                | has_parent(if) | has_parent(switch)];
+    Assembly   { attr-dict if result { ":" type(result) } }
+  }
+
+  /* ---- 运算：一元与二元 ---- */
+
+  schema Unary {
+    Doc "一元 C 表达式：operands attr-dict : (T) -> (U)。";
+    Operands   (operands: emitc_value);
+    Results    (result: emitc_value);
+    Properties [pure_if_fundamental, c_expression];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema Binary {
+    Doc "二元 C 表达式：operands attr-dict : (T, T) -> (U)。";
+    Operands   (lhs: emitc_value, rhs: emitc_value);
+    Results    (result: emitc_value);
+    Properties [pure_if_fundamental, c_expression];
+    Assembly   { operands attr-dict ":" functional-type(operands, results) }
+  }
+
+  op add from Binary {
+    Doc "加法；至多一个操作数是 ptr，另一侧必须是整数或 opaque，结果仍是该 ptr 类型。";
+  }
+
+  op sub from Binary {
+    Doc "减法；ptr 减整数/opaque 得到 ptr，ptr 减 ptr 得到整数、ptrdiff_t 或 opaque；rhs 是 ptr 时 lhs 也必须是 ptr。";
+  }
+
+  op mul from Binary {
+    Doc "乘法；操作数限于浮点或整数类。";
+    Operands (lhs: float_or_integer, rhs: float_or_integer);
+  }
+
+  op div from Binary {
+    Doc "除法；操作数限于浮点或整数类。";
+    Operands (lhs: float_or_integer, rhs: float_or_integer);
+  }
+
+  op rem from Binary {
+    Doc "取余；操作数限于整数类。";
+    Operands (lhs: integer_like, rhs: integer_like);
+  }
+
+  op bitwise_and from Binary {
+    Doc "按位与。";
+  }
+
+  op bitwise_or from Binary {
+    Doc "按位或。";
+  }
+
+  op bitwise_xor from Binary {
+    Doc "按位异或。";
+  }
+
+  op bitwise_left_shift from Binary {
+    Doc "左移。";
+  }
+
+  op bitwise_right_shift from Binary {
+    Doc "右移。";
+  }
+
+  op logical_and from Binary {
+    Doc "逻辑与。";
+  }
+
+  op logical_or from Binary {
+    Doc "逻辑或。";
+  }
+
+  op cmp {
+    Doc "比较；谓词是文本的第一个词，后接两个操作数，结果通常为 i1（也可为 opaque）。";
+    Operands   (lhs: emitc_value, rhs: emitc_value);
+    Results    (result: emitc_value);
+    Attributes (predicate: CmpPredicate);
+    Properties [pure_if_fundamental, c_expression];
+    Assembly   { predicate "," operands attr-dict
+                 ":" functional-type(operands, results) }
+  }
+
+  op unary_minus from Unary {
+    Doc "一元负号。";
+  }
+
+  op unary_plus from Unary {
+    Doc "一元正号。";
+  }
+
+  op bitwise_not from Unary {
+    Doc "按位取反。";
+  }
+
+  op logical_not from Unary {
+    Doc "逻辑取反。";
+  }
+
+  /* ---- 自增/自减 ---- */
+
+  schema IncDec {
+    Doc "自增/自减：操作数是 lvalue，结果的值类型等于 lvalue 包裹的类型。";
+    Operands   (operand: lvalue);
+    Results    (result: emitc_value);
+    Properties [memory_effect(read), memory_effect(write), c_expression];
+    Assembly   { operand attr-dict ":" type(operand) }
+  }
+
+  op pre_increment from IncDec {
+    Doc "前置 ++。";
+  }
+
+  op post_increment from IncDec {
+    Doc "后置 ++。";
+  }
+
+  op pre_decrement from IncDec {
+    Doc "前置 --。";
+  }
+
+  op post_decrement from IncDec {
+    Doc "后置 --。";
+  }
+}

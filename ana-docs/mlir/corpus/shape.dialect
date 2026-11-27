@@ -24,9 +24,9 @@ dialect shape {
     Doc "A value paired with the shape it conforms to; either half may be unknown.";
   }
 
-  type_def extent_tensor {
-    Doc "A rank-1 tensor of index extents; it cannot represent the invalid state.";
-  }
+  /* extent_tensor 不是新类型，是 rank-1 的 index 张量（ShapeBase.td:94）；
+   * 它不能表示 invalid，这一点由类型本身保证。 */
+  constraint extent_tensor = tensor<index, 1>;
 
   type_def witness {
     Doc "A compile-time proof that runtime shape assertions hold; it carries no data.";
@@ -95,7 +95,7 @@ dialect shape {
 
   op const_shape {
     Doc "A constant shape or extent tensor; the attribute holds one extent per rank.";
-    Attributes (shape: shape);
+    Attributes (shape: array<index>);
     Results    (result: shape_or_extent);
     Properties [pure, constant_like];
     Implements [InferTypeOpInterface];
@@ -104,7 +104,7 @@ dialect shape {
 
   op const_size {
     Doc "A constant size, used both as a value and as a result name.";
-    Attributes (value: size);
+    Attributes (value: index);
     Results    (result: size);
     Properties [pure, constant_like];
     Implements [OpAsmOpInterface];
@@ -291,6 +291,8 @@ dialect shape {
     Doc "Passes a shape or size through after printing it; test-only.";
     Operands (input: shape_or_size);
     Results  (output: shape_or_size);
+ 
+    Assembly Generic;
   }
 
   op split_at {
@@ -298,6 +300,8 @@ dialect shape {
     Operands (operand: shape_or_extent, index: size_or_index);
     Results  (head: shape_or_extent, tail: shape_or_extent);
     Properties [pure];
+ 
+    Assembly Generic;
   }
 
   op concat {
@@ -384,7 +388,7 @@ dialect shape {
                 sym_visibility: optional<string>);
     Regions    (body: region);
     Properties [affine_scope, automatic_allocation_scope, isolated_from_above,
-                symbol, symbol_visibility, function_interface];
+                symbol, symbol_visibility];
     Implements [FunctionOpInterface, OpAsmOpInterface];
     Assembly Custom;
   }

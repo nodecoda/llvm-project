@@ -92,6 +92,7 @@ static int normal_kw(const char *s) {
   if (!strcmp(s, "Implements")) return KW_IMPLEMENTS;
   if (!strcmp(s, "Assembly")) return KW_ASSEMBLY;
   if (!strcmp(s, "Custom")) return KW_CUSTOM;
+  if (!strcmp(s, "Generic")) return KW_GENERIC;
   if (!strcmp(s, "Cases")) return KW_CASES;
   if (!strcmp(s, "Groups")) return KW_GROUPS;
   if (!strcmp(s, "Parameters")) return KW_PARAMETERS;

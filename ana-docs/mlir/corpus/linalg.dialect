@@ -85,27 +85,27 @@ dialect linalg {
 
   op copy from Structured {
     Doc "Copy the tensor elementwise.";
-    Properties [inputs(1), outputs(1), elementwise];
+    Properties [arity(inputs, 1), arity(outputs, 1), elementwise];
   }
 
   op fill from Structured {
     Doc "Fill the tensor with a scalar value.";
-    Properties [inputs(1), outputs(1), elementwise];
+    Properties [arity(inputs, 1), arity(outputs, 1), elementwise];
   }
 
   op add from Structured {
     Doc "Add two tensors elementwise.";
-    Properties [inputs(2), outputs(1), elementwise];
+    Properties [arity(inputs, 2), arity(outputs, 1), elementwise];
   }
 
   op matmul from Structured {
     Doc "Matrix multiplication of two 2-D inputs.";
-    Properties [inputs(2), outputs(1), contraction];
+    Properties [arity(inputs, 2), arity(outputs, 1), contraction];
   }
 
   op batch_matmul from Structured {
     Doc "Batched matrix multiplication.";
-    Properties [inputs(2), outputs(1), contraction];
+    Properties [arity(inputs, 2), arity(outputs, 1), contraction];
   }
 
   // ---- 区域内操作 ----

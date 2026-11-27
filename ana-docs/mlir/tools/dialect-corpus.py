@@ -28,6 +28,41 @@ CLAUSES = ["Operands", "Results", "Attributes", "Regions", "Successors",
            "Properties", "Implements", "Assembly", "Doc", "Cases", "Groups",
            "Parameters", "Methods"]
 STRUCT = ["Operands", "Results", "Attributes", "Regions", "Successors"]
+# 核心事实词表：语义在 19 章定义，任何方言可用。其余事实是"方言本地事实"，
+# 必须在方言文档里解释；同一名字被 3 个以上方言使用仍不在核心表内 → 违规。
+# 类型名也是逃逸点：declared（本语料声明）与 builtin（语言/IR 内建）之外的名字
+# 必须被报告，否则拼错一个类型名会被静默当成"外部类型"。
+BUILTIN_TYPES = {
+    "i1", "i8", "i16", "i32", "i64", "f16", "bf16", "f32", "f64",
+    "f8e4m3fn", "f8e5m2", "f4e2m1fn",
+    "index", "any", "none", "unit", "string", "bool", "dict", "dictionary",
+    "tensor", "vector", "memref", "complex", "tuple", "function_type",
+    "flat_symbol_ref", "attribute_value", "successor", "region",
+    "integer", "signless_integer", "unsigned_integer", "float", "type",
+    "block", "attribute", "affine_map", "affine_set", "symbol_ref",
+    "opaque", "i4", "i2", "f80", "f128", "none_type",
+}
+TYPE_KEYWORDS = {"optional", "variadic", "array", "type_of"}
+
+CORE_FACTS = {
+    # 结构 / trait
+    "pure", "commutative", "terminator", "elementwise", "constant_like",
+    "symbol", "symbol_table", "symbol_visibility", "isolated_from_above",
+    "recursive_effects", "no_memory_effect", "automatic_allocation_scope",
+    "destination_style", "contraction", "return_like", "no_region_args",
+    "operand_segments_by_attribute", "memory_effect",
+    "affine_scope", "infer_tensor_type", "same_variadic_operand_size",
+    # region
+    "single_block", "min_blocks", "max_blocks", "implicit_terminator",
+    "no_terminator",
+    # 绑定：值域与基数
+    "positive", "non_negative", "cardinality", "arity",
+    # 关系
+    "has_parent", "same_shape", "same_rank", "same_element_type",
+    "broadcastable", "element_type_matches", "unwraps_element_type",
+    "entry_args_unwrap", "yield_types_match",
+}
+
 ASM_DIRECTIVES = {"attr-dict", "attr-dict-with-keyword", "prop-dict", "type",
                   "functional-type",
                   "operands", "results", "regions", "successors", "custom",
@@ -147,6 +182,39 @@ def parts_of(body):
     return parts
 
 
+def split_top(expr):
+    """按顶层逗号切分（跳过括号/尖括号内部）。"""
+    out, depth, cur = [], 0, ""
+    for c in expr:
+        if c in "(<[{":
+            depth += 1
+        elif c in ")>]}":
+            depth -= 1
+        if c == "," and depth == 0:
+            out.append(cur)
+            cur = ""
+        else:
+            cur += c
+    out.append(cur)
+    return out
+
+
+def fact_names(body):
+    """事实原子：Properties 列表，以及绑定/region 的方括号注解。"""
+    out = []
+    b = re.sub(r'"(?:\\.|[^"])*"', " ", body)      # 字符串字面量不是事实
+    for m in re.finditer(r"Properties\s*\[(.*?)\]\s*;", b, re.S):
+        out += top_names(m.group(1))
+    for m in re.finditer(r"(?:Operands|Results|Attributes|Successors|Parameters)"
+                         r"\s*\((.*?)\)\s*;", b, re.S):
+        for ann in re.findall(r"\[([^\[\]]*)\]", m.group(1)):
+            out += top_names(ann)
+    for m in re.finditer(r"Regions\s*\((.*?)\)\s*;", b, re.S):
+        for ann in re.findall(r"\[([^\[\]]*)\]", m.group(1)):
+            out += top_names(ann)
+    return out
+
+
 def asm_refs(body):
     refs = set()
     for blk in blocks(body, "Assembly"):
@@ -214,6 +282,26 @@ def main():
         for pat in (r"::", r"\bnamespace\b", r"#include", r"\$\w", r"\[\{"):
             if re.search(pat, clean):
                 leakage.append({"file": path.name, "pattern": pat})
+
+    # 逃逸点：语言表达不了的东西必须显式写在某个点上，并且可数。
+    escape = OrderedDict()
+    all_facts = Counter()
+    per_file_facts = {}
+    for path in files:
+        text = file_text[path.name]
+        ents = [e for e in entities(text) if e[0] != "dialect"]
+        custom_asm = len(re.findall(r"Assembly\s+Custom\s*;", text))
+        # 通用格式 = 既没有自己的 Assembly，也没有从 schema 继承（没有 from）。
+        generic = sum(1 for k, _, h, b in ents
+                      if k == "op" and not re.search(r"\bfrom\b", h)
+                      and not re.search(r"\bAssembly\b", b))
+        hooks = sum(len(re.findall(r"custom<", b)) for _, _, _, b in ents)
+        fn = [n for _, _, _, b in ents for n in fact_names(b)]
+        all_facts.update(fn)
+        per_file_facts[path.name] = set(fn)
+        escape[path.name] = {"Custom": custom_asm, "generic": generic,
+                             "custom<>": hooks, "facts": len(fn),
+                             "distinct": len(set(fn))}
 
     schemas = {}
     for _, kind, name, header, body in all_entities:
@@ -298,6 +386,108 @@ def main():
     print("## properties: " + ", ".join(f"{k}={v}" for k, v in props.most_common()))
     print("## facts: " + ", ".join(f"{k}={v}" for k, v in facts.most_common()))
     print("## interfaces: " + ", ".join(f"{k}={v}" for k, v in ifaces.most_common()))
+    # 文本通道：每个 op 必须显式声明一种（块 / Custom / Generic）。
+    channels = OrderedDict()
+    no_channel = []
+    for path in files:
+        text = file_text[path.name]
+        blk = hook = gen = 0
+        for kind, name, header, body in entities(text):
+            if kind != "op":
+                continue
+            if re.search(r"Assembly\s+Custom\s*;", body):
+                hook += 1
+            elif re.search(r"Assembly\s+Generic\s*;", body):
+                gen += 1
+            elif re.search(r"Assembly\s*\{", body):
+                blk += 1
+            elif re.search(r"\bfrom\b", header):
+                blk += 1          # 从 schema 继承块格式
+            else:
+                no_channel.append("%s:%s" % (path.name, name))
+        channels[path.name] = {"block": blk, "Custom": hook, "Generic": gen}
+
+    local = Counter({k: v for k, v in all_facts.items() if k not in CORE_FACTS})
+    spread = Counter()
+    for fname, names in per_file_facts.items():
+        for n in names:
+            spread[n] += 1
+    unpromoted = sorted(n for n in CORE_FACTS if n not in all_facts)
+    overloaded = sorted(n for n, c in spread.items()
+                        if c >= 3 and n not in CORE_FACTS)
+
+    print("\n## escape points")
+    print("| file | Assembly Custom | generic | custom<> | facts | distinct |")
+    print("| --- | --- | --- | --- | --- | --- |")
+    for name, e in escape.items():
+        print("| %s | %d | %d | %d | %d | %d |"
+              % (name, e["Custom"], e["generic"], e["custom<>"],
+                 e["facts"], e["distinct"]))
+    tot = {k: sum(e[k] for e in escape.values()) for k in
+           ("Custom", "generic", "custom<>", "facts")}
+    once = [n for n, c in all_facts.items() if c == 1]
+    print()
+    print("## escape totals: Custom=%d, generic=%d, custom<>=%d, facts=%d "
+          "(distinct %d, single-use %d)"
+          % (tot["Custom"], tot["generic"], tot["custom<>"], tot["facts"],
+             len(all_facts), len(once)))
+
+    print("\n## text channels")
+    print("| file | block | Custom | Generic |")
+    print("| --- | --- | --- | --- |")
+    for name, c in channels.items():
+        print("| %s | %d | %d | %d |" % (name, c["block"], c["Custom"],
+                                         c["Generic"]))
+    print("ops without a text channel:", no_channel or "none")
+    print("## fact vocabulary: core=%d used, local(distinct)=%d, "
+          "local(single-use)=%d"
+          % (len([n for n in CORE_FACTS if n in all_facts]), len(local),
+             len([n for n, c in local.items() if c == 1])))
+    print("local facts:", ", ".join("%s=%d" % kv for kv in local.most_common()))
+    print("core, unused:", unpromoted or "none")
+    print("local but used by >=3 dialects (must promote):", overloaded or "none")
+
+    # 类型名解析：declared（全语料 type_def/constraint/enum/attr_def）> builtin > 外部署名。
+    all_declared = set()
+    for path in files:
+        for k, n, _, _ in entities(file_text[path.name]):
+            if k in ("type_def", "constraint", "enum", "attr_def"):
+                all_declared.add(n)
+    unresolved = {}
+    for path in files:
+        text = file_text[path.name]
+        names = set()
+        for kind, name, header, body in entities(text):
+            if kind == "dialect":
+                continue
+            for m in re.finditer(r"(?:Operands|Results|Attributes|Successors|"
+                                 r"Parameters)\s*\((.*?)\)\s*;", body, re.S):
+                for part in split_top(m.group(1)):
+                    bm = re.match(r"\s*[A-Za-z_][\w.]*\s*:\s*(.+)$", part, re.S)
+                    if not bm:
+                        continue
+                    texpr = bm.group(1)
+                    texpr = texpr.split("[")[0]      # 注解不是类型
+                    texpr = texpr.split("=")[0]      # 默认值不是类型
+                    texpr = re.sub(r"\w+\s*\([^)]*\)", " ", texpr)  # type_of(x)
+                    names |= set(re.findall(r"[A-Za-z_][\w.]*", texpr))
+            for m in re.finditer(r"constraint\s+\w+\s*=\s*([^;]+);", body):
+                names |= set(re.findall(r"[A-Za-z_][\w.]*", m.group(1)))
+        def resolved(n):
+            if n in all_declared or n in BUILTIN_TYPES or n in TYPE_KEYWORDS:
+                return True
+            # 限定名 pdl.range 的头部 pdl 在别处声明，末段是类型名
+            return "." in n and n.split(".")[-1] in all_declared
+
+        rest = sorted(n for n in names if not resolved(n))
+        unresolved[path.name] = rest
+
+    print("\n## external type names (neither declared in corpus nor builtin)")
+    print("These must be recognizable domain names; a typo shows up here.")
+    for name, rest in unresolved.items():
+        if rest:
+            print("| %s | %s |" % (name, ", ".join(rest)))
+
     print("\n## checks")
     print("missing `from`/`extends` targets:", missing_from or "none")
     print("dangling assembly refs:", dangling or "none")

@@ -77,7 +77,8 @@ dialect async {
                               implicit_terminator(yield),
                               entry_args_unwrap(body_operands),
                               yield_types_match(body_results)]);
-    Properties [recursive_effects, automatic_allocation_scope];
+    Properties [recursive_effects, automatic_allocation_scope,
+                operand_segments_by_attribute];
     Implements [RegionBranchOpInterface];
     Assembly Custom;
   }
@@ -89,9 +90,9 @@ dialect async {
                 sym_visibility: optional<string>,
                 arg_attrs: optional<array<dictionary>>,
                 res_attrs: optional<array<dictionary>>);
-    Regions    (body: region [single_block]);
-    Properties [symbol, isolated_from_above];
-    Implements [FunctionOpInterface];
+    Regions    (body: region);
+    Properties [symbol, symbol_visibility, isolated_from_above];
+    Implements [FunctionOpInterface, OpAsmOpInterface];
     Assembly Custom;
   }
 
@@ -129,7 +130,8 @@ dialect async {
     Results    (result: optional<any>);
     Properties [unwraps_element_type(operand)];
     // 钩子负责"token 不印结果类型、value 印解包后的元素类型"这段选择。
-    Assembly   { custom<AwaitResultType>(type(operand), type(result)) }
+    Assembly   { operand ":" custom<AwaitResultType>(type(operand), type(result))
+                 attr-dict }
   }
 
   // ---- 组层 ----
@@ -153,39 +155,39 @@ dialect async {
 
   op coro.id {
     Doc "produce a switched-resume coroutine identifier";
-    Results  (id: coro_id);
+    Results  (id: coro.id);
     Assembly { attr-dict }
   }
 
   op coro.begin {
     Doc "allocate the coroutine frame and return a handle to it";
-    Operands (id: coro_id);
-    Results  (handle: coro_handle);
+    Operands (id: coro.id);
+    Results  (handle: coro.handle);
     Assembly { id attr-dict }
   }
 
   op coro.free {
     Doc "deallocate the frame once the coroutine has ended";
-    Operands (id: coro_id, handle: coro_handle);
+    Operands (id: coro.id, handle: coro.handle);
     Assembly { id "," handle attr-dict }
   }
 
   op coro.end {
     Doc "mark the end of the coroutine inside its suspend block";
-    Operands (handle: coro_handle);
+    Operands (handle: coro.handle);
     Assembly { handle attr-dict }
   }
 
   op coro.save {
     Doc "save the coroutine state before suspension";
-    Operands (handle: coro_handle);
-    Results  (state: coro_state);
+    Operands (handle: coro.handle);
+    Results  (state: coro.state);
     Assembly { handle attr-dict }
   }
 
   op coro.suspend {
     Doc "suspend, transferring control to the suspend, resume or cleanup successor";
-    Operands   (state: coro_state);
+    Operands   (state: coro.state);
     Successors (suspend_dest: successor, resume_dest: successor,
                 cleanup_dest: successor);
     Properties [terminator];
@@ -231,13 +233,13 @@ dialect async {
 
   op runtime.resume {
     Doc "resume the coroutine on a runtime-managed thread";
-    Operands (handle: coro_handle);
+    Operands (handle: coro.handle);
     Assembly { handle attr-dict }
   }
 
   op runtime.await_and_resume {
     Doc "await a token, value or group, then resume the coroutine on a runtime-managed thread";
-    Operands (operand: any_async, handle: coro_handle);
+    Operands (operand: any_async, handle: coro.handle);
     Assembly { operand "," handle attr-dict ":" type(operand) }
   }
 

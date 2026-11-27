@@ -5,7 +5,7 @@
 > [`corpus/shape.dialect`](corpus/shape.dialect)、
 > [`corpus/async.dialect`](corpus/async.dialect)、
 > [`corpus/quant.dialect`](corpus/quant.dialect)
-> （合计 1858 行、147 个 op）；
+> （合计 1864 行、147 个 op）；
 > [`dialect-grammar.y`](dialect-grammar.y)（**58 条规则 / 136 条产生式**，0 冲突）；
 > 19 个语料文件全部 `parse OK`。
 >
@@ -29,13 +29,16 @@
 
 | 文件 | 行数 | dialect | constraint | enum | attr_def | type_def | schema | op |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `pdl_interp.dialect` | 450 | 1 | 5 | | | | 4 | 39 |
-| `tosa.dialect` | 651 | 1 | 5 | 9 | 9 | 1 | 21 | 36 |
-| `shape.dialect` | 398 | 1 | 5 | | | 5 | 6 | 40 |
-| `async.dialect` | 278 | 1 | 2 | | | 6 | 3 | 29 |
+| `pdl_interp.dialect` | 453 | 1 | 5 | | | | 4 | 39 |
+| `tosa.dialect` | 648 | 1 | 5 | 9 | 9 | 1 | 21 | 36 |
+| `shape.dialect` | 402 | 1 | 6 | | | 4 | 6 | 40 |
+| `async.dialect` | 280 | 1 | 2 | | | 6 | 3 | 29 |
 | `quant.dialect` | 81 | 1 | 4 | | | 4 | 1 | 3 |
 | 其余 14 个方言 | 1809 | 14 | 8 | 14 | 1 | 4 | 19 | 199 |
-| **合计** | **3667** | **19** | **29** | **23** | **10** | **20** | **54** | **346** |
+| **合计** | **3673** | **19** | **30** | **23** | **10** | **19** | **54** | **346** |
+
+> 本表在第五轮复核后修正（初版为 3667 行、29 constraint、20 type_def）：
+> 事实核对改了 async/tosa/shape/pdl_interp 的几行，行数与计数随之变化。
 
 各方言的领域贡献：
 
@@ -168,7 +171,7 @@ Regions (body: region [single_block,
 | `type_def` 的底层类型 | `ShapeBase.td:94` 的 `extent_tensor` | 需要"等价于 rank-1 index 张量"这种等式语法，值得单独设计 |
 | 接口方法覆写 | `ShapeOps.td:130` 的 `["getAsmResultNames"]` | 覆写列表是实现细节，边界未定 |
 | 匿名位置部件 | `AsyncOps.td:223` 的无名结果 | 名字在本语言里是"供 Assembly 引用"的装置，给无名结果起个名是可接受代价 |
-| generic 格式 | `ShapeOps.td:691`、`:703` | 缺省即通用：没有 Assembly 子句就是 generic，不需要新词 |
+| generic 格式 | `ShapeOps.td:691`、`:703` | 一度按“缺省即通用”处理；19 章 R1 推翻了这一点：省略是看不见的逃逸点，改为显式 `Assembly Generic;` |
 
 ## 4. 属性层：cardinality 挂在哪一层
 

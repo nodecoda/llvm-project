@@ -34,6 +34,7 @@
 %token KW_DOC KW_OPERANDS KW_RESULTS KW_ATTRIBUTES KW_REGIONS KW_SUCCESSORS
 %token KW_PROPERTIES KW_IMPLEMENTS KW_ASSEMBLY KW_CUSTOM
 %token KW_CASES KW_GROUPS KW_PARAMETERS
+%token KW_GENERIC
 
 /* Assembly 模式 */
 %token A_ATTR_DICT A_ATTR_DICT_WITH_KEYWORD A_TYPE A_IF
@@ -285,9 +286,12 @@ fact_arg
 /* Assembly：块状双向程序，或整体交给钩子                                */
 /*===--------------------------------------------------------------------===*/
 
+/* 文本通道必须显式写出：块格式、整体交给钩子、或明确"没有自定义格式"。
+ * 省略 Assembly 子句不被解释为 generic——那样逃逸点就成了看不见的黑洞。 */
 assembly
   : L_BRACE asm_list R_BRACE
   | KW_CUSTOM SEMI
+  | KW_GENERIC SEMI
   ;
 
 asm_list
@@ -325,8 +329,9 @@ custom_arg
   | A_TYPE L_PAREN IDENT R_PAREN  /* 派生：把某个部件的类型交给钩子 */
   ;
 
-/* oilist(a | b | c)：每个分支是一段格式；运行时至多匹配一个。
- * 分支用 `|` 分隔，与类型并集、enum 组合子同一个析取符号。 */
+/* oilist(a | b | c)：顺序无关的可选组，每支 0 或 1 次（可以同时出现两支）。
+ * 分支用 `|` 分隔，与类型并集、enum 组合子同一个析取符号。ODS 原义见
+ * mlir/docs/DefiningDialects/Operations.md:808-819；13 章 §5.6 有完整文法。 */
 oilist_alt_list
   : asm_list
   | oilist_alt_list PIPE asm_list
