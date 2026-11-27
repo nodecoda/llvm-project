@@ -1,0 +1,5 @@
+gap	witness	missing	status
+prop_dict	emitc.call_opaque,emitc.member_call_opaque,func.call	属性字典（prop-dict）在文本中的位置	open
+optional_default	amdgpu.packed_trunc_2xfp8,amdgpu.packed_scaled_trunc,amdgpu.packed_stoch_round_fp8	($x^):(`undef`)? —— 缺省时打印固定字面量	open
+ref_type	cf.switch,pdl_interp.create_range	custom<...> 实参里的 ref(type($x)) 形态	open
+oilist_separator	func.call_indirect	oilist<sep>(...) 的分隔符	open

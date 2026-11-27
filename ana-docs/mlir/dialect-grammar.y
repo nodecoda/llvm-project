@@ -39,6 +39,7 @@
 /* Assembly 模式 */
 %token A_ATTR_DICT A_ATTR_DICT_WITH_KEYWORD A_TYPE A_IF
 %token A_FUNCTIONAL_TYPE A_QUALIFIED A_OILIST A_CUSTOM A_SUCCESSORS
+%token A_GAP
 
 %define parse.trace
 
@@ -320,6 +321,7 @@ asm_element
                                  /* 至多出现一个可选组 */
   | A_IF IDENT L_BRACE asm_list R_BRACE
   | A_SUCCESSORS                  /* 打印全部后继，名字不再逐个写出 */
+  | A_GAP L_PAREN IDENT R_PAREN   /* 部分描述：命名的构造当前文法说不出 */
   ;
 
 /* custom<Hook>(a, b)：钩子名是格式的实现细节，实参是部件引用。

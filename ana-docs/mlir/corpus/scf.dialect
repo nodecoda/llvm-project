@@ -86,14 +86,15 @@ dialect scf {
     Operands (operands: variadic<any>);
     Regions  (reductions: variadic<region> [single_block]);
     Properties [has_parent(parallel)];
-    Assembly Custom;
+    Assembly   { if operands { "(" operands ":" type(operands) ")" }
+               reductions attr-dict }
   }
 
   op reduce.return {
     Doc "terminator for scf.reduce";
     Operands   (result: any);
     Properties [terminator, has_parent(reduce)];
-    Assembly Custom;
+    Assembly   { result attr-dict ":" type(result) }
   }
 
   op while {
@@ -114,7 +115,9 @@ dialect scf {
     Regions    (default_region: region [single_block],
                 case_regions: variadic<region> [single_block]);
     Properties [recursive_effects];
-    Assembly Custom;
+    Assembly   { arg attr-dict if results { "->" type(results) }
+               custom<SwitchCases>(cases, case_regions) "default"
+               default_region }
   }
 
   op yield {

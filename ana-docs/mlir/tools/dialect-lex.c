@@ -4,7 +4,7 @@
  * 产品实现。两个模式：
  *   normal  —— 默认；`Assembly {` 之后切到 assembly 模式。
  *   assembly—— 字面量是 STRING；`attr-dict`/`attr-dict-with-keyword`/
- *              `type`/`if`/`functional-type`/`oilist`/`custom` 是关键字，
+ *              `type`/`if`/`functional-type`/`oilist`/`custom`/`Gap` 是关键字，
  *              其余标识符是部件引用；`{ }` 计深度，深度归零切回 normal。
  *
  * 名字允许 `.`（`reduce.return`），不允许 `-`；`attr-dict` 是 assembly 模式
@@ -108,6 +108,7 @@ static int asm_kw(const char *s) {
   if (!strcmp(s, "functional-type")) return A_FUNCTIONAL_TYPE;
   if (!strcmp(s, "oilist")) return A_OILIST;
   if (!strcmp(s, "custom")) return A_CUSTOM;
+  if (!strcmp(s, "Gap")) return A_GAP;   /* 大写：只在 Assembly 里，避开部件名 */
   if (!strcmp(s, "successors")) return A_SUCCESSORS;
   return IDENT;
 }

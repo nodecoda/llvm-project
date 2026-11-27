@@ -8,7 +8,8 @@ dialect func {
     Results    (results: variadic<any>);
     Attributes (callee: symbol_ref);
     Implements [CallOpInterface, SymbolUserOpInterface];
-    Assembly Custom;
+    Assembly   { Gap(prop_dict) callee "(" operands ")" attr-dict ":"
+               functional-type(operands, results) }
   }
 
   op call_indirect {
@@ -16,7 +17,8 @@ dialect func {
     Operands   (callee: function_type, callee_operands: variadic<any>);
     Results    (results: variadic<any>);
     Implements [CallOpInterface];
-    Assembly Custom;
+    Assembly   { Gap(oilist_separator) callee "(" callee_operands ")" attr-dict
+               ":" type(callee) }
   }
 
   op constant {

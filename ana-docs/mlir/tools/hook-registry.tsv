@@ -1,0 +1,4 @@
+hook	dialects	reason
+PrivateClause	omp	上游把 private 子句并入 custom<PrivateReductionRegion>(region, ...)；语料按子句拆分，故用本地标签
+ReductionClause	omp	上游把 reduction 子句并入 custom<PrivateReductionRegion>(region, ...)；语料按子句拆分，故用本地标签
+TaskReductionClause	omp	上游 task_reduction 是 clause 类，没有同名 custom<> 钩子

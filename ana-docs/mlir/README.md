@@ -17,7 +17,9 @@
   amdgpu/openmp/smt 把规模推到 173 个 op：最复杂的 openmp 用了 0 个本地词，
   23 章换方向：先把"死声明/类型名/覆盖"三条恒真的检查修成会失败的检查，
   再用覆盖审计量出 258 个缺失 op 并补账，共 31 个方言、1036 个 op，
-  文法只多一条产生式：带引号的名字）。
+  文法只多一条产生式：带引号的名字；24 章给五种逃逸点发许可证：断言必须与
+  上游 TD 一致，说出不来的构造用 `Gap(name)` 记成登记过的债务，检查第一次
+  跑就抓到 16 处假 `Custom` 和 1 个拼错的钩子名）。
 
 - 分析基线：worktree `/home/ubuntu/llvm/trees/pr-ctpop`，分支 `research/mlir`。
   01–09 基于 `5f7f36636abe`；10–23 基于 `53a80edfeb2e`（2026-11-27）。
@@ -55,6 +57,8 @@
 | [20-corpus-round-five.md](20-corpus-round-five.md) | 第五轮语料：emitc/sparse_tensor，92 个 op 换 0 条产生式、`oilist` 读窄的修正、同名类型/属性空间、字典型属性、预算首次告警与 8 合 7 留的单次事实复审 |
 | [22-corpus-round-seven.md](22-corpus-round-seven.md) | 第七轮语料：amdgpu/openmp/smt（173 op），0 条产生式；`speculatable` 升级进核心（40→41）、本地词表 18→17；openmp 70 个子句钩子 + 0 个本地事实；共享名字空间的检查缺陷 |
 | [21-corpus-round-six.md](21-corpus-round-six.md) | 第六轮语料：ub/ptr/shard/arm_sve，81 个 op 换 0 条 op 形状产生式；`same_type` 升级进核心（39→40）、本地词表 19→18；`qualified` 第三个见证落地为文本产生式（11 处使用点）；空负载属性、符号非类型、Generic 是契约 |
+| [23-corpus-round-eight.md](23-corpus-round-eight.md) | 第八轮：三条恒真检查修成会失败、覆盖审计量出 258 个缺失 op 并补账、带引号的 `name`、schema 名全局解析缺陷 |
+| [24-escape-licenses.md](24-escape-licenses.md) | 逃逸点许可证：断言与描述分离、五通道四元组、L0–L6 会失败的证据检查、`Gap(name)` 债务与三份登记表、16 处假 Custom 的处置、预算与 22 个设计分歧 |
 
 ## 一页结论
 
@@ -217,7 +221,7 @@
 | `14-dialect-domain-model.md` | 领域模型：定义/生成边界、三投影、trait 分类、约束语义、schema refinement、v1 逐项判决 |
 | `15-corpus-driven-grammar.md` | 语料优先：方法论、语料统计、见证表、8 个修正、机械核对、与 v1/v2 差异、下一轮语料 |
 | `corpus/*.dialect` | 31 个方言源程序（12063 行）：1036 op、157 schema、73 enum、149 constraint、20 attr_def、53 type_def；31/31 覆盖缺口为 0 |
-| `dialect-grammar.y` | 从语料归纳的文法（bison，58 条规则 / 140 条产生式，0 冲突，`31/31 parse OK`） |
+| `dialect-grammar.y` | 从语料归纳的文法（bison，58 条规则 / 141 条产生式，0 冲突，`31/31 parse OK`），含 `Gap(name)` 与 9 个 `Gap` 使用点 |
 | `16-corpus-round-two.md` | 第二轮：10 项扩展、谓词组合、region 约束搬家、软关键字、见证表、机械核对 |
 | `corpus/gpu.dialect` | gpu：launch/module/func、内建 id/dim、barrier/printf/shuffle/all_reduce/subgroup_reduce/warp（18 op） |
 | `corpus/linalg.dialect` | linalg：`Structured` schema + 5 个命名算符 + generic/map/reduce/transpose/broadcast/index/yield（12 op） |
@@ -253,7 +257,11 @@
 | `corpus/arm_sme.dialect` | arm_sme：68 op（25 核心 + 43 intrinsic）、15 schema；intrinsic 全部显式 `Assembly Generic;` |
 | `corpus/ml_program.dialect` | ml_program：11 op、4 schema；符号表 + SSACFG/Graph 两种 region 种类（种类本身无核心词） |
 | `tools/dialect-coverage.py` | 覆盖审计：47 个方言 → TD 文件的显式映射，助记符集合与语料 `op` 集合对差；missing 非空则退出码 1 |
-| `tools/dialect-lex.c` | 参考词法器（normal / assembly 两模式） |
+| `tools/dialect-lex.c` | 参考词法器（normal / assembly 两模式，含 `Gap` 关键字） |
+| `tools/escape-audit.py` | 逃逸点许可证审计：L0–L6、上游 TD 闭包证据、预算硬上限，失败退出 1 |
+| `tools/fact-glossary.tsv` | 事实词表：41 核心 + 20 本地（含 owner 与释义），新词未登记即失败 |
+| `tools/gap-registry.tsv` | 表达力缺口登记：4 个名字 / 9 个 op，见证集合必须与语料一致 |
+| `tools/hook-registry.tsv` | 上游找不到同名 `custom<>` 的本地钩子标签及理由 |
 | `sketch/arith.dialect` | 领域描述样例：3 约束 + 4 schema + 8 op，无 C++/namespace/class |
 | `design-first-v1/` | 归档：先定文法再凑样例的 v1（`dialect-dsl.y` + 5 个 `.mdl` + 词法器），仅作对照 |
 | `tools/td-dependency-graph.py` | 扫描脚本：统计 + `--mermaid` + `--json`，可复现全部数字 |

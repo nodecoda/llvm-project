@@ -347,8 +347,9 @@ dialect pdl_interp {
     Operands   (arguments: variadic<pdl_any>);
     Results    (result: pdl.range<value> | pdl.range<type>);
     Properties [pure];
-    // 文本整体交给钩子：它既按"实参是否为空"分支，又用 ref(...) 包住实参的类型。
-    Assembly Custom;
+    // 余下文本可描述；缺口只有钩子实参里的 ref(type(x)) 形态。
+    Assembly   { Gap(ref_type) if arguments { "(" arguments ":" type(arguments) ")" }
+               custom<RangeType>(arguments, type(result)) attr-dict }
   }
 
   // ------------------------------------------------------------------

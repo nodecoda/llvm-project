@@ -64,6 +64,7 @@ CORE_FACTS = {
 }
 
 ASM_DIRECTIVES = {"attr-dict", "attr-dict-with-keyword", "prop-dict", "type",
+                  "gap",
                   "functional-type",
                   "operands", "results", "regions", "successors", "custom",
                   "ref", "enum", "qualified", "oilist", "params", "struct",
@@ -222,6 +223,7 @@ def asm_refs(body):
     for blk in blocks(body, "Assembly"):
         blk = re.sub(r'"(?:\\.|[^"])*"', " ", blk)   # literals are not refs
         blk = re.sub(r"custom<[^>]*>", " ", blk)     # hook names are not refs
+        blk = re.sub(r"\bGap\s*\(\s*[a-z_]\w*\s*\)", " ", blk)  # gap 名不是部件
         for tok in re.findall(r"[A-Za-z_][\w.-]*", blk):
             if tok not in ASM_DIRECTIVES and tok not in TYPE_CTORS:
                 refs.add(tok)
@@ -401,7 +403,7 @@ def main():
     no_channel = []
     for path in files:
         text = file_text[path.name]
-        blk = hook = gen = 0
+        blk = hook = gen = gap = 0
         for kind, name, header, body in entities(text):
             if kind != "op":
                 continue
@@ -409,13 +411,14 @@ def main():
                 hook += 1
             elif re.search(r"Assembly\s+Generic\s*;", body):
                 gen += 1
-            elif re.search(r"Assembly\s*\{", body):
-                blk += 1
-            elif re.search(r"\bfrom\b", header):
-                blk += 1          # 从 schema 继承块格式
+            elif re.search(r"Assembly\s*\{", body) or re.search(r"\bfrom\b", header):
+                blk += 1          # 块格式：直接写，或从 schema 继承
+                if re.search(r"\bGap\s*\(\s*([a-z_][\w]*)\s*\)", body):
+                    gap += 1
             else:
                 no_channel.append("%s:%s" % (path.name, name))
-        channels[path.name] = {"block": blk, "Custom": hook, "Generic": gen}
+        channels[path.name] = {"block": blk, "Custom": hook,
+                               "Generic": gen, "gap": gap}
 
     local = Counter({k: v for k, v in all_facts.items() if k not in CORE_FACTS})
     spread = Counter()
@@ -443,12 +446,15 @@ def main():
              len(all_facts), len(once)))
 
     print("\n## text channels")
-    print("| file | block | Custom | Generic |")
-    print("| --- | --- | --- | --- |")
+    print("| file | block | Custom | Generic | gap |")
+    print("| --- | --- | --- | --- | --- |")
     for name, c in channels.items():
-        print("| %s | %d | %d | %d |" % (name, c["block"], c["Custom"],
-                                         c["Generic"]))
+        print("| %s | %d | %d | %d | %d |" % (name, c["block"], c["Custom"],
+                                            c["Generic"], c["gap"]))
     print("ops without a text channel:", no_channel or "none")
+    gaps = [n for path in files for k, n, h, body in entities(file_text[path.name])
+            if k == "op" and re.search(r"\bGap\s*\(", body)]
+    print("ops with a named gap:", len(gaps), ",".join(gaps) or "none")
     print("## fact vocabulary: core=%d used, local(distinct)=%d, "
           "local(single-use)=%d"
           % (len([n for n in CORE_FACTS if n in all_facts]), len(local),

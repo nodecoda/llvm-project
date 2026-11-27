@@ -15,7 +15,8 @@ dialect cf {
     Successors (dest: successor);
     Properties [terminator];
     Implements [BranchOpInterface];
-    Assembly Custom;
+    Assembly   { dest if dest_operands { "(" dest_operands ":" type(dest_operands) ")" }
+               attr-dict }
   }
 
   op cond_br {
@@ -27,7 +28,10 @@ dialect cf {
     Successors (true_dest: successor, false_dest: successor);
     Properties [terminator];
     Implements [BranchOpInterface];
-    Assembly Custom;
+    Assembly   { condition if branch_weights { "weights" "(" branch_weights ")" } ","
+               true_dest if true_dest_operands { "(" true_dest_operands ":" type(true_dest_operands) ")" } ","
+               false_dest if false_dest_operands { "(" false_dest_operands ":" type(false_dest_operands) ")" }
+               attr-dict }
   }
 
   op switch {
@@ -39,6 +43,10 @@ dialect cf {
     Successors (default_dest: successor, case_dests: variadic<successor>);
     Properties [terminator];
     Implements [BranchOpInterface];
-    Assembly Custom;
+    Assembly   { Gap(ref_type) flag ":" type(flag) "," "["
+               custom<SwitchOpCases>(flag, default_dest, default_operands,
+                                     type(default_operands), case_values,
+                                     case_dests, case_operands, type(case_operands))
+               "]" attr-dict }
   }
 }

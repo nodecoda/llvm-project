@@ -1,0 +1,62 @@
+fact	scope	owner	meaning
+pure	core	-	与 Pure trait 对应：无副作用、可 CSE
+commutative	core	-	操作数可交换
+speculatable	core	-	可被推测执行（不改变可观察行为）
+terminator	core	-	region 的终结符
+elementwise	core	-	逐元素语义
+constant_like	core	-	值只依赖属性，等价于常量
+symbol	core	-	在符号表中定义符号
+symbol_table	core	-	自身是符号表
+symbol_visibility	core	-	带可见性属性
+isolated_from_above	core	-	region 不捕获外层值
+recursive_effects	core	-	副作用需递归看待子 region
+no_memory_effect	core	-	不读写内存
+memory_effect	core	-	读写/分配内存：memory_effect(read|write|allocate)
+automatic_allocation_scope	core	-	region 是自动分配作用域
+destination_style	core	-	destination-passing 约定
+contraction	core	-	张量收缩语义
+return_like	core	-	把值交给外层 region，类似 return
+no_region_args	core	-	region 入口块没有参数
+affine_scope	core	-	affine 作用域边界
+infer_tensor_type	core	-	结果张量类型由操作数推导
+same_variadic_operand_size	core	-	变长操作数组等长
+operand_segments_by_attribute	core	-	变长操作数按属性分段
+single_block	core	-	region 恰好一块
+min_blocks	core	-	块数下界：min_blocks(n)
+max_blocks	core	-	块数上界：max_blocks(n)
+implicit_terminator	core	-	region 末尾隐含指定终结符：implicit_terminator(op)
+no_terminator	core	-	region 不需要终结符
+positive	core	-	取值 > 0
+non_negative	core	-	取值 >= 0
+cardinality	core	-	部件数量固定：cardinality(n)
+arity	core	-	与另一部件的元数关系：arity(parts, n)
+has_parent	core	-	只能出现在指定 op 内：has_parent(op)
+same_type	core	-	两个部件类型完全相等：same_type(a, b)
+same_shape	core	-	形状相等
+same_rank	core	-	秩相等
+same_element_type	core	-	元素类型相等
+broadcastable	core	-	形状可广播
+element_type_matches	core	-	元素类型关系：element_type_matches(a, b)
+unwraps_element_type	core	-	去掉一层容器后的元素类型：unwraps_element_type(x)
+entry_args_unwrap	core	-	region 入口参数来自被解包的操作数：entry_args_unwrap(x)
+yield_types_match	core	-	yield 类型与部件类型匹配：yield_types_match(x)
+c_expression	local	emitc	该 op 的值是 C 表达式，可参与 C 侧求值
+always_inline	local	emitc	生成的 C 函数体必须内联
+default_dialect	local	emitc	文件体内可省略该方言前缀
+pure_if_fundamental	local	emitc	仅当元素类型是基础类型时无副作用
+graph_region	local	emitc	region 是表达式图而非 CFG
+entry_args	local	sparse_tensor	region 入口块参数由操作数给出
+resolvable_shape_operands	local	tosa	形状操作数必须能在常量表里解析
+level_bitmask	local	sparse_tensor	维/lvl 的位掩码关系
+in_place	local	sparse_tensor	写回自身缓冲；既非分配也非纯读
+same_operands_and_result_type	local	sparse_tensor	操作数与结果同元素类型
+shape_operator	local	tosa	属于形状算子族
+at_least	local	sparse_tensor	下限依赖另一个参数（m >= n），非常数
+debug_only	local	sparse_tensor	仅调试用途，可删除
+first_attr_derived_result_type	local	tosa	结果类型由属性导出，不由操作数推导
+matches_input_arity	local	pdl_interp	结果元数等于输入元数（符号元数）
+same_size	local	sparse_tensor	两个变长部件等长（跨结果/操作数）
+yields_to_enclosing_region	local	sparse_tensor	终结符把操作数交给外层 region
+dot_group	local	arm_neon	每 n 个 i8 lane 归约成一个 i32 lane
+widening_factor	local	arm_sme	n 路外积融合：tile 位宽是输入的 n 倍
+element_width_doubled	local	arm_neon	结果与操作数同 shape、元素位宽翻倍

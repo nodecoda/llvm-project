@@ -4,6 +4,10 @@
 > [`tools/dialect-corpus.py`](tools/dialect-corpus.py)（`escape points` /
 > `text channels` / `fact vocabulary` / `external type names` 四段报告）。
 > 语料：`corpus/*.dialect`（21 个方言、438 个 op、4735 行）。
+>
+> **24 章把本章的规则变成了会失败的检查**：`Custom`/`Generic` 必须与上游 TD
+> 一致，说不出的构造用 `Gap(name)` 记成登记过的债务。本章仍是概念定义，
+> 24 章是执行口径。
 
 ## 0. 为什么单写一章
 

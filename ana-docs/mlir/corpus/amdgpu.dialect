@@ -387,7 +387,9 @@ dialect amdgpu {
     Results    (res: fp8_quad);
     Attributes (wordIndex: i32 [non_negative]);
     Properties [pure, operand_segments_by_attribute];
-    Assembly Custom;
+    Assembly   { Gap(optional_default) attr-dict sourceA "," sourceB "into" existing
+               "[" "word" wordIndex "]" ":" type(sourceA) "to" type(res)
+               "into" type(existing) }
   }
 
   // GAP: 同 packed_trunc_2xfp8，existing 缺失时上游打印 undef。
@@ -398,7 +400,9 @@ dialect amdgpu {
     Results    (res: scaled_trunc_result);
     Attributes (index: i32 [non_negative]);
     Properties [pure];
-    Assembly Custom;
+    Assembly   { Gap(optional_default) attr-dict source "into" existing "[" index "]"
+               "," scale ":" type(source) "to" type(res)
+               "into" type(existing) }
   }
 
   // GAP: 同 packed_trunc_2xfp8，existing 缺失时上游打印 undef。
@@ -409,7 +413,9 @@ dialect amdgpu {
     Results    (res: fp8_quad);
     Attributes (storeIndex: i32 [non_negative]);
     Properties [pure];
-    Assembly Custom;
+    Assembly   { Gap(optional_default) attr-dict source "+" stochiasticParam
+               "into" existing "[" storeIndex "]" ":" type(source) "to" type(res)
+               "into" type(existing) }
   }
 
   // ---- 原始缓冲与胖缓冲 ----

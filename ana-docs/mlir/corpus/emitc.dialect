@@ -107,7 +107,7 @@ dialect emitc {
     Regions    (body: region [single_block, graph_region, no_terminator]);
     Properties [isolated_from_above, symbol_table, default_dialect(emitc)];
     Implements [OpAsmOpInterface];
-    Assembly Custom;
+    Assembly   { id attr-dict-with-keyword body }
   }
 
   op func {
@@ -162,7 +162,8 @@ dialect emitc {
                 args: optional<array<attribute_value>>,
                 template_args: optional<array<attribute_value>>);
     Implements [CExpressionInterface];
-    Assembly Custom;
+    Assembly   { Gap(prop_dict) callee "(" arg_operands ")" attr-dict ":"
+               functional-type(arg_operands, results) }
   }
 
   op member_call_opaque {
@@ -173,7 +174,8 @@ dialect emitc {
                 args: optional<array<attribute_value>>,
                 template_args: optional<array<attribute_value>>);
     Implements [CExpressionInterface];
-    Assembly Custom;
+    Assembly   { Gap(prop_dict) receiver callee "(" arg_operands ")" attr-dict ":"
+               type(receiver) "," functional-type(arg_operands, results) }
   }
 
   op include {
@@ -224,7 +226,7 @@ dialect emitc {
                  if static_specifier { "static" }
                  if const_specifier { "const" }
                  if sym_visibility { sym_visibility }
-                 sym_name ":" custom<GlobalTypeAndInitialValue>(type, initial_value)
+                 sym_name ":" custom<EmitCGlobalOpTypeAndInitialValue>(type, initial_value)
                  attr-dict }
   }
 
@@ -427,7 +429,8 @@ dialect emitc {
     Regions    (default_region: region [single_block],
                 case_regions: variadic<region> [single_block]);
     Implements [RegionBranchOpInterface];
-    Assembly Custom;
+    Assembly   { arg ":" type(arg) attr-dict custom<SwitchCases>(cases, case_regions)
+               "default" default_region }
   }
 
   op yield {
