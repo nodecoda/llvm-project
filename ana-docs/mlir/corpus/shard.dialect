@@ -13,6 +13,11 @@
 ///   - 12 个集合通信 op 共享 `Collective` schema：设备组由 grid 与 grid_axes
 ///     选择；各 op 只补自己的轴号、归约方式或根设备属性，并给出自己的文本。
 ///
+/// 定义层范围：split_axes 在 sharding/update_halo 上的上游类型是
+/// Shard_GridAxesArrayAttr，本文件声明 attr_def axisarray 并用它做字段类型；
+/// grid_axes 与 neighbors_linear_indices 的上游类型是内建 DenseI16ArrayAttr，
+/// 仍用 axis_array（array<i16>）。
+///
 /// 文本通道：22 个 op 全部是块状 Assembly。上游的定制打印只有
 /// DimensionList 与 DynamicIndexList 两个局部钩子，块格式都能原样表达，
 /// 因此既没有 Custom 通道，也没有 Generic 通道。
@@ -46,9 +51,16 @@ dialect shard {
 
   // ---- 类型域与属性域 ----
 
+  /// split_axes 的上游类型是 Shard_GridAxesArrayAttr，文本是 `[<axis list>, ...]`
+  /// （ShardBase.td:83-90）；它的参数是一串 GridAxesAttr（内建 DenseI16ArrayAttr）。
+  attr_def axisarray {
+    Doc "One axis list per tensor dimension; upstream GridAxesArrayAttr prints [axes].";
+    Parameters (axes: array<axis_array>);
+    Assembly   { "[" axes "]" }
+  }
+
   /// 一个 grid 轴号是 i16；split_axes 的每一项是一组轴号，外层再包一层。
   constraint axis_array = array<i16>;
-  constraint axes_array = array<axis_array>;
 
   /// 静态维度表、设备坐标表、根设备坐标表都是 i64 数组。
   constraint dims_array = array<i64>;
@@ -131,7 +143,7 @@ dialect shard {
   op sharding {
     Doc "Defines how a tensor is split over a grid: split_axes has one axis list per tensor dimension; halo_sizes and sharded_dims_offsets are mutually exclusive and each mixes static entries with dynamic index operands.";
     Attributes (grid: flat_symbol_ref,
-                split_axes: axes_array [non_negative],
+                split_axes: axisarray [non_negative],
                 static_sharded_dims_offsets: dims_array = none,
                 static_halo_sizes: dims_array = none);
     Operands   (dynamic_sharded_dims_offsets: variadic<i64>,
@@ -335,7 +347,7 @@ dialect shard {
     Operands   (destination: non0_value, halo_sizes: variadic<i64>);
     Results    (result: non0_value);
     Attributes (grid: flat_symbol_ref,
-                split_axes: axes_array [non_negative],
+                split_axes: axisarray [non_negative],
                 static_halo_sizes: dims_array = none);
     Properties [pure, same_type];
     Implements [DestinationStyleOpInterface, SymbolUserOpInterface];

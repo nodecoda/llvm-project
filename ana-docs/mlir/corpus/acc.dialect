@@ -13,6 +13,12 @@
 ///   - 代码生成辅助：reduction 家族、privatize/unwrap_private/private_local、
 ///     par_width、gpu_shared_memory、map_info、kernel_environment。
 ///
+/// 定义层范围：defaultAttr 的上游类型是 DefaultValueAttr（AccCommon.td:10，
+/// 由 OpenACCDirective.td 生成），但 op 的格式写的是
+/// `enum(defaultAttr)`，实际文本只有枚举助记符（present/none）。本文件声明
+/// ClauseDefaultValue 枚举并直接用它做字段类型；attr_def `defaultvalue` 的
+/// `< $value >` 外壳没有文本载体，coverage 记为 substituted，不伪造声明。
+///
 /// 覆盖：OpenACCOps.td 与 OpenACCCGOps.td 共 68 个打印助记符（去 acc. 前缀），
 /// 本文件逐个覆盖，missing=0。
 ///
@@ -122,6 +128,11 @@ dialect acc {
     Cases [ none = 0 "none", star = 1 "star", default = 2 "default",
             host = 3 "host", multicore = 4 "multicore",
             nvidia = 5 "nvidia", radeon = 6 "radeon" ];
+  }
+
+  enum ClauseDefaultValue {
+    Doc "Default clause kind; upstream prints it through enum(defaultAttr).";
+    Cases [ present = 0, none = 1 ];
   }
 
   enum DataClause {
@@ -568,7 +579,7 @@ dialect acc {
                 numWorkersDeviceType: optional<device_type_array>,
                 vectorLengthDeviceType: optional<device_type_array>,
                 selfAttr: optional<unit>,
-                defaultAttr: optional<any>,
+                defaultAttr: optional<ClauseDefaultValue>,
                 combined: optional<unit>);
     Regions    (region: region);
     Properties [operand_segments_by_attribute, automatic_allocation_scope,
@@ -607,7 +618,7 @@ dialect acc {
                 hasWaitDevnum: optional<bool_array>,
                 waitOnly: optional<device_type_array>,
                 selfAttr: optional<unit>,
-                defaultAttr: optional<any>,
+                defaultAttr: optional<ClauseDefaultValue>,
                 combined: optional<unit>);
     Regions    (region: region);
     Properties [operand_segments_by_attribute, automatic_allocation_scope,
@@ -650,7 +661,7 @@ dialect acc {
                 numWorkersDeviceType: optional<device_type_array>,
                 vectorLengthDeviceType: optional<device_type_array>,
                 selfAttr: optional<unit>,
-                defaultAttr: optional<any>,
+                defaultAttr: optional<ClauseDefaultValue>,
                 combined: optional<unit>);
     Regions    (region: region);
     Properties [operand_segments_by_attribute, automatic_allocation_scope,
@@ -688,7 +699,7 @@ dialect acc {
                 waitOperandsDeviceType: optional<device_type_array>,
                 hasWaitDevnum: optional<bool_array>,
                 waitOnly: optional<device_type_array>,
-                defaultAttr: optional<any>);
+                defaultAttr: optional<ClauseDefaultValue>);
     Regions    (region: region);
     Properties [operand_segments_by_attribute, recursive_effects,
                 memory_effect(write), memory_effect(read)];

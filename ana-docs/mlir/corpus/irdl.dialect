@@ -4,11 +4,24 @@
 /// `!irdl.region`。符号体（dialect/type/attribute/operation）都是单块 region，
 /// 文本只打印名字与关键字，块体交给 `SingleBlockRegion` 钩子。
 ///
+/// 定义层范围：`VariadicityArrayAttr`（IRDLAttributes.td:49-50）由
+/// custom<NamedValueListWithVariadicity>
+/// 消费，打印的是每个 VariadicityAttr 的助记符（single/optional/variadic），
+/// 不是 `[...]` 外壳。本文件声明 variadicity 枚举并把字段改成
+/// array<variadicity>；attr_def `variadicity_array` 没有独立文本，coverage
+/// 记为 substituted。
+///
 /// 本文件把两个句柄类型命名为 `attribute` / `region`（打印名分别是
 /// `!irdl.attribute` / `!irdl.region`），避免遮蔽内建的 `attribute`/`region`。
 
 dialect irdl {
   Doc "A dialect for defining dialects at runtime.";
+
+  enum variadicity {
+    Doc "Variadicity of an operand or result constraint.";
+    Cases [ single = 0, optional_ = 1 "optional",
+            variadic_ = 2 "variadic" ];
+  }
 
   type_def attribute {
     Doc "Handle to an attribute value (prints !irdl.attribute).";
@@ -69,7 +82,7 @@ dialect irdl {
   op operands {
     Doc "Constrain the operands of the enclosing operation, with variadicity.";
     Operands   (args: variadic<attribute>);
-    Attributes (names: array<string>, variadicity: array<integer>);
+    Attributes (names: array<string>, variadicity: array<variadicity>);
     Assembly   { custom<NamedValueListWithVariadicity>(args, names, variadicity)
                  attr-dict }
   }
@@ -77,7 +90,7 @@ dialect irdl {
   op results {
     Doc "Constrain the results of the enclosing operation, with variadicity.";
     Operands   (args: variadic<attribute>);
-    Attributes (names: array<string>, variadicity: array<integer>);
+    Attributes (names: array<string>, variadicity: array<variadicity>);
     Assembly   { custom<NamedValueListWithVariadicity>(args, names, variadicity)
                  attr-dict }
   }

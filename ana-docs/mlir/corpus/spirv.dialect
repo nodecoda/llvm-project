@@ -21,9 +21,9 @@
 /// verifier 事实，文法写不出，只出现在 Doc。
 ///
 /// 属性：SPIR-V 的枚举属性很多，统一用 enum + Cases 声明（取值抄 SPIRVBase.td
-/// 的枚举）；MemoryAccess/ImageOperands 等位集也按上游数值列出。复杂属性
-/// （LinkageAttributes、VerCapExt、DenseElements 形态的窗参数）建模为 any，
-/// 详见各 op 的 Doc。
+/// 的枚举）；MemoryAccess/ImageOperands 等位集也按上游数值列出。
+/// LinkageAttributes 已按上游 struct(params) 声明为 attr_def；VerCapExt、
+/// DenseElements 形态的窗参数仍建模为 any，详见各 op 的 Doc。
 ///
 /// 事实：只用 tools/fact-glossary.tsv 的 core 词：pure（Pure）、commutative、
 /// speculatable（AlwaysSpeculatable）、no_memory_effect（NoMemoryEffect）、
@@ -266,6 +266,17 @@ dialect spirv {
   // ----------------------------------------------------------------
   // 类型域
   // ----------------------------------------------------------------
+  enum LinkageType {
+    Doc "SPIR-V linkage kind, printed by the LinkageAttributes struct(params).";
+    Cases [ Export = 0, Import = 1, LinkOnceODR = 2, Weak = 3 ];
+  }
+
+  attr_def linkage_attributes {
+    Doc "Symbol linkage name and kind; upstream SPIRV_LinkageAttributesAttr.";
+    Parameters (linkage_name: string, linkage_type: LinkageType);
+    Assembly   { "<" struct(params) ">" }
+  }
+
   type_def any_ptr {
     Doc "SPIR-V 指针类型；pointee 与 storage class 是类型参数/verifier 事实。";
     Assembly   Modeled;
@@ -2425,7 +2436,7 @@ dialect spirv {
   }
   op func from SpirvOp {
     Doc "Declare or define a function";
-    Attributes (function_type: type, arg_attrs: optional<array<dictionary>>, res_attrs: optional<array<dictionary>>, sym_name: string, function_control: FunctionControl, linkage_attributes: optional<any>, sym_visibility: optional<string>);
+    Attributes (function_type: type, arg_attrs: optional<array<dictionary>>, res_attrs: optional<array<dictionary>>, sym_name: string, function_control: FunctionControl, linkage_attributes: optional<linkage_attributes>, sym_visibility: optional<string>);
     Regions    (body: region);
     Properties [automatic_allocation_scope, symbol, symbol_visibility, has_parent(module), isolated_from_above];
     Implements [FunctionOpInterface];
@@ -2433,7 +2444,7 @@ dialect spirv {
   }
   op GlobalVariable from SpirvOp {
     Doc "Allocate an object in memory at module scope. The object is referenced using a symbol name.";
-    Attributes (type: type, sym_name: string, initializer: optional<symbol_ref>, location: optional<i32>, binding: optional<i32>, descriptor_set: optional<i32>, built_in: optional<string>, linkage_attributes: optional<any>, sym_visibility: optional<string>);
+    Attributes (type: type, sym_name: string, initializer: optional<symbol_ref>, location: optional<i32>, binding: optional<i32>, descriptor_set: optional<i32>, built_in: optional<string>, linkage_attributes: optional<linkage_attributes>, sym_visibility: optional<string>);
     Properties [has_parent(module), symbol, symbol_visibility];
     Implements [SymbolOpInterface, SymbolUserOpInterface];
     Assembly Custom;

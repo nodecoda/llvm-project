@@ -20,8 +20,9 @@
 ///   - 带方言前缀的尖括号形式 `#xevm.mem_scope<workgroup>`：mem_scope、
 ///     addr_space、load_cache_control、store_cache_control；
 ///   - 内联形式 `shape=<m=8, ...>` 与 `src_etype = bf16`：mma_shape、mma_types
-///     与 truncf/extf 的元素类型参数。二者在语料里分别写成 attr_def 与
-///     enum 值类型，因为实测打印不同，不是风格选择。
+///     与 truncf/extf 的元素类型参数。truncf/extf 的 src_etype/dst_etype 是
+///     带 `src_etype =` 前缀的 AttrDef（XeVMOps.td:613-646），本文件声明
+///     attr_def 并让 op 字段直接用它们；mma_shape/mma_types 仍是 enum 值类型。
 ///
 /// 事实：blockload/blockload2d 读内存，blockstore/blockstore2d 写内存，
 /// truncf/extf 是 Pure；其余 op 没有 trait 依据，不写 Properties。
@@ -106,6 +107,30 @@ dialect xevm {
   enum ExtfDstElemTypes {
     Doc "Destinations of xevm.extf.";
     Cases [ bf16 = 8, f16 = 9 ];
+  }
+
+  attr_def src_etype {
+    Doc "Source element type of xevm.truncf; upstream prints `src_etype = <case>`.";
+    Parameters (etype: TruncfSrcElemTypes);
+    Assembly   { "src_etype" "=" etype }
+  }
+
+  attr_def dst_etype {
+    Doc "Destination element type of xevm.truncf; upstream prints `dst_etype = <case>`.";
+    Parameters (etype: TruncfDstElemTypes);
+    Assembly   { "dst_etype" "=" etype }
+  }
+
+  attr_def ext_src_etype {
+    Doc "Source element type of xevm.extf; upstream prints `src_etype = <case>`.";
+    Parameters (etype: ExtfSrcElemTypes);
+    Assembly   { "src_etype" "=" etype }
+  }
+
+  attr_def ext_dst_etype {
+    Doc "Destination element type of xevm.extf; upstream prints `dst_etype = <case>`.";
+    Parameters (etype: ExtfDstElemTypes);
+    Assembly   { "dst_etype" "=" etype }
   }
 
   attr_def load_cache_control {
@@ -244,11 +269,10 @@ dialect xevm {
     Doc "Truncate f16/bf16 to f8/bf8/f4; src_etype and dst_etype are printed inline inside braces.";
     Operands   (src: f16_or_bf16);
     Results    (dst: i8_or_i4);
-    Attributes (src_etype: TruncfSrcElemTypes,
-                dst_etype: TruncfDstElemTypes);
+    Attributes (src_etype: src_etype,
+                dst_etype: dst_etype);
     Properties [pure];
-    Assembly   { src "{" "src_etype" "=" src_etype ","
-                 "dst_etype" "=" dst_etype "}" attr-dict ":"
+    Assembly   { src "{" src_etype "," dst_etype "}" attr-dict ":"
                  functional-type(operands, results) }
   }
 
@@ -256,10 +280,9 @@ dialect xevm {
     Doc "Extend f8/bf8/f4 to f16/bf16; the inverse of truncf, with the same inline brace spelling.";
     Operands   (src: i8_or_i4);
     Results    (dst: f16_or_bf16);
-    Attributes (src_etype: ExtfSrcElemTypes, dst_etype: ExtfDstElemTypes);
+    Attributes (src_etype: ext_src_etype, dst_etype: ext_dst_etype);
     Properties [pure];
-    Assembly   { src "{" "src_etype" "=" src_etype ","
-                 "dst_etype" "=" dst_etype "}" attr-dict ":"
+    Assembly   { src "{" src_etype "," dst_etype "}" attr-dict ":"
                  functional-type(operands, results) }
   }
 

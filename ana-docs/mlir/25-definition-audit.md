@@ -4,7 +4,7 @@
 > `tools/def-exceptions.tsv`（7 列，34 行）、文法 `dialect-grammar.y`
 > （`Assembly Modeled;`、`params`、`struct(params)`）。
 > 上位规则见 [24 章](24-escape-licenses.md)：E0–E10、S1–S10、L0–L12。
-> 语料：50 个方言、278 个定义（100 type / 37 attr / 141 enum）。
+> 语料：50 个方言、287 个定义（100 type / 42 attr / 145 enum）。
 
 ## 0. 问题：逃逸点不是黑洞
 
@@ -143,10 +143,10 @@ type_def tensor_arm {
 | 类别 | 判据 | 当前 | 含义 |
 | --- | --- | --- | --- |
 | `unaccounted` | 语料在**声明面**的类型位置引用了它，却没声明 | **0** | 悬挂引用；非空即失败（C1）。先判它：语料自己打印的名字，不能拿"ODS 不可达"来豁免 |
-| `unreferenced` | 上游 op 没有通过**结构化 ODS 引用**到达它 | 208 | 它仍可能是某个 modeled 类型的参数（`spirv.Dim` 在 `!spirv.image<...>` 里），所以只声称"没有 op 字段引用"，不声称"从不打印" |
-| `substituted` | op 通过结构化引用到达它，但语料从未在声明面的类型位置引用它 | 171 | 语料把该字段换成了 i32/`any`/别的约束：范围决定，不是遗忘 |
+| `unreferenced` | 上游 op 没有通过**结构化 ODS 引用**到达它 | 204 | 它仍可能是某个 modeled 类型的参数（`spirv.Dim` 在 `!spirv.image<...>` 里），所以只声称"没有 op 字段引用"，不声称"从不打印" |
+| `substituted` | op 通过结构化引用到达它，但语料从未在声明面的类型位置引用它 | 163 | 语料把该字段换成了 i32/`any`/别的约束：范围决定，不是遗忘 |
 
-379 条"missing"因此不是欠账，而是两种范围决定。`unaccounted` 是唯一需要动手的
+367 条"missing"因此不是欠账，而是两种范围决定。`unaccounted` 是唯一需要动手的
 类，它是**语料自己说了这个名字，但没给定义**。当前 0：每个被引用的名字都能解析。
 
 判据是算出来的，不是声明的：
@@ -182,6 +182,24 @@ type_def tensor_arm {
 | `nvvm` | 106 | 全部枚举属性按 i32/`optional<i32>` 建模；枚举值集合见文件头 |
 | `llvm` | 31 | DI 元数据属性只作为 `metadata` 字典里的不透明负载，用 `attribute`/`dictionary` 承载 |
 | `rocdl` | 24 | immarg 枚举按 i32 建模，取值集合见文件头 |
+
+本轮把 5 个方言里**有真实文本载体**的定义补成声明，substituted 从 171 降到 163：
+
+| 方言 | 补的声明 | 证据 |
+| --- | --- | --- |
+| `acc` | `ClauseDefaultValue` 枚举；`defaultAttr` 字段改用它 | op 格式是 `enum(defaultAttr)`，文本就是 `present`/`none` |
+| `irdl` | `variadicity` 枚举；`operands`/`results` 的字段改成 `array<variadicity>` | 钩子打印 `single`/`optional`/`variadic` |
+| `shard` | `attr_def axisarray`；`split_axes` 字段改用它 | 上游 `GridAxesArrayAttr` 格式 `[axes]`（ShardBase.td:83-90） |
+| `spirv` | `LinkageType` 枚举 + `attr_def linkage_attributes` | 上游 `struct(params)`（SPIRVAttributes.td:55-61） |
+| `xevm` | 4 个 `*_etype` attr_def；字段从枚举改成 attr | 上游格式 `src_etype = $etype` / `dst_etype = $etype`（XeVMOps.td:613-646） |
+
+剩下的 163 条只有 3 个是小方言里的 attr 外壳，另有三个折叠方言：
+
+| 方言 | 剩余 | 为什么保持 substituted |
+| --- | --- | --- |
+| `acc` | 1 | `defaultvalue` 的 `< value >` 外壳没有文本载体：op 打印的是枚举，不是 attr |
+| `gpu` | 1 | `gpu.object` 走 `custom<Object>` 且带 `KernelTableAttr`；`gpu.binary` 只能用 `array<any>` 承载（文件头已登记） |
+| `irdl` | 1 | `variadicity_array` 由 `NamedValueListWithVariadicity` 消费，打印的是枚举列表，不是 `[...]` 外壳 |
 
 `--coverage --verbose` 逐条打印 `unreferenced` / `substituted`，供人工抽查；默认只打
 每方言的计数。这样"missing"不再是一个可以无限增长的沉默数字：每一条都有类，
