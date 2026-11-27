@@ -85,7 +85,7 @@ dialect pdl_interp {
   op are_equal from Predicate {
     Doc "Check two handles, or two ranges, for equality.";
     Operands   (lhs: pdl_any, rhs: pdl_any);
-    Properties [pure, same_type_operands];
+    Properties [pure, same_type];
     Assembly   { lhs "," rhs ":" type(lhs) attr-dict
                  "->" successors }
   }

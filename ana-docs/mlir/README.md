@@ -3,7 +3,7 @@
 本目录有两个主题：
 
 - **A. 文本解析**（01–09）：`mlir/lib/AsmParser/` 如何把 MLIR 文本变成内存中的 IR。
-- **B. 声明层**（10–20）：`mlir/**/*.td` 如何通过 `include` 组成 ODS 依赖图，
+- **B. 声明层**（10–21）：`mlir/**/*.td` 如何通过 `include` 组成 ODS 依赖图，
   这张图如何经 `mlir-tblgen` 变成 `.inc` 再进入 C++，寄生在 TD 语法里的
   ODS 语义结构是什么样子（13 章给出两门可编译的语义文法），如果只描述
   方言领域本身、不描述代码生成这门定义语言应该长什么样（14 章），以及
@@ -12,17 +12,18 @@
   形状差异更大的方言检验文法是否收敛，18 章换问题：ODS 装不下的概念
   落在 C++ 里，它还是不是领域事实，19 章把"说不出来时往哪儿放"收敛成
   五种受约束的逃逸点，20 章用 emitc/sparse_tensor 压测这套规则，并用
-  单次事实复审把本地词表从 26 压回 19）。
+  单次事实复审把本地词表从 26 压回 19，21 章再用 ub/ptr/shard/arm_sve
+  证明 81 个新 op 可以只换来 1 个核心词、0 条新产生式）。
 
 - 分析基线：worktree `/home/ubuntu/llvm/trees/pr-ctpop`，分支 `research/mlir`。
-  01–09 基于 `5f7f36636abe`；10–20 基于 `53a80edfeb2e`（2026-11-27）。
+  01–09 基于 `5f7f36636abe`；10–21 基于 `53a80edfeb2e`（2026-11-27）。
 - 所有 `file:line` 引用均以对应提交为准；上游演进后行号可能漂移，函数名相对稳定。
 - 01–09 的范围以 `mlir/lib/AsmParser/` 为中心；为解释边界，少量引用
   `mlir/include/mlir/Parser/Parser.h`、`mlir/include/mlir/AsmParser/*`、
   `mlir/include/mlir/IR/OpImplementation.h` 与 `mlir/lib/Parser/Parser.cpp`。
-- 10–20 的范围是 `mlir/include`、`mlir/lib`、`mlir/python` 下的 412 个 `.td`
+- 10–21 的范围是 `mlir/include`、`mlir/lib`、`mlir/python` 下的 412 个 `.td`
   （不含 `mlir/test`、`mlir/examples`、`mlir/unittests`）；14 章的样例在
-  `sketch/`，15–20 章的语料在 `corpus/`，v1 归档在 `design-first-v1/`。
+  `sketch/`，15–21 章的语料在 `corpus/`，v1 归档在 `design-first-v1/`。
 
 ## 章节
 
@@ -48,6 +49,7 @@
 | [18-corpus-round-four.md](18-corpus-round-four.md) | 第四轮语料：pdl_interp/tosa/shape/async/quant，五个“缺口判决”（ODS 落点、声明名=助记符、trait 列表实参、verifier 领域、推迟项）、属性值域、秩进类型、19 个方言 58 条规则 / 136 条产生式 |
 | [19-escape-hatches.md](19-escape-hatches.md) | 逃逸点宪章：五种通道（块/Custom/Generic/事实/类型名）、七条规则（显式、单维、可数、判据、词表、预算、类型名）、核心词表 39 + 方言本地 26（20 章复审后 19）、诚实的无通道缺口清单 |
 | [20-corpus-round-five.md](20-corpus-round-five.md) | 第五轮语料：emitc/sparse_tensor，92 个 op 换 0 条产生式、`oilist` 读窄的修正、同名类型/属性空间、字典型属性、预算首次告警与 8 合 7 留的单次事实复审 |
+| [21-corpus-round-six.md](21-corpus-round-six.md) | 第六轮语料：ub/ptr/shard/arm_sve，81 个 op 换 0 条产生式；`same_type` 升级进核心（39→40）、本地词表 19→18；`qualified` 第三个见证判决为产生式；空负载属性、符号非类型、Generic 是契约 |
 
 ## 一页结论
 
@@ -162,7 +164,15 @@
 33. **同名不同类型空间是真实需求**：`!emitc.opaque<...>` 与 `#emitc.opaque<...>`
     共享助记符、不共享命名空间（20 章）。
 34. **预算告警先于失控**：两个方言就把本地事实 8→34；复审不删信息，只换词，
-    单次占比 59%→37%（19 章 R6、20 章 §6.1）。
+    单次占比 59%→33%（19 章 R6、20 章 §6.1、21 章 §7）。
+35. **op 数量与文法大小已经脱钩**：最后 173 个 op（第五、六轮）只换来
+    1 条产生式，新增 op 与新增词的比例降到 81:1（21 章）。
+36. **同一个缺口第三次出现就该改文法**：`qualified(type(x))` 在
+    sparse_tensor/emitc/ptr 三处独立出现，判决为产生式，不再留在 Doc（21 章）。
+37. **“没有类型”和“没有格式”都是领域事实**：`shard.grid` 是符号 op 而非
+    `GridType`；`arm_sve` 的 scalable vector 是内建 `vector`，不发明方言类型（21 章）。
+38. **Generic 是契约，不是历史遗留**：`arm_sve` 的 23 个 `intr.*` 与 21 个
+    用户可见 op 是同一概念的两种文本通道，两者都要显式声明（21 章）。
 
 ## A 部分：`mlir/lib/AsmParser/` 文件职责
 
@@ -193,8 +203,8 @@
 | `ods-asm-format.y` | `assemblyFormat` 子语言文法（bison，0 冲突） |
 | `14-dialect-domain-model.md` | 领域模型：定义/生成边界、三投影、trait 分类、约束语义、schema refinement、v1 逐项判决 |
 | `15-corpus-driven-grammar.md` | 语料优先：方法论、语料统计、见证表、8 个修正、机械核对、与 v1/v2 差异、下一轮语料 |
-| `corpus/*.dialect` | 21 个方言源程序（4735 行）：438 op、60 schema、29 enum、48 constraint、13 attr_def、30 type_def |
-| `dialect-grammar.y` | 从语料归纳的文法（bison，58 条规则 / 137 条产生式，0 冲突，`21/21 parse OK`） |
+| `corpus/*.dialect` | 25 个方言源程序（5739 行）：519 op、76 schema、34 enum、66 constraint、14 attr_def、33 type_def |
+| `dialect-grammar.y` | 从语料归纳的文法（bison，58 条规则 / 137 条产生式，0 冲突，`25/25 parse OK`） |
 | `16-corpus-round-two.md` | 第二轮：10 项扩展、谓词组合、region 约束搬家、软关键字、见证表、机械核对 |
 | `corpus/gpu.dialect` | gpu：launch/module/func、内建 id/dim、barrier/printf/shuffle/all_reduce/subgroup_reduce/warp（18 op） |
 | `corpus/linalg.dialect` | linalg：`Structured` schema + 5 个命名算符 + generic/map/reduce/transpose/broadcast/index/yield（12 op） |
@@ -215,6 +225,11 @@
 | `20-corpus-round-five.md` | 第五轮：92 op / 0 产生式、oilist 语义修正、`Assembly Generic;` 落地、字典属性、预算告警与单次事实复审 |
 | `corpus/emitc.dialect` | emitc：C 类型系统进 MLIR，`type_def` 为主（opaque/array/ptr/lvalue），55 op 只有 4 schema |
 | `corpus/sparse_tensor.dialect` | sparse_tensor：`encoding` 为键值字典、`level_type` 为“枚举头 + 两个独立后缀”，37 op |
+| `21-corpus-round-six.md` | 第六轮：81 op / 0 产生式、`same_type` 进核心、`qualified` 判决、家族压缩与双通道、空负载属性、趋势表 |
+| `corpus/ub.dialect` | ub：毒值与不可达；无参数属性写成 `Assembly { "" }`（2 op） |
+| `corpus/ptr.dialect` | ptr：不透明指针只参数化内存空间；2 类型 / 4 枚举 / 13 op |
+| `corpus/shard.dialect` | shard：`grid` 是符号 op 而非类型；12 个集合通信共 1 schema（22 op） |
+| `corpus/arm_sve.dialect` | arm_sve：44 op 压成 13 schema；21 块格式 + 23 Generic，含唯一的 `intr.bfmmla` 块格式 |
 | `tools/dialect-corpus.py` | 语料统计与审计：子句×实体矩阵、Assembly 频次、region 注解、悬挂引用、死声明、C++ 泄漏，以及逃逸点三段报告（`escape points` / `text channels` / `fact vocabulary`） |
 | `tools/dialect-lex.c` | 参考词法器（normal / assembly 两模式） |
 | `sketch/arith.dialect` | 领域描述样例：3 约束 + 4 schema + 8 op，无 C++/namespace/class |

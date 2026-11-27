@@ -1,0 +1,33 @@
+/// ub —— 显式记录未定义行为的方言。
+///
+/// 领域事实：ub 不描述“可以执行的计算”，而描述“程序已经越界”的两种形态：
+///   - ub.poison 产生毒值：它可以出现在任何类型位置上，后续使用即推迟的 UB；
+///     可选的 value 属性标记“部分中毒”（例如向量里只有部分元素有毒）。
+///   - ub.unreachable 声明该点不可达：执行到它立即是 UB，因此它是终结符。
+/// 两者都不读写内存：它们改变的是“这个值 / 这条路径是否存在”，不是数据。
+
+dialect ub {
+  Doc "Explicit undefined behavior: poison values and unreachable control flow.";
+
+  /* 毒值属性没有参数：文本就是助记符本身，空串表示不打印任何负载。 */
+  attr_def poison {
+    Doc "#ub.poison：毒值属性；缺省（空）表示整体中毒。属性无参数，文本即助记符。";
+    Assembly { "" }
+  }
+
+  op poison {
+    Doc "materialize a poison constant of any type; the optional value marks partial poison";
+    Results    (result: any);
+    // GAP: 上游是 PoisonAttrInterface（接受任意实现了该接口的毒值属性），
+    //      本语言只能写可见的默认类型；空默认值写作 none。
+    Attributes (value: poison = none);
+    Properties [constant_like, pure];
+    Assembly   { attr-dict if value { "<" value ">" } ":" type(result) }
+  }
+
+  op unreachable {
+    Doc "executing this point is immediate undefined behavior";
+    Properties [terminator];
+    Assembly   { attr-dict }
+  }
+}

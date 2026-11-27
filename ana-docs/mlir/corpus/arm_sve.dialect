@@ -1,0 +1,373 @@
+/// arm_sve —— Arm SVE / SME 的 scalable 向量 op。
+///
+/// 领域要点：
+///   - 所有值类型都是**内建** vector 的 scalable 写法 vector<[N]xT>。TD 里的
+///     SVBool / SVEPredicate / SVEVector 只是给这个内建类型的约束起了名字，
+///     没有新的方言类型，所以本文件不声明 type_def。
+///   - 21 个用户可见的 op 各自有一个内部 lowering 用的 intr.* 对偶；对偶在 TD
+///     里由 LLVM_IntrOpBase 生成，通常没有 assemblyFormat，因此只有 generic 文本。
+///     唯一例外是 intr.bfmmla：它本身就是 BfmmlaOp，带声明式 assemblyFormat，
+///     没有单独的用户可见 bfmmla。
+///   - 带文本的 op 的 assemblyFormat 都是声明式的，没有自定义 printer/parser，
+///     所以这里没有 Custom，全部是块格式或 Generic。
+///   - 文本形状相同的 op 共享一个 schema，op 只写自己的差异（Doc、
+///     commutative 等）；家族用 extends 串起来。
+
+dialect arm_sve {
+  Doc "Arm SVE scalable vectors: dot/matrix accumulate, svbool conversion, zip, predicate select and masked arithmetic.";
+
+  // ---- 类型 ----
+  // SVE 的谓词与数据向量在内建 vector 里用“尾维 scalable”表示：
+  //   svbool      = vector<[16]xi1>
+  //   SVE 谓词    = vector<[1]xi1> 到 vector<[16]xi1>
+  //   数据向量    = vector<[16]xi8>、vector<[8]xi16> 等，元素至多 64 位
+  // 文法写不出 <[N]xT>，所以下面的约束只在给类别命名，类型仍是内建 vector。
+  // GAP: scalable 维长与元素类型的组合（[16]xi8、[8]xbf16 ...）无法在
+  //      constraint 里表达，只能退化成 `= vector`；具体宽度写在各 op 的 Doc。
+  constraint svbool = vector;
+  constraint sve_predicate = vector;
+  constraint sve_mask = vector;
+  constraint sve_vector = vector;
+
+  // ---- 累加类：dot、MMLA、FMLA ----
+  // 文本形状统一：acc, src1, src2 attr-dict : type(src1) to type(dst)。
+  // 元素/长度随 op 不同：
+  //   sdot, udot          acc 是 [4]xi32 或 [2]xi64，src 是 [16]xi8 或 [8]xi16
+  //   smmla, ummla, usmmla acc 是 [4]xi32，src 是 [16]xi8
+  //   bfmmla              acc 是 [4]xf32，src 是 [8]xbf16
+  schema SveAccumulate {
+    Doc "acc、src1、src2 -> dst；src1/src2 同型，acc/dst 同型，文本用两者的类型收尾。";
+    Operands   (acc: sve_vector, src1: sve_vector, src2: sve_vector);
+    Results    (dst: sve_vector);
+    Properties [pure, element_type_matches(src1, src2),
+                element_type_matches(acc, dst)];
+    Assembly   { acc "," src1 "," src2 attr-dict
+                 ":" type(src1) "to" type(dst) }
+  }
+
+  schema SveIndexedAccumulate extends SveAccumulate {
+    Doc "在累加形状上多带一个 i32 索引 lane，选择每个 128-bit 段里的元素。";
+    Operands (acc: sve_vector, src1: sve_vector, src2: sve_vector, lane: i32);
+    Assembly { acc "," src1 "," src2 "," lane attr-dict
+               ":" type(src1) "to" type(dst) }
+  }
+
+  op sdot from SveAccumulate {
+    Doc "有符号解释的整数点积累加：src 每 4 个元素一组求点积，再加到 acc 的对应元素。";
+  }
+
+  op udot from SveAccumulate {
+    Doc "无符号解释的整数点积累加；与 sdot 只在 src 的符号解释上不同。";
+  }
+
+  op smmla from SveAccumulate {
+    Doc "有符号 8 位整数矩阵乘累加：2x8 乘 8x2 得 2x2 的 32 位结果，加到 acc。";
+  }
+
+  op ummla from SveAccumulate {
+    Doc "无符号 8 位整数矩阵乘累加；结果同样加宽到 32 位后累加。";
+  }
+
+  op usmmla from SveAccumulate {
+    Doc "无符号乘有符号的 8 位整数矩阵乘累加。";
+  }
+
+  // 唯一带块格式的 intr op：TD 里 bfmmla 只有 intr.bfmmla，且带 assemblyFormat。
+  op intr.bfmmla from SveAccumulate {
+    Doc "bf16 矩阵乘累加：2x4 乘 4x2 的 bf16 矩阵，结果以 f32 累加到 acc。";
+  }
+
+  op fmla from SveIndexedAccumulate {
+    Doc "按索引元素的浮点融合乘加：src1 的每个元素乘 src2 段内 lane 处的元素，不中间舍入地加到 acc。";
+  }
+
+  // ---- svbool 与谓词互转 ----
+  // svbool 是唯一有内存表示、映射满谓词寄存器的谓词；更窄的谓词必须先转成
+  // svbool 才能存取，读回后再转回去。GAP: “结果的尾维被改写成 16”这一
+  // TypesMatch 关系没有对应的核心事实，只能写进 Doc。
+  schema SvboolConvert {
+    Doc "svbool -> 更窄的 SVE 谓词；文本只打印结果类型。";
+    Operands   (source: svbool);
+    Results    (result: sve_predicate);
+    Properties [pure, same_element_type];
+    Assembly   { source attr-dict ":" type(result) }
+  }
+
+  schema SvboolConvertTo extends SvboolConvert {
+    Doc "SVE 谓词 -> svbool；方向相反，文本打印源类型。";
+    Operands (source: sve_predicate);
+    Results  (result: svbool);
+    Assembly { source attr-dict ":" type(source) }
+  }
+
+  op convert_from_svbool from SvboolConvert {
+    Doc "把 svbool 转成更窄的谓词，例如 vector<[4]xi1> 或 vector<2x[8]xi1>。";
+  }
+
+  op convert_to_svbool from SvboolConvertTo {
+    Doc "把窄谓词转成 svbool：结果尾维固定为 16。";
+  }
+
+  // ---- 多向量 zip（SME2）----
+  schema Zip2 {
+    Doc "两路交织：两个源、两个结果（低半与高半），文本只打印源类型。";
+    Operands   (source1: sve_vector, source2: sve_vector);
+    Results    (result1: sve_vector, result2: sve_vector);
+    Properties [pure, same_shape, same_element_type];
+    Assembly   { source1 "," source2 attr-dict ":" type(source1) }
+  }
+
+  schema Zip4 extends Zip2 {
+    Doc "四路交织：四个源、四个结果，每个结果占整体的四分之一。";
+    Operands (source1: sve_vector, source2: sve_vector,
+              source3: sve_vector, source4: sve_vector);
+    Results  (result1: sve_vector, result2: sve_vector,
+              result3: sve_vector, result4: sve_vector);
+    Assembly { source1 "," source2 "," source3 "," source4 attr-dict
+               ":" type(source1) }
+  }
+
+  op zip.x2 from Zip2 {
+    Doc "把两个向量的元素按 A1 B1 A2 B2 ... 交织，低半进 result1、高半进 result2。";
+  }
+
+  op zip.x4 from Zip4 {
+    Doc "把四个向量的元素按 A1 B1 C1 D1 ... 交织，分成四份依次进四个结果。";
+  }
+
+  // ---- 谓词选择与段广播 ----
+  op psel {
+    Doc "谓词选择：p2 的 index 位为 1 时返回 p1，否则返回全 false；p1 与结果同型，p2 可以更窄。";
+    Operands   (p1: sve_predicate, p2: sve_predicate, index: index);
+    Results    (result: sve_predicate);
+    Properties [pure, element_type_matches(p1, result)];
+    Assembly   { p1 "," p2 "[" index "]" attr-dict
+                 ":" type(p1) "," type(p2) }
+  }
+
+  op dupq_lane {
+    Doc "把被索引的 128-bit 段广播到向量的每个 128-bit 段；索引超出段数时结果全零。";
+    Operands   (src: sve_vector);
+    Results    (dst: sve_vector);
+    Attributes (lane: i64);
+    Properties [pure, same_shape, same_element_type];
+    Assembly   { src "[" lane "]" attr-dict ":" type(dst) }
+  }
+
+  // ---- masked 算术 ----
+  // mask 与操作数同形；inactive lane 保留第一个操作数的值。
+  schema MaskedArithmetic {
+    Doc "mask、src1、src2 -> res；inactive lane 保留 src1；文本以 mask 与 res 的类型收尾。";
+    Operands   (mask: sve_mask, src1: sve_vector, src2: sve_vector);
+    Results    (res: sve_vector);
+    Properties [pure, same_shape, element_type_matches(src1, res)];
+    Assembly   { mask "," src1 "," src2 attr-dict
+                 ":" type(mask) "," type(res) }
+  }
+
+  op masked.addi from MaskedArithmetic {
+    Doc "整数加法；元素是 i8、i16、i32 或 i64。";
+    Properties [commutative];
+  }
+
+  op masked.addf from MaskedArithmetic {
+    Doc "浮点加法；元素是任意浮点类型。";
+    Properties [commutative];
+  }
+
+  op masked.subi from MaskedArithmetic {
+    Doc "整数减法。";
+  }
+
+  op masked.subf from MaskedArithmetic {
+    Doc "浮点减法。";
+  }
+
+  op masked.muli from MaskedArithmetic {
+    Doc "整数乘法。";
+    Properties [commutative];
+  }
+
+  op masked.mulf from MaskedArithmetic {
+    Doc "浮点乘法。";
+    Properties [commutative];
+  }
+
+  op masked.divi_signed from MaskedArithmetic {
+    Doc "有符号整数除法。";
+  }
+
+  op masked.divi_unsigned from MaskedArithmetic {
+    Doc "无符号整数除法。";
+  }
+
+  op masked.divf from MaskedArithmetic {
+    Doc "浮点除法。";
+  }
+
+  // ---- intr.* 对偶 ----
+  // TD 用 LLVM_IntrOpBase 生成这些 op：没有 assemblyFormat、没有自定义
+  // printer，只有 generic 文本；所以每个 op 显式写 Assembly Generic。
+  // 公共结构仍由 schema 给出，op 只写 Doc。
+  schema IntrBinary {
+    Doc "三个 rank-1 scalable 向量 -> 一个结果；generic 文本。";
+    Operands (src1: sve_vector, src2: sve_vector, acc: sve_vector);
+    Results  (res: sve_vector);
+  }
+
+  schema IntrIndexedBinary extends IntrBinary {
+    Doc "在三分量形状上多一个标量立即索引 lane。";
+    Operands (src1: sve_vector, src2: sve_vector, acc: sve_vector,
+              lane: signless_integer);
+  }
+
+  schema IntrMaskedBinary {
+    Doc "mask、src1、src2 三个 rank-1 scalable 向量 -> 一个结果；generic 文本。";
+    Operands (mask: sve_vector, src1: sve_vector, src2: sve_vector);
+    Results  (res: sve_vector);
+  }
+
+  schema IntrUnary {
+    Doc "一个源 -> 一个结果；generic 文本。";
+    Operands (source: sve_vector);
+    Results  (res: sve_vector);
+  }
+
+  schema IntrZip2 {
+    Doc "两个源、一个结果；generic 文本。";
+    Operands (v1: sve_vector, v2: sve_vector);
+    // 结果是任意 LLVM 类型（实际为 !llvm.struct），不是 scalable vector。
+    Results  (res: llvm_type);
+  }
+
+  schema IntrZip4 extends IntrZip2 {
+    Doc "四个源、一个结果；generic 文本。";
+    Operands (v1: sve_vector, v2: sve_vector, v3: sve_vector, v4: sve_vector);
+  }
+
+  // TD 里 ZipX2IntrOp / ZipX4IntrOp 只声明一个 LLVM_Type 结果，numResults
+  // 只影响 intrinsic 构造，所以这里照录为一个结果。
+
+  op intr.sdot from IntrBinary {
+    Doc "sdot 的 intrinsic 形式。";
+    Assembly Generic;
+  }
+
+  op intr.udot from IntrBinary {
+    Doc "udot 的 intrinsic 形式。";
+    Assembly Generic;
+  }
+
+  op intr.smmla from IntrBinary {
+    Doc "smmla 的 intrinsic 形式。";
+    Assembly Generic;
+  }
+
+  op intr.ummla from IntrBinary {
+    Doc "ummla 的 intrinsic 形式。";
+    Assembly Generic;
+  }
+
+  op intr.usmmla from IntrBinary {
+    Doc "usmmla 的 intrinsic 形式。";
+    Assembly Generic;
+  }
+
+  op intr.fmla.lane from IntrIndexedBinary {
+    Doc "fmla 的按索引 intrinsic 形式。";
+    Assembly Generic;
+  }
+
+  op intr.add from IntrMaskedBinary {
+    Doc "masked.addi 的 intrinsic 形式。";
+    Assembly Generic;
+  }
+
+  op intr.fadd from IntrMaskedBinary {
+    Doc "masked.addf 的 intrinsic 形式。";
+    Assembly Generic;
+  }
+
+  op intr.sub from IntrMaskedBinary {
+    Doc "masked.subi 的 intrinsic 形式。";
+    Assembly Generic;
+  }
+
+  op intr.fsub from IntrMaskedBinary {
+    Doc "masked.subf 的 intrinsic 形式。";
+    Assembly Generic;
+  }
+
+  op intr.mul from IntrMaskedBinary {
+    Doc "masked.muli 的 intrinsic 形式。";
+    Assembly Generic;
+  }
+
+  op intr.fmul from IntrMaskedBinary {
+    Doc "masked.mulf 的 intrinsic 形式。";
+    Assembly Generic;
+  }
+
+  op intr.sdiv from IntrMaskedBinary {
+    Doc "masked.divi_signed 的 intrinsic 形式。";
+    Assembly Generic;
+  }
+
+  op intr.udiv from IntrMaskedBinary {
+    Doc "masked.divi_unsigned 的 intrinsic 形式。";
+    Assembly Generic;
+  }
+
+  op intr.fdiv from IntrMaskedBinary {
+    Doc "masked.divf 的 intrinsic 形式。";
+    Assembly Generic;
+  }
+
+  op intr.convert.from.svbool from IntrUnary {
+    Doc "convert_from_svbool 的 intrinsic 形式。";
+    Operands (source: svbool);
+    Results  (res: sve_predicate);
+    Assembly Generic;
+  }
+
+  op intr.convert.to.svbool from IntrUnary {
+    Doc "convert_to_svbool 的 intrinsic 形式。";
+    Operands (source: sve_predicate);
+    Results  (res: svbool);
+    Assembly Generic;
+  }
+
+  op intr.zip.x2 from IntrZip2 {
+    Doc "zip.x2 的 intrinsic 形式。";
+    Assembly Generic;
+  }
+
+  op intr.zip.x4 from IntrZip4 {
+    Doc "zip.x4 的 intrinsic 形式。";
+    Assembly Generic;
+  }
+
+  op intr.psel {
+    Doc "psel 的 intrinsic 形式：p1 是满宽 svbool，索引是 i32 而不是 index。";
+    Operands   (p1: svbool, p2: sve_predicate, index: i32);
+    Results    (res: svbool);
+    Properties [pure];
+    Assembly Generic;
+  }
+
+  op intr.whilelt {
+    Doc "由基址与长度生成谓词：对应 vector.create_mask 的 SVE 实现。";
+    Operands   (base: i64, n: i64);
+    Results    (res: sve_predicate);
+    Properties [pure];
+    Assembly Generic;
+  }
+
+  op intr.dupq_lane {
+    Doc "dupq_lane 的 intrinsic 形式，lane 仍是立即数属性。";
+    Operands   (v: sve_vector);
+    Results    (res: sve_vector);
+    Attributes (lane: i64);
+    Assembly Generic;
+  }
+}

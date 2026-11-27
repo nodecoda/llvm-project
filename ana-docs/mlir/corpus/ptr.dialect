@@ -1,0 +1,249 @@
+/// ptr —— 不透明指针：指针类型、指针算术与基于指针的内存访问。
+///
+/// 领域核心是一个不带元素类型的 ptr 类型：它只参数化内存空间，元素类型只
+/// 出现在使用它的访存 op 上（load/store 的值类型），或由 ptr_metadata 显式
+/// 描述。所以本方言没有 typed pointer：
+///   - from_ptr / to_ptr 在 ptr 与 ptr-like 对象（memref、其他方言的指针）
+///     之间转换；两端内存空间必须一致，且 ptr-like 一端不能又是 ptr。
+///   - load/store 是标量访存；gather/scatter 与 masked_load/masked_store 是
+///     rank-1 的掩码访存，mask 的元素是 i1，形状与值/结果一致。
+///   - ptr_add / ptr_diff 在标量或形状值上做指针算术：前者按广播兼容附加
+///     偏移，后者要求两个操作数同型并逐元素相减。
+///
+/// 访存修饰与 LLVM 的 load/store 对应：volatile、atomic（可带 syncscope 与
+/// ordering）、nontemporal、invariant、invariant_group、alignment。ordering
+/// 的默认值是 not_atomic，只在非默认时打印；atomic 关键字也只在这时出现。
+///
+/// AtomicBinOp 是 PtrEnums.td 里的原子二元操作枚举（atomicrmw 的选择器），
+/// 本树的 Ptr 方言没有 atomicrmw op，枚举目前只被内存空间接口的原子钩子使用；
+/// 这里按 TD 声明它，不额外发明 op。
+///
+/// GAP: 上游 load/masked_load/masked_store/store 把地址类型打印成
+/// qualified(type(ptr))，即只在需要时带 `!ptr.` 前缀；本语法没有 qualified
+/// 指令，块格式一律写 type(ptr)，前缀属于打印层面。
+
+dialect ptr {
+  Doc "Opaque pointers, pointer arithmetic, and pointer-based memory access.";
+
+  /// 整数类：无符号语义整数或 index，标量，或任意 rank 的形状值。
+  constraint scalar_int = signless_integer | index;
+  constraint int_like = scalar_int | tensor<scalar_int> | vector<scalar_int>;
+
+  /// ptr-like：标量 ptr，或元素为 ptr 的任意 rank 形状值。
+  constraint ptr_like = ptr | tensor<ptr> | vector<ptr>;
+
+  /// 各类 rank-1 形状值：任意元素、i1 掩码、ptr 元素。
+  constraint any_1d = tensor<any, 1> | vector<any, 1>;
+  constraint mask_1d = tensor<i1, 1> | vector<i1, 1>;
+  constraint ptr_1d = tensor<ptr, 1> | vector<ptr, 1>;
+
+  /// 原子二元操作：与 LLVM atomicrmw 的操作码同名；and/or/xor 为避开关键字
+  /// 在枚举里拼成 _and/_or/_xor，文本也是这三个拼写。
+  enum AtomicBinOp {
+    Doc "Read-modify-write binary selectors, spelled like LLVM atomicrmw opcodes.";
+    Cases [ xchg = 0, add = 1, sub = 2, _and = 3, nand = 4, _or = 5,
+            _xor = 6, max = 7, min = 8, umax = 9, umin = 10,
+            fadd = 11, fsub = 12, fmax = 13, fmin = 14,
+            uinc_wrap = 15, udec_wrap = 16 ];
+  }
+
+  /// 内存序：not_atomic 是默认值，因此从不出现在文本里。
+  enum AtomicOrdering {
+    Doc "Atomic ordering; not_atomic is the default and is never printed.";
+    Cases [ not_atomic = 0, unordered = 1, monotonic = 2, acquire = 3,
+            release = 4, acq_rel = 5, seq_cst = 6 ];
+  }
+
+  /// 指针加法的溢出/边界保证；none 是默认值，不打印。
+  enum PtrAddFlags {
+    Doc "Pointer-add guarantees; none is the default and is never printed.";
+    Cases [ none = 0, nusw = 1, nuw = 2, inbounds = 3 ];
+  }
+
+  /// 指针减法的溢出保证；none 是默认值，不打印。位枚举，与加法的普通枚举不同。
+  enum PtrDiffFlags: bits {
+    Doc "Pointer-difference guarantees; none is the default and is never printed.";
+    Cases [ none = 0, nuw = 1, nsw = 2 ];
+  }
+
+  /// 指针类型只带内存空间，不带元素类型：这是与 LLVM opaque pointer 对齐的
+  /// 地方。内存空间是属性，本方言只提供 #ptr.generic_space 一个实例；其他
+  /// 方言可以给自己的内存空间属性。
+  type_def ptr {
+    Doc "Opaque pointer parameterized by a memory space; it has no element type.";
+    Parameters (memory_space: attribute);
+    Assembly { "<" memory_space ">" }
+  }
+
+  /// ptr_metadata 不携带自己的状态：它只是“某个 ptr-like 对象类型的 metadata”
+  /// 的类型化表示，参数就是那个对象类型；对没有 metadata 的 ptr-like 类型
+  /// 构造它是错误。
+  type_def ptr_metadata {
+    Doc "Typed view of the metadata of a ptr-like object; constructing it for a ptr-like type without metadata is an error.";
+    Parameters (object: any);
+    Assembly { "<" object ">" }
+  }
+
+  /// 掩码读的公共形状。ptr 在两种 op 里都指地址：masked_load 是标量 ptr，
+  /// gather 是 rank-1 的 ptr 数组；mask 是 i1 元素，passthrough 与结果同型。
+  /// alignment 只在非默认时打印。属性字典在类型之前。
+  schema MaskedRead {
+    Doc "Shared shape of the conditional reads: address, i1 mask and passthrough; alignment prints only when set.";
+    Operands   (ptr: ptr_like, mask: mask_1d, passthrough: any_1d);
+    Results    (result: any_1d);
+    Attributes (alignment: optional<integer>);
+    Assembly   { ptr "," mask "," passthrough
+                 if alignment { "alignment" "=" alignment }
+                 attr-dict ":" type(ptr) "->" type(result) }
+  }
+
+  /// 掩码写的公共形状。ptr 同样是地址：masked_store 是标量 ptr，scatter 是
+  /// rank-1 的 ptr 数组。没有结果，类型列表只有 value 与 ptr。
+  schema MaskedWrite {
+    Doc "Shared shape of the conditional stores: value, address and i1 mask; alignment prints only when set.";
+    Operands   (value: any_1d, ptr: ptr_like, mask: mask_1d);
+    Attributes (alignment: optional<integer>);
+    Assembly   { value "," ptr "," mask
+                 if alignment { "alignment" "=" alignment }
+                 attr-dict ":" type(value) "," type(ptr) }
+  }
+
+  // ---- 常量与类型转换 ----
+
+  op constant {
+    Doc "Pointer constant; value is a typed attribute of pointer type (such as a null pointer) and the result type is given by that attribute, so the text prints no separate result type.";
+    Results    (result: ptr);
+    Attributes (value: attribute);
+    Properties [pure, constant_like];
+    Assembly   { attr-dict value }
+  }
+
+  op from_ptr {
+    Doc "Cast a ptr to a ptr-like object, optionally feeding metadata; both sides share the memory space and the result is not ptr again.";
+    Operands   (ptr: ptr, metadata: optional<ptr_metadata>);
+    Results    (result: ptr_like);
+    Properties [pure];
+    Assembly   { ptr if metadata { "metadata" metadata }
+                 attr-dict ":" type(ptr) "->" type(result) }
+  }
+
+  op to_ptr {
+    Doc "Cast a ptr-like object to a ptr; both sides share the memory space and the operand is not ptr already.";
+    Operands   (ptr: ptr_like);
+    Results    (result: ptr);
+    Properties [pure];
+    Assembly   { ptr attr-dict ":" type(ptr) "->" type(result) }
+  }
+
+  op type_offset {
+    Doc "Produce the target-specific byte offset of one element of the given type, as an integer or index value.";
+    Attributes (element_type: type);
+    Results    (result: scalar_int);
+    Properties [pure];
+    Assembly   { element_type attr-dict ":" type(result) }
+  }
+
+  // ---- 元数据 ----
+
+  op get_metadata {
+    Doc "Produce the metadata of a ptr-like object as an SSA value; the result type names the object type whose metadata it is.";
+    Operands   (ptr: ptr_like);
+    Results    (result: ptr_metadata);
+    Properties [pure];
+    Assembly   { ptr attr-dict ":" type(ptr) }
+  }
+
+  // ---- 标量访存 ----
+
+  op load {
+    Doc "Read a value through a pointer, with optional volatile, atomic (plus syncscope and ordering), nontemporal, invariant, invariant_group and alignment modifiers.";
+    Operands   (ptr: ptr);
+    Results    (value: any);
+    Attributes (alignment: optional<integer>,
+                volatile: optional<unit>,
+                nontemporal: optional<unit>,
+                invariant: optional<unit>,
+                invariant_group: optional<unit>,
+                ordering: AtomicOrdering = not_atomic,
+                syncscope: optional<string>);
+    Properties [memory_effect(read)];
+    Assembly   { if volatile { "volatile" } ptr
+                 if ordering { "atomic"
+                               if syncscope { "syncscope" "(" syncscope ")" }
+                               ordering }
+                 oilist("nontemporal" nontemporal
+                        | "invariant" invariant
+                        | "invariant_group" invariant_group
+                        | "alignment" "=" alignment)
+                 attr-dict ":" type(ptr) "->" type(value) }
+  }
+
+  op store {
+    Doc "Write a value through a pointer, with optional volatile, atomic (plus syncscope and ordering), nontemporal, invariant_group and alignment modifiers; unlike load there is no invariant modifier.";
+    Operands   (value: any, ptr: ptr);
+    Attributes (alignment: optional<integer>,
+                volatile: optional<unit>,
+                nontemporal: optional<unit>,
+                invariant_group: optional<unit>,
+                ordering: AtomicOrdering = not_atomic,
+                syncscope: optional<string>);
+    Properties [memory_effect(write)];
+    Assembly   { if volatile { "volatile" } value "," ptr
+                 if ordering { "atomic"
+                               if syncscope { "syncscope" "(" syncscope ")" }
+                               ordering }
+                 oilist("nontemporal" nontemporal
+                        | "invariant_group" invariant_group
+                        | "alignment" "=" alignment)
+                 attr-dict ":" type(value) "," type(ptr) }
+  }
+
+  // ---- 掩码访存 ----
+
+  op masked_load from MaskedRead {
+    Doc "Conditional load through a scalar pointer; lanes whose mask bit is clear take the passthrough value.";
+    Operands   (ptr: ptr, mask: mask_1d, passthrough: any_1d);
+    Properties [memory_effect(read), same_shape];
+  }
+
+  op masked_store from MaskedWrite {
+    Doc "Conditional store through a scalar pointer; only lanes whose mask bit is set are written.";
+    Operands   (value: any_1d, ptr: ptr, mask: mask_1d);
+    Properties [memory_effect(write), same_shape];
+  }
+
+  op gather from MaskedRead {
+    Doc "Conditional loads from a rank-1 array of pointers; lanes whose mask bit is clear take the passthrough value.";
+    Operands   (ptr: ptr_1d, mask: mask_1d, passthrough: any_1d);
+    Properties [memory_effect(read), same_shape];
+  }
+
+  op scatter from MaskedWrite {
+    Doc "Conditional stores of a rank-1 value to a rank-1 array of pointers; only lanes whose mask bit is set are written.";
+    Operands   (value: any_1d, ptr: ptr_1d, mask: mask_1d);
+    Properties [memory_effect(write), same_shape];
+  }
+
+  // ---- 指针算术 ----
+
+  op ptr_add {
+    Doc "Add an int-like offset to a pointer or a shaped value of pointers; base and offset shapes are broadcast-compatible and the flags print only when not none.";
+    Operands   (base: ptr_like, offset: int_like);
+    Results    (result: ptr_like);
+    Attributes (flags: PtrAddFlags = none);
+    Properties [pure, broadcastable];
+    Implements [ViewLikeOpInterface, InferTypeOpInterface];
+    Assembly   { if flags { flags } base "," offset
+                 attr-dict ":" type(base) "," type(offset) }
+  }
+
+  op ptr_diff {
+    Doc "Subtract two same-typed pointers, yielding the byte difference as an integer or index value; the flags print only when not none.";
+    Operands   (lhs: ptr_like, rhs: ptr_like);
+    Results    (result: int_like);
+    Attributes (flags: PtrDiffFlags = none);
+    Properties [pure, same_shape];
+    Assembly   { if flags { flags } lhs "," rhs
+                 attr-dict ":" type(lhs) "->" type(result) }
+  }
+}

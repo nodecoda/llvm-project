@@ -1,0 +1,348 @@
+/// shard —— SPMD 张量分片方言：设备网格、sharding 描述与集合通信。
+///
+/// 领域要点：
+///   - `shard.grid` 是唯一的符号 op：它给设备网格起名，并给出每轴长度（`?`
+///     表示动态）。所以“网格”不是类型：其余 op 用 flat_symbol_ref 指向它，
+///     TD 里没有 GridType，本文件也不发明一个。
+///   - 唯一的方言类型是 `!shard.sharding`：一个不带负载的分片描述。真正的
+///     内容（网格、split_axes、halo、偏移）由 `shard.sharding` op 的属性与
+///     操作数给出，再经 SSA 值在 shard、get_sharding 与集合通信之间传递。
+///   - 轴号与维度号是 IndexAttr；静态数组与动态操作数成对时（shape、dims、
+///     root、halo 等），上游用一个局部钩子把两份数据合并成一份列表，块格式
+///     直接引用 DimensionList / DynamicIndexList。
+///   - 12 个集合通信 op 共享 `Collective` schema：设备组由 grid 与 grid_axes
+///     选择；各 op 只补自己的轴号、归约方式或根设备属性，并给出自己的文本。
+///
+/// 文本通道：22 个 op 全部是块状 Assembly。上游的定制打印只有
+/// DimensionList 与 DynamicIndexList 两个局部钩子，块格式都能原样表达，
+/// 因此既没有 Custom 通道，也没有 Generic 通道。
+///
+/// 本地事实（1 个，在此解释）：
+///   same_type —— ODS 的 AllTypesMatch 与 TypesMatchWith 要求两个部件的完整
+///   类型相等（shard 的 result/src、update_halo 的 result/destination）；核心
+///   词表只有 same_shape 与 same_element_type 两个较弱的投影，故新增 same_type。
+///
+/// GAP: 上游 Shard 只有 sharding 一个类型；grid 是符号 op 而非类型，没有可
+///     声明的 grid type_def（见开头说明），故不虚构该声明。
+
+dialect shard {
+  Doc "Tensor sharding over a device grid, with collective communication.";
+
+  // ---- 类型与枚举 ----
+
+  /// sharding 类型没有参数，上游的 assemblyFormat 为空，文本就是裸类型名。
+  type_def sharding {
+    Doc "A sharding description of a tensor; it has no parameters and prints as bare !shard.sharding.";
+  }
+
+  enum reduction_kind {
+    Doc "Reduction used by all_reduce, reduce and reduce_scatter; printed as the case mnemonic.";
+    Cases [ sum = 1 "sum", max = 2 "max", min = 3 "min", product = 4 "product",
+            average = 5 "average", bitwise_and = 6 "bitwise_and",
+            bitwise_or = 7 "bitwise_or", bitwise_xor = 8 "bitwise_xor",
+            generic = 100 "generic" ];
+  }
+
+  // ---- 类型域与属性域 ----
+
+  /// 一个 grid 轴号是 i16；split_axes 的每一项是一组轴号，外层再包一层。
+  constraint axis_array = array<i16>;
+  constraint axes_array = array<axis_array>;
+
+  /// 静态维度表、设备坐标表、根设备坐标表都是 i64 数组。
+  constraint dims_array = array<i64>;
+
+  /// 共享类型域：tensor 是 ranked tensor，memref 是 ranked memref。
+  constraint tensor_like = tensor;
+  constraint memref_like = memref;
+  constraint collective_value = tensor_like | memref_like;
+
+  /// AnyNon0RankedTensor 与 AnyNon0RankedMemRef：秩至少为 1。
+  // GAP: 上游是 AnyNon0RankedTensor/AnyNon0RankedMemRef（rank ≥ 1），
+  //      约束语法没有“rank ≥ 1”这种下界，只能写裸 tensor/memref。
+  constraint non0_tensor = tensor;
+  constraint non0_value = non0_tensor | memref_like;
+
+  // ---- 集合通信的共享骨架 ----
+
+  /// 设备组由 grid 与 grid_axes 选择；grid_axes 缺省表示整张网格。
+  /// input 与 result 的具体类型域由各 op 覆盖。
+  schema Collective {
+    Doc "Common skeleton of collective ops: device group, input and result.";
+    Operands   (input: collective_value);
+    Results    (result: collective_value);
+    Attributes (grid: flat_symbol_ref, grid_axes: axis_array = none);
+    Implements [SymbolUserOpInterface, OpAsmOpInterface];
+  }
+
+  // ---- 网格与进程坐标 ----
+
+  op grid {
+    Doc "A symbol naming a device grid; shape gives one extent per axis, with ? for a dynamic extent. The rank is positive and static extents are non-negative.";
+    Attributes (sym_name: string,
+                sym_visibility: optional<string>,
+                shape: dims_array);
+    Properties [pure, symbol, symbol_visibility];
+    Assembly   { if sym_visibility { sym_visibility } sym_name
+                 "(" "shape" "=" custom<DimensionList>(shape) ")" attr-dict }
+  }
+
+  op grid_shape {
+    Doc "Shape of a grid symbol: one index per selected axis, or one per axis of the grid when axes is absent.";
+    Attributes (grid: flat_symbol_ref, axes: axis_array [non_negative] = none);
+    Results    (result: variadic<index>);
+    Properties [pure];
+    Implements [SymbolUserOpInterface, OpAsmOpInterface];
+    Assembly   { grid if axes { "axes" "=" axes } attr-dict ":" type(result) }
+  }
+
+  op process_multi_index {
+    Doc "Multi-index of the current device along the selected grid axes, or along all axes when axes is absent.";
+    Attributes (grid: flat_symbol_ref, axes: axis_array [non_negative] = none);
+    Results    (result: variadic<index>);
+    Properties [pure];
+    Implements [SymbolUserOpInterface, OpAsmOpInterface];
+    Assembly   { "on" grid if axes { "axes" "=" axes } attr-dict ":" type(result) }
+  }
+
+  op process_linear_index {
+    Doc "Row-major linear index of the current device in the grid.";
+    Attributes (grid: flat_symbol_ref);
+    Results    (result: index);
+    Properties [pure];
+    Implements [SymbolUserOpInterface, OpAsmOpInterface];
+    Assembly   { "on" grid attr-dict ":" type(result) }
+  }
+
+  op neighbors_linear_indices {
+    Doc "Linear indices of the previous and next device along the given split axes; a negative value means there is no neighbor in that direction.";
+    Attributes (grid: flat_symbol_ref, split_axes: axis_array);
+    Operands   (device: variadic<index>);
+    Results    (neighbor_down: index, neighbor_up: index);
+    Properties [pure];
+    Implements [SymbolUserOpInterface, OpAsmOpInterface];
+    Assembly   { "on" grid "[" device "]" "split_axes" "=" split_axes
+                 attr-dict ":" type(results) }
+  }
+
+  // ---- 分片描述 ----
+
+  op sharding {
+    Doc "Defines how a tensor is split over a grid: split_axes has one axis list per tensor dimension; halo_sizes and sharded_dims_offsets are mutually exclusive and each mixes static entries with dynamic index operands.";
+    Attributes (grid: flat_symbol_ref,
+                split_axes: axes_array [non_negative],
+                static_sharded_dims_offsets: dims_array = none,
+                static_halo_sizes: dims_array = none);
+    Operands   (dynamic_sharded_dims_offsets: variadic<i64>,
+                dynamic_halo_sizes: variadic<i64>);
+    Results    (result: sharding);
+    Properties [pure, operand_segments_by_attribute];
+    Implements [SymbolUserOpInterface, OpAsmOpInterface];
+    Assembly   { grid
+                 "split_axes" "=" split_axes
+                 if dynamic_halo_sizes {
+                   "halo_sizes" "="
+                   custom<DynamicIndexList>(dynamic_halo_sizes, static_halo_sizes) }
+                 if dynamic_sharded_dims_offsets {
+                   "sharded_dims_offsets" "="
+                   custom<DynamicIndexList>(dynamic_sharded_dims_offsets,
+                                            static_sharded_dims_offsets) }
+                 attr-dict ":" type(result) }
+  }
+
+  op get_sharding {
+    Doc "Returns the sharding recorded for a tensor.";
+    Operands   (source: tensor_like);
+    Results    (result: sharding);
+    Properties [pure];
+    Assembly   { source attr-dict ":" type(source) "->" type(result) }
+  }
+
+  op shard_shape {
+    Doc "Shape of the shard owned by the device at multi-index device, for a tensor of shape dims; dims and device each mix static entries with dynamic index operands.";
+    Attributes (dims: dims_array, device: dims_array);
+    Operands   (dims_dynamic: variadic<index>,
+                sharding: sharding,
+                device_dynamic: variadic<index>);
+    Results    (result: variadic<index>);
+    Properties [pure, operand_segments_by_attribute];
+    Implements [OpAsmOpInterface];
+    Assembly   { "dims" "=" custom<DynamicIndexList>(dims_dynamic, dims)
+                 "sharding" "=" sharding
+                 "device" "=" custom<DynamicIndexList>(device_dynamic, device)
+                 attr-dict ":" type(results) }
+  }
+
+  op shard {
+    Doc "Annotates a tensor with the sharding it is split under; annotate_for_users makes the annotation apply to users of the value instead of to its defining op.";
+    Operands   (src: tensor_like, sharding: sharding);
+    Results    (result: tensor_like);
+    Attributes (annotate_for_users: optional<unit>);
+    Properties [pure, same_type];
+    Implements [OpAsmOpInterface];
+    Assembly   { src "to" sharding
+                 if annotate_for_users { "annotate_for_users" }
+                 attr-dict ":" type(result) }
+  }
+
+  // ---- 集合通信 ----
+
+  op all_gather from Collective {
+    Doc "Concatenates every device slice along gather_axis and gives each device in the group the concatenated tensor.";
+    Attributes (gather_axis: index [non_negative]);
+    Properties [pure, same_element_type, same_rank];
+    Assembly   { input "on" grid if grid_axes { "grid_axes" "=" grid_axes }
+                 "gather_axis" "=" gather_axis
+                 attr-dict ":" type(input) "->" type(result) }
+  }
+
+  op all_reduce from Collective {
+    Doc "Element-wise reduction over the group, replicated to every device; each input element is converted to the result element type before the reduction.";
+    Attributes (reduction: reduction_kind = sum);
+    Properties [pure, same_shape];
+    Assembly   { input "on" grid if grid_axes { "grid_axes" "=" grid_axes }
+                 if reduction { "reduction" "=" reduction }
+                 attr-dict ":" type(input) "->" type(result) }
+  }
+
+  op all_slice from Collective {
+    Doc "Crops each device replicated input to the slice that device owns along slice_axis; no communication takes place.";
+    Operands   (input: non0_tensor);
+    Results    (result: non0_tensor);
+    Attributes (slice_axis: index [non_negative]);
+    Properties [pure, same_element_type, same_rank];
+    Assembly   { input "on" grid if grid_axes { "grid_axes" "=" grid_axes }
+                 "slice_axis" "=" slice_axis
+                 attr-dict ":" type(input) "->" type(result) }
+  }
+
+  op all_to_all from Collective {
+    Doc "Splits the input along split_axis, exchanges the pieces within the group, then concatenates them along concat_axis.";
+    Operands   (input: non0_tensor);
+    Results    (result: non0_tensor);
+    Attributes (split_axis: index [non_negative],
+                concat_axis: index [non_negative]);
+    Properties [pure, same_element_type, same_rank];
+    Assembly   { input "on" grid if grid_axes { "grid_axes" "=" grid_axes }
+                 "split_axis" "=" split_axis
+                 "concat_axis" "=" concat_axis
+                 attr-dict ":" type(input) "->" type(result) }
+  }
+
+  op broadcast from Collective {
+    Doc "Copies the root device input to every device in the group; input on non-root devices is ignored.";
+    Operands   (input: tensor_like, root_dynamic: variadic<index>);
+    Results    (result: tensor_like);
+    Attributes (root: dims_array);
+    Properties [pure, same_shape, same_element_type];
+    Assembly   { input "on" grid if grid_axes { "grid_axes" "=" grid_axes }
+                 "root" "=" custom<DynamicIndexList>(root_dynamic, root)
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  op gather from Collective {
+    Doc "Concatenates every device slice along gather_axis and returns the result only on the root device; elsewhere the result is undefined.";
+    Operands   (input: non0_tensor, root_dynamic: variadic<index>);
+    Results    (result: non0_tensor);
+    Attributes (gather_axis: index [non_negative], root: dims_array);
+    Properties [pure, same_element_type, same_rank];
+    Assembly   { input "on" grid if grid_axes { "grid_axes" "=" grid_axes }
+                 "gather_axis" "=" gather_axis
+                 "root" "=" custom<DynamicIndexList>(root_dynamic, root)
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  op recv from Collective {
+    Doc "Receives a tensor from the source device in the group; the input content is ignored and the op is not pure.";
+    Operands   (input: non0_tensor, source_dynamic: variadic<index>);
+    Results    (result: tensor_like);
+    Attributes (source: optional<dims_array>);
+    Properties [same_shape, same_element_type];
+    Assembly   { input "on" grid if grid_axes { "grid_axes" "=" grid_axes }
+                 if source {
+                   "source" "="
+                   custom<DynamicIndexList>(source_dynamic, source) }
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  op reduce from Collective {
+    Doc "Reduces over the group and returns the result only on the root device; each input element is converted to the result element type before the reduction.";
+    Operands   (input: tensor_like, root_dynamic: variadic<index>);
+    Results    (result: tensor_like);
+    Attributes (reduction: reduction_kind = sum, root: dims_array);
+    Properties [pure, same_shape];
+    Assembly   { input "on" grid if grid_axes { "grid_axes" "=" grid_axes }
+                 if reduction { "reduction" "=" reduction }
+                 "root" "=" custom<DynamicIndexList>(root_dynamic, root)
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  op reduce_scatter from Collective {
+    Doc "Reduces over the group, then scatters the reduced tensor along scatter_dim.";
+    Attributes (reduction: reduction_kind = sum,
+                scatter_dim: index [non_negative]);
+    Properties [pure, same_rank];
+    Assembly   { input "on" grid if grid_axes { "grid_axes" "=" grid_axes }
+                 if reduction { "reduction" "=" reduction }
+                 "scatter_dim" "=" scatter_dim
+                 attr-dict ":" type(input) "->" type(result) }
+  }
+
+  op scatter from Collective {
+    Doc "Splits the root device input along scatter_dim and distributes the pieces across the group; input on non-root devices is ignored.";
+    Operands   (input: non0_tensor, root_dynamic: variadic<index>);
+    Results    (result: tensor_like);
+    Attributes (scatter_dim: index [non_negative], root: dims_array);
+    Properties [pure, same_element_type, same_rank];
+    Assembly   { input "on" grid if grid_axes { "grid_axes" "=" grid_axes }
+                 "scatter_dim" "=" scatter_dim
+                 "root" "=" custom<DynamicIndexList>(root_dynamic, root)
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  op send from Collective {
+    Doc "Sends the input tensor to the destination device in the group; the op is not pure.";
+    Operands   (input: non0_tensor, destination_dynamic: variadic<index>);
+    Results    (result: tensor_like);
+    Attributes (destination: dims_array);
+    Properties [same_shape, same_element_type];
+    Assembly   { input "on" grid if grid_axes { "grid_axes" "=" grid_axes }
+                 "destination" "="
+                 custom<DynamicIndexList>(destination_dynamic, destination)
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  op shift from Collective {
+    Doc "Shifts tensors along grid axis shift_axis by offset; with rotate the shift wraps around the group, otherwise the result on devices without a source is undefined.";
+    Operands   (input: non0_tensor);
+    Results    (result: tensor_like);
+    Attributes (shift_axis: index [non_negative],
+                offset: i64,
+                rotate: optional<unit>);
+    Properties [pure, same_element_type, same_shape];
+    Assembly   { input "on" grid if grid_axes { "grid_axes" "=" grid_axes }
+                 "shift_axis" "=" shift_axis
+                 "offset" "=" offset
+                 if rotate { "rotate" }
+                 attr-dict ":" type(input) "->" type(result) }
+  }
+
+  // ---- halo 更新 ----
+
+  op update_halo {
+    Doc "Refreshes the halo regions of destination, a tensor or memref, from neighbor devices; split_axes gives the grid axes updated per tensor dimension and halo_sizes mixes static entries with dynamic i64 operands.";
+    Operands   (destination: non0_value, halo_sizes: variadic<i64>);
+    Results    (result: non0_value);
+    Attributes (grid: flat_symbol_ref,
+                split_axes: axes_array [non_negative],
+                static_halo_sizes: dims_array = none);
+    Properties [pure, same_type];
+    Implements [DestinationStyleOpInterface, SymbolUserOpInterface];
+    Assembly   { destination "on" grid
+                 "split_axes" "=" split_axes
+                 if halo_sizes {
+                   "halo_sizes" "="
+                   custom<DynamicIndexList>(halo_sizes, static_halo_sizes) }
+                 attr-dict ":" type(result) }
+  }
+}

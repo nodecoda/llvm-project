@@ -58,7 +58,7 @@ CORE_FACTS = {
     # 绑定：值域与基数
     "positive", "non_negative", "cardinality", "arity",
     # 关系
-    "has_parent", "same_shape", "same_rank", "same_element_type",
+    "has_parent", "same_type", "same_shape", "same_rank", "same_element_type",
     "broadcastable", "element_type_matches", "unwraps_element_type",
     "entry_args_unwrap", "yield_types_match",
 }
