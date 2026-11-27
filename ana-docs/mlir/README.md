@@ -259,7 +259,7 @@
 | `corpus/amdgpu.dialect` | amdgpu：41 个约束的类型域、11 schema、47 op（含 4 个模板派生），3 Custom（`undef`） |
 | `corpus/openmp.dialect` | omp：72 op、24 enum、70 个 `custom<>` 子句钩子、0 本地事实 |
 | `corpus/smt.dialect` | smt：6 个 sort 类型、42 op、13 个二元位向量 op 共 1 schema |
-| `tools/dialect-corpus.py` | 语料统计与审计：子句×实体矩阵、Assembly 频次、region 注解、悬挂引用、死声明、C++ 泄漏，以及逃逸点三段报告（`escape points` / `text channels` / `fact vocabulary`） |
+| `tools/dialect-corpus.py` | 语料统计与审计：子句×实体矩阵、Assembly 频次、region 注解、悬挂引用、死声明、C++ 泄漏、op 缺 Doc/占位 Doc，以及逃逸点三段报告（`escape points` / `text channels` / `fact vocabulary`） |
 | `23-corpus-round-eight.md` | 第八轮：三条恒真检查的修复、覆盖审计（258 op 欠账）、补账到 1036 op、带引号的 `name`、pdl 两处逃逸点修正、schema 名全局解析缺陷 |
 | `corpus/arm_neon.dialect` | arm_neon：7 op、3 schema；`"2d.sdot"` 用带引号名字保留以数字开头的打印名 |
 | `corpus/arm_sme.dialect` | arm_sme：68 op（25 核心 + 43 intrinsic）、15 schema；intrinsic 全部显式 `Assembly Generic;` |

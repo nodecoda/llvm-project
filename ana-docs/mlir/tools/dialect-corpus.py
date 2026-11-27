@@ -43,6 +43,7 @@ BUILTIN_TYPES = {
     "opaque", "i4", "i2", "f80", "f128", "none_type",
 }
 TYPE_KEYWORDS = {"optional", "variadic", "array", "type_of"}
+DOC_RE = re.compile(r'\bDoc\s+"([^"]*)"')
 
 CORE_FACTS = {
     # 结构 / trait
@@ -368,6 +369,16 @@ def main():
         if dead:
             unused[k] = dead
 
+    # 每个 op 必须有非占位的 Doc：TBD 和空串都不是文档。
+    no_doc = []
+    for path in files:
+        for kind, name, header, body in entities(file_text[path.name]):
+            if kind != "op":
+                continue
+            m = DOC_RE.search(body)
+            if not m or m.group(1).strip() in ("", "TBD"):
+                no_doc.append("%s:%s" % (path.name, name))
+
     if as_json:
         print(json.dumps({"files": report,
                           "clauses": {"%s.%s" % k: v for k, v in clause_matrix.items()},
@@ -375,7 +386,7 @@ def main():
                           "region_facts": region_facts,
                           "properties": props, "facts": facts,
                           "interfaces": ifaces, "missing_from": missing_from,
-                          "dangling": dangling, "unused": unused,
+                          "dangling": dangling, "unused": unused, "no_doc": no_doc,
                           "leakage": leakage}, indent=2))
         return
 
@@ -457,6 +468,7 @@ def main():
         print("| %s | %d | %d | %d | %d |" % (name, c["block"], c["Custom"],
                                             c["Generic"], c["gap"]))
     print("ops without a text channel:", no_channel or "none")
+    print("ops without a Doc:", no_doc or "none")
     gaps = [n for path in files for k, n, h, body in entities(file_text[path.name])
             if k == "op" and re.search(r"\bGap\s*\(", body)]
     print("ops with a named gap:", len(gaps), ",".join(gaps) or "none")

@@ -789,7 +789,7 @@ dialect spirv {
     Assembly { memory_scope semantics pointer "," value attr-dict ":" type(pointer) }
   }
   op EXT.AtomicFAdd from SpirvOp {
-    Doc "TBD";
+    Doc "Atomically add a floating-point value to the value at pointer, returning the original value; scope and memory semantics are explicit operands (SPV_EXT_shader_atomic_float_add).";
     Operands   (pointer: any_ptr, value: fp);
     Results    (result: fp);
     Attributes (memory_scope: Scope, semantics: MemorySemantics);
@@ -1979,7 +1979,7 @@ dialect spirv {
 
   // == SPIRVMiscOps.td
   op KHR.AssumeTrue from SpirvOp {
-    Doc "TBD";
+    Doc "Hint to the optimizer that condition is true; no result (SPV_KHR_expect_assume, OpAssumeTrueKHR).";
     Operands   (condition: bool_scalar);
     Assembly { condition attr-dict }
   }
