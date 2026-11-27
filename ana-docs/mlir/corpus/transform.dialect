@@ -1,0 +1,567 @@
+/// transform —— MLIR Transform 方言：用 handle 描述"对 payload IR 做什么"的
+/// 变换控制 IR。
+///
+/// 领域：Transform 方言不直接计算 payload，而是把变换本身写成 IR。值域有三类：
+///   - 操作 handle：指向一组 payload 操作（!transform.any_op / !transform.op<...>
+///     / !transform.normalized_op<...>）；
+///   - 值 handle：指向一组 payload SSA 值（!transform.any_value）；
+///   - 参数：指向一组属性或类型（!transform.any_param / !transform.param<...>
+///     / !transform.type / !transform.affine_map）。
+/// 本文件按功能把 op 分成六层：序列与顶层容器（alternatives/sequence/
+/// named_sequence/include/foreach/payload）、匹配与导航（match.*/get_*/select/
+/// collect_matching/foreach_match）、handle 组合（merge_handles/replicate/
+/// split_handle）、参数（num_associations/param.constant/get_type）、
+/// 变换应用（annotate/apply_cse/apply_dce/apply_licm/apply_patterns/
+/// apply_conversion_patterns/apply_registered_pass/verify/cast），以及打印
+/// （print）与终结符（yield）。
+///
+/// 类型：TransformTypes.td 的八个类型全部声明。operation、normalized_op、param
+/// 带参数，文本是尖括号；其余五个无参数，文本是裸类型名。接口
+/// （TransformHandleTypeInterface / TransformParamTypeInterface /
+/// TransformValueHandleTypeInterface）在 Doc 中说明，type_def 子句没有
+/// Implements 产生式。
+///
+/// 枚举：FailurePropagationMode（propagate/suppress）与 MatchCmpIPredicate
+/// （eq/ne/lt/le/gt/ge）；值逐字照 TransformAttrs.td。
+///
+/// 文本通道：37 个 op —— block 36，Custom 1，Generic 0，gap 0。
+///   Custom 的唯一依据是 NamedSequenceOp 的 hasCustomAssemblyFormat = 1
+///   （TransformOps.td:1048）；其余 36 个 op 都有 assemblyFormat，故走块格式。
+///   块里的 custom<> 钩子都来自 TransformOps.td 的同一闭包：
+///   SequenceOpOperands、ForeachMatchSymbols、TransformMatchDims、
+///   ApplyRegisteredPassOptions。
+///
+/// 事实：只使用 tools/fact-glossary.tsv 的核心词表，依据均是 TD 的 trait /
+/// 接口 / verifier 级声明：
+///   - isolated_from_above：AlternativesOp、NamedSequenceOp 的 IsolatedFromAbove；
+///   - symbol / symbol_visibility：NamedSequenceOp 的 SymbolName / SymbolVisibility；
+///   - single_block / implicit_terminator(yield)：AlternativesOp、ForeachOp、
+///     SequenceOp 的 SingleBlockImplicitTerminator 与 SizedRegion<1>，
+///     以及 ApplyPatternsOp / ApplyConversionPatternsOp 的
+///     GraphRegionNoTerminator（内含 SingleBlock）；
+///   - max_blocks(1)：NamedSequenceOp 的 MaxSizedRegion<1>；
+///   - no_terminator / no_region_args：PayloadOp 的 NoTerminator /
+///     NoRegionArguments（以及 GraphRegionNoTerminator 的 NoTerminator）；
+///   - operand_segments_by_attribute：SequenceOp 的 AttrSizedOperandSegments；
+///   - same_type：ReplicateOp 的 AllTypesMatch<["handles","replicated"]>、
+///     MergeHandlesOp 的 SameOperandsAndResultType、MatchParamCmpIOp 的
+///     SameTypeOperands；
+///   - positive：GetParentOp 的 nth_parent 使用 IntPositive；
+///   - terminator：YieldOp 的 Terminator。
+///   没有 Pure trait，故不写 pure。MemoryEffectsOpInterface 的逐 op 读写效果由
+///   C++ getEffects 实现，TD 没有逐 op 的 trait/verifier 断言，故不写
+///   memory_effect；读/改语义记录在 Doc。
+///
+/// GAP:
+///   - `regions` 指令不在本文法；块格式直接写 region 部件名，语义是打印该 op
+///     的全部 region，与上游 `regions` 等价（不是具名缺口）。
+///   - apply_patterns 的 max_iterations / max_num_rewrites 默认值是 C++ 表达式
+///     static_cast<uint64_t>(-1)，apply_registered_pass 的 options 默认值是
+///     `{}`；文法只接受标识符或整数默认值，故默认值不写，Doc 说明。
+///   - NamedSequenceOp 的 body 由 FunctionOpInterface 约束为单块并以
+///     transform.yield 结束；文法只能写 max_blocks(1)，单块与终结符写在 Doc。
+///   - 类型助记符 op / type / affine_map 不能直接作为 type_primary（op 是声明
+///     关键字，type/affine_map 是内建词），故写作 operation / type_param /
+///     affine_map_param；各 type_def 的 Doc 保留上游 !transform.<mnemonic> 拼写。
+///   - TransformAttrs.td 的 ParamOperandAttr 不被这 37 个 core op 使用，未建模。
+///   - 扩展目录（Linalg/SCF/GPU 等）里的 transform op 不属于本 TD 映射，由各自
+///     方言的 transform op 集合覆盖。
+///   - 计数：dialect-coverage.py 的 transform 映射只有 TransformOps.td；该文件
+///     有 37 个带小写打印助记符的 op def/defm，本文件逐个覆盖。
+
+dialect transform {
+  Doc "Fine-grain transformation control dialect: handles to payload operations, values and parameters, plus sequences, matchers and transform application ops.";
+
+  // ---- 类型域 ----
+
+  type_def any_op {
+    Doc "!transform.any_op: handle to any payload operations (TransformHandleTypeInterface).";
+  }
+
+  type_def any_value {
+    Doc "!transform.any_value: handle to payload SSA values (TransformValueHandleTypeInterface).";
+  }
+
+  type_def operation {
+    Doc "!transform.op<name>: handle restricted to payload operations with the given operation name.";
+    Parameters (operation_name: string);
+    Assembly { "<" operation_name ">" }
+  }
+
+  type_def normalized_op {
+    Doc "!transform.normalized_op<forms>: handle to payload operations satisfying the given normal forms.";
+    Parameters (normal_forms: array<attribute>);
+    Assembly { "<" normal_forms ">" }
+  }
+
+  type_def any_param {
+    Doc "!transform.any_param: parameter value associated with any kind of attribute or type.";
+  }
+
+  type_def param {
+    Doc "!transform.param<T>: parameter value whose underlying element type is T.";
+    Parameters (underlying: type);
+    Assembly { "<" underlying ">" }
+  }
+
+  type_def type_param {
+    Doc "!transform.type: parameter value associated with type attributes.";
+  }
+
+  type_def affine_map_param {
+    Doc "!transform.affine_map: parameter value associated with affine-map attributes.";
+  }
+
+  // handle 覆盖操作 handle 与值 handle；parameter 覆盖四种参数类型。
+  constraint handle = any_op | operation | normalized_op | any_value;
+  constraint parameter = any_param | param | type_param | affine_map_param;
+  constraint any_transform = handle | parameter;
+
+  // ---- 枚举 ----
+
+  enum FailurePropagationMode {
+    Doc "Silenceable error propagation policy for sequence/include.";
+    Cases [ propagate = 1 "propagate", suppress = 2 "suppress" ];
+  }
+
+  enum MatchCmpIPredicate {
+    Doc "Signed integer comparison predicate used by match.param.cmpi.";
+    Cases [ eq = 0, ne = 1, lt = 2, le = 3, gt = 4, ge = 5 ];
+  }
+
+  // ------------------------------------------------------------------
+  // 序列与顶层容器
+  // ------------------------------------------------------------------
+
+  op alternatives {
+    Doc "Attempts alternative sequences of transforms until one succeeds; each single-block region is tried in order and the first successful region supplies the results.";
+    Operands   (scope: optional<handle>);
+    Results    (results: variadic<handle>);
+    Regions    (alternatives: variadic<region> [single_block,
+                                                implicit_terminator(yield)]);
+    Properties [isolated_from_above];
+    Implements [RegionBranchOpInterface, TransformOpInterface];
+    Assembly   { if scope { scope ":" type(scope) }
+                 if results { "->" type(results) }
+                 attr-dict-with-keyword alternatives }
+  }
+
+  op sequence {
+    Doc "Contains a sequence of transform ops applied in order; root is the optional entry handle, extra_bindings are additional entry values, and failure_propagation_mode controls silenceable-error propagation.";
+    Operands   (root: optional<handle>,
+                extra_bindings: variadic<any_transform>);
+    Results    (results: variadic<handle>);
+    Attributes (failure_propagation_mode: FailurePropagationMode);
+    Regions    (body: region [single_block, implicit_terminator(yield)]);
+    Properties [operand_segments_by_attribute];
+    Implements [RegionBranchOpInterface, MatchOpInterface, TransformOpInterface,
+                OpAsmOpInterface];
+    Assembly   { custom<SequenceOpOperands>(root, type(root),
+                                           extra_bindings, type(extra_bindings))
+                 if results { "->" type(results) }
+                 "failures" "(" failure_propagation_mode ")"
+                 attr-dict-with-keyword body }
+  }
+
+  op named_sequence {
+    Doc "Named, function-like transform sequence that can be included elsewhere; the body is a single block ending in transform.yield, cannot be nested, and must not recurse.";
+    Attributes (sym_name: string,
+                function_type: function_type,
+                sym_visibility: optional<string>,
+                arg_attrs: optional<array<dictionary>>,
+                res_attrs: optional<array<dictionary>>);
+    Regions    (body: region [max_blocks(1)]);
+    Properties [symbol, symbol_visibility, isolated_from_above];
+    Implements [FunctionOpInterface, TransformOpInterface];
+    Assembly Custom;
+  }
+
+  op include {
+    Doc "Includes a named transform sequence, remapping operands to block arguments; target names the sequence, and failure_propagation_mode controls how silenceable errors from the sequence are handled.";
+    Operands   (operands: variadic<any_transform>);
+    Results    (results: variadic<any_transform>);
+    Attributes (target: symbol_ref,
+                failure_propagation_mode: FailurePropagationMode,
+                arg_attrs: optional<array<dictionary>>,
+                res_attrs: optional<array<dictionary>>);
+    Implements [CallOpInterface, MatchOpInterface, TransformOpInterface,
+                SymbolUserOpInterface];
+    Assembly   { target "failures" "(" failure_propagation_mode ")"
+                 "(" operands ")"
+                 oilist("arg_attrs" "=" arg_attrs | "res_attrs" "=" res_attrs)
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  op foreach {
+    Doc "Executes the single-block body once per element of the co-indexed target payloads; with_zip_shortest limits iteration to the shortest target, and each result merges the payloads yielded for it.";
+    Operands   (targets: variadic<any_transform>);
+    Results    (results: variadic<any_transform>);
+    Attributes (with_zip_shortest: optional<unit>);
+    Regions    (body: region [single_block, implicit_terminator(yield)]);
+    Implements [RegionBranchOpInterface, TransformOpInterface];
+    Assembly   { targets
+                 oilist("with_zip_shortest" with_zip_shortest)
+                 ":" type(targets)
+                 if results { "->" type(results) }
+                 body attr-dict }
+  }
+
+  op payload {
+    Doc "Optional container for transform payloads: stores payload operations between transform invocations; normal_forms gives the normal forms its body must satisfy.";
+    Attributes (normal_forms: array<attribute>);
+    Regions    (body: region);
+    Properties [no_terminator, no_region_args];
+    Implements [NormalFormCheckedOpInterface];
+    Assembly   { "normal_forms" "=" normal_forms attr-dict-with-keyword body }
+  }
+
+  // ------------------------------------------------------------------
+  // 匹配与导航
+  // ------------------------------------------------------------------
+
+  op match.operation_empty {
+    Doc "Succeeds if the operand handle is associated with no payload operation; accepts at most one payload operation.";
+    Operands   (operand_handle: handle);
+    Implements [MatchOpInterface];
+    Assembly   { operand_handle attr-dict ":" type(operand_handle) }
+  }
+
+  op match.operation_name {
+    Doc "Succeeds if the single payload operation associated with the handle has one of the given names; a handle with more than one payload operation is a definite failure.";
+    Operands   (operand_handle: handle);
+    Attributes (op_names: array<string>);
+    Implements [MatchOpInterface];
+    Assembly   { operand_handle op_names attr-dict ":" type(operand_handle) }
+  }
+
+  op match.param.cmpi {
+    Doc "Succeeds if all co-indexed parameter values compare as specified by the signed integer predicate (eq/ne/lt/le/gt/ge); fails silently otherwise.";
+    Operands   (param: parameter, reference: parameter);
+    Attributes (predicate: MatchCmpIPredicate);
+    Properties [same_type(param, reference)];
+    Implements [MatchOpInterface];
+    Assembly   { predicate param "," reference attr-dict ":" type(param) }
+  }
+
+  op get_consumers_of_result {
+    Doc "Returns a handle to the operations that consume the result at result_number of every targeted operation.";
+    Operands   (target: handle);
+    Results    (consumers: handle);
+    Attributes (result_number: i64);
+    Implements [TransformOpInterface];
+    Assembly   { target "[" result_number "]" attr-dict ":"
+                 functional-type(operands, results) }
+  }
+
+  op get_defining_op {
+    Doc "Returns a handle to the operation defining the targeted payload value; a block argument produces a silenceable failure.";
+    Operands   (target: any_value);
+    Results    (result: handle);
+    Implements [MatchOpInterface, TransformOpInterface];
+    Assembly   { target attr-dict ":" functional-type(operands, results) }
+  }
+
+  op get_parent_op {
+    Doc "Returns handles to the closest parent operations satisfying the optional requirements: isolated_from_above, op_name, deduplicate, allow_empty_results, and the positive nth_parent depth (default 1).";
+    Operands   (target: handle);
+    Results    (parent: handle);
+    Attributes (isolated_from_above: optional<unit>,
+                allow_empty_results: optional<unit>,
+                op_name: optional<string>,
+                deduplicate: optional<unit>,
+                nth_parent: i64 [positive] = 1);
+    Implements [MatchOpInterface, TransformOpInterface];
+    Assembly   { target prop-dict attr-dict ":"
+                 functional-type(operands, results) }
+  }
+
+  op get_producer_of_operand {
+    Doc "Returns a handle to the operation producing the operand at operand_number of the targeted operations; a block argument produces a silenceable failure.";
+    Operands   (target: handle);
+    Results    (producer: handle);
+    Attributes (operand_number: i64);
+    Implements [TransformOpInterface];
+    Assembly   { target "[" operand_number "]" attr-dict ":"
+                 functional-type(operands, results) }
+  }
+
+  op get_operand {
+    Doc "Returns a value handle to selected operands of the targeted operations; positions are a direct list, an inverted list, or all operands.";
+    Operands   (target: handle);
+    Results    (result: any_value);
+    Attributes (raw_position_list: array<integer>,
+                is_inverted: optional<unit>,
+                is_all: optional<unit>);
+    Implements [MatchOpInterface, TransformOpInterface];
+    Assembly   { target "["
+                 custom<TransformMatchDims>(raw_position_list, is_inverted, is_all)
+                 "]" attr-dict ":" functional-type(operands, results) }
+  }
+
+  op get_result {
+    Doc "Returns a value handle to selected results of the targeted operations; positions are a direct list, an inverted list, or all results.";
+    Operands   (target: handle);
+    Results    (result: any_value);
+    Attributes (raw_position_list: array<integer>,
+                is_inverted: optional<unit>,
+                is_all: optional<unit>);
+    Implements [MatchOpInterface, TransformOpInterface];
+    Assembly   { target "["
+                 custom<TransformMatchDims>(raw_position_list, is_inverted, is_all)
+                 "]" attr-dict ":" functional-type(operands, results) }
+  }
+
+  op get_type {
+    Doc "Creates a parameter holding the type of the targeted payload value; elemental selects the element type of each value.";
+    Operands   (value: any_value);
+    Results    (type_param: parameter);
+    Attributes (elemental: optional<unit>);
+    Implements [MatchOpInterface, TransformOpInterface];
+    Assembly   { if elemental { "elemental" elemental }
+                 value attr-dict ":" functional-type(operands, results) }
+  }
+
+  op select {
+    Doc "Returns a handle to all targeted operations whose name equals op_name; relative order is preserved.";
+    Operands   (target: handle);
+    Results    (result: handle);
+    Attributes (op_name: string);
+    Implements [TransformOpInterface];
+    Assembly   { op_name "in" target attr-dict ":"
+                 functional-type(operands, results) }
+  }
+
+  op collect_matching {
+    Doc "Collects payload objects under root that match the named matcher sequence; the matcher yields one value per result, and each result concatenates the corresponding yields of all successful matches.";
+    Operands   (root: handle);
+    Results    (results: variadic<any_transform>);
+    Attributes (matcher: symbol_ref);
+    Implements [SymbolUserOpInterface, TransformOpInterface];
+    Assembly   { matcher "in" root attr-dict ":"
+                 functional-type(root, results) }
+  }
+
+  op foreach_match {
+    Doc "Walks the payload under root and applies the co-indexed matcher/action named sequences; restrict_root also matches the root, flatten_results relaxes the one-entity-per-result rule, and forwarded_inputs/outputs carry extra handles.";
+    Operands   (root: handle,
+                forwarded_inputs: variadic<any_transform>);
+    Results    (updated: handle,
+                forwarded_outputs: variadic<any_transform>);
+    Attributes (restrict_root: optional<unit>,
+                flatten_results: optional<unit>,
+                matchers: array<symbol_ref>,
+                actions: array<symbol_ref>);
+    Implements [SymbolUserOpInterface, TransformOpInterface, OpAsmOpInterface];
+    Assembly   { oilist("restrict_root" restrict_root
+                        | "flatten_results" flatten_results)
+                 "in" root
+                 if forwarded_inputs { "," forwarded_inputs }
+                 custom<ForeachMatchSymbols>(matchers, actions)
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  // ------------------------------------------------------------------
+  // handle 组合
+  // ------------------------------------------------------------------
+
+  op merge_handles {
+    Doc "Merges handle operands into one handle pointing to the concatenation of their payloads; deduplicate drops repeated payload objects.";
+    Operands   (handles: variadic<any_transform>);
+    Results    (result: any_transform);
+    Attributes (deduplicate: optional<unit>);
+    Properties [same_type(handles, result)];
+    Implements [MatchOpInterface, TransformOpInterface];
+    Assembly   { if deduplicate { "deduplicate" deduplicate }
+                 handles attr-dict ":" type(result) }
+  }
+
+  op replicate {
+    Doc "Repeats the payload list of handles as many times as the pattern handle has payloads; useful for aligning list sizes before an op that expects equal lengths.";
+    Operands   (pattern: handle,
+                handles: variadic<any_transform>);
+    Results    (replicated: variadic<any_transform>);
+    Properties [same_type(handles, replicated)];
+    Implements [TransformOpInterface];
+    Assembly   { "num" "(" pattern ")" handles attr-dict ":"
+                 type(pattern) "," type(handles) }
+  }
+
+  op split_handle {
+    Doc "Splits one handle into one handle per result; pass_through_empty_handle and fail_on_payload_too_small control empty/short inputs, and overflow_result collects excess payloads.";
+    Operands   (handle: any_transform);
+    Results    (results: variadic<any_transform>);
+    Attributes (pass_through_empty_handle: bool = true,
+                fail_on_payload_too_small: bool = true,
+                overflow_result: optional<i64>);
+    Implements [TransformOpInterface];
+    Assembly   { handle
+                 oilist("pass_through_empty_handle" "=" pass_through_empty_handle
+                        | "fail_on_payload_too_small" "=" fail_on_payload_too_small
+                        | "overflow_result" "=" overflow_result)
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  // ------------------------------------------------------------------
+  // 参数
+  // ------------------------------------------------------------------
+
+  op num_associations {
+    Doc "Returns a 64-bit parameter equal to the number of payload objects (operations or values for a handle, attributes for a parameter) associated with handle; always succeeds.";
+    Operands   (handle: any_transform);
+    Results    (num: parameter);
+    Implements [MatchOpInterface, TransformOpInterface];
+    Assembly   { handle attr-dict ":" functional-type(operands, results) }
+  }
+
+  op param.constant {
+    Doc "Produces a parameter associated with the singleton list containing value; the operation always succeeds, but the parameter type may reject the attribute kind.";
+    Attributes (value: attribute);
+    Results    (param: parameter);
+    Implements [MatchOpInterface, TransformOpInterface];
+    Assembly   { value attr-dict "->" type(param) }
+  }
+
+  // ------------------------------------------------------------------
+  // 变换应用
+  // ------------------------------------------------------------------
+
+  op annotate {
+    Doc "Adds the attribute name to each targeted operation, with param as its value when provided (otherwise a unit attribute); a single parameter is broadcast or mapped 1:1, and a length mismatch is a silenceable failure.";
+    Operands   (target: handle);
+    Attributes (name: string, param: optional<parameter>);
+    Implements [TransformOpInterface];
+    Assembly   { target name attr-dict
+                 if param { "=" param }
+                 ":" type(target)
+                 if param { "," type(param) } }
+  }
+
+
+  op apply_cse {
+    Doc "Applies common subexpression elimination to the body of the targeted operation, retaining and updating handles to nested operations.";
+    Operands   (target: handle);
+    Implements [TransformOpInterface];
+    Assembly   { "to" target attr-dict ":" type(target) }
+  }
+
+  op apply_dce {
+    Doc "Applies dead-code elimination to the body of the targeted operation; payload operations may silently disappear from handles.";
+    Operands   (target: handle);
+    Implements [TransformOpInterface];
+    Assembly   { "to" target attr-dict ":" type(target) }
+  }
+
+  op apply_licm {
+    Doc "Moves side-effect-free loop-invariant code out of the targeted loop-like operation; the target must implement LoopLikeOpInterface.";
+    Operands   (target: handle);
+    Implements [TransformOpInterface];
+    Assembly   { "to" target attr-dict ":" type(target) }
+  }
+
+  op apply_patterns {
+    Doc "Greedily applies the patterns in the single-block graph region to the body of the targeted operation until a fixpoint; apply_cse interleaves CSE, and max_iterations / max_num_rewrites default to -1 (unlimited).";
+    Operands   (target: handle);
+    Attributes (apply_cse: optional<unit>,
+                max_iterations: i64,
+                max_num_rewrites: i64);
+    Regions    (patterns: region [single_block, no_terminator]);
+    Implements [TransformOpInterface];
+    Assembly   { "to" target patterns
+                 oilist("apply_cse" apply_cse
+                        | "max_iterations" "=" max_iterations
+                        | "max_num_rewrites" "=" max_num_rewrites)
+                 attr-dict ":" type(target) }
+  }
+
+  op apply_patterns.canonicalization {
+    Doc "Populates all canonicalization patterns of all loaded dialects for an enclosing apply_patterns transformation.";
+    Implements [PatternDescriptorOpInterface];
+    Assembly   { attr-dict }
+  }
+
+  op apply_conversion_patterns {
+    Doc "Applies the conversion patterns in the first single-block graph region to the targeted operation and its nested operations; the optional second graph region supplies a default type converter, and partial_conversion / preserve_handles tune the conversion.";
+    Operands   (target: handle);
+    Attributes (legal_ops: optional<array<string>>,
+                illegal_ops: optional<array<string>>,
+                legal_dialects: optional<array<string>>,
+                illegal_dialects: optional<array<string>>,
+                partial_conversion: optional<unit>,
+                preserve_handles: optional<unit>);
+    Regions    (patterns: region [single_block, no_terminator],
+                default_type_converter_region: variadic<region> [single_block,
+                                                                 no_terminator]);
+    Implements [TransformOpInterface];
+    Assembly   { "to" target patterns
+                 if default_type_converter_region {
+                   "with" "type_converter" default_type_converter_region }
+                 prop-dict attr-dict ":" type(target) }
+  }
+
+  op apply_conversion_patterns.dialect_to_llvm {
+    Doc "Collects patterns converting operations of dialect_name to LLVM dialect operations; requires an LLVMTypeConverter and is used inside apply_conversion_patterns.";
+    Attributes (dialect_name: string);
+    Implements [ConversionPatternDescriptorOpInterface];
+    Assembly   { dialect_name attr-dict }
+  }
+
+  op apply_registered_pass {
+    Doc "Applies a registered pass or pass pipeline named by pass_name to the targeted operation; options is a dictionary (default empty) rendered into pass options, and dynamic_options supplies parameter values.";
+    Operands   (target: handle,
+                dynamic_options: variadic<parameter>);
+    Results    (result: handle);
+    Attributes (pass_name: string,
+                options: dictionary);
+    Implements [TransformOpInterface];
+    Assembly   { pass_name
+                 if options {
+                   "with" "options" "="
+                   custom<ApplyRegisteredPassOptions>(options, dynamic_options) }
+                 "to" target attr-dict ":"
+                 functional-type(operands, results) }
+  }
+
+  op verify {
+    Doc "Verifies the targeted operations; any failure is a definite failure. Intended as a debugging assertion.";
+    Operands   (target: handle);
+    Implements [TransformOpInterface];
+    Assembly   { target attr-dict ":" type(target) }
+  }
+
+  op cast {
+    Doc "Casts a handle to a different handle type without changing the associated payload.";
+    Operands   (input: handle);
+    Results    (output: handle);
+    Implements [CastOpInterface, TransformOpInterface];
+    Assembly   { input attr-dict ":" type(input) "to" type(output) }
+  }
+
+  // ------------------------------------------------------------------
+  // 打印与终结符
+  // ------------------------------------------------------------------
+
+  op print {
+    Doc "Dumps each payload operation associated with target (or the top-level operation when target is absent) to stdout; name is a label, and assume_verified / use_local_scope / skip_regions tune printing.";
+    Operands   (target: optional<handle>);
+    Attributes (name: optional<string>,
+                assume_verified: optional<unit>,
+                use_local_scope: optional<unit>,
+                skip_regions: optional<unit>);
+    Implements [MatchOpInterface, TransformOpInterface];
+    Assembly   { target
+                 oilist("name" "=" name
+                        | "assume_verified" assume_verified
+                        | "use_local_scope" use_local_scope
+                        | "skip_regions" skip_regions)
+                 attr-dict
+                 if target { ":" type(target) } }
+  }
+
+  op yield {
+    Doc "Yields transform handles or parameters from a transform IR region back to the containing op; it has no payload effect and exists only for flow.";
+    Operands   (operands: variadic<any_transform>);
+    Properties [terminator];
+    Assembly   { operands attr-dict
+                 if operands { ":" type(operands) } }
+  }
+}

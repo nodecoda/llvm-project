@@ -5,7 +5,7 @@
  *   normal  —— 默认；`Assembly {` 之后切到 assembly 模式。
  *   assembly—— 字面量是 STRING；`attr-dict`/`attr-dict-with-keyword`/
  *              `prop-dict`/`type`/`if`/`functional-type`/`oilist`/`custom`/
- *              `Gap` 是关键字，
+ *              `ref`/`Gap` 是关键字，
  *              其余标识符是部件引用；`{ }` 计深度，深度归零切回 normal。
  *
  * 名字允许 `.`（`reduce.return`），不允许 `-`；`attr-dict` 是 assembly 模式
@@ -110,6 +110,7 @@ static int asm_kw(const char *s) {
   if (!strcmp(s, "functional-type")) return A_FUNCTIONAL_TYPE;
   if (!strcmp(s, "oilist")) return A_OILIST;
   if (!strcmp(s, "custom")) return A_CUSTOM;
+  if (!strcmp(s, "else")) return A_ELSE;
   if (!strcmp(s, "Gap")) return A_GAP;   /* 大写：只在 Assembly 里，避开部件名 */
   if (!strcmp(s, "successors")) return A_SUCCESSORS;
   return IDENT;
@@ -147,6 +148,13 @@ int yylex(void) {
           } else { ungetch(d); break; }
         }
         ident[n] = 0;
+        /* `ref` 是软关键字：只有紧贴 `(` 时才是 ref(...)，否则是普通部件名
+         * （mpi 的 send/recv 有名为 ref 的操作数）。 */
+        if (!strcmp(ident, "ref")) {
+          int e = getch();
+          ungetch(e);
+          return e == '(' ? A_REF : IDENT;
+        }
         return asm_kw(ident);
       }
       switch (c) {

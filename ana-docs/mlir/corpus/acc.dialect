@@ -1,0 +1,1117 @@
+/// acc —— OpenACC 方言：数据子句、计算/数据区域、循环指令、原子与设备运行时。
+///
+/// 领域分层：
+///   - 数据子句分解：数据进入子句（copyin/create/present/...）与数据离开子句
+///     （copyout/delete/detach/update_host），以及 declare 入口/出口。
+///   - 计算与数据构造：parallel、serial、kernels、data、host_data、declare、
+///     loop、compute_region、predicate_region；子句用 oilist 打印，region
+///     承载嵌套指令。
+///   - 边界辅助：bounds 及其四个读取器（get_lowerbound/upperbound/stride/extent）。
+///   - 配方与符号：三类 recipe、routine、global_ctor/global_dtor。
+///   - 原子：atomic.read/write/update/capture。
+///   - 设备运行时：init/shutdown/set/update/wait/on_device/enter_data/exit_data。
+///   - 代码生成辅助：reduction 家族、privatize/unwrap_private/private_local、
+///     par_width、gpu_shared_memory、map_info、kernel_environment。
+///
+/// 覆盖：OpenACCOps.td 与 OpenACCCGOps.td 共 68 个打印助记符（去 acc. 前缀），
+/// 本文件逐个覆盖，missing=0。
+///
+/// 文本通道：67 个块格式，1 个 Custom，0 个 Generic。
+///   - Custom 只有 compute_region：上游只声明 hasCustomAssemblyFormat = 1，
+///     没有 assemblyFormat。
+///   - loop 同时写了 hasCustomAssemblyFormat = 1 与 assemblyFormat；TableGen
+///     的 genParser/genPrinter 在 assemblyFormat 存在时提前返回
+///     （mlir/tools/mlir-tblgen/OpDefinitionsGen.cpp），实际走声明式解析与打印，
+///     故按块格式转写。
+///   - 其余 op 的 assemblyFormat 逐字转写；局部手写子格式保留为
+///     custom<Hook>(...)，钩子名全部取自上游 TD 闭包。
+///
+/// 事实依据（只写 trait 或区域形态直接支持的核心词表事实）：
+///   - AttrSizedOperandSegments -> operand_segments_by_attribute；
+///   - SingleBlockImplicitTerminator<X> / SizedRegion<1> / SingleBlock ->
+///     single_block（前者另加 implicit_terminator(x)）；
+///   - NoTerminator -> no_terminator；IsolatedFromAbove -> isolated_from_above；
+///   - AutomaticAllocationScope / AffineScope / RecursiveMemoryEffects /
+///     NoMemoryEffect / Pure / AlwaysSpeculatable / ReturnLike / Terminator /
+///     Symbol / SymbolVisibility -> 同名核心事实；
+///   - MemoryEffects<[MemWrite<..>, MemRead<..>]> -> memory_effect(read/write)，
+///     结果上的 MemAlloc -> memory_effect(allocate)；
+///   - AllTypesMatch 与 SameTypeOperands -> same_type 二元链；
+///   - yield 的 ParentOneOf -> has_parent(op) 析取。
+///
+/// GAP（只记录，不改其它文件）：
+///   - PointerLikeTypeInterface 与 AnyPointerOrMappableType 是接口约束，本语言
+///     没有接口约束；pointer_like / pointer_or_mappable 退化为 opaque，
+///     mappable 侧语义留在各 op 的 Doc。
+///   - gpu::AsyncTokenType 同理退化为 async_token = opaque。
+///   - 上游 qualified(枚举) 把枚举值带方言前缀打印；本语言的 qualified 只接受
+///     type(x)，故这些位置写成裸部件引用（device_types、device_type、par_dim、
+///     par_dims），前缀语义仅记在 Doc。
+///   - 上游 enum($x) 打印枚举助记符；本语言没有 enum 指令，块里直接引用该部件。
+///   - 以 custom<...>(...)^ 为锚的可选组（数据离开类的 async 子句）没有单一部件
+///     可作守卫；本文件用底层变长部件 asyncOperands 作 if 守卫。
+///   - 数据子句与 region 的对应关系若无法用部件说清，不发明事实，语义只写 Doc。
+///   - DataEntry 共享 schema 省略了逐 op 不同的 dataClause 默认值
+///     （acc_private/acc_copyin/...）；默认值以上游 clause 参数为准。
+///   - 上游 recipe 的属性名 `type` 在本文本写作 `decl_type`：`type` 在 Assembly
+///     模式里是关键字，无法作为裸部件引用；打印形态不变。
+///   - 上游大量逐 op 的 verifier 条件（取值集合、互斥、跨部件关系）不在核心
+///     事实词表内，只在 Doc 中描述。
+
+dialect acc {
+  Doc "OpenACC directives, data clauses, compute and data regions, loops, atomics and device runtime.";
+
+  // ------------------------------------------------------------------
+  // 类型与属性域
+  // ------------------------------------------------------------------
+
+  // 真实 TypeDef：data_bounds_ty 无参数，文本是裸类型名。
+  type_def data_bounds_ty {
+    Doc "!acc.data_bounds_ty: normalized data clause bounds produced by acc.bounds.";
+  }
+
+  type_def declare_token {
+    Doc "!acc.declare_token: implicit data region token produced by acc.declare_enter and consumed by acc.declare_exit.";
+  }
+
+  // private_type 带一个元素类型参数；文本形态见上游 TypeDef 的 assemblyFormat。
+  type_def private_type {
+    Doc "!acc.private_type<base>: handle for privatized storage across parallel dimensions; produced by acc.privatize.";
+    Parameters (base: any);
+    Assembly   { "<" base ">" }
+  }
+
+  // 两个 AttrDef：par_dim 是单个并行维，par_dims 是它的有序列表。两者上游都是
+  // 手写打印器，故写 Custom。
+  attr_def par_dim {
+    Doc "GPU parallel dimension (seq, thread x/y/z or block x/y/z).";
+    Parameters (value: i64);
+    Assembly   Custom;
+  }
+
+  attr_def par_dims {
+    Doc "Ordered list of GPU parallel dimensions; ownership scope of a privatization or reduction.";
+    Parameters (dims: array<par_dim>);
+    Assembly   Custom;
+  }
+
+  // 接口约束的占位（见文件头 GAP）：opaque 代表 pointer-like 与 mappable 类型。
+  constraint pointer_like = opaque;
+  constraint pointer_or_mappable = opaque;
+  constraint async_token = opaque;
+  constraint location = opaque;
+
+  // IntOrIndex：标准整数或 index。
+  constraint int_or_index = integer | index;
+
+  // 属性数组。DeviceTypeArrayAttr 等是 TypedArrayAttrBase，不是 EnumAttr。
+  constraint device_type_array = array<DeviceType>;
+  constraint gang_arg_type_array = array<GangArgType>;
+  constraint bool_array = array<bool>;
+  constraint i32_array = array<i32>;
+  constraint i64_array = array<i64>;
+
+  // ------------------------------------------------------------------
+  // 枚举（只声明 op 属性实际引用的那些）
+  // ------------------------------------------------------------------
+
+  enum DeviceType {
+    Doc "Built-in device type of a device_type clause; none means before any device_type.";
+    Cases [ none = 0 "none", star = 1 "star", default = 2 "default",
+            host = 3 "host", multicore = 4 "multicore",
+            nvidia = 5 "nvidia", radeon = 6 "radeon" ];
+  }
+
+  enum DataClause {
+    Doc "Original OpenACC data clause, kept across the decomposed data-entry and data-exit ops.";
+    Cases [ acc_copyin = 1 "acc_copyin", acc_copyin_readonly = 2 "acc_copyin_readonly",
+            acc_copy = 3 "acc_copy", acc_copyout = 4 "acc_copyout",
+            acc_copyout_zero = 5 "acc_copyout_zero", acc_present = 6 "acc_present",
+            acc_create = 7 "acc_create", acc_create_zero = 8 "acc_create_zero",
+            acc_delete = 9 "acc_delete", acc_attach = 10 "acc_attach",
+            acc_detach = 11 "acc_detach", acc_no_create = 12 "acc_no_create",
+            acc_private = 13 "acc_private", acc_firstprivate = 14 "acc_firstprivate",
+            acc_deviceptr = 15 "acc_deviceptr", acc_getdeviceptr = 16 "acc_getdeviceptr",
+            acc_update_host = 17 "acc_update_host", acc_update_self = 18 "acc_update_self",
+            acc_update_device = 19 "acc_update_device", acc_use_device = 20 "acc_use_device",
+            acc_reduction = 21 "acc_reduction",
+            acc_declare_device_resident = 22 "acc_declare_device_resident",
+            acc_declare_link = 23 "acc_declare_link", acc_cache = 24 "acc_cache",
+            acc_cache_readonly = 25 "acc_cache_readonly" ];
+  }
+
+  enum DataClauseModifier : bits {
+    Doc "Bit flags refining a data clause (readonly, zero, always, capture).";
+    Cases [ none = 0 "none", zero = 1 "zero", readonly = 2 "readonly",
+            alwaysin = 4 "alwaysin", alwaysout = 8 "alwaysout", capture = 16 "capture" ];
+    Groups [ always = alwaysin | alwaysout ];
+  }
+
+  enum ReductionOperator {
+    Doc "Built-in OpenACC reduction operators; the max/min family is split by NaN and signed-zero behavior.";
+    Cases [ none = 0 "none", add = 1 "add", mul = 2 "mul", max = 3 "max",
+            min = 4 "min", iand = 5 "iand", ior = 6 "ior", xor = 7 "xor",
+            eqv = 8 "eqv", neqv = 9 "neqv", land = 10 "land", lor = 11 "lor",
+            maximumf = 12 "maximumf", minimumf = 13 "minimumf",
+            maxnumf = 14 "maxnumf", minnumf = 15 "minnumf" ];
+  }
+
+  enum GangArgType {
+    Doc "How a gang clause argument is interpreted: count, dimension, or static chunk.";
+    Cases [ Num = 0 "Num", Dim = 1 "Dim", Static = 2 "Static" ];
+  }
+
+  enum CombinedConstructsType {
+    Doc "Which combined construct a loop-level combined clause names.";
+    Cases [ kernels_loop = 1 "kernels_loop", parallel_loop = 2 "parallel_loop",
+            serial_loop = 3 "serial_loop" ];
+  }
+
+  enum DataDescKind : bits {
+    Doc "Offload descriptor layouts recorded by acc.map_info; bits may combine for nested descriptors.";
+    Cases [ none = 0 "none", cfi = 1 "cfi", memref = 2 "memref", openacc = 4096 "openacc" ];
+  }
+
+  enum MapFlags : bits {
+    Doc "Offload map-type flags carried by acc.map_info; enter and exit effects combine as bits.";
+    Cases [ none = 0 "none", to = 1 "to", from_ = 2 "from", delete = 8 "delete",
+            ptr_and_obj = 16 "ptr_and_obj", return_param = 64 "return_param",
+            private_ = 128 "private", literal = 256 "literal",
+            implicit = 512 "implicit", devptr = 1024 "devptr",
+            managed_devptr = 2048 "managed_devptr", no_create = 8192 "no_create",
+            gang_private = 16384 "gang_private", worker_private = 32768 "worker_private",
+            vector_private = 65536 "vector_private", init_zero = 131072 "init_zero",
+            device_resident = 262144 "device_resident", if_present = 524288 "if_present",
+            present = 1048576 "present", descriptor = 2097152 "descriptor",
+            reduction = 4194304 "reduction", attach = 8388608 "attach",
+            detach = 16777216 "detach",
+            no_device_descriptor = 33554432 "no_device_descriptor",
+            link = 67108864 "link" ];
+  }
+
+  // ------------------------------------------------------------------
+  // 共享 schema：数据子句分解
+  // ------------------------------------------------------------------
+
+  /// 数据进入子句的公共形态：一个变量、可选地址/边界、异步值、子句种类与修饰。
+  /// 上游 OpenACC_DataEntryOp 同时定义 arguments 与 assemblyFormat，16 个具体
+  /// op 只提供 var 与 accVar 的类型，故整段继承。
+  schema DataEntry {
+    Doc "Common form of the acc data-entry clause ops (copyin, create, present, private, reduction, ...).";
+    Operands   (var: pointer_or_mappable,
+                varPtrPtr: optional<pointer_like>,
+                bounds: variadic<data_bounds_ty>,
+                asyncOperands: variadic<int_or_index>);
+    Attributes (varType: type,
+                asyncOperandsDeviceType: optional<device_type_array>,
+                asyncOnly: optional<device_type_array>,
+                dataClause: DataClause,
+                structured: bool = true,
+                implicit: bool = false,
+                synthetic: optional<unit>,
+                modifiers: DataClauseModifier = none,
+                name: optional<string>,
+                recipe: optional<symbol_ref>);
+    Results    (accVar: pointer_or_mappable);
+    Properties [operand_segments_by_attribute];
+    Assembly   { custom<Var>(var) ":" custom<VarPtrType>(type(var), varType)
+                 oilist("varPtrPtr" "(" varPtrPtr ":" type(varPtrPtr) ")"
+                      | "bounds" "(" bounds ")"
+                      | "async" custom<DeviceTypeOperandsWithKeywordOnly>(asyncOperands, type(asyncOperands), asyncOperandsDeviceType, asyncOnly)
+                      | "recipe" "(" custom<RecipeSym>(recipe) ")"
+                      | "dataClause" "(" dataClause ")"
+                      | "structured" "(" structured ")"
+                      | "implicit" "(" implicit ")"
+                      | "synthetic" synthetic
+                      | "name" "(" name ")")
+                 prop-dict "->" type(accVar) attr-dict }
+  }
+
+  /// 数据离开子句（带 varPtr）：先打印 accVar，再打印可选的边界/异步，最后
+  /// 打印宿主机变量。
+  schema DataExitVar {
+    Doc "Data-exit clause that keeps both the mapped accVar and the host var (copyout, update_host).";
+    Operands   (accVar: pointer_or_mappable,
+                var: pointer_or_mappable,
+                bounds: variadic<data_bounds_ty>,
+                asyncOperands: variadic<int_or_index>);
+    Attributes (varType: type,
+                asyncOperandsDeviceType: optional<device_type_array>,
+                asyncOnly: optional<device_type_array>,
+                dataClause: DataClause,
+                structured: bool = true,
+                implicit: bool = false,
+                synthetic: optional<unit>,
+                modifiers: DataClauseModifier = none,
+                name: optional<string>);
+    Properties [operand_segments_by_attribute];
+    Assembly   { custom<AccVar>(accVar, type(accVar))
+                 if bounds { "bounds" "(" bounds ")" }
+                 if asyncOperands { "async" custom<DeviceTypeOperandsWithKeywordOnly>(asyncOperands, type(asyncOperands), asyncOperandsDeviceType, asyncOnly) }
+                 "to" custom<Var>(var) ":" custom<VarPtrType>(type(var), varType)
+                 oilist("dataClause" "(" dataClause ")"
+                      | "structured" "(" structured ")"
+                      | "implicit" "(" implicit ")"
+                      | "synthetic" synthetic
+                      | "name" "(" name ")")
+                 prop-dict attr-dict }
+  }
+
+  /// 数据离开子句（不带 varPtr）。
+  schema DataExitNoVar {
+    Doc "Data-exit clause with only the mapped accVar (delete, detach).";
+    Operands   (accVar: pointer_or_mappable,
+                bounds: variadic<data_bounds_ty>,
+                asyncOperands: variadic<int_or_index>);
+    Attributes (asyncOperandsDeviceType: optional<device_type_array>,
+                asyncOnly: optional<device_type_array>,
+                dataClause: DataClause,
+                structured: bool = true,
+                implicit: bool = false,
+                synthetic: optional<unit>,
+                modifiers: DataClauseModifier = none,
+                name: optional<string>);
+    Properties [operand_segments_by_attribute];
+    Assembly   { custom<AccVar>(accVar, type(accVar))
+                 if bounds { "bounds" "(" bounds ")" }
+                 if asyncOperands { "async" custom<DeviceTypeOperandsWithKeywordOnly>(asyncOperands, type(asyncOperands), asyncOperandsDeviceType, asyncOnly) }
+                 oilist("dataClause" "(" dataClause ")"
+                      | "structured" "(" structured ")"
+                      | "implicit" "(" implicit ")"
+                      | "synthetic" synthetic
+                      | "name" "(" name ")")
+                 prop-dict attr-dict }
+  }
+
+  // ------------------------------------------------------------------
+  // 边界与读取器
+  // ------------------------------------------------------------------
+
+  op bounds {
+    Doc "Normalized data clause bounds: optional lowerbound/upperbound/extent/sourceExtent/stride/startIdx, with strideInBytes selecting byte stride.";
+    Operands   (lowerbound: optional<int_or_index>,
+                upperbound: optional<int_or_index>,
+                extent: optional<int_or_index>,
+                sourceExtent: optional<int_or_index>,
+                stride: optional<int_or_index>,
+                startIdx: optional<int_or_index>);
+    Attributes (strideInBytes: bool = false);
+    Results    (result: data_bounds_ty);
+    Properties [no_memory_effect, operand_segments_by_attribute];
+    Assembly   { oilist("lowerbound" "(" lowerbound ":" type(lowerbound) ")"
+                      | "upperbound" "(" upperbound ":" type(upperbound) ")"
+                      | "extent" "(" extent ":" type(extent) ")"
+                      | "sourceExtent" "(" sourceExtent ":" type(sourceExtent) ")"
+                      | "stride" "(" stride ":" type(stride) ")"
+                      | "startIdx" "(" startIdx ":" type(startIdx) ")")
+                 if strideInBytes { "strideInBytes" "(" strideInBytes ")" }
+                 attr-dict }
+  }
+
+  op get_lowerbound {
+    Doc "Extract the lowerbound from acc.bounds; absence means zero.";
+    Operands   (bounds: data_bounds_ty);
+    Results    (result: index);
+    Properties [no_memory_effect];
+    Assembly   { bounds attr-dict ":" "(" type(bounds) ")" "->" type(result) }
+  }
+
+  op get_upperbound {
+    Doc "Extract the upperbound from acc.bounds.";
+    Operands   (bounds: data_bounds_ty);
+    Results    (result: index);
+    Properties [no_memory_effect];
+    Assembly   { bounds attr-dict ":" "(" type(bounds) ")" "->" type(result) }
+  }
+
+  op get_stride {
+    Doc "Extract the stride from acc.bounds.";
+    Operands   (bounds: data_bounds_ty);
+    Results    (result: index);
+    Properties [no_memory_effect];
+    Assembly   { bounds attr-dict ":" "(" type(bounds) ")" "->" type(result) }
+  }
+
+  op get_extent {
+    Doc "Extract the extent from acc.bounds; computed from the upperbound when absent.";
+    Operands   (bounds: data_bounds_ty);
+    Results    (result: index);
+    Properties [no_memory_effect];
+    Assembly   { bounds attr-dict ":" "(" type(bounds) ")" "->" type(result) }
+  }
+
+  // ------------------------------------------------------------------
+  // 数据进入子句（16 个）
+  // ------------------------------------------------------------------
+
+  op private from DataEntry {
+    Doc "Private clause: a private copy of var for each implicit task.";
+  }
+
+  op firstprivate from DataEntry {
+    Doc "Firstprivate clause: a private copy initialized from var.";
+  }
+
+  op reduction from DataEntry {
+    Doc "Reduction clause variable; the recipe names the init/combiner/destroy regions.";
+  }
+
+  op deviceptr from DataEntry {
+    Doc "Deviceptr clause: var is a device pointer rather than a host mapping.";
+  }
+
+  op present from DataEntry {
+    Doc "Present clause: var must already be present on the device.";
+  }
+
+  op copyin from DataEntry {
+    Doc "Copyin clause: copy var to the device on entry.";
+  }
+
+  op create from DataEntry {
+    Doc "Create clause: allocate device storage without copying data.";
+  }
+
+  op nocreate from DataEntry {
+    Doc "Nocreate clause: use existing device storage, creating nothing.";
+  }
+
+  op attach from DataEntry {
+    Doc "Attach clause: attach the pointee of var on the device.";
+  }
+
+  op getdeviceptr from DataEntry {
+    Doc "Return the device pointer for var; dataClause may be any valid clause.";
+  }
+
+  op update_device from DataEntry {
+    Doc "Update device copy of var from the host.";
+  }
+
+  op use_device from DataEntry {
+    Doc "Use_device clause: make the device address of var available in a host_data region.";
+  }
+
+  op declare_device_resident from DataEntry {
+    Doc "Declare device_resident clause for a global variable.";
+  }
+
+  op declare_link from DataEntry {
+    Doc "Declare link clause for a global variable.";
+  }
+
+  op cache from DataEntry {
+    Doc "Cache clause: keep var in the device cache.";
+  }
+
+  op firstprivate_map from DataEntry {
+    Doc "Firstprivate clause initial mapping used by code generation.";
+  }
+
+  // ------------------------------------------------------------------
+  // 数据离开子句（4 个）
+  // ------------------------------------------------------------------
+
+  op copyout from DataExitVar {
+    Doc "Copyout clause: copy device data of accVar back into host var.";
+  }
+
+  op update_host from DataExitVar {
+    Doc "Update_host clause: update host var from the device copy.";
+  }
+
+  op delete from DataExitNoVar {
+    Doc "Delete clause: release device storage of accVar.";
+  }
+
+  op detach from DataExitNoVar {
+    Doc "Detach clause: detach the pointee of accVar on the device.";
+  }
+
+  // ------------------------------------------------------------------
+  // 配方与符号
+  // ------------------------------------------------------------------
+
+  op private.recipe {
+    Doc "Private recipe: init and optional destroy regions for a private clause.";
+    Attributes (sym_name: string, sym_visibility: optional<string>, decl_type: type);
+    Regions    (init_region: region, destroy_region: region);
+    Properties [isolated_from_above, symbol, symbol_visibility,
+                automatic_allocation_scope];
+    Assembly   { if sym_visibility { sym_visibility } sym_name ":" decl_type
+                 attr-dict-with-keyword "init" init_region
+                 if destroy_region { "destroy" destroy_region } }
+  }
+
+  op firstprivate.recipe {
+    Doc "Firstprivate recipe: init, copy and optional destroy regions.";
+    Attributes (sym_name: string, sym_visibility: optional<string>, decl_type: type);
+    Regions    (init_region: region, copy_region: region, destroy_region: region);
+    Properties [isolated_from_above, symbol, symbol_visibility,
+                automatic_allocation_scope];
+    Assembly   { if sym_visibility { sym_visibility } sym_name ":" decl_type
+                 attr-dict-with-keyword "init" init_region "copy" copy_region
+                 if destroy_region { "destroy" destroy_region } }
+  }
+
+  op reduction.recipe {
+    Doc "Reduction recipe: reduction operator plus init, combiner and optional destroy regions.";
+    Attributes (sym_name: string, sym_visibility: optional<string>, decl_type: type,
+                reductionOperator: ReductionOperator);
+    Regions    (init_region: region, combiner_region: region, destroy_region: region);
+    Properties [isolated_from_above, symbol, symbol_visibility,
+                automatic_allocation_scope];
+    Assembly   { if sym_visibility { sym_visibility } sym_name ":" decl_type
+                 attr-dict-with-keyword "reduction_operator" reductionOperator
+                 "init" init_region "combiner" combiner_region
+                 if destroy_region { "destroy" destroy_region } }
+  }
+
+  op routine {
+    Doc "Declare per-device-type routine implementation selection for func_name.";
+    Attributes (sym_name: string, sym_visibility: optional<string>,
+                func_name: symbol_ref,
+                bindIdName: optional<array<symbol_ref>>,
+                bindStrName: optional<array<string>>,
+                bindIdNameDeviceType: optional<device_type_array>,
+                bindStrNameDeviceType: optional<device_type_array>,
+                gang: optional<device_type_array>, worker: optional<device_type_array>,
+                vector: optional<device_type_array>, seq: optional<device_type_array>,
+                gangDim: optional<i64_array>, gangDimDeviceType: optional<device_type_array>,
+                nohost: optional<unit>, implicit: optional<unit>);
+    Properties [isolated_from_above, symbol, symbol_visibility];
+    Assembly   { if sym_visibility { sym_visibility } sym_name "func" "(" func_name ")"
+                 oilist("bind" "(" custom<BindName>(bindIdName, bindStrName, bindIdNameDeviceType, bindStrNameDeviceType) ")"
+                      | "gang" custom<RoutineGangClause>(gang, gangDim, gangDimDeviceType)
+                      | "worker" custom<DeviceTypeArrayAttr>(worker)
+                      | "vector" custom<DeviceTypeArrayAttr>(vector)
+                      | "seq" custom<DeviceTypeArrayAttr>(seq)
+                      | "nohost" nohost
+                      | "implicit" implicit)
+                 attr-dict-with-keyword }
+  }
+
+  op global_ctor {
+    Doc "Global constructor body for a global variable's device storage.";
+    Attributes (sym_name: string, sym_visibility: optional<string>);
+    Regions    (region: region);
+    Properties [isolated_from_above, symbol, symbol_visibility];
+    Assembly   { if sym_visibility { sym_visibility } sym_name region
+                 attr-dict-with-keyword }
+  }
+
+  op global_dtor {
+    Doc "Global destructor body for a global variable's device storage.";
+    Attributes (sym_name: string, sym_visibility: optional<string>);
+    Regions    (region: region);
+    Properties [isolated_from_above, symbol, symbol_visibility];
+    Assembly   { if sym_visibility { sym_visibility } sym_name region
+                 attr-dict-with-keyword }
+  }
+
+  op declare {
+    Doc "Declare region listing the data clause operands that must exist on the device.";
+    Operands   (dataClauseOperands: variadic<pointer_or_mappable>);
+    Regions    (region: region);
+    Properties [recursive_effects, memory_effect(write)];
+    Assembly   { "dataOperands" "(" dataClauseOperands ":" type(dataClauseOperands) ")"
+                 region attr-dict-with-keyword }
+  }
+
+  op declare_enter {
+    Doc "Enter an implicit data region and return a declare token for declare_exit.";
+    Operands   (dataClauseOperands: variadic<pointer_or_mappable>);
+    Results    (token: declare_token);
+    Properties [memory_effect(write), memory_effect(read)];
+    Assembly   { oilist("dataOperands" "(" dataClauseOperands ":" type(dataClauseOperands) ")")
+                 attr-dict-with-keyword }
+  }
+
+  op declare_exit {
+    Doc "Exit an implicit data region, optionally consuming the declare token.";
+    Operands   (token: optional<declare_token>,
+                dataClauseOperands: variadic<pointer_or_mappable>);
+    Properties [operand_segments_by_attribute, memory_effect(write),
+                memory_effect(read)];
+    Assembly   { oilist("token" "(" token ")"
+                      | "dataOperands" "(" dataClauseOperands ":" type(dataClauseOperands) ")")
+                 attr-dict-with-keyword }
+  }
+
+  // ------------------------------------------------------------------
+  // 计算构造：parallel / serial / kernels
+  // ------------------------------------------------------------------
+
+  op parallel {
+    Doc "Parallel region: data, private, reduction, async/wait, num_gangs, num_workers, vector_length, if and self clauses.";
+    Operands   (asyncOperands: variadic<int_or_index>,
+                waitOperands: variadic<int_or_index>,
+                numGangs: variadic<int_or_index>,
+                numWorkers: variadic<int_or_index>,
+                vectorLength: variadic<int_or_index>,
+                ifCond: optional<i1>,
+                selfCond: optional<i1>,
+                reductionOperands: variadic<pointer_or_mappable>,
+                privateOperands: variadic<pointer_or_mappable>,
+                firstprivateOperands: variadic<pointer_or_mappable>,
+                dataClauseOperands: variadic<pointer_or_mappable>);
+    Attributes (asyncOperandsDeviceType: optional<device_type_array>,
+                asyncOnly: optional<device_type_array>,
+                waitOperandsSegments: optional<i32_array>,
+                waitOperandsDeviceType: optional<device_type_array>,
+                hasWaitDevnum: optional<bool_array>,
+                waitOnly: optional<device_type_array>,
+                numGangsSegments: optional<i32_array>,
+                numGangsDeviceType: optional<device_type_array>,
+                numWorkersDeviceType: optional<device_type_array>,
+                vectorLengthDeviceType: optional<device_type_array>,
+                selfAttr: optional<unit>,
+                defaultAttr: optional<any>,
+                combined: optional<unit>);
+    Regions    (region: region);
+    Properties [operand_segments_by_attribute, automatic_allocation_scope,
+                recursive_effects, memory_effect(write), memory_effect(read)];
+    Assembly   { if combined { "combined" "(" "loop" ")" }
+                 oilist("dataOperands" "(" dataClauseOperands ":" type(dataClauseOperands) ")"
+                      | "async" custom<DeviceTypeOperandsWithKeywordOnly>(asyncOperands, type(asyncOperands), asyncOperandsDeviceType, asyncOnly)
+                      | "firstprivate" "(" firstprivateOperands ":" type(firstprivateOperands) ")"
+                      | "num_gangs" "(" custom<NumGangs>(numGangs, type(numGangs), numGangsDeviceType, numGangsSegments) ")"
+                      | "num_workers" "(" custom<DeviceTypeOperands>(numWorkers, type(numWorkers), numWorkersDeviceType) ")"
+                      | "private" "(" privateOperands ":" type(privateOperands) ")"
+                      | "vector_length" "(" custom<DeviceTypeOperands>(vectorLength, type(vectorLength), vectorLengthDeviceType) ")"
+                      | "wait" custom<WaitClause>(waitOperands, type(waitOperands), waitOperandsDeviceType, waitOperandsSegments, hasWaitDevnum, waitOnly)
+                      | "self" "(" selfCond ")"
+                      | "if" "(" ifCond ")"
+                      | "reduction" "(" reductionOperands ":" type(reductionOperands) ")")
+                 region
+                 oilist("defaultAttr" "(" defaultAttr ")" | "selfAttr" selfAttr)
+                 attr-dict-with-keyword }
+  }
+
+  op serial {
+    Doc "Serial region: parallel-like clauses without num_gangs, num_workers or vector_length.";
+    Operands   (asyncOperands: variadic<int_or_index>,
+                waitOperands: variadic<int_or_index>,
+                ifCond: optional<i1>,
+                selfCond: optional<i1>,
+                reductionOperands: variadic<pointer_or_mappable>,
+                privateOperands: variadic<pointer_or_mappable>,
+                firstprivateOperands: variadic<pointer_or_mappable>,
+                dataClauseOperands: variadic<pointer_or_mappable>);
+    Attributes (asyncOperandsDeviceType: optional<device_type_array>,
+                asyncOnly: optional<device_type_array>,
+                waitOperandsSegments: optional<i32_array>,
+                waitOperandsDeviceType: optional<device_type_array>,
+                hasWaitDevnum: optional<bool_array>,
+                waitOnly: optional<device_type_array>,
+                selfAttr: optional<unit>,
+                defaultAttr: optional<any>,
+                combined: optional<unit>);
+    Regions    (region: region);
+    Properties [operand_segments_by_attribute, automatic_allocation_scope,
+                recursive_effects, memory_effect(write), memory_effect(read)];
+    Assembly   { if combined { "combined" "(" "loop" ")" }
+                 oilist("dataOperands" "(" dataClauseOperands ":" type(dataClauseOperands) ")"
+                      | "async" custom<DeviceTypeOperandsWithKeywordOnly>(asyncOperands, type(asyncOperands), asyncOperandsDeviceType, asyncOnly)
+                      | "firstprivate" "(" firstprivateOperands ":" type(firstprivateOperands) ")"
+                      | "private" "(" privateOperands ":" type(privateOperands) ")"
+                      | "wait" custom<WaitClause>(waitOperands, type(waitOperands), waitOperandsDeviceType, waitOperandsSegments, hasWaitDevnum, waitOnly)
+                      | "self" "(" selfCond ")"
+                      | "if" "(" ifCond ")"
+                      | "reduction" "(" reductionOperands ":" type(reductionOperands) ")")
+                 region
+                 oilist("defaultAttr" "(" defaultAttr ")" | "selfAttr" selfAttr)
+                 attr-dict-with-keyword }
+  }
+
+  op kernels {
+    Doc "Kernels region: parallel-like clauses with num_gangs, num_workers and vector_length.";
+    Operands   (asyncOperands: variadic<int_or_index>,
+                waitOperands: variadic<int_or_index>,
+                numGangs: variadic<int_or_index>,
+                numWorkers: variadic<int_or_index>,
+                vectorLength: variadic<int_or_index>,
+                ifCond: optional<i1>,
+                selfCond: optional<i1>,
+                reductionOperands: variadic<pointer_or_mappable>,
+                privateOperands: variadic<pointer_or_mappable>,
+                firstprivateOperands: variadic<pointer_or_mappable>,
+                dataClauseOperands: variadic<pointer_or_mappable>);
+    Attributes (asyncOperandsDeviceType: optional<device_type_array>,
+                asyncOnly: optional<device_type_array>,
+                waitOperandsSegments: optional<i32_array>,
+                waitOperandsDeviceType: optional<device_type_array>,
+                hasWaitDevnum: optional<bool_array>,
+                waitOnly: optional<device_type_array>,
+                numGangsSegments: optional<i32_array>,
+                numGangsDeviceType: optional<device_type_array>,
+                numWorkersDeviceType: optional<device_type_array>,
+                vectorLengthDeviceType: optional<device_type_array>,
+                selfAttr: optional<unit>,
+                defaultAttr: optional<any>,
+                combined: optional<unit>);
+    Regions    (region: region);
+    Properties [operand_segments_by_attribute, automatic_allocation_scope,
+                recursive_effects, memory_effect(write), memory_effect(read)];
+    Assembly   { if combined { "combined" "(" "loop" ")" }
+                 oilist("dataOperands" "(" dataClauseOperands ":" type(dataClauseOperands) ")"
+                      | "async" custom<DeviceTypeOperandsWithKeywordOnly>(asyncOperands, type(asyncOperands), asyncOperandsDeviceType, asyncOnly)
+                      | "firstprivate" "(" firstprivateOperands ":" type(firstprivateOperands) ")"
+                      | "num_gangs" "(" custom<NumGangs>(numGangs, type(numGangs), numGangsDeviceType, numGangsSegments) ")"
+                      | "num_workers" "(" custom<DeviceTypeOperands>(numWorkers, type(numWorkers), numWorkersDeviceType) ")"
+                      | "private" "(" privateOperands ":" type(privateOperands) ")"
+                      | "vector_length" "(" custom<DeviceTypeOperands>(vectorLength, type(vectorLength), vectorLengthDeviceType) ")"
+                      | "wait" custom<WaitClause>(waitOperands, type(waitOperands), waitOperandsDeviceType, waitOperandsSegments, hasWaitDevnum, waitOnly)
+                      | "self" "(" selfCond ")"
+                      | "if" "(" ifCond ")"
+                      | "reduction" "(" reductionOperands ":" type(reductionOperands) ")")
+                 region
+                 oilist("defaultAttr" "(" defaultAttr ")" | "selfAttr" selfAttr)
+                 attr-dict-with-keyword }
+  }
+
+  // ------------------------------------------------------------------
+  // 数据构造与循环
+  // ------------------------------------------------------------------
+
+  op data {
+    Doc "Structured data region: async, wait, data operands and default clause around a region.";
+    Operands   (ifCond: optional<i1>,
+                asyncOperands: variadic<int_or_index>,
+                waitOperands: variadic<int_or_index>,
+                dataClauseOperands: variadic<pointer_or_mappable>);
+    Attributes (asyncOperandsDeviceType: optional<device_type_array>,
+                asyncOnly: optional<device_type_array>,
+                waitOperandsSegments: optional<i32_array>,
+                waitOperandsDeviceType: optional<device_type_array>,
+                hasWaitDevnum: optional<bool_array>,
+                waitOnly: optional<device_type_array>,
+                defaultAttr: optional<any>);
+    Regions    (region: region);
+    Properties [operand_segments_by_attribute, recursive_effects,
+                memory_effect(write), memory_effect(read)];
+    Assembly   { oilist("if" "(" ifCond ")"
+                      | "async" custom<DeviceTypeOperandsWithKeywordOnly>(asyncOperands, type(asyncOperands), asyncOperandsDeviceType, asyncOnly)
+                      | "dataOperands" "(" dataClauseOperands ":" type(dataClauseOperands) ")"
+                      | "wait" custom<WaitClause>(waitOperands, type(waitOperands), waitOperandsDeviceType, waitOperandsSegments, hasWaitDevnum, waitOnly))
+                 region
+                 if defaultAttr { "defaultAttr" "(" defaultAttr ")" }
+                 attr-dict-with-keyword }
+  }
+
+  op enter_data {
+    Doc "Unstructured enter data: async/wait, if and data operands; no region.";
+    Operands   (ifCond: optional<i1>,
+                asyncOperand: optional<int_or_index>,
+                waitDevnum: optional<int_or_index>,
+                waitOperands: variadic<int_or_index>,
+                dataClauseOperands: variadic<pointer_or_mappable>);
+    Attributes (async: optional<unit>, wait: optional<unit>);
+    Properties [operand_segments_by_attribute, memory_effect(write),
+                memory_effect(read)];
+    Assembly   { oilist("if" "(" ifCond ")"
+                      | "async" custom<OperandWithKeywordOnly>(asyncOperand, type(asyncOperand), async)
+                      | "wait_devnum" "(" waitDevnum ":" type(waitDevnum) ")"
+                      | "wait" custom<OperandsWithKeywordOnly>(waitOperands, type(waitOperands), wait)
+                      | "dataOperands" "(" dataClauseOperands ":" type(dataClauseOperands) ")")
+                 attr-dict-with-keyword }
+  }
+
+  op exit_data {
+    Doc "Unstructured exit data: enter_data clauses plus finalize.";
+    Operands   (ifCond: optional<i1>,
+                asyncOperand: optional<int_or_index>,
+                waitDevnum: optional<int_or_index>,
+                waitOperands: variadic<int_or_index>,
+                dataClauseOperands: variadic<pointer_or_mappable>);
+    Attributes (async: optional<unit>, wait: optional<unit>, finalize: optional<unit>);
+    Properties [operand_segments_by_attribute, memory_effect(write),
+                memory_effect(read)];
+    Assembly   { oilist("if" "(" ifCond ")"
+                      | "async" custom<OperandWithKeywordOnly>(asyncOperand, type(asyncOperand), async)
+                      | "wait_devnum" "(" waitDevnum ":" type(waitDevnum) ")"
+                      | "wait" custom<OperandsWithKeywordOnly>(waitOperands, type(waitOperands), wait)
+                      | "dataOperands" "(" dataClauseOperands ":" type(dataClauseOperands) ")"
+                      | "finalize" finalize)
+                 attr-dict-with-keyword }
+  }
+
+  op host_data {
+    Doc "Host data region: expose device addresses of data operands to host code, with optional ifPresent.";
+    Operands   (ifCond: optional<i1>,
+                dataClauseOperands: variadic<pointer_or_mappable>);
+    Attributes (ifPresent: optional<unit>);
+    Regions    (region: region);
+    Properties [operand_segments_by_attribute, recursive_effects,
+                memory_effect(write), memory_effect(read)];
+    Assembly   { oilist("if" "(" ifCond ")"
+                      | "dataOperands" "(" dataClauseOperands ":" type(dataClauseOperands) ")")
+                 region
+                 if ifPresent { "ifPresent" }
+                 attr-dict-with-keyword }
+  }
+
+  op loop {
+    Doc "Loop directive: gang/worker/vector/tile/cache clauses, collapse, seq/independent/auto, bounds and loop body.";
+    Operands   (lowerbound: variadic<int_or_index>,
+                upperbound: variadic<int_or_index>,
+                step: variadic<int_or_index>,
+                gangOperands: variadic<int_or_index>,
+                workerNumOperands: variadic<int_or_index>,
+                vectorOperands: variadic<int_or_index>,
+                tileOperands: variadic<int_or_index>,
+                cacheOperands: variadic<pointer_or_mappable>,
+                privateOperands: variadic<pointer_or_mappable>,
+                firstprivateOperands: variadic<pointer_or_mappable>,
+                reductionOperands: variadic<any>);
+    Attributes (inclusiveUpperbound: optional<bool_array>,
+                collapse: optional<i64_array>,
+                collapseDeviceType: optional<device_type_array>,
+                gangOperandsArgType: optional<gang_arg_type_array>,
+                gangOperandsSegments: optional<i32_array>,
+                gangOperandsDeviceType: optional<device_type_array>,
+                workerNumOperandsDeviceType: optional<device_type_array>,
+                vectorOperandsDeviceType: optional<device_type_array>,
+                tileOperandsSegments: optional<i32_array>,
+                tileOperandsDeviceType: optional<device_type_array>,
+                seq: optional<device_type_array>,
+                independent: optional<device_type_array>,
+                auto_: optional<device_type_array>,
+                gang: optional<device_type_array>,
+                worker: optional<device_type_array>,
+                vector: optional<device_type_array>,
+                combined: optional<CombinedConstructsType>,
+                unstructured: optional<unit>);
+    Results    (results: variadic<any>);
+    Regions    (region: region);
+    Properties [operand_segments_by_attribute, automatic_allocation_scope,
+                recursive_effects, memory_effect(write)];
+    Assembly   { if combined { "combined" "(" custom<CombinedConstructsLoop>(combined) ")" }
+                 oilist("gang" custom<GangClause>(gangOperands, type(gangOperands), gangOperandsArgType, gangOperandsDeviceType, gangOperandsSegments, gang)
+                      | "worker" custom<DeviceTypeOperandsWithKeywordOnly>(workerNumOperands, type(workerNumOperands), workerNumOperandsDeviceType, worker)
+                      | "vector" custom<DeviceTypeOperandsWithKeywordOnly>(vectorOperands, type(vectorOperands), vectorOperandsDeviceType, vector)
+                      | "private" "(" privateOperands ":" type(privateOperands) ")"
+                      | "firstprivate" "(" firstprivateOperands ":" type(firstprivateOperands) ")"
+                      | "tile" "(" custom<DeviceTypeOperandsWithSegment>(tileOperands, type(tileOperands), tileOperandsDeviceType, tileOperandsSegments) ")"
+                      | "reduction" "(" reductionOperands ":" type(reductionOperands) ")"
+                      | "cache" "(" cacheOperands ":" type(cacheOperands) ")")
+                 custom<LoopControl>(region, lowerbound, type(lowerbound), upperbound, type(upperbound), step, type(step))
+                 if results { "(" type(results) ")" }
+                 oilist("inclusiveUpperbound" "(" custom<DenseBoolArrayAttr>(inclusiveUpperbound) ")"
+                      | "collapse" "(" custom<ArrayAttr>(collapse) ")"
+                      | "collapseDeviceType" "(" custom<ArrayAttr>(collapseDeviceType) ")"
+                      | "seq" custom<DeviceTypeArrayAttr>(seq)
+                      | "independent" custom<DeviceTypeArrayAttr>(independent)
+                      | "auto_" custom<DeviceTypeArrayAttr>(auto_)
+                      | "unstructured" unstructured)
+                 attr-dict-with-keyword }
+  }
+
+  op predicate_region {
+    Doc "Groups operations at intermediate loop-nest points where execution scope differs; no terminator.";
+    Regions    (region: region [no_terminator]);
+    Properties [recursive_effects];
+    Assembly   { region attr-dict }
+  }
+
+  // ------------------------------------------------------------------
+  // 终结符
+  // ------------------------------------------------------------------
+
+  op terminator {
+    Doc "Structured region terminator with no operands.";
+    Properties [pure, terminator];
+    Assembly   { attr-dict }
+  }
+
+  op yield {
+    Doc "Yield values from an OpenACC region; allowed only in the listed parent ops.";
+    Operands   (operands: variadic<any>);
+    Properties [pure, return_like, terminator,
+                has_parent(firstprivate.recipe) | has_parent(loop)
+                | has_parent(parallel) | has_parent(private.recipe)
+                | has_parent(reduction.recipe) | has_parent(reduction_init)
+                | has_parent(reduction_combine_region) | has_parent(serial)
+                | has_parent(atomic.update) | has_parent(compute_region)];
+    Assembly   { attr-dict if operands { ":" type(operands) } }
+  }
+
+  // ------------------------------------------------------------------
+  // 原子
+  // ------------------------------------------------------------------
+
+  op atomic.read {
+    Doc "Atomic read of element_type from x into v, both pointer-like.";
+    Operands   (x: pointer_like, v: pointer_like);
+    Attributes (element_type: type, ifCond: optional<i1>);
+    Assembly   { oilist("if" "(" ifCond ")")
+                 v "=" x ":" type(v) "," type(x) "," element_type attr-dict }
+  }
+
+  op atomic.write {
+    Doc "Atomic write of expr to x; expr has the element type of x.";
+    Operands   (x: pointer_like, expr: any);
+    Attributes (ifCond: optional<i1>);
+    Assembly   { oilist("if" "(" ifCond ")")
+                 x "=" expr ":" type(x) "," type(expr) attr-dict }
+  }
+
+  op atomic.update {
+    Doc "Atomic read-modify-write: the single-block region yields the updated value.";
+    Operands   (x: pointer_like);
+    Attributes (ifCond: optional<i1>);
+    Regions    (region: region [single_block, implicit_terminator(yield)]);
+    Properties [recursive_effects];
+    Assembly   { oilist("if" "(" ifCond ")")
+                 x ":" type(x) region attr-dict }
+  }
+
+  op atomic.capture {
+    Doc "Atomic capture region: exactly one block ended by the acc terminator.";
+    Attributes (ifCond: optional<i1>);
+    Regions    (region: region [single_block, implicit_terminator(terminator)]);
+    Properties [recursive_effects];
+    Assembly   { oilist("if" "(" ifCond ")")
+                 region attr-dict }
+  }
+
+  // ------------------------------------------------------------------
+  // 设备运行时
+  // ------------------------------------------------------------------
+
+  op init {
+    Doc "Initialize the device runtime for the selected device types.";
+    Operands   (deviceNum: optional<int_or_index>, ifCond: optional<i1>);
+    Attributes (device_types: optional<device_type_array>);
+    Properties [operand_segments_by_attribute];
+    Assembly   { oilist("device_num" "(" deviceNum ":" type(deviceNum) ")"
+                      | "if" "(" ifCond ")"
+                      | "device_types" "(" device_types ")")
+                 attr-dict-with-keyword }
+  }
+
+  op shutdown {
+    Doc "Shut down the device runtime for the selected device types.";
+    Operands   (deviceNum: optional<int_or_index>, ifCond: optional<i1>);
+    Attributes (device_types: optional<device_type_array>);
+    Properties [operand_segments_by_attribute];
+    Assembly   { oilist("device_num" "(" deviceNum ":" type(deviceNum) ")"
+                      | "if" "(" ifCond ")"
+                      | "device_types" "(" device_types ")")
+                 attr-dict-with-keyword }
+  }
+
+  op set {
+    Doc "Set the default async queue, device number, device type or if condition.";
+    Operands   (defaultAsync: optional<int_or_index>,
+                deviceNum: optional<int_or_index>,
+                ifCond: optional<i1>);
+    Attributes (device_type: optional<DeviceType>);
+    Properties [operand_segments_by_attribute, memory_effect(write)];
+    Assembly   { oilist("default_async" "(" defaultAsync ":" type(defaultAsync) ")"
+                      | "device_num" "(" deviceNum ":" type(deviceNum) ")"
+                      | "if" "(" ifCond ")"
+                      | "device_type" "(" device_type ")")
+                 attr-dict-with-keyword }
+  }
+
+  op update {
+    Doc "Standalone update directive: async/wait, data operands and ifPresent.";
+    Operands   (ifCond: optional<i1>,
+                asyncOperands: variadic<int_or_index>,
+                waitOperands: variadic<int_or_index>,
+                dataClauseOperands: variadic<pointer_or_mappable>);
+    Attributes (asyncOperandsDeviceType: optional<device_type_array>,
+                asyncOnly: optional<device_type_array>,
+                waitOperandsSegments: optional<i32_array>,
+                waitOperandsDeviceType: optional<device_type_array>,
+                hasWaitDevnum: optional<bool_array>,
+                waitOnly: optional<device_type_array>,
+                ifPresent: optional<unit>);
+    Properties [operand_segments_by_attribute, memory_effect(write),
+                memory_effect(read)];
+    Assembly   { oilist("if" "(" ifCond ")"
+                      | "async" custom<DeviceTypeOperandsWithKeywordOnly>(asyncOperands, type(asyncOperands), asyncOperandsDeviceType, asyncOnly)
+                      | "wait" custom<WaitClause>(waitOperands, type(waitOperands), waitOperandsDeviceType, waitOperandsSegments, hasWaitDevnum, waitOnly)
+                      | "dataOperands" "(" dataClauseOperands ":" type(dataClauseOperands) ")"
+                      | "ifPresent" ifPresent)
+                 attr-dict-with-keyword }
+  }
+
+  op wait {
+    Doc "Wait for the listed async queues (or a wait_devnum) with an optional if condition.";
+    Operands   (waitOperands: variadic<int_or_index>,
+                asyncOperand: optional<int_or_index>,
+                waitDevnum: optional<int_or_index>);
+    Attributes (async: optional<unit>, ifCond: optional<i1>);
+    Properties [operand_segments_by_attribute];
+    Assembly   { if waitOperands { "(" waitOperands ":" type(waitOperands) ")" }
+                 oilist("async" custom<OperandWithKeywordOnly>(asyncOperand, type(asyncOperand), async)
+                      | "wait_devnum" "(" waitDevnum ":" type(waitDevnum) ")"
+                      | "if" "(" ifCond ")")
+                 attr-dict-with-keyword }
+  }
+
+  op on_device {
+    Doc "Return whether the execution device matches deviceType.";
+    Operands   (deviceType: int_or_index);
+    Results    (result: i1);
+    Assembly   { deviceType attr-dict ":" type(deviceType) "->" type(result) }
+  }
+
+  // ------------------------------------------------------------------
+  // 代码生成：规约、私有化、并行宽度、共享内存、映射元数据
+  // ------------------------------------------------------------------
+
+  op reduction_init {
+    Doc "Initialize a reduction variable and yield the initialized value.";
+    Operands   (var: pointer_or_mappable, bounds: variadic<data_bounds_ty>);
+    Attributes (reductionOperator: ReductionOperator);
+    Results    (result: pointer_or_mappable);
+    Regions    (region: region [single_block, implicit_terminator(yield)]);
+    Properties [recursive_effects, same_type(var, result)];
+    Assembly   { var
+                 if bounds { "bounds" "(" bounds ")" }
+                 reductionOperator ":" type(result) region attr-dict }
+  }
+
+  op reduction_combine_region {
+    Doc "Combine a private reduction partial srcVar into destVar using a region.";
+    Operands   (destVar: pointer_or_mappable, srcVar: pointer_or_mappable);
+    Regions    (region: region [single_block, implicit_terminator(yield)]);
+    Properties [recursive_effects, same_type(srcVar, destVar)];
+    Assembly   { srcVar "into" destVar ":" type(srcVar) region attr-dict }
+  }
+
+  op reduction_combine {
+    Doc "Combine a source partial memref into a destination memref with a reduction operator.";
+    Operands   (destMemref: pointer_or_mappable, srcMemref: pointer_or_mappable);
+    Attributes (reductionOperator: ReductionOperator,
+                par_dims: optional<par_dims>);
+    Properties [same_type(srcMemref, destMemref)];
+    Assembly   { srcMemref "into" destMemref reductionOperator
+                 if par_dims { "par_dims" "(" par_dims ")" }
+                 ":" type(destMemref) attr-dict }
+  }
+
+  op reduction_accumulate {
+    Doc "Accumulate value into a reduction variable memref at the given parallel dimensions.";
+    Operands   (value: any, memref: pointer_like);
+    Attributes (reductionOperator: ReductionOperator, par_dims: par_dims);
+    Assembly   { value "to" memref reductionOperator
+                 "par_dims" "(" par_dims ")"
+                 ":" type(value) "->" type(memref) attr-dict }
+  }
+
+  op reduction_accumulate_array {
+    Doc "Accumulate an array slice described by bounds into a reduction variable memref.";
+    Operands   (memref: pointer_like, bounds: data_bounds_ty);
+    Attributes (reductionOperator: ReductionOperator, par_dims: par_dims);
+    Assembly   { memref "bounds" "(" bounds ")" reductionOperator
+                 "par_dims" "(" par_dims ")"
+                 ":" type(memref) attr-dict }
+  }
+
+  op privatize {
+    Doc "Create a private_type handle for storage replicated across the given parallel dimensions.";
+    Operands   (dynamicSizes: variadic<index>);
+    Attributes (par_dims: optional<par_dims>);
+    Results    (result: private_type);
+    Assembly   { if dynamicSizes { "(" dynamicSizes ")" }
+                 if par_dims { "par_dims" "(" par_dims ")" }
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  op unwrap_private {
+    Doc "Unwrap a private_type handle into a pointer-like value.";
+    Operands   (handle: private_type);
+    Results    (result: pointer_like);
+    Properties [no_memory_effect, speculatable];
+    Assembly   { handle attr-dict ":" qualified(type(handle)) "to" type(result) }
+  }
+
+  op private_local {
+    Doc "Materialize the private storage of a private_type handle for the current execution context.";
+    Operands   (privatized: private_type);
+    Results    (output: any);
+    Properties [no_memory_effect, speculatable];
+    Assembly   { privatized attr-dict ":" functional-type(operands, results) }
+  }
+
+  op par_width {
+    Doc "Return the width of one parallel dimension, optionally from a launch argument.";
+    Operands   (launchArg: optional<index>);
+    Attributes (par_dim: par_dim);
+    Results    (output: index);
+    Properties [no_memory_effect, speculatable];
+    Assembly   { if launchArg { launchArg }
+                 "par_dim" "(" par_dim ")" attr-dict }
+  }
+
+  op gpu_shared_memory {
+    Doc "Allocate GPU shared memory for num_copies static providers plus dynamic sizes.";
+    Operands   (dynamic_sizes: variadic<index>);
+    Attributes (num_copies: i64, static_upper_bound_bytes: i64,
+                dynamic_shared_memory_scaling_bytes: optional<i64>,
+                dynamic_shared_memory_fixed_bytes: optional<i64>);
+    Results    (result: memref);
+    Properties [memory_effect(allocate)];
+    Assembly   { if dynamic_sizes { "(" dynamic_sizes ")" }
+                 prop-dict attr-dict ":" functional-type(operands, results) }
+  }
+
+  op compute_region {
+    Doc "GPU compute region with explicit launch and input captures; all values used inside must be captured.";
+    Operands   (launchArgs: variadic<index>, inputArgs: variadic<any>,
+                stream: optional<async_token>);
+    Attributes (origin: string,
+                kernel_func_name: optional<flat_symbol_ref>,
+                kernel_module_name: optional<flat_symbol_ref>);
+    Results    (results: variadic<any>);
+    Regions    (region: region [single_block, implicit_terminator(yield)]);
+    Properties [affine_scope, automatic_allocation_scope, recursive_effects,
+                isolated_from_above, operand_segments_by_attribute];
+    Assembly   Custom;
+  }
+
+  op map_info {
+    Doc "Per-object offload mapping metadata: descriptor kind, map flags, bounds, size and attach point.";
+    Operands   (var: pointer_or_mappable,
+                varPtrPtr: optional<pointer_like>,
+                desc: optional<pointer_or_mappable>,
+                bounds: variadic<data_bounds_ty>,
+                size: optional<int_or_index>);
+    Attributes (varType: type, descKind: DataDescKind, mapFlags: MapFlags,
+                name: optional<string>, elementSize: optional<i64> [non_negative],
+                exitLoc: optional<location>);
+    Results    (accVar: pointer_or_mappable);
+    Properties [operand_segments_by_attribute, same_type(var, accVar)];
+    Assembly   { custom<Var>(var) ":" custom<VarPtrType>(type(var), varType)
+                 oilist("varPtrPtr" "(" varPtrPtr ":" type(varPtrPtr) ")"
+                      | "desc" "(" desc ":" type(desc) ")"
+                      | "bounds" "(" bounds ")"
+                      | "size" "(" size ":" type(size) ")"
+                      | "elementSize" "(" elementSize ")"
+                      | "name" "(" name ")"
+                      | "exitLoc" "(" custom<SourceLocation>(exitLoc) ")")
+                 "descKind" "(" descKind ")" "mapFlags" "(" mapFlags ")"
+                 "->" type(accVar) attr-dict }
+  }
+
+  op kernel_environment {
+    Doc "Kernel environment: data, async/wait clauses around the device kernel body; single block, no terminator.";
+    Operands   (dataClauseOperands: variadic<any>,
+                asyncOperand: optional<int_or_index>,
+                waitDevnum: optional<int_or_index>,
+                waitOperands: variadic<int_or_index>);
+    Attributes (asyncOnly: optional<unit>, waitOnly: optional<unit>);
+    Regions    (region: region [single_block, no_terminator]);
+    Properties [operand_segments_by_attribute, recursive_effects,
+                memory_effect(write), memory_effect(read)];
+    Assembly   { oilist("dataOperands" "(" dataClauseOperands ":" type(dataClauseOperands) ")"
+                      | "async" custom<OperandWithKeywordOnly>(asyncOperand, type(asyncOperand), asyncOnly)
+                      | "wait_devnum" "(" waitDevnum ":" type(waitDevnum) ")"
+                      | "wait" custom<OperandsWithKeywordOnly>(waitOperands, type(waitOperands), waitOnly))
+                 region attr-dict }
+  }
+}

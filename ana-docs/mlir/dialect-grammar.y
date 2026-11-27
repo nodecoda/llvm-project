@@ -13,7 +13,7 @@
  *   - 声明关键字是软关键字：`name` 也接受它们，因为 gpu.all_reduce 的
  *     属性就叫 `op`；
  *   - `type`/`if`/`attr-dict`/`attr-dict-with-keyword`/`prop-dict`/
- *     `functional-type`/`oilist`/`custom` 只在 Assembly 模式里是关键字，
+ *     `functional-type`/`oilist`/`custom`/`ref` 只在 Assembly 模式里是关键字，
  *     所以 `op if`、`type_def type` 在普通模式里都合法；
  *   - 谓词：列表是合取，`|` 是析取，没有 `and`/`not`。
  *
@@ -39,7 +39,7 @@
 /* Assembly 模式 */
 %token A_ATTR_DICT A_ATTR_DICT_WITH_KEYWORD A_PROP_DICT A_TYPE A_IF
 %token A_FUNCTIONAL_TYPE A_QUALIFIED A_OILIST A_CUSTOM A_SUCCESSORS
-%token A_GAP
+%token A_REF A_ELSE A_GAP
 
 %define parse.trace
 
@@ -318,9 +318,10 @@ asm_element
                                  /* (T...) -> (U...)，实参是部件组 */
   | A_CUSTOM L_ANGLE IDENT R_ANGLE L_PAREN custom_arg_list R_PAREN
                                  /* 局部子格式交给具名钩子 */
-  | A_OILIST L_PAREN oilist_alt_list R_PAREN
-                                 /* 至多出现一个可选组 */
-  | A_IF IDENT L_BRACE asm_list R_BRACE
+  | A_OILIST oilist_sep L_PAREN oilist_alt_list R_PAREN
+                                 /* 至多出现一个可选组；分隔符可选 */
+  | A_IF IDENT L_BRACE asm_list R_BRACE else_opt
+                                 /* 可带 else：缺失时打印固定文本 */
   | A_SUCCESSORS                  /* 打印全部后继，名字不再逐个写出 */
   | A_GAP L_PAREN IDENT R_PAREN   /* 部分描述：命名的构造当前文法说不出 */
   ;
@@ -337,11 +338,41 @@ custom_arg
   : IDENT
   | A_TYPE                        /* 部件名恰好叫 type */
   | A_TYPE L_PAREN IDENT R_PAREN  /* 派生：把某个部件的类型交给钩子 */
+  | A_REF L_PAREN ref_arg R_PAREN
+                                 /* ref(x) / ref(type(x))：按字面打印，不派生
+                                  * （GPU_LaunchFuncOp 的 ref($clusterSizeX)） */
   ;
 
-/* oilist(a | b | c)：顺序无关的可选组，每支 0 或 1 次（可以同时出现两支）。
+/* ref 只包一层：ref(x) 或 ref(type(x))。ref(ref(x)) 没有见证，也不该有：
+ * 逃逸构造不嵌套，否则每一层都要重新审。 */
+ref_arg
+  : IDENT
+  | A_TYPE L_PAREN IDENT R_PAREN
+  ;
+
+/* if x { ... } else { ... }：可选组缺省时打印固定文本。上游写作
+ * ($x^):(`undef`)?，本 DSL 写成 if x { x } else { "undef" }。
+ * else 体只允许字符串字面量：缺省分支是"打印固定文本"，不是第二个格式。
+ * 想放结构就走正常分支，或者给文法加一个具名产生式。 */
+else_opt
+  : %empty
+  | A_ELSE L_BRACE asm_string_list R_BRACE
+  ;
+
+asm_string_list
+  : STRING
+  | asm_string_list STRING
+  ;
+
+/* oilist<sep>(a | b | c)：顺序无关的可选组，每支 0 或 1 次（可以同时出现两支）。
+ * 可选的首参是分隔符：上游 `oilist<\`,\`>(...)`。
  * 分支用 `|` 分隔，与类型并集、enum 组合子同一个析取符号。ODS 原义见
  * mlir/docs/DefiningDialects/Operations.md:808-819；13 章 §5.6 有完整文法。 */
+oilist_sep
+  : %empty
+  | L_ANGLE STRING R_ANGLE
+  ;
+
 oilist_alt_list
   : asm_list
   | oilist_alt_list PIPE asm_list

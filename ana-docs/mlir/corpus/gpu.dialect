@@ -216,9 +216,8 @@ dialect gpu {
     // RecursiveMemoryEffects；token 与 async_dependencies 同为 async token。
     Properties [same_type(token, async_dependencies)];
     Implements [SymbolUserOpInterface];
-    // 上游是 declarative assemblyFormat。唯一写不出的是
-    // custom<LaunchDimType>(..., ref(cluster_size_x), ...)：`ref` 还没有产生式
-    // （19 章 §6 的缺口）；其余逐字照写，并用单参形式近似该钩子。
+    // 上游是 declarative assemblyFormat；LaunchDimType 的实参按上游顺序
+    // 列出，包括 ref(cluster_size_x)（按字面打印，不派生类型）。
     Assembly { custom<AsyncDependencies>(type(token), async_dependencies)
                if async_object { "<" async_object ":" type(async_object) ">" }
                kernel
@@ -226,7 +225,9 @@ dialect gpu {
                                    cluster_size_y "," cluster_size_z ")" }
                "blocks" "in" "(" grid_size_x "," grid_size_y "," grid_size_z ")"
                "threads" "in" "(" block_size_x "," block_size_y "," block_size_z ")"
-               custom<LaunchDimType>(type(grid_size_x))
+               custom<LaunchDimType>(type(grid_size_x), ref(cluster_size_x),
+                                     type(cluster_size_x), type(cluster_size_y),
+                                     type(cluster_size_z))
                if dynamic_shared_memory_size {
                  "dynamic_shared_memory_size" dynamic_shared_memory_size }
                if cooperative { "cooperative" cooperative }

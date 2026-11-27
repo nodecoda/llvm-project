@@ -1,0 +1,60 @@
+/// dlti —— 数据布局与目标信息：只有属性语法，没有 op。
+///
+/// 领域：DLTI 把数据布局与目标硬件信息编码成属性，挂在任意 op 的固有属性
+/// 上（例如 module 的 `dlti`）。它由六种属性组成：一条键值项、一个布局规格、
+/// 一个通用映射、系统规格、设备规格，以及函数指针对齐。前五种上游都是手写
+/// 打印器（hasCustomAssemblyFormat = 1），只有函数指针对齐是声明式格式。
+///
+/// 文本通道：本方言没有 op，因此没有文本通道预算；属性自身的打印形态由
+/// attr_def 的 Assembly 子句描述。这不是遗漏：`dialect dlti` 的全部文本
+/// 表面就是这六个属性，覆盖审计的 op 数为 0 对 0。
+///
+/// 事实：属性定义上没有 op trait；接口（DLTIQueryInterface 等）只影响查询
+/// 行为，不进入文本，故不写 Properties。
+///
+/// GAP:
+///   - 五个 Custom 属性的内部布局（`key = value` 列表、嵌套属性、`ui32`
+///     这样的类型后缀）属于手写打印器；本文件按许可证记 `Assembly Custom;`，
+///     不在块里猜它的分隔符。
+///   - `dl_entry` 的 key 可以是类型或标识符，两种形态在类型系统里是 union，
+///     本文件用不透明 attribute 表示。
+
+dialect dlti {
+  Doc "Data layout and target information attributes: entries, specifications, maps and target descriptions.";
+
+  attr_def dl_entry {
+    Doc "#dlti.dl_entry<key = value>: one data-layout entry; the key is a type or an identifier. The printer is custom.";
+    Parameters (key: attribute, value: attribute);
+    Assembly   Custom;
+  }
+
+  attr_def dl_spec {
+    Doc "#dlti.dl_spec<...>: a list of data-layout entries describing (partial) layout information. The printer is custom.";
+    Parameters (entries: variadic<attribute>);
+    Assembly   Custom;
+  }
+
+  attr_def map {
+    Doc "#dlti.map<...>: a flat key-value map of DLTI information. The printer is custom.";
+    Parameters (entries: variadic<attribute>);
+    Assembly   Custom;
+  }
+
+  attr_def target_system_spec {
+    Doc "#dlti.target_system_spec<...>: device-id to target-device-spec entries describing a whole system. The printer is custom.";
+    Parameters (entries: variadic<attribute>);
+    Assembly   Custom;
+  }
+
+  attr_def target_device_spec {
+    Doc "#dlti.target_device_spec<...>: hardware properties of one device. The printer is custom.";
+    Parameters (entries: variadic<attribute>);
+    Assembly   Custom;
+  }
+
+  attr_def function_pointer_alignment {
+    Doc "#dlti.function_pointer_alignment<64, function_dependent = false>: minimum alignment of function pointers, optionally depending on the target function.";
+    Parameters (alignment: i64, function_dependent: bool);
+    Assembly   { "<" alignment "," "function_dependent" "=" function_dependent ">" }
+  }
+}

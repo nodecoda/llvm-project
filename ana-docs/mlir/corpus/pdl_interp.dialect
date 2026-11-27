@@ -347,9 +347,8 @@ dialect pdl_interp {
     Operands   (arguments: variadic<pdl_any>);
     Results    (result: pdl.range<value> | pdl.range<type>);
     Properties [pure];
-    // 余下文本可描述；缺口只有钩子实参里的 ref(type(x)) 形态。
-    Assembly   { Gap(ref_type) if arguments { "(" arguments ":" type(arguments) ")" }
-               custom<RangeType>(arguments, type(result)) attr-dict }
+    Assembly   { if arguments { "(" arguments ":" type(arguments) ")" }
+               custom<RangeType>(ref(type(arguments)), type(result)) attr-dict }
   }
 
   // ------------------------------------------------------------------

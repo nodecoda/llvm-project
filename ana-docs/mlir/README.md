@@ -23,16 +23,20 @@
   vcix、xevm、x86、xegpu、nvgpu、mpi、irdl 八个方言把语料推到 39 个方言、
   1171 个 op；`prop_dict` 因 XeGPU/NVGPU/XeVM 共 23 个 op 的证据而从缺口
   升级成 `A_PROP_DICT` 产生式，这是"文法跟不上语料才加产生式"的正例。
+  24 章随后把逃逸点从"许可证"推进到"契约"：语法层窄化形状（`ref` 不嵌套、
+  `else` 只打字符串、`oilist` 分隔符显式），审计层逐位比对钩子实参（L3b），
+  缺口登记成有期限、可销账的债。三条缺口在同一轮被三条产生式关掉，
+  语料到 44 个方言、1358 个 op、0 个 open 缺口。
 
 - 分析基线：worktree `/home/ubuntu/llvm/trees/pr-ctpop`，分支 `research/mlir`。
-  01–09 基于 `5f7f36636abe`；10–23 基于 `53a80edfeb2e`（2026-11-27）。
+  01–09 基于 `5f7f36636abe`；10–24 基于 `53a80edfeb2e`（2026-11-27）。
 - 所有 `file:line` 引用均以对应提交为准；上游演进后行号可能漂移，函数名相对稳定。
 - 01–09 的范围以 `mlir/lib/AsmParser/` 为中心；为解释边界，少量引用
   `mlir/include/mlir/Parser/Parser.h`、`mlir/include/mlir/AsmParser/*`、
   `mlir/include/mlir/IR/OpImplementation.h` 与 `mlir/lib/Parser/Parser.cpp`。
-- 10–23 的范围是 `mlir/include`、`mlir/lib`、`mlir/python` 下的 412 个 `.td`
+- 10–24 的范围是 `mlir/include`、`mlir/lib`、`mlir/python` 下的 412 个 `.td`
   （不含 `mlir/test`、`mlir/examples`、`mlir/unittests`）；14 章的样例在
-  `sketch/`，15–23 章的语料在 `corpus/`，v1 归档在 `design-first-v1/`。
+  `sketch/`，15–24 章的语料在 `corpus/`，v1 归档在 `design-first-v1/`。
 
 ## 章节
 
@@ -61,7 +65,7 @@
 | [22-corpus-round-seven.md](22-corpus-round-seven.md) | 第七轮语料：amdgpu/openmp/smt（173 op），0 条产生式；`speculatable` 升级进核心（40→41）、本地词表 18→17；openmp 70 个子句钩子 + 0 个本地事实；共享名字空间的检查缺陷 |
 | [21-corpus-round-six.md](21-corpus-round-six.md) | 第六轮语料：ub/ptr/shard/arm_sve，81 个 op 换 0 条 op 形状产生式；`same_type` 升级进核心（39→40）、本地词表 19→18；`qualified` 第三个见证落地为文本产生式（11 处使用点）；空负载属性、符号非类型、Generic 是契约 |
 | [23-corpus-round-eight.md](23-corpus-round-eight.md) | 第八轮：三条恒真检查修成会失败、覆盖审计量出 258 个缺失 op 并补账、带引号的 `name`、schema 名全局解析缺陷 |
-| [24-escape-licenses.md](24-escape-licenses.md) | 逃逸点许可证：断言与描述分离、五通道四元组、L0–L6 会失败的证据检查、`Gap(name)` 债务与三份登记表、16 处假 Custom 的处置、预算与 22 个设计分歧 |
+| [24-escape-licenses.md](24-escape-licenses.md) | 逃逸点契约：断言与描述分离、五通道许可证、设计规则 E0–E7（封闭集/单通道/可证伪/实参即范围/不组合/有期限/不带语义）、范围细则 S1–S7、L0–L9 与 17 例 selftest、三条缺口关闭（`ref`/`oilist<sep>`/`else`）、分方言预算账本 |
 
 ## 一页结论
 
@@ -223,8 +227,8 @@
 | `ods-asm-format.y` | `assemblyFormat` 子语言文法（bison，0 冲突） |
 | `14-dialect-domain-model.md` | 领域模型：定义/生成边界、三投影、trait 分类、约束语义、schema refinement、v1 逐项判决 |
 | `15-corpus-driven-grammar.md` | 语料优先：方法论、语料统计、见证表、8 个修正、机械核对、与 v1/v2 差异、下一轮语料 |
-| `corpus/*.dialect` | 39 个方言源程序（13928 行）：1171 op、158 schema、95 enum、181 constraint、27 attr_def、68 type_def；39/39 覆盖缺口为 0 |
-| `dialect-grammar.y` | 从语料归纳的文法（bison，58 条规则 / 142 条产生式，0 冲突，`39/39 parse OK`），含 `Gap(name)` 与 6 个 `Gap` 使用点 |
+| `corpus/*.dialect` | 44 个方言源程序：1358 op；44/44 覆盖缺口为 0，0 个 open 缺口 |
+| `dialect-grammar.y` | 从语料归纳的文法（bison，151 条产生式，0 冲突，`44/44 parse OK`），含 `ref(...)`、`else`、`oilist<sep>`、`Gap(name)` |
 | `16-corpus-round-two.md` | 第二轮：10 项扩展、谓词组合、region 约束搬家、软关键字、见证表、机械核对 |
 | `corpus/gpu.dialect` | gpu：launch/module/func、内建 id/dim、barrier/printf/shuffle/all_reduce/subgroup_reduce/warp（18 op） |
 | `corpus/linalg.dialect` | linalg：`Structured` schema + 5 个命名算符 + generic/map/reduce/transpose/broadcast/index/yield（12 op） |

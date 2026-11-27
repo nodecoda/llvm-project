@@ -1,0 +1,711 @@
+/// wasmssa —— WebAssembly 的 SSA 形式方言建模（corpus，不是最终语法）。
+///
+/// 领域：把 WebAssembly 的栈式指令提升成 SSA。符号层有函数、全局、内存与表，
+/// 每种都有定义与导入两种形态；数据层有局部变量声明与读写；控制层有 block、
+/// loop、if 三个标签层级以及 block_return/branch_if；此外是 Wasm 的标量数值
+/// 指令：整数/浮点二元运算、比较、移位旋转、类型转换、一元数值运算，以及 select。
+/// 每个上游 op 基本对应一条 Wasm 指令，区别只是用 SSA 操作数取代了栈。
+///
+/// 类型：按 WasmSSATypes.td 建模 value_type = integer | fp | vec | ref，其中
+/// integer = i32 | i64、fp = f32 | f64、vec = i128、ref = funcref | externref。
+/// local 是带元素类型参数的局部引用；limit、tabletype 是另外两个参数化类型；
+/// funcref、externref 无参数，打印为裸类型名。共五个真实 TypeDef。
+///
+/// 文本通道：80 个 op 中 77 个块格式、3 个 Custom（func、global、import_global）、
+/// 0 个 Generic。块格式逐字转写上游 assemblyFormat；if 的 else 区沿用上游
+/// custom<ElseRegion> 钩子。上游没有任何 op 打开固有属性打印，故本文件不使用
+/// prop-dict；也没有使用 Gap(...)。
+///
+/// schema：12 个 schema 收敛 56 个同形 op（BlockLike、Binary{Integer,FP,}Numeric、
+/// Cmp{Integer,FP,}Numeric、ShiftRotate、Conversion、Unary{FP,Integer}、ExtendI32）；
+/// 其余 24 个 op 的文本各自不同，直接写在 op 上。同名部件在不同 schema 里按
+/// 上游类型域收窄（integer/fp/numeric），不跨类型域硬塞一个 schema。
+///
+/// 事实依据：只用核心词表，不引入方言本地事实。
+///   - Terminator -> terminator；ReturnLike -> return_like；Pure -> pure；
+///     ConstantExprOpTrait -> constant_like（const、global_get）；
+///     Symbol/SymbolName -> symbol/symbol_visibility；
+///     IsolatedFromAbove/AffineScope/AutomaticAllocationScope ->
+///     isolated_from_above/affine_scope/automatic_allocation_scope；
+///     AllTypesMatch -> 相邻二元 same_type（三部件写两对）；
+///     SizedRegion<1> -> single_block（global 的 initializer）；
+///     InferTypeOpInterface 的 inferReturnTypes -> unwraps_element_type(localVar)
+///     （local_get/local_tee）；local_tee verifier -> same_type(value, result)；
+///     ExtendLowBitsS verifier -> positive(bitsToTake)。
+///   没有 AllElementTypesMatch，故本文件不需要 same_element_type。
+///
+/// 名为 type 的部件在块格式里改名为 type_attr（local、table、import_table、
+/// import_func）：Assembly 模式里 type 是保留 token，直接引用会与 type(...) 冲突；
+/// 文本本身仍是逐字的 "of" "type" 或相应的类型位置。
+/// if 的 $if 区改名为 then_region（if 在 Assembly 模式是关键字），$else 改名为
+/// else_region；两段 region 的文本位置不变。
+///
+/// 仅写进 Doc 的语义（文法没有对应谓词）：
+///   - func 的 verifyBody：入口块参数个数与函数类型一致，且参数是 local ref，
+///     其元素类型与函数类型输入一致；exported 对应 public 可见性，嵌套为 nested。
+///   - global 的 verifier：initializer 单块的终结符必须是 return；exported 语义同上。
+///   - global_get/global_set 的符号解析：常量上下文里的 global_get 只能引用
+///     不可变 import；global_set 的目标必须可变且值类型与全局类型一致。
+///   - import_func/import_global/import_mem/import_table 的可见性固定为 nested。
+///   - local 的结果是包住 type 属性的 local ref；local_get/local_tee 的结果是
+///     local ref 的元素类型；local_set 要求 local ref 元素类型等于 value 类型，
+///     local_tee 还要求 value 类型等于结果类型。
+///   - reinterpret 要求输入/输出类型不同且位宽相同。
+///   - return 要求操作数个数与类型匹配外层 func 的结果。
+///   - extend 的 bitsToTake 只能是 8、16 或 32，且小于输入位宽。
+///   - branch_if 的 exitLevel 是 ui32；底层按无符号层级解释。
+///
+/// GAP：无。未使用 Gap(...)，现有三条登记缺口（optional_default、ref_type、
+/// oilist_separator）的见证与登记表不受本文件影响。
+
+dialect wasmssa {
+  Doc "WebAssembly in SSA form: symbols, locals, structured labels, and scalar numeric instructions.";
+
+  // ---- 类型域 ----
+
+  constraint integer = i32 | i64;
+  constraint fp = f32 | f64;
+  constraint numeric = integer | fp;
+  constraint vec = i128;
+  constraint ref = funcref | externref;
+  constraint value_type = numeric | vec | ref;
+
+  type_def funcref {
+    Doc "Opaque function reference type (!wasmssa<funcref>); no parameters, printed as a bare type name.";
+  }
+
+  type_def externref {
+    Doc "Opaque external reference type (!wasmssa<externref>); no parameters, printed as a bare type name.";
+  }
+
+  type_def limit {
+    Doc "Memory/table size limit (!wasmssa<limit[min:max]>); max is optional, so an unbounded limit prints as [min:].";
+    Parameters (min: i32, max: optional<i32>);
+    Assembly   { "[" min ":" if max { max } "]" }
+  }
+
+  type_def local {
+    Doc "Reference to a Wasm local (!wasmssa<local ref to T>); parameterized by the stored value type.";
+    Parameters (elementType: value_type);
+    Assembly   { "ref" "to" elementType }
+  }
+
+  type_def tabletype {
+    Doc "Table type (!wasmssa<tabletype R L>): an element reference type plus a size limit.";
+    Parameters (reference: ref, limits: limit);
+    Assembly   { reference limits }
+  }
+
+  // ---- 共享骨架 ----
+
+  // block 与 loop 的文本完全相同，只有标签语义与 Doc 不同。
+  schema BlockLike {
+    Doc "Common shape of the structured label-level operations: optional inputs, a body region, and a successor target.";
+    Operands   (inputs: variadic<value_type>);
+    Regions    (body: region);
+    Successors (target: successor);
+    Properties [terminator];
+    Assembly   { if inputs { "(" inputs ")" ":" type(inputs) }
+                 attr-dict ":" body ">" target }
+  }
+
+  // 二元数值运算：lhs rhs : type(lhs) attr-dict。按上游类型域分三组。
+  schema BinaryIntegerNumeric {
+    Doc "Integer binary numeric operation; lhs, rhs and result share one integer type.";
+    Operands   (lhs: integer, rhs: integer);
+    Results    (result: integer);
+    Properties [same_type(lhs, rhs), same_type(rhs, result)];
+    Assembly   { lhs rhs ":" type(lhs) attr-dict }
+  }
+
+  schema BinaryFPNumeric {
+    Doc "Floating-point binary numeric operation; lhs, rhs and result share one floating type.";
+    Operands   (lhs: fp, rhs: fp);
+    Results    (result: fp);
+    Properties [same_type(lhs, rhs), same_type(rhs, result)];
+    Assembly   { lhs rhs ":" type(lhs) attr-dict }
+  }
+
+  schema BinaryNumeric {
+    Doc "Integer-or-float binary numeric operation; lhs, rhs and result share one numeric type.";
+    Operands   (lhs: numeric, rhs: numeric);
+    Results    (result: numeric);
+    Properties [same_type(lhs, rhs), same_type(rhs, result)];
+    Assembly   { lhs rhs ":" type(lhs) attr-dict }
+  }
+
+  // 二元比较：lhs rhs : type(lhs) -> type(result)，结果固定 i32。
+  schema CmpInteger {
+    Doc "Integer binary comparison producing i32; lhs and rhs share one integer type.";
+    Operands   (lhs: integer, rhs: integer);
+    Results    (result: i32);
+    Properties [same_type(lhs, rhs)];
+    Assembly   { lhs rhs ":" type(lhs) "->" type(result) attr-dict }
+  }
+
+  schema CmpFP {
+    Doc "Floating-point binary comparison producing i32; lhs and rhs share one floating type.";
+    Operands   (lhs: fp, rhs: fp);
+    Results    (result: i32);
+    Properties [same_type(lhs, rhs)];
+    Assembly   { lhs rhs ":" type(lhs) "->" type(result) attr-dict }
+  }
+
+  schema CmpNumeric {
+    Doc "Integer-or-float binary comparison producing i32; lhs and rhs share one numeric type.";
+    Operands   (lhs: numeric, rhs: numeric);
+    Results    (result: i32);
+    Properties [same_type(lhs, rhs)];
+    Assembly   { lhs rhs ":" type(lhs) "->" type(result) attr-dict }
+  }
+
+  // 移位与旋转：val by bits bits : type(val) attr-dict。
+  schema ShiftRotate {
+    Doc "Integer shift or rotate; val, bits and result share one integer type.";
+    Operands   (val: integer, bits: integer);
+    Results    (result: integer);
+    Properties [same_type(val, bits), same_type(bits, result)];
+    Assembly   { val "by" bits "bits" ":" type(val) attr-dict }
+  }
+
+  // 十个转换 op 共用 input : type(input) to type(result) 文本，各自的类型域在 op 上收窄。
+  schema Conversion {
+    Doc "Common text of the value conversions; each op narrows input and result to its actual type pair.";
+    Operands   (input: any);
+    Results    (result: any);
+    Assembly   { input ":" type(input) "to" type(result) attr-dict }
+  }
+
+  // 一元浮点/整数数值运算：src : type(src) attr-dict。
+  schema UnaryFP {
+    Doc "Unary floating-point numeric operation; src and result share one floating type.";
+    Operands   (src: fp);
+    Results    (result: fp);
+    Properties [same_type(src, result)];
+    Assembly   { src ":" type(src) attr-dict }
+  }
+
+  schema UnaryInteger {
+    Doc "Unary integer numeric operation; src and result share one integer type.";
+    Operands   (src: integer);
+    Results    (result: integer);
+    Properties [same_type(src, result)];
+    Assembly   { src ":" type(src) attr-dict }
+  }
+
+  // 两个 i32 -> i64 扩展 op 的文本相同。
+  schema ExtendI32 {
+    Doc "Sign or zero extend i32 to i64; the two ops differ only in their extension semantics.";
+    Operands   (input: i32);
+    Results    (result: i64);
+    Assembly   { input "to" type(result) attr-dict }
+  }
+
+  // ---- 标签层级与控制流 ----
+
+  op block from BlockLike {
+    Doc "Create a nesting level whose label sits at its exit; branches targeting the label leave the level.";
+    Implements [LabelLevelOpInterface];
+  }
+
+  op loop from BlockLike {
+    Doc "Create a nesting level whose label sits at the region entry; branches targeting the label re-enter the loop.";
+    Implements [LabelLevelOpInterface];
+  }
+
+  op block_return {
+    Doc "Escape the current nesting level and return control to its successor, optionally transferring inputs.";
+    Operands   (inputs: variadic<value_type>);
+    Properties [terminator];
+    Implements [LabelBranchingOpInterface];
+    Assembly   { if inputs { ":" type(inputs) } attr-dict }
+  }
+
+  op branch_if {
+    Doc "Branch to the level given by the non-zero condition, transferring inputs, else fall through to elseSuccessor; exitLevel is ui32.";
+    Operands   (condition: i32, inputs: variadic<value_type>);
+    Attributes (exitLevel: i32);
+    Successors (elseSuccessor: successor);
+    Properties [terminator];
+    Implements [LabelBranchingOpInterface];
+    Assembly   { condition "to" "level" exitLevel
+                 if inputs { "with" "args" "(" inputs ":" type(inputs) ")" }
+                 "else" elseSuccessor attr-dict }
+  }
+
+  op if {
+    Doc "Execute then_region when the condition is non-zero and else_region otherwise; both regions are optional targets of the enclosing level. else_region is printed through the upstream ElseRegion hook.";
+    Operands   (condition: i32, inputs: variadic<value_type>);
+    Regions    (then_region: region, else_region: region);
+    Successors (target: successor);
+    Properties [terminator];
+    Implements [LabelLevelOpInterface];
+    Assembly   { condition if inputs { "(" inputs ")" ":" type(inputs) }
+                 attr-dict ":" then_region custom<ElseRegion>(else_region)
+                 ">" target }
+  }
+
+  // ---- 常量、函数与调用 ----
+
+  op const {
+    Doc "Produce a constant value; the typed attribute carries both the literal and its type, and the result has the same type.";
+    Attributes (value: any);
+    Results    (result: numeric);
+    Properties [same_type(value, result), constant_like];
+    Assembly   { value attr-dict }
+  }
+
+  op func {
+    Doc "Wasm function definition or declaration; the body is absent for an external function. exported selects public visibility, otherwise the symbol is nested. Entry block arguments are local refs whose element types match the function type.";
+    Attributes (sym_name: string,
+                functionType: function_type,
+                arg_attrs: optional<array<dictionary>>,
+                res_attrs: optional<array<dictionary>>,
+                exported: optional<unit>);
+    Regions    (body: region);
+    Properties [affine_scope, automatic_allocation_scope, isolated_from_above,
+                symbol, symbol_visibility];
+    Implements [FunctionOpInterface];
+    Assembly Custom;
+  }
+
+  op call {
+    Doc "Call a Wasm function by symbol, passing operands and returning results; the functional type gives operand and result types.";
+    Operands   (operands: variadic<value_type>);
+    Results    (results: variadic<value_type>);
+    Attributes (callee: flat_symbol_ref);
+    Assembly   { callee if operands { "(" operands ")" } attr-dict
+                 ":" functional-type(operands, results) }
+  }
+
+  op import_func {
+    Doc "Import a function from another module; the symbol is always nested, and arg_attrs/res_attrs print only when present.";
+    Attributes (sym_name: string,
+                moduleName: string,
+                importName: string,
+                type_attr: function_type,
+                arg_attrs: optional<array<dictionary>>,
+                res_attrs: optional<array<dictionary>>);
+    Properties [symbol, symbol_visibility];
+    Implements [CallableOpInterface, ImportOpInterface];
+    Assembly   { importName "from" moduleName "as" sym_name ":" type_attr
+                 if arg_attrs { "arg_attrs" "=" arg_attrs }
+                 if res_attrs { "res_attrs" "=" res_attrs }
+                 attr-dict }
+  }
+
+  // ---- 全局、内存与表 ----
+
+  op global {
+    Doc "Wasm global definition; the single-block initializer must end with return, and only constant instructions are allowed inside. exported selects public visibility, otherwise nested.";
+    Attributes (sym_name: string,
+                type: value_type,
+                isMutable: optional<unit>,
+                exported: optional<unit>);
+    Regions    (initializer: region [single_block]);
+    Properties [affine_scope, automatic_allocation_scope, isolated_from_above,
+                symbol, symbol_visibility];
+    Assembly Custom;
+  }
+
+  op import_global {
+    Doc "Import a global from another module; the symbol is always nested, and isMutable selects a writable import.";
+    Attributes (sym_name: string,
+                moduleName: string,
+                importName: string,
+                type: value_type,
+                isMutable: optional<unit>);
+    Properties [symbol, symbol_visibility];
+    Implements [ImportOpInterface];
+    Assembly Custom;
+  }
+
+  op global_get {
+    Doc "Read the value of a global; in a constant context the verifier requires an immutable imported global.";
+    Attributes (global: flat_symbol_ref);
+    Results    (global_val: value_type);
+    Properties [constant_like];
+    Implements [SymbolUserOpInterface];
+    Assembly   { global attr-dict ":" type(global_val) }
+  }
+
+  op global_set {
+    Doc "Write a mutable global; the verifier requires a mutable target and a value type equal to the global type.";
+    Operands   (value: value_type);
+    Attributes (global: flat_symbol_ref);
+    Implements [SymbolUserOpInterface];
+    Assembly   { global "to" value ":" type(value) attr-dict }
+  }
+
+  op memory {
+    Doc "Wasm memory definition with a limit type; exported selects public visibility, otherwise nested.";
+    Attributes (sym_name: string, limits: limit, exported: optional<unit>);
+    Properties [symbol, symbol_visibility];
+    Assembly   { if exported { "exported" } sym_name limits attr-dict }
+  }
+
+  op import_mem {
+    Doc "Import a memory from another module; the symbol is always nested.";
+    Attributes (sym_name: string,
+                moduleName: string,
+                importName: string,
+                limits: limit);
+    Properties [symbol, symbol_visibility];
+    Implements [ImportOpInterface];
+    Assembly   { importName "from" moduleName "as" sym_name limits attr-dict }
+  }
+
+  op table {
+    Doc "Wasm table definition with a table type; exported selects public visibility, otherwise nested.";
+    Attributes (sym_name: string, type_attr: tabletype, exported: optional<unit>);
+    Properties [symbol, symbol_visibility];
+    Assembly   { if exported { "exported" } sym_name type_attr attr-dict }
+  }
+
+  op import_table {
+    Doc "Import a table from another module; the symbol is always nested.";
+    Attributes (sym_name: string,
+                moduleName: string,
+                importName: string,
+                type_attr: tabletype);
+    Properties [symbol, symbol_visibility];
+    Implements [ImportOpInterface];
+    Assembly   { importName "from" moduleName "as" sym_name type_attr attr-dict }
+  }
+
+  op return {
+    Doc "Return from the current function frame, optionally with values; the verifier matches operand count and types against the enclosing func.";
+    Operands   (operands: variadic<value_type>);
+    Properties [terminator, return_like];
+    Assembly   { attr-dict if operands { ":" type(operands) } }
+  }
+
+  // ---- 局部变量 ----
+
+  op local {
+    Doc "Declare a local variable; the result is a local ref wrapping the given value type.";
+    Attributes (type_attr: value_type);
+    Results    (result: local);
+    Implements [InferTypeOpInterface];
+    Assembly   { "of" "type" type_attr attr-dict }
+  }
+
+  op local_get {
+    Doc "Read a local variable; the result is the element type of the local ref.";
+    Operands   (localVar: local);
+    Results    (result: value_type);
+    Properties [unwraps_element_type(localVar)];
+    Implements [InferTypeOpInterface];
+    Assembly   { localVar ":" type(localVar) attr-dict }
+  }
+
+  op local_set {
+    Doc "Write a local variable; the verifier requires the local ref element type to equal the value type.";
+    Operands   (localVar: local, value: value_type);
+    Assembly   { localVar ":" type(localVar) "to" value ":" type(value) attr-dict }
+  }
+
+  op local_tee {
+    Doc "Write a local variable and return the written value; the verifier requires the local element type, the value type and the result type to agree.";
+    Operands   (localVar: local, value: value_type);
+    Results    (result: value_type);
+    Properties [unwraps_element_type(localVar), same_type(value, result)];
+    Implements [InferTypeOpInterface];
+    Assembly   { localVar ":" type(localVar) "to" value ":" type(value) attr-dict }
+  }
+
+  // ---- select ----
+
+  op select {
+    Doc "Choose true_value when the condition is non-zero and false_value otherwise; condition is i32, and both values and the result share one type.";
+    Operands   (true_value: value_type, false_value: value_type, condition: i32);
+    Results    (result: value_type);
+    Properties [pure, same_type(true_value, false_value),
+                same_type(false_value, result)];
+    Assembly   { condition "," true_value "," false_value attr-dict
+                 ":" type(result) }
+  }
+
+  // ---- 二元数值：整数 ----
+
+  op div_ui from BinaryIntegerNumeric {
+    Doc "Divide two integers interpreted as unsigned.";
+  }
+
+  op div_si from BinaryIntegerNumeric {
+    Doc "Divide two integers interpreted as signed.";
+  }
+
+  op rem_ui from BinaryIntegerNumeric {
+    Doc "Unsigned integer remainder.";
+  }
+
+  op rem_si from BinaryIntegerNumeric {
+    Doc "Signed integer remainder.";
+  }
+
+  // ---- 二元数值：浮点 ----
+
+  op div from BinaryFPNumeric {
+    Doc "Floating-point division.";
+  }
+
+  op min from BinaryFPNumeric {
+    Doc "Floating-point minimum.";
+  }
+
+  op max from BinaryFPNumeric {
+    Doc "Floating-point maximum.";
+  }
+
+  op copysign from BinaryFPNumeric {
+    Doc "Copy the sign of the second floating-point value onto the first.";
+  }
+
+  // ---- 二元数值：整数或浮点 ----
+
+  op add from BinaryNumeric {
+    Doc "Add two numeric values.";
+  }
+
+  op and from BinaryNumeric {
+    Doc "Bitwise AND of two numeric values.";
+  }
+
+  op mul from BinaryNumeric {
+    Doc "Multiply two numeric values.";
+  }
+
+  op or from BinaryNumeric {
+    Doc "Bitwise OR of two numeric values.";
+  }
+
+  op sub from BinaryNumeric {
+    Doc "Subtract two numeric values.";
+  }
+
+  op xor from BinaryNumeric {
+    Doc "Bitwise XOR of two numeric values.";
+  }
+
+  // ---- 二元比较：整数 ----
+
+  op lt_si from CmpInteger {
+    Doc "Signed integer less-than; result is i32.";
+  }
+
+  op lt_ui from CmpInteger {
+    Doc "Unsigned integer less-than; result is i32.";
+  }
+
+  op le_si from CmpInteger {
+    Doc "Signed integer less-or-equal; result is i32.";
+  }
+
+  op le_ui from CmpInteger {
+    Doc "Unsigned integer less-or-equal; result is i32.";
+  }
+
+  op gt_si from CmpInteger {
+    Doc "Signed integer greater-than; result is i32.";
+  }
+
+  op gt_ui from CmpInteger {
+    Doc "Unsigned integer greater-than; result is i32.";
+  }
+
+  op ge_si from CmpInteger {
+    Doc "Signed integer greater-or-equal; result is i32.";
+  }
+
+  op ge_ui from CmpInteger {
+    Doc "Unsigned integer greater-or-equal; result is i32.";
+  }
+
+  // ---- 二元比较：浮点 ----
+
+  op lt from CmpFP {
+    Doc "Floating-point less-than; result is i32.";
+  }
+
+  op le from CmpFP {
+    Doc "Floating-point less-or-equal; result is i32.";
+  }
+
+  op gt from CmpFP {
+    Doc "Floating-point greater-than; result is i32.";
+  }
+
+  op ge from CmpFP {
+    Doc "Floating-point greater-or-equal; result is i32.";
+  }
+
+  // ---- 二元比较：整数或浮点 ----
+
+  op eq from CmpNumeric {
+    Doc "Equality of two numeric values; result is i32.";
+  }
+
+  op ne from CmpNumeric {
+    Doc "Inequality of two numeric values; result is i32.";
+  }
+
+  // ---- 移位与旋转 ----
+
+  op shl from ShiftRotate {
+    Doc "Shift the first integer left by the number of bits given by the second.";
+  }
+
+  op shr_s from ShiftRotate {
+    Doc "Arithmetic right shift, filling vacated high bits with the sign bit.";
+  }
+
+  op shr_u from ShiftRotate {
+    Doc "Logical right shift, filling vacated high bits with zero.";
+  }
+
+  op rotl from ShiftRotate {
+    Doc "Rotate the first integer left by the given number of bits.";
+  }
+
+  op rotr from ShiftRotate {
+    Doc "Rotate the first integer right by the given number of bits.";
+  }
+
+  // ---- 类型转换 ----
+
+  op convert_u from Conversion {
+    Doc "Convert an unsigned integer to floating point, rounding to nearest with ties to even.";
+    Operands   (input: integer);
+    Results    (result: fp);
+  }
+
+  op convert_s from Conversion {
+    Doc "Convert a signed integer to floating point, rounding to nearest with ties to even.";
+    Operands   (input: integer);
+    Results    (result: fp);
+  }
+
+  op trunc_si from Conversion {
+    Doc "Truncate floating point toward zero to a signed integer; traps on NaN, infinity or out-of-range values.";
+    Operands   (input: fp);
+    Results    (result: integer);
+  }
+
+  op trunc_ui from Conversion {
+    Doc "Truncate floating point toward zero to an unsigned integer; traps on NaN, infinity, negative or out-of-range values.";
+    Operands   (input: fp);
+    Results    (result: integer);
+  }
+
+  op trunc_sat_si from Conversion {
+    Doc "Saturating truncation of floating point to a signed integer.";
+    Operands   (input: fp);
+    Results    (result: integer);
+  }
+
+  op trunc_sat_ui from Conversion {
+    Doc "Saturating truncation of floating point to an unsigned integer.";
+    Operands   (input: fp);
+    Results    (result: integer);
+  }
+
+  op demote from Conversion {
+    Doc "Convert f64 to f32.";
+    Operands   (input: f64);
+    Results    (result: f32);
+  }
+
+  op promote from Conversion {
+    Doc "Convert f32 to f64.";
+    Operands   (input: f32);
+    Results    (result: f64);
+  }
+
+  op wrap from Conversion {
+    Doc "Wrap i64 to i32 by taking the value modulo 2^32.";
+    Operands   (input: i64);
+    Results    (result: i32);
+  }
+
+  op reinterpret {
+    Doc "Bit-cast a numeric value to another numeric type of the same width; the verifier requires distinct input and result types with equal bit width.";
+    Operands   (input: numeric);
+    Results    (result: numeric);
+    Assembly   { input ":" type(input) "as" type(result) attr-dict }
+  }
+
+  // ---- i32 扩展 ----
+
+  op extend_i32_s from ExtendI32 {
+    Doc "Sign extend i32 to i64.";
+  }
+
+  op extend_i32_u from ExtendI32 {
+    Doc "Zero extend i32 to i64.";
+  }
+
+  // ---- 低 bits 扩展 ----
+
+  op extend {
+    Doc "Sign extend the low bytes of an integer without changing its type; bitsToTake must be 8, 16 or 32 and smaller than the input width.";
+    Operands   (input: integer);
+    Attributes (bitsToTake: integer [positive]);
+    Results    (result: integer);
+    Properties [same_type(input, result)];
+    Assembly   { bitsToTake "low" "bits" "from" input ":" type(input) attr-dict }
+  }
+
+  // ---- 一元数值：浮点 ----
+
+  op abs from UnaryFP {
+    Doc "Floating-point absolute value.";
+  }
+
+  op ceil from UnaryFP {
+    Doc "Floating-point ceiling.";
+  }
+
+  op floor from UnaryFP {
+    Doc "Floating-point floor.";
+  }
+
+  op neg from UnaryFP {
+    Doc "Floating-point negation.";
+  }
+
+  op sqrt from UnaryFP {
+    Doc "Floating-point square root.";
+  }
+
+  op trunc from UnaryFP {
+    Doc "Floating-point truncation toward zero.";
+  }
+
+  op nearest from UnaryFP {
+    Doc "Round floating point to the nearest integer, ties to even.";
+  }
+
+  // ---- 一元数值：整数 ----
+
+  op ctz from UnaryInteger {
+    Doc "Count trailing zero bits of an integer.";
+  }
+
+  op clz from UnaryInteger {
+    Doc "Count leading zero bits of an integer.";
+  }
+
+  op popcnt from UnaryInteger {
+    Doc "Population count of an integer.";
+  }
+
+  // ---- 零值检查 ----
+
+  op eqz {
+    Doc "Check whether an integer is zero; result is i32.";
+    Operands   (input: integer);
+    Results    (result: i32);
+    Assembly   { input ":" type(input) "->" type(result) attr-dict }
+  }
+}

@@ -387,9 +387,11 @@ dialect amdgpu {
     Results    (res: fp8_quad);
     Attributes (wordIndex: i32 [non_negative]);
     Properties [pure, operand_segments_by_attribute];
-    Assembly   { Gap(optional_default) attr-dict sourceA "," sourceB "into" existing
+    // 上游的可选组带缺省分支：操作数缺失时打印字面量 undef。
+    Assembly   { attr-dict sourceA "," if sourceB { sourceB } else { "undef" }
+               "into" if existing { existing } else { "undef" }
                "[" "word" wordIndex "]" ":" type(sourceA) "to" type(res)
-               "into" type(existing) }
+               if existing { "into" type(existing) } }
   }
 
   // GAP: 同 packed_trunc_2xfp8，existing 缺失时上游打印 undef。
@@ -400,9 +402,9 @@ dialect amdgpu {
     Results    (res: scaled_trunc_result);
     Attributes (index: i32 [non_negative]);
     Properties [pure];
-    Assembly   { Gap(optional_default) attr-dict source "into" existing "[" index "]"
-               "," scale ":" type(source) "to" type(res)
-               "into" type(existing) }
+    Assembly   { attr-dict source "into" if existing { existing } else { "undef" }
+               "[" index "]" "," scale ":" type(source) "to" type(res)
+               if existing { "into" type(existing) } }
   }
 
   // GAP: 同 packed_trunc_2xfp8，existing 缺失时上游打印 undef。
@@ -413,9 +415,10 @@ dialect amdgpu {
     Results    (res: fp8_quad);
     Attributes (storeIndex: i32 [non_negative]);
     Properties [pure];
-    Assembly   { Gap(optional_default) attr-dict source "+" stochiasticParam
-               "into" existing "[" storeIndex "]" ":" type(source) "to" type(res)
-               "into" type(existing) }
+    Assembly   { attr-dict source "+" stochiasticParam
+               "into" if existing { existing } else { "undef" }
+               "[" storeIndex "]" ":" type(source) "to" type(res)
+               if existing { "into" type(existing) } }
   }
 
   // ---- 原始缓冲与胖缓冲 ----

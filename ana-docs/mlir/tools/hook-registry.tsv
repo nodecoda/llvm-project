@@ -1,4 +1,4 @@
-hook	dialects	reason
-PrivateClause	omp	上游把 private 子句并入 custom<PrivateReductionRegion>(region, ...)；语料按子句拆分，故用本地标签
-ReductionClause	omp	上游把 reduction 子句并入 custom<PrivateReductionRegion>(region, ...)；语料按子句拆分，故用本地标签
-TaskReductionClause	omp	上游 task_reduction 是 clause 类，没有同名 custom<> 钩子
+hook	dialects	scope	reason	retire_when
+PrivateClause	omp	private 子句的 region 与变量列表	上游把 private 子句并入 custom<PrivateReductionRegion>(region, ...)；语料按子句拆分，故用本地标签	上游拆出独立的 private 钩子，或本 DSL 支持子句级参数
+ReductionClause	omp	reduction 子句的 region、变量与操作符	上游把 reduction 子句并入 custom<PrivateReductionRegion>(region, ...)；语料按子句拆分，故用本地标签	上游拆出独立的 reduction 钩子，或本 DSL 支持子句级参数
+TaskReductionClause	omp	task_reduction 子句	上游 task_reduction 是 clause 类，没有同名 custom<> 钩子	上游给出 task_reduction 的独立格式

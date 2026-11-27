@@ -23,7 +23,7 @@ INC = ROOT.parent.parent / "mlir/include/mlir/Dialect"
 
 # dialect keyword -> TD files (relative to mlir/include/mlir/Dialect)
 TD = {
-    "acc": ["OpenACC/IR/OpenACC.td"],
+    "acc": ["OpenACC/OpenACCOps.td", "OpenACC/OpenACCCGOps.td"],
     "affine": ["Affine/IR/AffineOps.td"],
     "amdgpu": ["AMDGPU/IR/AMDGPUOps.td"],
     "arith": ["Arith/IR/ArithOps.td"],
@@ -32,8 +32,10 @@ TD = {
     "arm_sve": ["ArmSVE/IR/ArmSVE.td"],
     "async": ["Async/IR/AsyncOps.td"],
     "bufferization": ["Bufferization/IR/BufferizationOps.td"],
+    "builtin": ["../IR/BuiltinOps.td"],
     "cf": ["ControlFlow/IR/ControlFlowOps.td"],
     "complex": ["Complex/IR/ComplexOps.td"],
+    "dlti": ["DLTI/DLTIAttrs.td"],
     "emitc": ["EmitC/IR/EmitC.td"],
     "func": ["Func/IR/FuncOps.td"],
     "gpu": ["GPU/IR/GPUOps.td"],

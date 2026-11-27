@@ -1,4 +1,4 @@
-gap	witness	missing	status
-optional_default	amdgpu.packed_trunc_2xfp8,amdgpu.packed_scaled_trunc,amdgpu.packed_stoch_round_fp8	($x^):(`undef`)? —— 缺省时打印固定字面量	open
-ref_type	cf.switch,pdl_interp.create_range	custom<...> 实参里的 ref(type($x)) 形态	open
-oilist_separator	func.call_indirect	oilist<sep>(...) 的分隔符	open
+gap	scope	witness	missing	retire_when	closed_by	status
+optional_default	optional-group		($x^):(`undef`)? —— 缺省时打印固定字面量	出现第二个方言需要"缺失时打印字面量"，或已有见证逼出 else 分支	自 2026-11-28 起由 else_opt 表达：amdgpu.packed_trunc_2xfp8、packed_scaled_trunc、packed_stoch_round_fp8 三个见证	closed
+ref_type	hook-args		custom<...> 实参里的 ref(type($x)) / ref($x)	任一 op 的钩子实参出现 ref(...) 即加产生式	自 2026-11-28 起由 A_REF 表达：cf.switch、pdl_interp.create_range、gpu.launch_func	closed
+oilist_separator	oilist		oilist<sep>(...) 的分隔符	任一 op 用 oilist<sep> 即加可选首参	自 2026-11-28 起由 oilist_sep 表达：func.call_indirect	closed

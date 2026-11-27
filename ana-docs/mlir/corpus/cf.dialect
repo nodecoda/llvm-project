@@ -43,8 +43,10 @@ dialect cf {
     Successors (default_dest: successor, case_dests: variadic<successor>);
     Properties [terminator];
     Implements [BranchOpInterface];
-    Assembly   { Gap(ref_type) flag ":" type(flag) "," "["
-               custom<SwitchOpCases>(flag, default_dest, default_operands,
+    // 上游 custom<SwitchOpCases> 的首参是 ref(type(flag))：按字面打印
+    // flag 的类型，不派生。
+    Assembly   { flag ":" type(flag) "," "["
+               custom<SwitchOpCases>(ref(type(flag)), default_dest, default_operands,
                                      type(default_operands), case_values,
                                      case_dests, case_operands, type(case_operands))
                "]" attr-dict }

@@ -298,7 +298,8 @@ dialect omp {
                 depend_iterated_kinds: optional<task_depend_array>,
                 nowait: optional<unit>);
     Properties [operand_segments_by_attribute];
-    Assembly { oilist("depend" "(" custom<DependVarList>(depend_vars, depend_kinds, depend_iterated, depend_iterated_kinds) ")"
+    Assembly { oilist("depend" "(" custom<DependVarList>(depend_vars, type(depend_vars), depend_kinds,
+                                   depend_iterated, type(depend_iterated), depend_iterated_kinds) ")"
                     | "device" "(" device ":" type(device) ")"
                     | "if" "(" if_expr ")"
                     | "map_entries" "(" map_vars ":" type(map_vars) ")"
@@ -320,7 +321,8 @@ dialect omp {
     Properties [operand_segments_by_attribute];
     Assembly { interop_var ":" type(interop_var)
                if device { "device" "(" device ":" type(device) ")" }
-               oilist("depend" "(" custom<DependVarList>(depend_vars, depend_kinds, depend_iterated, depend_iterated_kinds) ")"
+               oilist("depend" "(" custom<DependVarList>(depend_vars, type(depend_vars), depend_kinds,
+                                   depend_iterated, type(depend_iterated), depend_iterated_kinds) ")"
                     | "nowait" nowait)
                attr-dict }
   }
@@ -634,7 +636,8 @@ dialect omp {
                 nowait: optional<unit>);
     Properties [operand_segments_by_attribute, memory_effect(read),
                 memory_effect(write)];
-    Assembly   { oilist("depend" "(" custom<DependVarList>(depend_vars, depend_kinds, depend_iterated, depend_iterated_kinds) ")"
+    Assembly   { oilist("depend" "(" custom<DependVarList>(depend_vars, type(depend_vars), depend_kinds,
+                                   depend_iterated, type(depend_iterated), depend_iterated_kinds) ")"
                       | "nowait" nowait)
                  attr-dict }
   }
@@ -835,7 +838,8 @@ dialect omp {
                       | "allocate" "(" custom<AllocateAndAllocator>(allocate_vars, allocator_vars) ")"
                         if allocate_alignments { "allocate_alignments" "(" allocate_alignments ")" }
                         if allocate_private_indices { "allocate_private_indices" "(" allocate_private_indices ")" }
-                      | "depend" "(" custom<DependVarList>(depend_vars, depend_kinds, depend_iterated, depend_iterated_kinds) ")"
+                      | "depend" "(" custom<DependVarList>(depend_vars, type(depend_vars), depend_kinds,
+                                   depend_iterated, type(depend_iterated), depend_iterated_kinds) ")"
                       | "final" "(" final ")"
                       | "if" "(" if_expr ")"
                       | "in_reduction" "(" custom<InReductionClause>(in_reduction_vars, in_reduction_byref, in_reduction_syms) ")"
@@ -988,7 +992,8 @@ dialect omp {
                  oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, allocator_vars) ")"
                         if allocate_alignments { "allocate_alignments" "(" allocate_alignments ")" }
                         if allocate_private_indices { "allocate_private_indices" "(" allocate_private_indices ")" }
-                      | "depend" "(" custom<DependVarList>(depend_vars, depend_kinds, depend_iterated, depend_iterated_kinds) ")"
+                      | "depend" "(" custom<DependVarList>(depend_vars, type(depend_vars), depend_kinds,
+                                   depend_iterated, type(depend_iterated), depend_iterated_kinds) ")"
                       | "device" "(" device ":" type(device) ")"
                       | "dyn_groupprivate" "(" custom<DynGroupprivateClause>(dyn_groupprivate_access_group, dyn_groupprivate_fallback, dyn_groupprivate_size) ")"
                       | "has_device_addr" "(" has_device_addr_vars ":" type(has_device_addr_vars) ")"
@@ -1338,7 +1343,10 @@ dialect omp {
     Regions    (region: region [min_blocks(1), implicit_terminator(yield)]);
     Properties [operand_segments_by_attribute];
     Assembly   { custom<IteratorHeader>(region, loop_lower_bounds,
-                                        loop_upper_bounds, loop_steps)
+                                        loop_upper_bounds, loop_steps,
+                                        type(loop_lower_bounds),
+                                        type(loop_upper_bounds),
+                                        type(loop_steps))
                  if loop_inclusive { "inclusive" }
                  "->" qualified(type(iterated)) attr-dict }
   }
@@ -1359,7 +1367,9 @@ dialect omp {
                  "interop_types" "(" interop_types ")"
                  if prefer_type { "prefer_type" "(" prefer_type ")" }
                  if device { "device" "(" device ":" type(device) ")" }
-                 oilist("depend" "(" custom<DependVarList>(depend_vars, depend_kinds, depend_iterated, depend_iterated_kinds) ")"
+                 oilist("depend" "(" custom<DependVarList>(depend_vars,
+                        type(depend_vars), depend_kinds, depend_iterated,
+                        type(depend_iterated), depend_iterated_kinds) ")"
                       | "nowait" nowait)
                  attr-dict }
   }

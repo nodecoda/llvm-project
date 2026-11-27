@@ -53,6 +53,7 @@ HEAD = re.compile(r"(?m)^\s*(def|defm|class)\s+([A-Za-z_]\w*)")
 CUSTOM_RE = re.compile(r"hasCustomAssemblyFormat\s*=\s*(?:1|true)")
 FORMAT_RE = re.compile(r"assemblyFormat\s*=")
 HOOK_RE = re.compile(r"custom\s*<\s*([A-Za-z_]\w*)\s*>")
+HOOK_CALL_RE = re.compile(r"custom\s*<\s*([A-Za-z_]\w*)\s*>\s*\(")
 INCLUDE_RE = re.compile(r'(?m)^\s*include\s+"([^"]+)"')
 
 
@@ -117,6 +118,7 @@ def parse_records(text, out):
         full = text[m.start():he] + body
         out[name] = {
             "kind": kind,
+            "text": full,
             "base": base,
             "custom": bool(CUSTOM_RE.search(full)),
             "fmt": bool(FORMAT_RE.search(full)),
@@ -182,6 +184,72 @@ def resolve(records, name):
     return ("block-hook" if hooks else "block"), hooks
 
 
+# ------------------------------------------------- hook argument shapes
+SIMPLE_RE = re.compile(r"^\$?([A-Za-z_]\w*)$")
+TYPE_RE = re.compile(r"^type\s*\(\s*\$?([A-Za-z_]\w*)\s*\)$")
+REF_RE = re.compile(r"^ref\s*\((.+)\)$", re.S)
+
+
+def split_top(text):
+    """Split at commas that are not inside (), [], <> or a string."""
+    out, cur, depth, q = [], "", 0, False
+    for c in text:
+        if q:
+            cur += c
+            if c == '"':
+                q = False
+            continue
+        if c == '"':
+            q = True
+        elif c in "([<{":
+            depth += 1
+        elif c in ")]>}":
+            depth -= 1
+        elif c == "," and depth == 0:
+            out.append(cur)
+            cur = ""
+            continue
+        cur += c
+    if cur.strip():
+        out.append(cur)
+    return out
+
+
+def arg_shape(arg):
+    """Normalize one hook argument to V / T / R(..).  Literals return None.
+
+    A quoted string is hook configuration (a delimiter, a builder name), not
+    data from the op; it is dropped, and the corpus is allowed to omit it.
+    """
+    a = arg.strip()
+    m = REF_RE.match(a)
+    if m:
+        inner = arg_shape(m.group(1))
+        return "R(%s)" % inner if inner else "R?"
+    if TYPE_RE.match(a):
+        return "T"
+    if SIMPLE_RE.match(a):
+        return "V"
+    return None
+
+
+def hook_calls(text):
+    """[(hook, [shapes])] for every custom<Hook>(...) call in text, in order."""
+    out = []
+    for m in HOOK_CALL_RE.finditer(text):
+        i = m.end()
+        depth, j = 1, i
+        while j < len(text) and depth:
+            if text[j] == "(":
+                depth += 1
+            elif text[j] == ")":
+                depth -= 1
+            j += 1
+        shapes = [s for s in (arg_shape(a) for a in split_top(text[i:j - 1])) if s]
+        out.append((m.group(1), shapes))
+    return out
+
+
 # ---------------------------------------------------------------- corpus
 OP_RE = re.compile(r'(?m)^  (?:(op) "?([a-z0-9_.]+)"?|(schema) ([A-Za-z_][\w.]*))')
 NEXT_RE = re.compile(r'(?m)^  (?:op|schema|enum|constraint|type_def|attr_def|dialect)\b')
@@ -220,6 +288,7 @@ def parse_corpus(path):
             "parent": parent.group(1) if parent else None,
             "gap": gap.group(1) if gap else None,
             "hooks": set(HOOK_RE.findall(block)),
+            "block": block,
             "facts": set(corpus_mod.fact_names(seg)),
             "has_assembly": bool(block),
         }
@@ -241,6 +310,71 @@ def channel_of(table, name):
     return "none", gap
 
 
+def effective_block(table, name):
+    """The nearest Assembly block on the inheritance chain (schema templates)."""
+    seen, cur = set(), name
+    while cur and cur not in seen:
+        seen.add(cur)
+        e = table.get(cur)
+        if not e:
+            return ""
+        if e["block"]:
+            return e["block"]
+        cur = e["parent"]
+    return ""
+
+
+def fmt_text(records, name):
+    """The nearest upstream record text that actually carries a format."""
+    seen, cur = set(), name
+    while cur and cur not in seen:
+        seen.add(cur)
+        r = records.get(cur)
+        if not r:
+            return ""
+        if r["fmt"] or r["custom"]:
+            return r["text"]
+        cur = r["base"]
+    return ""
+
+
+def gap_positions(block):
+    """(context, index) for each Gap(): context is '' only on the text spine."""
+    regions = []
+    for m in re.finditer(r"\bif\s+[A-Za-z_]\w*\s*\{", block):
+        b = m.end() - 1
+        e = matching(block, b, "{", "}")
+        if e > 0:
+            regions.append(("if-group", b, e))
+    for m in re.finditer(r"\boilist\s*(?:<[^>]*>)?\s*\(", block):
+        b = m.end() - 1
+        e = matching(block, b, "(", ")")
+        if e > 0:
+            regions.append(("oilist-group", b, e))
+    for m in HOOK_CALL_RE.finditer(block):
+        b = m.end() - 1
+        e = matching(block, b, "(", ")")
+        if e > 0:
+            regions.append(("hook-args", b, e))
+    out = []
+    for m in re.finditer(r"\bGap\s*\(", block):
+        ctx = next((k for k, b, e in regions if b < m.start() < e), "")
+        out.append((ctx, m.start()))
+    return out
+
+
+def matching(text, start, op, cl):
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == op:
+            depth += 1
+        elif text[i] == cl:
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
 # ---------------------------------------------------------------- registries
 def read_tsv(path):
     with open(path, newline="") as f:
@@ -248,7 +382,114 @@ def read_tsv(path):
     return rows
 
 
+def gap_findings(registry, gap_users, gap_blocks):
+    """L4: the gap registry is a debt ledger.
+
+    Open gaps match the corpus exactly; closed gaps keep their closure
+    evidence and must not reappear in the corpus.
+    """
+    fails = []
+    SCOPE_FEATURE = {"optional-group": "if", "hook-args": "custom<",
+                     "oilist": "oilist"}
+    for gap, users in sorted(gap_users.items()):
+        entry = registry.get(gap)
+        if not entry:
+            fails.append(["L4", "-", "-", "gap %s is not registered" % gap])
+            continue
+        claimed = {w.strip() for w in entry["witness"].split(",") if w.strip()}
+        if claimed != users:
+            fails.append(["L4", "-", "-",
+                          "gap %s witness mismatch: registry=%s corpus=%s"
+                          % (gap, sorted(claimed), sorted(users))])
+        feat = SCOPE_FEATURE.get(entry["scope"])
+        if feat:
+            for dialect, name, block in gap_blocks.get(gap, []):
+                if feat not in block:
+                    fails.append(["L4", dialect, name,
+                                  "Gap(%s) scope=%s but no %s in the text"
+                                  % (gap, entry["scope"], feat)])
+    for gap, entry in registry.items():
+        if entry["status"] not in ("open", "closed"):
+            fails.append(["L4", "-", "-",
+                          "gap %s has bad status %s" % (gap, entry["status"])])
+        for col in ("scope", "missing", "retire_when"):
+            if not entry.get(col, "").strip():
+                fails.append(["L4", "-", "-", "gap %s lacks %s" % (gap, col)])
+        if entry["status"] == "open" and gap not in gap_users:
+            fails.append(["L4", "-", "-", "gap %s is stale (no corpus user)" % gap])
+        if entry["status"] == "closed":
+            if gap in gap_users:
+                fails.append(["L4", "-", "-",
+                              "gap %s is closed but still used" % gap])
+            if not entry.get("closed_by", "").strip():
+                fails.append(["L4", "-", "-",
+                              "gap %s is closed without closed_by" % gap])
+    return fails
+
+
+
+
+def selftest():
+    """Exercise the contract guards with synthetic inputs.
+
+    The corpus currently has zero open gaps, which would leave L4 vacuously
+    green.  These cases pin each guard: a broken registry must fail, and the
+    exact witness must pass.
+    """
+    cases, bad = [], 0
+
+    def check(label, got, want):
+        nonlocal bad
+        ok = got == want
+        bad += 0 if ok else 1
+        cases.append((label, "ok" if ok else "FAIL: %r != %r" % (got, want)))
+
+    check("ref(type(x))", arg_shape("ref(type($x))"), "R(T)")
+    check("ref(x)", arg_shape("ref($x)"), "R(V)")
+    check("type(x)", arg_shape("type($x)"), "T")
+    check("x", arg_shape("$x"), "V")
+    check("config dropped", arg_shape('"{}"'), None)
+    check("hook call shapes",
+          [s for _, s in hook_calls(
+              "custom<A>(ref(type(x)), type(y)) custom<A>(z)")],
+          [["R(T)", "T"], ["V"]])
+
+    def ctx(block):
+        return [c for c, _ in gap_positions(block)]
+
+    check("gap on spine", ctx("Gap(g) a b"), [""])
+    check("gap in if", ctx("a if x { Gap(g) }"), ["if-group"])
+    check("gap in oilist", ctx("oilist(Gap(g) | a)"), ["oilist-group"])
+    check("gap in hook", ctx("custom<H>(Gap(g))"), ["hook-args"])
+
+    reg = {"g": {"gap": "g", "scope": "optional-group", "witness": "d.o",
+                 "missing": "m", "retire_when": "r", "closed_by": "",
+                 "status": "open"}}
+    users = {"g": {"d.o"}}
+    blocks = {"g": [("d", "o", "if x { x } else { \"undef\" }")]}
+    check("open gap exact", gap_findings(reg, users, blocks), [])
+    check("unregistered", len(gap_findings({}, users, blocks)), 1)
+    check("witness drift",
+          len(gap_findings(reg, {"g": {"d.other"}}, blocks)), 1)
+    closed = {"g": dict(reg["g"], status="closed", closed_by="grammar.y")}
+    check("closed but used", len(gap_findings(closed, users, blocks)), 1)
+    check("open but stale", len(gap_findings(reg, {}, {})), 1)
+    nosc = {"g": dict(reg["g"], scope="")}
+    check("missing scope", len(gap_findings(nosc, users, blocks)), 1)
+    wrong = {"g": [("d", "o", "Gap(g) a")]}
+    check("scope mismatch", len(gap_findings(reg, users, wrong)), 1)
+
+    print("## selftest")
+    for label, verdict in cases:
+        print("| %s | %s |" % (label, verdict))
+    print("| --- | --- |")
+    print("%d cases, %d failed" % (len(cases), bad))
+    return 1 if bad else 0
+
+
 def main():
+    if "--selftest" in sys.argv:
+        return selftest()
     verbose = "--verbose" in sys.argv
     fails, notes = [], []
 
@@ -257,6 +498,7 @@ def main():
     hook_registry = {r["hook"]: r for r in read_tsv(ROOT / "tools/hook-registry.tsv")}
 
     rows, gap_users, fact_users, unbacked_hooks = [], {}, {}, {}
+    gap_blocks, dstat = {}, {}
     fact_occ = Counter()
     totals = Counter()
     for path in sorted(CORPUS.glob("*.dialect")):
@@ -264,6 +506,7 @@ def main():
         if dialect not in TD:
             notes.append("%s: no TD mapping, licenses not checked" % dialect)
             continue
+        dstat[dialect] = Counter()
         records, mnemonic, upstream_hooks = upstream_for(dialect)
         all_hooks_upstream = upstream_hooks
         table = dict(schemas)
@@ -275,6 +518,8 @@ def main():
             if gap:
                 totals["gap_ops"] += 1
                 gap_users.setdefault(gap, set()).add("%s.%s" % (dialect, name))
+                gap_blocks.setdefault(gap, []).append(
+                    (dialect, name, effective_block(table, name)))
             for h in e["hooks"]:
                 if h in all_hooks_upstream:
                     continue
@@ -292,6 +537,19 @@ def main():
                 fails.append(["L0", dialect, name, "no text channel"])
             if ch == "none":
                 totals["no_channel"] += 1
+            eff = effective_block(table, name)
+            dstat[dialect]["ops"] += 1
+            dstat[dialect][ch] += 1
+            dstat[dialect]["gaps"] += 1 if gap else 0
+            dstat[dialect]["hooks"] += len(HOOK_RE.findall(eff))
+
+            # L7: one escape per op, and a gap sits on the text spine.
+            if eff.count("Gap(") > 1:
+                fails.append(["L7", dialect, name, "more than one Gap()"])
+            for ctx, _ in gap_positions(eff):
+                if ctx:
+                    fails.append(["L7", dialect, name, "Gap() inside %s" % ctx])
+
             rec = mnemonic.get(name) or mnemonic.get(name.split(".", 1)[-1]) or \
                 next((v for k, v in mnemonic.items()
                       if name.endswith("." + k) or k.endswith("." + name)), None)
@@ -302,6 +560,17 @@ def main():
                 fails.append(["L1", dialect, name, "Custom, but upstream is %s" % up])
             if ch == "generic" and up != "generic":
                 fails.append(["L2", dialect, name, "Generic, but upstream is %s" % up])
+
+            # L3b: a hook call mirrors the upstream call's data arguments.
+            # Quoted configuration (delimiters, builder names) is dropped on
+            # both sides; ref()/type() keep their shape.
+            up_calls = hook_calls(fmt_text(records, rec))
+            for h, shapes in hook_calls(eff):
+                ups = [sh for hh, sh in up_calls if hh == h]
+                if ups and shapes not in ups:
+                    fails.append(["L3", dialect, name,
+                                  "hook %s(%s), upstream %s"
+                                  % (h, ", ".join(shapes), ups)])
             if ch in ("block", "block-hook") and up in ("custom", "generic"):
                 totals["divergence"] += 1
                 rows.append([dialect, name, ch, up])
@@ -315,20 +584,13 @@ def main():
                 fact_users.setdefault(f, set()).add(dialect)
                 fact_occ[f] += 1
 
-    # L4: gaps are registered, and the registry is exact (no stale witness).
-    for gap, users in sorted(gap_users.items()):
-        entry = registry.get(gap)
-        if not entry:
-            fails.append(["L4", "-", "-", "gap %s is not registered" % gap])
-            continue
-        claimed = {w.strip() for w in entry["witness"].split(",") if w.strip()}
-        if claimed != users:
-            fails.append(["L4", "-", "-",
-                          "gap %s witness mismatch: registry=%s corpus=%s"
-                          % (gap, sorted(claimed), sorted(users))])
-    for gap in registry:
-        if gap not in gap_users:
-            fails.append(["L4", "-", "-", "gap %s is stale (no corpus user)" % gap])
+    fails += gap_findings(registry, gap_users, gap_blocks)
+
+    # L3c: a registered label states its scope and when it can be retired.
+    for hook, entry in hook_registry.items():
+        for col in ("scope", "retire_when"):
+            if not entry.get(col, "").strip():
+                fails.append(["L3", "-", hook, "registry lacks %s" % col])
 
     # L5: facts are registered; local facts stay in their owning dialect.
     local_single = 0
@@ -347,6 +609,20 @@ def main():
     for fact, entry in glossary.items():
         if entry["scope"] == "local" and fact not in fact_users:
             notes.append("glossary: local fact %s is unused" % fact)
+
+    # L9: each dialect's escape ledger is visible and bounded.  A global
+    # share can hide one dialect that escapes everything; the caps are
+    # per dialect so that outlier is named.
+    for dialect, st in sorted(dstat.items()):
+        if not st["ops"]:
+            continue
+        share = 100.0 * st["custom"] / st["ops"]
+        dstat[dialect]["custom_share"] = share
+        if st["ops"] >= 8 and share > 80.0:
+            fails.append(["L9", dialect, "-",
+                          "custom share %.0f%% > 80%%" % share])
+        if st["gaps"] > 3:
+            fails.append(["L9", dialect, "-", "%d gaps > 3" % st["gaps"]])
 
     # L6: budgets.
     ops = max(totals["ops"], 1)
@@ -374,6 +650,15 @@ def main():
     print("| --- | --- | --- | --- |")
     for label, value, limit, ok in budgets:
         print("| %s | %s | %s | %s |" % (label, value, limit, "ok" if ok else "FAIL"))
+    print("\n## per-dialect escapes")
+    print("| dialect | ops | custom | share | gaps | hooks |")
+    print("| --- | --- | --- | --- | --- | --- |")
+    for dialect, st in sorted(dstat.items()):
+        if not st["ops"]:
+            continue
+        print("| %s | %d | %d | %.0f%% | %d | %d |"
+              % (dialect, st["ops"], st["custom"],
+                 100.0 * st["custom"] / st["ops"], st["gaps"], st["hooks"]))
     print("\n## gap registry")
     for gap in sorted(registry):
         print("- %s: %s" % (gap, ", ".join(sorted(gap_users.get(gap, []))) or "unused"))

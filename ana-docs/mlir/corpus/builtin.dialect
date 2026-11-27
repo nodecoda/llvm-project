@@ -1,0 +1,48 @@
+/// builtin —— 内建方言：模块容器与未实现转换。
+///
+/// 领域：builtin 不是普通计算方言，它承载 IR 的顶层容器与转换过程中的占位
+/// 转换。模块是符号表、affine 作用域、隔离作用域三者的交集，正文是一个
+/// 单块、无终结符的 graph region；未实现转换把任意类型映射到任意类型，
+/// 只用于类型系统混用期间。
+///
+/// 文本通道：2 个 op 都是块格式。module 的格式是
+/// `(@name)? prop-dict attributes {..} region`：可选符号名、固有属性字典、
+/// 可丢弃属性字典与 region 依次出现，`attr-dict-with-keyword` 负责打印
+/// `attributes {..}` 这个带关键字的形式。
+///
+/// 事实：module 的 trait 直接给出 affine_scope、isolated_from_above、
+/// no_region_args、symbol、symbol_visibility、symbol_table、single_block、
+/// no_terminator；unrealized_conversion_cast 只有 Pure。graph region 这一
+/// 性质没有核心事实（emitc 的 graph_region 是方言本地词），只在 Doc 里写。
+///
+/// GAP:
+///   - module 的 `dlti` 属性类型是 DLTIQueryAttr，本文件不引入 dlti 方言的
+///     声明，按不透明 attribute 记录。
+///   - 符号名的 `@` 前缀属于属性自身打印，不在块格式里单独写。
+
+dialect builtin {
+  Doc "Built-in dialect: the top-level module container and the unrealized conversion cast.";
+
+  op module {
+    Doc "A top-level container with one graph region; it is a symbol table, isolated from above, and an affine scope. The optional symbol name is printed with its @ prefix, followed by the property dictionary and a keyworded attribute dictionary.";
+    Attributes (sym_name: optional<symbol_ref>,
+                sym_visibility: optional<string>,
+                dlti: optional<attribute>);
+    Regions    (bodyRegion: region [single_block, no_terminator]);
+    Properties [affine_scope, isolated_from_above, no_region_args,
+                symbol, symbol_visibility, symbol_table,
+                single_block, no_terminator];
+    Implements [OpAsmOpInterface];
+    Assembly   { if sym_name { sym_name }
+                 prop-dict attr-dict-with-keyword bodyRegion }
+  }
+
+  op unrealized_conversion_cast {
+    Doc "An unrealized conversion from zero or more input values to one or more results; it exists only to keep the IR valid while type systems are mixed.";
+    Operands   (inputs: variadic<any>);
+    Results    (outputs: variadic<any>);
+    Properties [pure];
+    Assembly   { if inputs { inputs ":" type(inputs) }
+                 "to" type(outputs) attr-dict }
+  }
+}

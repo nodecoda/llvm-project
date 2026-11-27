@@ -228,7 +228,7 @@ dialect pdl {
     Results (result: range<type> | range<value>);
     Properties [pure, has_parent(rewrite)];
     Assembly { if arguments { arguments ":" type(arguments) }
-               custom<RangeType>(type(arguments), type(result))
+               custom<RangeType>(ref(type(arguments)), type(result))
                attr-dict }
   }
 
@@ -263,7 +263,7 @@ dialect pdl {
     Attributes (index: optional<i32>);
     Properties [pure];
     Assembly { if index { index } "of" parent
-               custom<ResultsValueType>(index, type(val))
+               custom<ResultsValueType>(ref(index), type(val))
                attr-dict }
   }
 }

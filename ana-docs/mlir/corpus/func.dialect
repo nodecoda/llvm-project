@@ -16,9 +16,12 @@ dialect func {
     Doc "call through a value of function type";
     Operands   (callee: function_type, callee_operands: variadic<any>);
     Results    (results: variadic<any>);
+    Attributes (arg_attrs: optional<array<dict>>, res_attrs: optional<array<dict>>);
     Implements [CallOpInterface];
-    Assembly   { Gap(oilist_separator) callee "(" callee_operands ")" attr-dict
-               ":" type(callee) }
+    // oilist 的分隔符是可选首参；两支分别打印 arg_attrs 与 res_attrs。
+    Assembly   { callee "(" callee_operands ")"
+               oilist<",">("arg_attrs" "=" arg_attrs | "res_attrs" "=" res_attrs)
+               attr-dict ":" type(callee) }
   }
 
   op constant {
