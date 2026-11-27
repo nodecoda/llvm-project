@@ -1,0 +1,192 @@
+/// memref —— 内存引用：分配、访问、视图与原子读改写。
+///
+/// 两个领域特点：
+///   - load/store 的可选修饰是"互斥组"，文本上无论顺序都至多一个；
+///   - 视图类 op 的偏移/尺寸/步长是"静态数组 + 动态 operand"两份数据。
+
+dialect memref {
+  Doc "Memory references: allocation, access, views and atomics.";
+
+  enum AtomicRMWKind {
+    Doc "Read-modify-write combinators, spelled like the source op.";
+    Cases [ addf = 0 "addf", addi = 1 "addi", assign = 2 "assign",
+            maximumf = 3 "maximumf", maxs = 4 "maxs", maxu = 5 "maxu",
+            minimumf = 6 "minimumf", mins = 7 "mins", minu = 8 "minu",
+            mulf = 9 "mulf", muli = 10 "muli", ori = 11 "ori",
+            andi = 12 "andi" ];
+  }
+
+  op alloc {
+    Doc "Allocate a region of memory of the given memref type.";
+    Operands   (dynamic_sizes: variadic<index>,
+                symbol_operands: variadic<index>);
+    Results    (memref: any);
+    Attributes (alignment: optional<integer>);
+    Assembly   { "(" dynamic_sizes ")"
+                 if symbol_operands { "[" symbol_operands "]" }
+                 if alignment { "alignment" "=" alignment }
+                 attr-dict ":" type(memref) }
+  }
+
+  op alloca {
+    Doc "Allocate memory on the stack.";
+    Operands   (dynamic_sizes: variadic<index>,
+                symbol_operands: variadic<index>);
+    Results    (memref: any);
+    Attributes (alignment: optional<integer>);
+    Properties [automatic_allocation_scope];
+    Assembly   { "(" dynamic_sizes ")"
+                 if symbol_operands { "[" symbol_operands "]" }
+                 if alignment { "alignment" "=" alignment }
+                 attr-dict ":" type(memref) }
+  }
+
+  op alloca_scope {
+    Doc "Explicitly delimited scope for stack allocations.";
+    Results  (results: variadic<any>);
+    Regions  (body_region: region [single_block]);
+    Properties [recursive_effects, no_region_args];
+    Assembly Custom;
+  }
+
+  op alloca_scope.return {
+    Doc "Terminator of memref.alloca_scope.";
+    Operands   (results: variadic<any>);
+    Properties [terminator, has_parent(alloca_scope)];
+    Assembly   { attr-dict if results { ":" type(results) } }
+  }
+
+  op dealloc {
+    Doc "Free memory created by memref.alloc.";
+    Operands (memref: any);
+    Assembly { memref attr-dict ":" type(memref) }
+  }
+
+  op load {
+    Doc "Read an element at the given indices.";
+    Operands   (memref: any, indices: variadic<index>);
+    Results    (result: any);
+    Attributes (nontemporal: bool = false, invariant: bool = false,
+                alignment: optional<integer>);
+    Assembly   { memref "[" indices "]"
+                 oilist("alignment" "(" alignment ")"
+                        | "nontemporal" "(" custom<BoolAttr>(nontemporal) ")"
+                        | "invariant" "(" custom<BoolAttr>(invariant) ")")
+                 attr-dict ":" type(memref) }
+  }
+
+  op store {
+    Doc "Write an element at the given indices.";
+    Operands   (value: any, memref: any, indices: variadic<index>);
+    Attributes (nontemporal: bool = false, alignment: optional<integer>);
+    Assembly   { value "," memref "[" indices "]"
+                 oilist("alignment" "(" alignment ")"
+                        | "nontemporal" "(" custom<BoolAttr>(nontemporal) ")")
+                 attr-dict ":" type(memref) }
+  }
+
+  op copy {
+    Doc "Copy the contents of one memref into another.";
+    Operands (source: any, target: any);
+    Assembly { source "," target attr-dict
+               ":" type(source) "to" type(target) }
+  }
+
+  op dim {
+    Doc "Size of one dimension.";
+    Operands (source: any, index: index);
+    Results  (result: index);
+    Assembly { attr-dict source "," index ":" type(source) }
+  }
+
+  op rank {
+    Doc "Rank of a memref.";
+    Operands (memref: any);
+    Results  (result: index);
+    Assembly { memref attr-dict ":" type(memref) }
+  }
+
+  op cast {
+    Doc "Cast between compatible memref types.";
+    Operands (source: any);
+    Results  (dest: any);
+    Assembly { source attr-dict ":" type(source) "to" type(dest) }
+  }
+
+  op subview {
+    Doc "A subview of the source, as a strided memref.";
+    Operands   (source: any, offsets: variadic<index>, sizes: variadic<index>,
+                strides: variadic<index>);
+    Attributes (static_offsets: array<integer>, static_sizes: array<integer>,
+                static_strides: array<integer>);
+    Results    (result: any);
+    Assembly   { source
+                 custom<DynamicIndexList>(offsets, static_offsets)
+                 custom<DynamicIndexList>(sizes, static_sizes)
+                 custom<DynamicIndexList>(strides, static_strides)
+                 attr-dict ":" type(source) "to" type(result) }
+  }
+
+  op reinterpret_cast {
+    Doc "Reinterpret the source with explicit offset, sizes and strides.";
+    Operands   (source: any, offsets: variadic<index>, sizes: variadic<index>,
+                strides: variadic<index>);
+    Attributes (static_offsets: array<integer>, static_sizes: array<integer>,
+                static_strides: array<integer>);
+    Results    (result: any);
+    Assembly   { source "to" "offset" ":"
+                 custom<DynamicIndexList>(offsets, static_offsets)
+                 "," "sizes" ":"
+                 custom<DynamicIndexList>(sizes, static_sizes)
+                 "," "strides" ":"
+                 custom<DynamicIndexList>(strides, static_strides)
+                 attr-dict ":" type(source) "to" type(result) }
+  }
+
+  op global {
+    Doc "Declare or define a global memref variable.";
+    Attributes (sym_name: string, sym_visibility: optional<string>,
+                constant: optional<unit>, type: any,
+                initial_value: optional<any>, alignment: optional<integer>);
+    Properties [symbol];
+    Assembly   { if sym_visibility { sym_visibility }
+                 if constant { "constant" }
+                 sym_name ":"
+                 custom<GlobalMemrefOpTypeAndInitialValue>(type, initial_value)
+                 if alignment { "alignment" "=" alignment }
+                 attr-dict }
+  }
+
+  op get_global {
+    Doc "The memref of a named global variable.";
+    Results    (result: any);
+    Attributes (name: symbol_ref);
+    Properties [pure];
+    Assembly   { name ":" type(result) attr-dict }
+  }
+
+  op view {
+    Doc "A strided view of a flat 1-D buffer.";
+    Operands (source: any, byte_shift: index, sizes: variadic<index>);
+    Results  (result: any);
+    Assembly { source "[" byte_shift "]" "[" sizes "]" attr-dict
+               ":" type(source) "to" type(result) }
+  }
+
+  op atomic_rmw {
+    Doc "Atomic read-modify-write with a combinator.";
+    Operands   (kind: AtomicRMWKind, value: any, memref: any,
+                indices: variadic<index>);
+    Results    (result: type_of(value));
+    Assembly   { kind value "," memref "[" indices "]" attr-dict
+                 ":" "(" type(value) "," type(memref) ")" "->" type(result) }
+  }
+
+  op prefetch {
+    Doc "Prefetch a memref location into a cache.";
+    Operands   (memref: any, indices: variadic<index>);
+    Attributes (is_write: bool = false, locality: integer,
+                cache_type: integer, is_data_cache: bool = false);
+    Assembly Custom;
+  }
+}

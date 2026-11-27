@@ -295,10 +295,17 @@ asm_element
   | A_IF IDENT L_BRACE asm_list R_BRACE
   ;
 
-/* custom<Hook>(a, b)：钩子名是格式的实现细节，实参是部件引用。 */
+/* custom<Hook>(a, b)：钩子名是格式的实现细节，实参是部件引用。
+ * `type` 是 Assembly 关键字，但也可以是一个部件名（memref.global 的 $type），
+ * 所以这里接受它；`type(x)` 有括号，`type,`/`type)` 没有，LR(1) 可区分。 */
 custom_arg_list
+  : custom_arg
+  | custom_arg_list COMMA custom_arg
+  ;
+
+custom_arg
   : IDENT
-  | custom_arg_list COMMA IDENT
+  | A_TYPE
   ;
 
 /* oilist(a | b | c)：每个分支是一段格式；运行时至多匹配一个。

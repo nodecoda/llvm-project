@@ -1,0 +1,66 @@
+/// math —— 浮点与整数数学函数。
+///
+/// 领域特点：几十个 op 只有三种形状（一元/二元/三元），差别在函数本身；
+/// fastmath 与 roundingmode 复用 arith 的两个枚举。
+
+dialect math {
+  Doc "Floating-point and integer math functions.";
+
+  constraint math.float_like = f16 | f32 | f64 | bf16;
+
+  schema math.Unary {
+    Operands   (operand: math.float_like);
+    Results    (result: type_of(operand));
+    Attributes (fastmath: FastMathFlags = none);
+    Properties [elementwise];
+    Assembly   { operand if fastmath { "fastmath" fastmath }
+                 attr-dict ":" type(result) }
+  }
+
+  schema math.Binary {
+    Operands   (lhs: math.float_like, rhs: math.float_like);
+    Results    (result: type_of(lhs));
+    Attributes (fastmath: FastMathFlags = none);
+    Properties [elementwise];
+    Assembly   { lhs "," rhs if fastmath { "fastmath" fastmath }
+                 attr-dict ":" type(result) }
+  }
+
+  schema math.Ternary {
+    Operands   (a: math.float_like, b: math.float_like, c: math.float_like);
+    Results    (result: type_of(a));
+    Attributes (fastmath: FastMathFlags = none,
+                roundingmode: optional<RoundingMode>);
+    Properties [elementwise];
+    Assembly   { a "," b "," c
+                 if roundingmode { roundingmode }
+                 if fastmath { "fastmath" fastmath }
+                 attr-dict ":" type(result) }
+  }
+
+  schema math.IntBinary {
+    Operands (lhs: signless_integer, rhs: signless_integer);
+    Results  (result: type_of(lhs));
+    Properties [elementwise];
+    Assembly { lhs "," rhs attr-dict ":" type(result) }
+  }
+
+  // ---- 一元 ----
+  op absf  from math.Unary { Doc "Absolute value of a float."; }
+  op ceil  from math.Unary { Doc "Round up to the nearest integer."; }
+  op floor from math.Unary { Doc "Round down to the nearest integer."; }
+  op sqrt  from math.Unary { Doc "Square root."; }
+  op rsqrt from math.Unary { Doc "Reciprocal square root."; }
+  op exp   from math.Unary { Doc "e raised to the operand."; }
+  op log   from math.Unary { Doc "Natural logarithm."; }
+  op log2  from math.Unary { Doc "Base-2 logarithm."; }
+  op sin   from math.Unary { Doc "Sine."; }
+  op cos   from math.Unary { Doc "Cosine."; }
+  op tanh  from math.Unary { Doc "Hyperbolic tangent."; }
+
+  // ---- 二元 / 三元 / 整数 ----
+  op atan2 from math.Binary { Doc "Two-argument arctangent."; }
+  op powf  from math.Binary { Doc "Raise the first operand to the second."; }
+  op fma   from math.Ternary { Doc "Fused multiply-add with rounding mode."; }
+  op ipowi from math.IntBinary { Doc "Integer power with a signed exponent."; }
+}

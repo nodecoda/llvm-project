@@ -1,0 +1,207 @@
+/// vector —— 定长向量：内存传输、逐元素运算、规约与掩码。
+///
+/// 领域特点：
+///   - transfer_read/write 的语义由 permutation_map + in_bounds 描述；
+///   - 访问类 op 的可选修饰用 oilist；
+///   - mask 是一个带单块 region 的"作用域"，被掩码的 op 写在里面。
+
+dialect vector {
+  Doc "Fixed-size vectors: transfers, elementwise ops, reductions, masking.";
+
+  enum CombiningKind {
+    Doc "Reduction/contraction combinator.";
+    Cases [ add = 0, mul = 1, minsi = 2, minui = 3, maxsi = 4, maxui = 5,
+            and = 8, or = 9, xor = 10 ];
+  }
+
+  enum PrintPunctuation {
+    Doc "Trailing punctuation for vector.print.";
+    Cases [ newline = 0, no_newline = 1, open = 2, close = 3 ];
+  }
+
+  // ---- 内存与传输 ----
+
+  op transfer_read {
+    Doc "Read a supervector from memory with a permutation map.";
+    Operands   (vector: any, base: any, indices: variadic<index>,
+                padding: any, mask: optional<any>);
+    Results    (result: any);
+    Attributes (permutation_map: affine_map, in_bounds: array<bool>);
+    Properties [destination_style];
+    Assembly Custom;
+  }
+
+  op transfer_write {
+    Doc "Write a supervector to memory with a permutation map.";
+    Operands   (vector_to_store: any, base: any, indices: variadic<index>,
+                mask: optional<any>);
+    Results    (result: optional<any>);
+    Attributes (permutation_map: affine_map, in_bounds: array<bool>);
+    Properties [destination_style];
+    Assembly Custom;
+  }
+
+  op load {
+    Doc "Load a vector from a memref slice.";
+    Operands   (base: any, indices: variadic<index>);
+    Results    (result: any);
+    Attributes (alignment: optional<integer>, nontemporal: bool = false);
+    Assembly   { base "[" indices "]"
+                 oilist("alignment" "=" alignment
+                        | "nontemporal" "=" custom<BoolAttr>(nontemporal))
+                 attr-dict ":" type(base) "," type(result) }
+  }
+
+  op store {
+    Doc "Store a vector into a memref slice.";
+    Operands   (value_to_store: any, base: any, indices: variadic<index>);
+    Attributes (alignment: optional<integer>, nontemporal: bool = false);
+    Assembly   { value_to_store "," base "[" indices "]"
+                 oilist("alignment" "=" alignment
+                        | "nontemporal" "=" custom<BoolAttr>(nontemporal))
+                 attr-dict ":" type(base) "," type(value_to_store) }
+  }
+
+  op maskedload {
+    Doc "Load with a lane mask and a pass-through vector.";
+    Operands   (base: any, indices: variadic<index>, mask: any, pass_thru: any);
+    Results    (result: any);
+    Attributes (alignment: optional<integer>);
+    Assembly   { base "[" indices "]" "," mask "," pass_thru
+                 if alignment { "alignment" "=" alignment }
+                 attr-dict ":" type(base) "," type(mask) "," type(pass_thru)
+                 "into" type(result) }
+  }
+
+  op maskedstore {
+    Doc "Store with a lane mask.";
+    Operands   (base: any, indices: variadic<index>, mask: any,
+                value_to_store: any);
+    Attributes (alignment: optional<integer>);
+    Assembly   { base "[" indices "]" "," mask "," value_to_store
+                 if alignment { "alignment" "=" alignment }
+                 attr-dict ":" type(base) "," type(mask) ","
+                 type(value_to_store) }
+  }
+
+  // ---- 逐元素与形状 ----
+
+  op broadcast {
+    Doc "Broadcast a scalar or lower-rank vector to the result shape.";
+    Operands (source: any);
+    Results  (result: any);
+    Assembly { source attr-dict ":" type(source) "to" type(result) }
+  }
+
+  op step {
+    Doc "A 1-D vector of consecutive indices.";
+    Results  (result: any);
+    Properties [pure];
+    Assembly { attr-dict ":" type(result) }
+  }
+
+  op fma {
+    Doc "Fused multiply-add.";
+    Operands (lhs: any, rhs: any, acc: any);
+    Results  (result: type_of(lhs));
+    Assembly { lhs "," rhs "," acc attr-dict ":" type(lhs) }
+  }
+
+  op bitcast {
+    Doc "Bitcast between vector types of the same bit width.";
+    Operands (source: any);
+    Results  (result: any);
+    Assembly { source attr-dict ":" type(source) "to" type(result) }
+  }
+
+  op interleave {
+    Doc "Interleave two vectors.";
+    Operands (lhs: any, rhs: any);
+    Results  (result: any);
+    Assembly { lhs "," rhs attr-dict ":" type(lhs) "->" type(result) }
+  }
+
+  op deinterleave {
+    Doc "Split a vector into even and odd lanes.";
+    Operands (source: any);
+    Results  (even: any, odd: any);
+    Assembly { source attr-dict ":" type(source) "->" type(even) }
+  }
+
+  op extract {
+    Doc "Extract a scalar or lower-rank vector at a position.";
+    Operands   (source: any, dynamic_position: variadic<index>);
+    Results    (result: any);
+    Attributes (static_position: array<integer>);
+    Assembly   { source
+                 custom<DynamicIndexList>(dynamic_position, static_position)
+                 attr-dict ":" type(result) "from" type(source) }
+  }
+
+  op insert {
+    Doc "Insert a scalar or lower-rank vector at a position.";
+    Operands   (value_to_store: any, dest: any,
+                dynamic_position: variadic<index>);
+    Results    (result: any);
+    Attributes (static_position: array<integer>);
+    Assembly   { value_to_store "," dest
+                 custom<DynamicIndexList>(dynamic_position, static_position)
+                 attr-dict ":" type(value_to_store) "into" type(dest) }
+  }
+
+  op create_mask {
+    Doc "Create an all-ones mask of the given dynamic sizes.";
+    Operands (mask_dim_sizes: variadic<index>);
+    Results  (result: variadic<any>);
+    Assembly { mask_dim_sizes attr-dict ":" type(result) }
+  }
+
+  // ---- 规约与收缩 ----
+
+  op reduction {
+    Doc "Horizontally reduce a vector with a combinator.";
+    Operands   (kind: CombiningKind, vector: any, acc: optional<any>);
+    Results    (result: any);
+    Attributes (fastmath: FastMathFlags = none);
+    Assembly   { kind "," vector if acc { "," acc }
+                 if fastmath { "fastmath" fastmath }
+                 attr-dict ":" type(vector) "into" type(result) }
+  }
+
+  op contraction {
+    Doc "Sum of products over contracting dimensions.";
+    Operands   (lhs: any, rhs: any, acc: any);
+    Results    (result: any);
+    Attributes (indexing_maps: array<affine_map>,
+                iterator_types: array<iterator_type>,
+                kind: CombiningKind = add, fastmath: FastMathFlags = none);
+    Assembly Custom;
+  }
+
+  // ---- 掩码作用域 ----
+
+  op mask {
+    Doc "Wrap a maskable op with a lane mask.";
+    Operands (mask: any, passthru: optional<any>);
+    Results  (result: variadic<any>);
+    Regions  (mask_region: region [single_block]);
+    Properties [recursive_effects, no_region_args];
+    Assembly Custom;
+  }
+
+  op yield {
+    Doc "Terminator of a vector.mask region.";
+    Operands   (values: variadic<any>);
+    Properties [terminator, has_parent(mask)];
+    Assembly   { attr-dict if values { ":" type(values) } }
+  }
+
+  op print {
+    Doc "Print a vector or scalar (testing and debugging).";
+    Operands   (source: optional<any>, string_literal: optional<string>);
+    Attributes (punctuation: PrintPunctuation = newline);
+    Assembly   { if source { source ":" type(source) }
+                 oilist("str" string_literal | "punctuation" punctuation)
+                 attr-dict }
+  }
+}

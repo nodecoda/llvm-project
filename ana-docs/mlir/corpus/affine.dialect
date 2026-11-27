@@ -1,0 +1,113 @@
+/// affine —— 仿射循环与仿射下标访问。
+///
+/// 领域特点：循环边界与下标映射都是 affine_map；if 的两个 region 约束
+/// 不同（then 恰好一块，else 不限制）——这是"约束属于 region"的直接见证。
+
+dialect affine {
+  Doc "Affine loops and affine-indexed memory access.";
+
+  op apply {
+    Doc "Apply an affine map to index operands.";
+    Operands   (operands: variadic<index>);
+    Results    (result: index);
+    Attributes (map: affine_map);
+    Properties [pure];
+    Assembly Custom;
+  }
+
+  op for {
+    Doc "Affine for loop with multi-result bounds.";
+    Operands   (lower_bound_operands: variadic<index>,
+                upper_bound_operands: variadic<index>,
+                step: index, iter_args: variadic<any>);
+    Results    (results: variadic<any>);
+    Attributes (lower_bound_map: affine_map, upper_bound_map: affine_map);
+    Regions    (region: region [single_block]);
+    Properties [recursive_effects];
+    Implements [LoopLikeOpInterface];
+    Assembly Custom;
+  }
+
+  op if {
+    Doc "Affine if with then and optional else regions.";
+    Operands   (operands: variadic<index>);
+    Results    (results: variadic<any>);
+    Attributes (condition: affine_set);
+    Regions    (then_region: region [single_block], else_region: region);
+    Properties [recursive_effects];
+    Assembly Custom;
+  }
+
+  op parallel {
+    Doc "Affine parallel loop with reductions.";
+    Operands   (map_operands: variadic<index>, init_values: variadic<any>);
+    Results    (results: variadic<any>);
+    Attributes (lower_bounds: array<affine_map>,
+                upper_bounds: array<affine_map>,
+                steps: array<integer>, reductions: array<any>);
+    Regions    (region: region [single_block]);
+    Properties [recursive_effects];
+    Implements [LoopLikeOpInterface];
+    Assembly Custom;
+  }
+
+  op load {
+    Doc "Load from a memref at an affine index.";
+    Operands   (memref: any, indices: variadic<index>);
+    Results    (result: any);
+    Attributes (map: affine_map, alignment: optional<integer>);
+    Properties [pure];
+    Assembly Custom;
+  }
+
+  op store {
+    Doc "Store to a memref at an affine index.";
+    Operands   (value: any, memref: any, indices: variadic<index>);
+    Attributes (map: affine_map, alignment: optional<integer>);
+    Assembly Custom;
+  }
+
+  op min {
+    Doc "Minimum of affine map results.";
+    Operands   (operands: variadic<index>);
+    Results    (result: index);
+    Attributes (map: affine_map);
+    Properties [pure];
+    Assembly Custom;
+  }
+
+  op max {
+    Doc "Maximum of affine map results.";
+    Operands   (operands: variadic<index>);
+    Results    (result: index);
+    Attributes (map: affine_map);
+    Properties [pure];
+    Assembly Custom;
+  }
+
+  op prefetch {
+    Doc "Prefetch an affine-indexed memref location.";
+    Operands   (memref: any, indices: variadic<index>);
+    Attributes (is_write: bool = false, locality: integer,
+                cache_type: integer, is_data_cache: bool = false);
+    Assembly Custom;
+  }
+
+  op delinearize_index {
+    Doc "Split a linear index into a multi-index.";
+    Operands   (linear_index: index, dynamic_basis: variadic<index>);
+    Results    (multi_index: variadic<index>);
+    Attributes (static_basis: array<integer>);
+    Properties [pure];
+    Assembly   { linear_index "into"
+                 custom<DynamicIndexList>(dynamic_basis, static_basis)
+                 attr-dict ":" type(multi_index) }
+  }
+
+  op yield {
+    Doc "Terminator of an affine region.";
+    Operands   (operands: variadic<any>);
+    Properties [terminator];
+    Assembly   { attr-dict if operands { ":" type(operands) } }
+  }
+}

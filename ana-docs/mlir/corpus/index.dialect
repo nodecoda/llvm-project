@@ -1,0 +1,79 @@
+/// index —— index 类型上的算术与比较。
+///
+/// 领域特点：所有 op 的 operand/result 都是 `index`，所以文本里没有类型；
+/// 二元 op 共用一个 schema，只是助记符不同。
+
+dialect index {
+  Doc "Arithmetic and comparison on the index type.";
+
+  enum IndexCmpPredicate {
+    Doc "Comparison predicates, signed and unsigned.";
+    Cases [ eq = 0, ne = 1, slt = 2, sle = 3, sgt = 4, sge = 5,
+            ult = 6, ule = 7, ugt = 8, uge = 9 ];
+  }
+
+  schema index.Binary {
+    Operands (lhs: index, rhs: index);
+    Results  (result: index);
+    Assembly { lhs "," rhs attr-dict }
+  }
+
+  op add from index.Binary { Doc "Addition."; Properties [commutative]; }
+  op sub from index.Binary { Doc "Subtraction."; }
+  op mul from index.Binary { Doc "Multiplication."; Properties [commutative]; }
+  op divs from index.Binary { Doc "Signed division."; }
+  op divu from index.Binary { Doc "Unsigned division."; }
+  op rems from index.Binary { Doc "Signed remainder."; }
+  op and from index.Binary { Doc "Bitwise and."; Properties [commutative]; }
+  op or from index.Binary { Doc "Bitwise or."; Properties [commutative]; }
+  op xor from index.Binary { Doc "Bitwise xor."; Properties [commutative]; }
+  op shl from index.Binary { Doc "Shift left."; }
+
+  op cmp {
+    Doc "Compare two index values.";
+    Operands   (lhs: index, rhs: index);
+    Results    (result: i1);
+    Attributes (pred: IndexCmpPredicate);
+    Properties [pure];
+    Assembly   { pred "(" lhs "," rhs ")" attr-dict }
+  }
+
+  op casts {
+    Doc "Cast an index to a narrower signed integer or back.";
+    Operands (input: any);
+    Results  (output: any);
+    Properties [pure];
+    Assembly { input attr-dict ":" type(input) "to" type(output) }
+  }
+
+  op castu {
+    Doc "Cast an index to a narrower unsigned integer or back.";
+    Operands (input: any);
+    Results  (output: any);
+    Properties [pure];
+    Assembly { input attr-dict ":" type(input) "to" type(output) }
+  }
+
+  op constant {
+    Doc "An index constant.";
+    Results    (result: index);
+    Attributes (value: integer);
+    Properties [pure, constant_like];
+    Assembly   { attr-dict value }
+  }
+
+  op bool.constant {
+    Doc "An index-typed boolean constant.";
+    Results    (result: index);
+    Attributes (value: integer);
+    Properties [pure, constant_like];
+    Assembly   { attr-dict value }
+  }
+
+  op sizeof {
+    Doc "Bit width of the index type.";
+    Results  (result: index);
+    Properties [pure, constant_like];
+    Assembly { attr-dict }
+  }
+}
