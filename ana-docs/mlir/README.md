@@ -1,14 +1,19 @@
-# MLIR 文本解析器（AsmParser）源码分析
+# MLIR 源码分析：文本解析器与 TableGen 声明层
 
-本目录分析 `mlir/lib/AsmParser/` 的实现：MLIR 文本格式如何被词法分析、语法分析，
-并直接构造出内存中的 IR。
+本目录有两个主题：
 
-- 分析基线：worktree `/home/ubuntu/llvm/trees/pr-ctpop`，分支 `research/mlir`，
-  HEAD `5f7f36636abe`（2026-11-27，基于 `upstream/main`）。
-- 所有 `file:line` 引用均以该提交为准；上游演进后行号可能漂移，函数名相对稳定。
-- 范围以 `mlir/lib/AsmParser/` 为中心；为解释边界，少量引用
+- **A. 文本解析**（01–09）：`mlir/lib/AsmParser/` 如何把 MLIR 文本变成内存中的 IR。
+- **B. 声明层依赖**（10–12）：`mlir/**/*.td` 如何通过 `include` 组成 ODS 依赖图，
+  以及这张图如何经 `mlir-tblgen` 变成 `.inc` 再进入 C++。
+
+- 分析基线：worktree `/home/ubuntu/llvm/trees/pr-ctpop`，分支 `research/mlir`。
+  01–09 基于 `5f7f36636abe`；10–12 基于 `53a80edfeb2e`（2026-11-27，含前一提交的文档）。
+- 所有 `file:line` 引用均以对应提交为准；上游演进后行号可能漂移，函数名相对稳定。
+- 01–09 的范围以 `mlir/lib/AsmParser/` 为中心；为解释边界，少量引用
   `mlir/include/mlir/Parser/Parser.h`、`mlir/include/mlir/AsmParser/*`、
   `mlir/include/mlir/IR/OpImplementation.h` 与 `mlir/lib/Parser/Parser.cpp`。
+- 10–12 的范围是 `mlir/include`、`mlir/lib`、`mlir/python` 下的 412 个 `.td`
+  （不含 `mlir/test`、`mlir/examples`、`mlir/unittests`）。
 
 ## 章节
 
@@ -23,8 +28,13 @@
 | [07-tooling-and-diagnostics.md](07-tooling-and-diagnostics.md) | AsmParserState、代码补全、诊断、资源 file metadata |
 | [08-walkthrough.md](08-walkthrough.md) | 端到端走查：一段文本从字节到 IR |
 | [09-pitfalls-and-internals.md](09-pitfalls-and-internals.md) | 易错点、内部契约、parser/printer 对称性案例 |
+| [10-tablegen-overview.md](10-tablegen-overview.md) | `.td` 依赖图总览：扫描口径、412 节点/1132 边/0 环、六层结构、生成节点 |
+| [11-tablegen-dependency-graph.md](11-tablegen-dependency-graph.md) | 图形版：IR 内核图、方言间 21 条边、TransformOps 汇聚、最长 16 跳链 |
+| [12-tablegen-dialect-anatomy.md](12-tablegen-dialect-anatomy.md) | 单方言解剖：Arith / Linalg 的文件划分、partition、YAML 生成、checklist |
 
 ## 一页结论
+
+### A. 文本解析
 
 1. **没有独立 AST**。MLIR 解析器是单遍、事件驱动的：读取 token 的同时调用
    `OpBuilder` 直接创建 `Operation`/`Block`/`Region`（`Parser.cpp:2921` 起）。
@@ -43,7 +53,21 @@
 6. **工具能力旁路**：`AsmParserState` 记录“源码位置 ↔ IR 实体”的映射，
    供 LSP/格式化/补全使用；解析主流程不依赖它（`ParserState.h:81-83`）。
 
-## 目录文件职责
+### B. TableGen 声明层
+
+1. **`.td` include 图是 DAG**：412 个文件、1132 条边、0 环，最大深度 16。
+   `include` 是词法替换（`llvm/docs/TableGen/ProgRef.md:242`），所以必须能拓扑排序。
+2. **脊柱只有 10 个文件**：`Utils → Constraints → CommonTypeConstraints →
+   CommonAttrConstraints → AttrTypeBase → Interfaces → OpBase`。`OpBase.td` 被 127 个文件
+   直接 include、320 个文件传递依赖（77.7%）。
+3. **方言层几乎平坦**：48 个方言只有 21 条“方言→方言”边，最长 4 跳
+   （`AMDGPU → LLVMIR → GPU → DLTI`）；复杂度来自横向使用 `mlir/Interfaces`。
+4. **`Passes.td` 与 op 定义解耦**：38 个里 32 个只 include `PassBase.td`，深度 1。
+5. **三条边只在 CMake 里**：OpenMP/OpenACC 的 clause 定义以 LLVM 的 `OMP.td`/`ACC.td`
+   为源，Linalg 的 59 个 named op 由 YAML 生成——`.td` 图上看不到，必须读
+   `mlir_tablegen()` 才能发现。
+
+## A 部分：`mlir/lib/AsmParser/` 文件职责
 
 | 文件 | 行数 | 职责 |
 | --- | --- | --- |
@@ -59,3 +83,12 @@
 | `AffineParser.cpp` | 821 | `affine_map`/`affine_set`/affine expr |
 | `LocationParser.cpp` | 237 | `loc(...)` 各种形式 |
 | `AsmParserState.cpp` | 433 | 工具侧源码映射状态的记录与查询 |
+
+## B 部分：产出物
+
+| 文件 | 内容 |
+| --- | --- |
+| `10-tablegen-overview.md` | 统计口径、六层结构、include 语义、生成节点、结论 |
+| `11-tablegen-dependency-graph.md` | 4 张 Mermaid 图 + 度数排行 + 深度分布 |
+| `12-tablegen-dialect-anatomy.md` | Arith / Linalg 解剖、新方言 checklist、常见错误 |
+| `tools/td-dependency-graph.py` | 扫描脚本：统计 + `--mermaid` + `--json`，可复现全部数字 |
