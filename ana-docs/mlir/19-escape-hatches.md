@@ -144,14 +144,25 @@ ops without a text channel: none
 ### R7 类型名也是逃逸点
 
 `Operands (x: token)` 里的 `token` 若是拼错的 `tokn`，语法完全合法。
-所以类型引用必须可解析：**本语料声明 > 内建 > 外部署名（逐条列出）**。
+所以类型引用必须可解析，且**按可见性分三层**：
+
+1. **本方言声明**（同名优先命中本文件）；
+2. **内建类型**与类型构造关键字；
+3. **其它方言的声明**——允许复用，但必须单独列出，不能静默通过。
+
+第 3 层是第七轮的教训：`amdgpu` 声明 `constraint scalar` 后，`tosa` 的
+`scalar` 从外部名报告里消失——全局解析把"借用"和"拼错"混成了一件事。
+按本方言优先解析后，借用仍合法，但借用本身是可数的。
 
 工具报告：
 
 ```text
 ## external type names (neither declared in corpus nor builtin)
 | gpu.dialect | address_space, gpu_handler, gpu_target |
+
+## cross-dialect type names (declared in another dialect, not in this one)
 | tosa.dialect | scalar |
+cross-dialect references: 11
 ```
 
 这条检查第一次跑就抓到了真错误：`async` 的类型声明改名成 `coro.id` 后，

@@ -447,13 +447,23 @@ def main():
     print("core, unused:", unpromoted or "none")
     print("local but used by >=3 dialects (must promote):", overloaded or "none")
 
-    # 类型名解析：declared（全语料 type_def/constraint/enum/attr_def）> builtin > 外部署名。
+    # 类型名解析按 R7 的三层可见性：
+    #   1. 本方言声明（本文件）；
+    #   2. 内建类型 / 类型构造关键字；
+    #   3. 其它方言的声明——允许，但必须单独列出，因为一个方言的拼写错误
+    #      会被另一个方言的同名声明掩盖（22 章 §6 的 `scalar` 事故）。
+    # 都不命中才是外部署名。
     all_declared = set()
+    own_declared = {}
     for path in files:
+        own = set()
         for k, n, _, _ in entities(file_text[path.name]):
             if k in ("type_def", "constraint", "enum", "attr_def"):
                 all_declared.add(n)
+                own.add(n)
+        own_declared[path.name] = own
     unresolved = {}
+    cross_refs = {}
     for path in files:
         text = file_text[path.name]
         names = set()
@@ -473,20 +483,38 @@ def main():
                     names |= set(re.findall(r"[A-Za-z_][\w.]*", texpr))
             for m in re.finditer(r"constraint\s+\w+\s*=\s*([^;]+);", body):
                 names |= set(re.findall(r"[A-Za-z_][\w.]*", m.group(1)))
-        def resolved(n):
-            if n in all_declared or n in BUILTIN_TYPES or n in TYPE_KEYWORDS:
+        own = own_declared[path.name]
+
+        def resolved_here(n):
+            if n in own or n in BUILTIN_TYPES or n in TYPE_KEYWORDS:
                 return True
             # 限定名 pdl.range 的头部 pdl 在别处声明，末段是类型名
+            return "." in n and n.split(".")[-1] in own
+
+        def resolved_elsewhere(n):
+            if n in all_declared:
+                return True
             return "." in n and n.split(".")[-1] in all_declared
 
-        rest = sorted(n for n in names if not resolved(n))
-        unresolved[path.name] = rest
+        unresolved[path.name] = sorted(
+            n for n in names if not resolved_here(n) and not resolved_elsewhere(n))
+        cross_refs[path.name] = sorted(
+            n for n in names if not resolved_here(n) and resolved_elsewhere(n))
 
     print("\n## external type names (neither declared in corpus nor builtin)")
     print("These must be recognizable domain names; a typo shows up here.")
     for name, rest in unresolved.items():
         if rest:
             print("| %s | %s |" % (name, ", ".join(rest)))
+
+    print("\n## cross-dialect type names (declared in another dialect, not in this one)")
+    print("Reuse is allowed; it is listed so a same-spelled local typo cannot hide behind it.")
+    cross_total = 0
+    for name, rest in cross_refs.items():
+        if rest:
+            cross_total += len(rest)
+            print("| %s | %s |" % (name, ", ".join(rest)))
+    print("cross-dialect references: %d" % cross_total)
 
     print("\n## checks")
     print("missing `from`/`extends` targets:", missing_from or "none")
