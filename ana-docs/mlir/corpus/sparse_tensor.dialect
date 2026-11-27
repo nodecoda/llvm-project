@@ -57,15 +57,13 @@ dialect sparse_tensor {
             dim_offset = 4, dim_stride = 5 ];
   }
 
-  enum SortKind {
+  enum SparseTensorSortKind {
     Doc "sort / reorder_coo 的排序实现；只有 insertion_sort_stable 稳定，其余都是非稳定实现。";
     Cases [ hybrid_quick_sort = 0, insertion_sort_stable = 1,
             quick_sort = 2, heap_sort = 3 ];
-    Groups [ stable = insertion_sort_stable ];
-    Groups [ unstable = hybrid_quick_sort | quick_sort | heap_sort ];
   }
 
-  enum CrdTransDirection {
+  enum CrdTransDirectionKind {
     Doc "坐标翻译方向：语义维到存储级，或反向。";
     Cases [ dim_to_lvl = 0, lvl_to_dim = 1 ];
   }
@@ -75,20 +73,19 @@ dialect sparse_tensor {
   attr_def Slice {
     Doc "某一维的切片元数据（offset, size, stride）。动态值存 -1，打印成问号；它嵌在 encoding 的维侧，不是独立属性。";
     Parameters (offset: i64, size: i64, stride: i64);
-    Assembly { "<" "slice" "(" offset "," size "," stride ")" ">" }
+    Assembly   Custom;
   }
 
-  // level-type 是 encoding 内部的取值对象，不单独出现在类型语法里，
-  // 因此用 type_def 而不是 constraint 表达它自己的文本形状。
+  // level-type 是 encoding 内部的取值对象，不单独出现在类型语法里；
+  // 没有 ODS TypeDef，文本由 C++ 打印器决定，故用 type_def 记领域模型、
+  // 用 Modeled 承认文本不可审计。
   type_def level_type {
-    Doc "一个级的完整描述：格式 + structured 的 n,m 尺寸 + 非默认属性表。n <= m，且只有 structured 带方括号尺寸。";
+    Doc "一个级的完整描述：格式 + structured 的 n,m 尺寸 + 非默认属性表。n <= m；它只作为 encoding 字典里的级描述出现，不单独出现在类型语法中（文本由 C++ printer 决定）。";
     Parameters (format: LevelFormat,
                 n: optional<i64> [positive],
                 m: optional<i64> [at_least(n)],
                 properties: optional<array<LevelProperty>>);
-    Assembly { format
-               if n { "[" n "," m "]" }
-               if properties { "(" properties ")" } }
+    Assembly   Modeled;   /* 没有 ODS TypeDef：C++ 打印器决定级描述的文本 */
   }
 
   attr_def Encoding {
@@ -101,12 +98,7 @@ dialect sparse_tensor {
                 explicit_val: optional<supported_element>,
                 implicit_val: optional<supported_element>,
                 dim_slices: array<Slice>);
-    Assembly { "<" "{" "map" "=" dim_to_lvl ":" lvl_types
-               if pos_width { "," "posWidth" "=" pos_width }
-               if crd_width { "," "crdWidth" "=" crd_width }
-               if explicit_val { "," "explicitVal" "=" explicit_val }
-               if implicit_val { "," "implicitVal" "=" implicit_val }
-               "}" ">" }
+    Assembly   Custom;
   }
 
   // ---- 类型：存储元数据与迭代空间 ----
@@ -316,7 +308,7 @@ dialect sparse_tensor {
     Doc "按 encoding 的映射在维空间与级空间之间翻译一组坐标；方向是关键字，编码作为属性写出。";
     Operands   (in_crds: variadic<index>);
     Results    (out_crds: variadic<index>);
-    Attributes (direction: CrdTransDirection, encoder: Encoding);
+    Attributes (direction: CrdTransDirectionKind, encoder: Encoding);
     Properties [pure];
     Assembly   { direction "[" in_crds "]" "as" encoder
                  attr-dict ":" type(out_crds) }
@@ -382,7 +374,7 @@ dialect sparse_tensor {
     Doc "按 xs 的整数值字典序排序 xy 线性缓冲，ys 随之一起动；perm_map 给出比较前作用在 xs 上的置换，其秩就是 xs 的个数，ny 是 ys 的个数（缺省 0）。";
     Operands   (n: index, xy: memref, ys: variadic<memref>);
     Attributes (perm_map: affine_map, ny: optional<index> [non_negative],
-                algorithm: SortKind);
+                algorithm: SparseTensorSortKind);
     Properties [in_place];
     Assembly   { algorithm n "," xy
                  if ys { "jointly" ys }
@@ -396,7 +388,7 @@ dialect sparse_tensor {
     Doc "重排输入 COO，使其级顺序与输出 encoding 一致（典型是把无序 COO 变成有序）。";
     Operands   (input_coo: sparse_tensor);
     Results    (result_coo: sparse_tensor);
-    Attributes (algorithm: SortKind);
+    Attributes (algorithm: SparseTensorSortKind);
     Properties [pure];
     Assembly   { algorithm input_coo attr-dict
                  ":" type(input_coo) "to" type(result_coo) }

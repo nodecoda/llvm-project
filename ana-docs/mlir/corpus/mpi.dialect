@@ -9,15 +9,18 @@ dialect mpi {
 
   type_def comm {
     Doc "Opaque MPI communicator handle (!mpi.comm); carries no parameters.";
+    Assembly   Generic;
   }
   type_def retval {
     Doc "Return value of an MPI call (!mpi.retval): MPI_SUCCESS or an error code.";
+    Assembly   Generic;
   }
   type_def request {
     Doc "Opaque handle to an asynchronous request (!mpi.request).";
+    Assembly   Generic;
   }
 
-  enum ErrorClass {
+  enum MPI_ErrorClassEnum {
     Doc "MPI error classes (MPI_SUCCESS .. MPI_ERR_LASTCODE).";
     Cases [
       mpi_success = 0 "MPI_SUCCESS", mpi_err_access = 1 "MPI_ERR_ACCESS",
@@ -63,7 +66,7 @@ dialect mpi {
       mpi_err_win = 61 "MPI_ERR_WIN", mpi_err_lastcode = 62 "MPI_ERR_LASTCODE"
     ];
   }
-  enum ReductionOp {
+  enum MPI_ReductionOpEnum {
     Doc "MPI reduction operators.";
     Cases [
       mpi_op_null = 0 "MPI_OP_NULL", mpi_max = 1 "MPI_MAX", mpi_min = 2 "MPI_MIN",
@@ -142,13 +145,13 @@ dialect mpi {
   }
   op allreduce {
     Doc "Reduce one buffer across all ranks with a reduction operator.";
-    Operands   (sendbuf: memref, recvbuf: memref, op: ReductionOp, comm: comm);
+    Operands   (sendbuf: memref, recvbuf: memref, op: MPI_ReductionOpEnum, comm: comm);
     Results    (retval: optional<retval>);
     Assembly   { "(" sendbuf "," recvbuf "," op "," comm ")" attr-dict ":" type(sendbuf) "," type(recvbuf) if retval { "->" type(retval) } }
   }
   op reduce_scatter_block {
     Doc "Reduce a buffer across ranks and scatter equal blocks.";
-    Operands   (sendbuf: memref, recvbuf: memref, op: ReductionOp, comm: comm);
+    Operands   (sendbuf: memref, recvbuf: memref, op: MPI_ReductionOpEnum, comm: comm);
     Results    (retval: optional<retval>);
     Assembly   { "(" sendbuf "," recvbuf "," op "," comm ")" attr-dict ":" type(sendbuf) "," type(recvbuf) if retval { "->" type(retval) } }
   }
@@ -176,7 +179,7 @@ dialect mpi {
     Doc "Compare a return value against an error class.";
     Operands   (val: retval);
     Results    (res: i1);
-    Attributes (errclass: ErrorClass);
+    Attributes (errclass: MPI_ErrorClassEnum);
     Properties [no_memory_effect];
     Assembly   { val "=" errclass attr-dict ":" type(res) }
   }

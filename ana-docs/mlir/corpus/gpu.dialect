@@ -50,13 +50,15 @@ dialect gpu {
 
   enum AllReduceOperation {
     Doc "Reduction combinator, mirroring vector reductions.";
-    Cases [ add = 0, mul = 1, minui = 2, minsi = 3, maxui = 5, maxsi = 6,
-            and = 8, or = 9, xor = 10 ];
+    Cases [ add = 0, mul = 1, minui = 2, minsi = 3, minnumf = 4, maxui = 5,
+             maxsi = 6, maxnumf = 7, and = 8, or = 9, xor = 10,
+             minimumf = 11, maximumf = 12, minimumnumf = 13,
+             maximumnumf = 14 ];
   }
 
   enum BarrierScope {
     Doc "Execution scope synchronized by a barrier.";
-    Cases [ workgroup = 0, subgroup = 1, cluster = 2 ];
+    Cases [ subgroup = 1, workgroup = 2, cluster = 3 ];
   }
 
   // ---- 枚举：转置模式、2:4 剪枝、SpGEMM 阶段、MMA 逐元素、广播源 ----
@@ -100,14 +102,17 @@ dialect gpu {
   // !gpu.sparse.spgemmop_handle；关键字本身即全部文本，没有参数。
   type_def sparse_dn_tensor {
     Doc "dense tensor 句柄；由 create_dn_tensor 产生。";
+    Assembly   Modeled;
   }
 
   type_def sparse_sp_mat {
     Doc "sparse matrix 句柄；由 create_* 稀疏格式构造器产生。";
+    Assembly   Modeled;
   }
 
   type_def sparse_spgemm_handle {
     Doc "SpGEMM 运算描述符句柄；贯穿 spgemm_* 各阶段。";
+    Assembly   Modeled;
   }
 
   // 三种句柄的并集：销毁与查询只关心"是某个 sparse 句柄"。

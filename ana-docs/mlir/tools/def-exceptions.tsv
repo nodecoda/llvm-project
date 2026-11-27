@@ -1,0 +1,60 @@
+# Definition-layer escapes: aliases and modeled definitions.
+#
+# dialect	kind	corpus	upstream	witness	category	reason
+#
+# An alias (`rename`) maps a corpus declaration to a real upstream record of
+# the same kind.  The reason says why the corpus cannot use the upstream
+# spelling; the target must exist, so a rename never smuggles in a definition.
+#
+# A modeled row has no upstream ODS record.  The witness is a `path:line` that
+# must (a) exist, (b) suit the category, and (c) mention the symbol quoted in
+# the reason.  Categories are a closed vocabulary:
+#
+#   cxx-type       hand-written C++ type / value object; witness .h or .td
+#   cxx-enum       hand-written C++ enum;                  witness .h
+#   builtin        builtin attribute/type used as a payload; witness under
+#                  mlir/include/mlir/IR/
+#   constraint     TableGen constraint alias, not a def;   witness .td
+#   borrowed-enum  enum record owned by another dialect;   witness outside
+#                  this dialect's own tree
+#
+# A modeled definition uses `Assembly Modeled;` (opaque) or a *flat spine*
+# block: string literals, declared parameters and `params` only.  `Modeled;`
+# declares no parameters (D12); a block is checked for the full parameter list
+# (D4) and against directives/control flow (D11).  A row is stale if no corpus
+# declaration uses it.
+#
+transform	type	operation	op	-	rename	mnemonic `op` is the op-declaration keyword; the corpus uses the class name
+transform	type	type_param	type	-	rename	keeps the parameter class name (`type` is the assembly directive)
+transform	type	affine_map_param	affine_map	-	rename	keeps the parameter class name used by the predicate
+gpu	type	sparse_dn_tensor	-	mlir/include/mlir/Dialect/GPU/IR/GPUBase.td:183	cxx-type	C++ handle type `SparseDnTensorHandleType`, not an ODS TypeDef
+gpu	type	sparse_sp_mat	-	mlir/include/mlir/Dialect/GPU/IR/GPUBase.td:185	cxx-type	C++ handle type `SparseSpMatHandleType`, not an ODS TypeDef
+gpu	type	sparse_spgemm_handle	-	mlir/include/mlir/Dialect/GPU/IR/GPUBase.td:184	cxx-type	C++ handle type `SparseSpGEMMOpHandleType`, not an ODS TypeDef
+gpu	type	mma_matrix	-	mlir/include/mlir/Dialect/GPU/IR/GPUBase.td:165	cxx-type	C++ type `MMAMatrixType`, not an ODS TypeDef
+llvm	type	metadata	-	mlir/include/mlir/Dialect/LLVMIR/LLVMTypes.h:70	cxx-type	trivial C++ type `LLVMMetadataType`
+quant	type	Uniform	-	mlir/include/mlir/Dialect/Quant/IR/QuantTypes.h:263	cxx-type	C++ type `UniformQuantizedType` (+ per-axis/sub-channel)
+quant	type	Any	-	mlir/include/mlir/Dialect/Quant/IR/QuantTypes.h:202	cxx-type	C++ type `AnyQuantizedType`
+quant	type	Calibrated	-	mlir/include/mlir/Dialect/Quant/IR/QuantTypes.h:523	cxx-type	C++ type `CalibratedQuantizedType`
+quant	type	Quantile	-	mlir/include/mlir/Dialect/Quant/IR/QuantTypes.h:606	cxx-type	C++ type `QuantileType`
+sparse_tensor	type	level_type	-	mlir/include/mlir/Dialect/SparseTensor/IR/Enums.h:238	cxx-type	C++ `LevelType` value object inside an encoding
+sparse_tensor	enum	LevelFormat	-	mlir/include/mlir/Dialect/SparseTensor/IR/Enums.h:154	cxx-enum	C++ `LevelFormat` enum
+sparse_tensor	enum	LevelProperty	-	mlir/include/mlir/Dialect/SparseTensor/IR/Enums.h:203	cxx-enum	C++ `LevelPropNonDefault` enum
+spirv	type	any_ptr	-	mlir/include/mlir/Dialect/SPIRV/IR/SPIRVTypes.h:193	cxx-type	C++ `PointerType`/`UntypedPointerType`
+spirv	type	image	-	mlir/include/mlir/Dialect/SPIRV/IR/SPIRVTypes.h:145	cxx-type	C++ `ImageType`
+spirv	type	sampled_image	-	mlir/include/mlir/Dialect/SPIRV/IR/SPIRVTypes.h:253	cxx-type	C++ `SampledImageType`
+spirv	type	sampler	-	mlir/include/mlir/Dialect/SPIRV/IR/SPIRVTypes.h:274	cxx-type	C++ `SamplerType`
+spirv	type	cooperative_matrix	-	mlir/include/mlir/Dialect/SPIRV/IR/SPIRVTypes.h:450	cxx-type	C++ `CooperativeMatrixType`
+spirv	type	matrix	-	mlir/include/mlir/Dialect/SPIRV/IR/SPIRVTypes.h:501	cxx-type	C++ `MatrixType`
+spirv	type	any_struct	-	mlir/include/mlir/Dialect/SPIRV/IR/SPIRVTypes.h:312	cxx-type	C++ `StructType`
+spirv	type	any_array	-	mlir/include/mlir/Dialect/SPIRV/IR/SPIRVTypes.h:117	cxx-type	C++ `ArrayType`/`RuntimeArrayType`
+spirv	type	named_barrier	-	mlir/include/mlir/Dialect/SPIRV/IR/SPIRVTypes.h:284	cxx-type	C++ `NamedBarrierType`
+spirv	type	tensor_arm	-	mlir/include/mlir/Dialect/SPIRV/IR/SPIRVTypes.h:557	cxx-type	C++ `TensorArmType`
+tosa	attr	AccumulatorType	-	mlir/include/mlir/Dialect/Tosa/IR/TosaOps.td:132	constraint	`TypeAttrOf<Tosa_AccType>`; no AttrDef exists
+tosa	attr	DenseElements	-	mlir/include/mlir/IR/BuiltinAttributes.h:243	builtin	builtin `DenseElementsAttr` used as a payload
+tosa	attr	IndexElements	-	mlir/include/mlir/IR/CommonAttrConstraints.td:491	builtin	builtin `IndexElementsAttr` constraint
+tosa	attr	SymbolName	-	mlir/include/mlir/IR/CommonAttrConstraints.td:379	builtin	builtin `SymbolNameAttr` constraint
+toy	type	struct	-	mlir/examples/toy/Ch7/include/toy/Ops.td:51	constraint	`DialectType` constraint over the C++ `StructType`
+memref	enum	AtomicRMWKind	-	mlir/include/mlir/Dialect/Arith/IR/ArithBase.td:106	borrowed-enum	memref borrows arith's `AtomicRMWKind` enum
+xegpu	enum	AtomicRMWKind	-	mlir/include/mlir/Dialect/Arith/IR/ArithBase.td:106	borrowed-enum	xegpu atomics borrow arith's `AtomicRMWKind` enum
+nvgpu	enum	FPRoundingMode	-	mlir/include/mlir/Dialect/LLVMIR/NVVMEnums.td:27	borrowed-enum	nvgpu borrows NVVM's `FPRoundingMode`
+nvgpu	enum	SaturationMode	-	mlir/include/mlir/Dialect/LLVMIR/NVVMEnums.td:47	borrowed-enum	nvgpu borrows NVVM's `SaturationMode`

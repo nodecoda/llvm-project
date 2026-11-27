@@ -120,66 +120,83 @@ dialect llvm {
 
   // ---- 类型 ----
 
-  type_def pointer {
-    Doc "LLVM pointer type (!llvm.ptr<addrspace>); address space defaults to 0.";
+  type_def ptr {
+    Doc "LLVM pointer type (!llvm.ptr<addrspace>); address space defaults to 0 and is then not printed.";
+    Parameters (address_space: i64 = 0);
+    Assembly { if address_space { "<" address_space ">" } }
   }
-  type_def struct_type {
-    Doc "LLVM literal struct type (!llvm.struct<(T0, T1, ...)>), possibly packed.";
+  type_def struct {
+    Doc "LLVM struct type: an optional name and a body, printed by the hand-written printer (LLVMTypes.cpp); a literal struct is !llvm.struct<(T0, T1, ...)>.";
+    Parameters (name: optional<string>, body: array<type>);
+    Assembly   Custom;
   }
-  type_def array_type {
+  type_def array {
     Doc "LLVM array type (!llvm.array<N x T>).";
+    Parameters (element: type, count: i64);
+    Assembly { "<" count "x" custom<PrettyLLVMType>(element) ">" }
   }
-  type_def metadata_type {
-    Doc "LLVM metadata type (!llvm.metadata), the SSA carrier of metadata attributes.";
-  }
-  type_def token_type {
-    Doc "LLVM token type (!llvm.token) used by coroutine intrinsics.";
-  }
-  type_def comdat_type {
-    Doc "LLVM comdat selector reference (!llvm.comdat), naming a comdat() group.";
+  type_def metadata {
+    Doc "LLVM metadata type (!llvm.metadata), the SSA carrier of metadata attributes; it is a trivial C++ type (LLVMTypes.h:70), not an ODS TypeDef.";
+    Assembly   Modeled;   /* 没有 ODS 记录：Generic/Custom 都无法被上游证伪 */
   }
 
-  constraint llvm_type = integer | float | pointer | struct_type | array_type | metadata_type | token_type | vector | function_type;
+  constraint llvm_type = integer | float | ptr | struct | array | metadata | token | vector | function_type;
   constraint llvm_scalar = integer | float;
-  constraint llvm_ptr = pointer | vector;
-  constraint aggregate = struct_type | array_type;
+  constraint llvm_ptr = ptr | vector;
+  constraint aggregate = struct | array;
 
   enum FastmathFlags: bits {
     Doc "Floating-point fast-math flags; empty prints nothing.";
-    Cases [ none = 0, reassoc = 1, nnan = 2, ninf = 4, nsz = 8,
-            arcp = 16, contract = 32, afn = 64 ];
+    Cases [ none = 0, nnan = 1, ninf = 2, nsz = 4, arcp = 8, contract = 16,
+             afn = 32, reassoc = 64 ];
     Groups [ fast = reassoc | nnan | ninf | nsz | arcp | contract | afn ];
   }
 
-  enum OverflowFlags: bits {
+  enum IntegerOverflowFlags: bits {
     Doc "Integer overflow flags on arithmetic and trunc.";
     Cases [ none = 0, nsw = 1, nuw = 2 ];
   }
 
   enum AtomicOrdering {
     Doc "LLVM atomic ordering.";
-    Cases [ not_atomic = 0 "not_atomic", unordered = 1, monotonic = 4,
-            acquire = 2, release = 3, acq_rel = 5, seq_cst = 6 ];
+    Cases [ not_atomic = 0, unordered = 1, monotonic = 2, acquire = 4,
+             release = 5, acq_rel = 6, seq_cst = 7 ];
   }
 
   enum AtomicBinOp {
     Doc "Operation of llvm.atomicrmw.";
-    Cases [ xchg = 0, add = 1, sub = 2, and_ = 3 "and", nand = 4, or_ = 5 "or",
-            xor = 6, max = 7, min = 8, umax = 9, umin = 10, fadd = 11,
-            fsub = 12, fmax = 13, fmin = 14, uinc_wrap = 15, udec_wrap = 16 ];
+    Cases [ xchg = 0, add = 1, sub = 2, _and = 3, nand = 4, _or = 5,
+             _xor = 6, max = 7, min = 8, umax = 9, umin = 10, fadd = 11,
+             fsub = 12, fmax = 13, fmin = 14, uinc_wrap = 15, udec_wrap = 16,
+             usub_cond = 17, usub_sat = 18, fmaximum = 19, fminimum = 20,
+             fmaximumnum = 21, fminimumnum = 22 ];
   }
 
   enum Linkage {
     Doc "LLVM linkage kinds.";
-    Cases [ private = 0, internal = 1, available_externally = 2, linkonce = 3,
-            weak = 4, common = 5, appending = 6, extern_weak = 7,
-            linkonce_odr = 8, weak_odr = 9, external = 10 ];
+    Cases [ external = 0, available_externally = 1, linkonce = 2,
+             linkonce_odr = 3, weak = 4, weak_odr = 5, appending = 6,
+             internal = 7, private = 8, extern_weak = 9, common = 10 ];
   }
 
   enum CConv {
     Doc "Calling conventions.";
-    Cases [ C = 0, fastcc = 8, coldcc = 9, ghccc = 10, tailcc = 20,
-            preserve_most = 21 ];
+    Cases [ ccc = 0, fastcc = 8, coldcc = 9, cc_10 = 10, cc_11 = 11,
+             anyregcc = 13, preserve_mostcc = 14, preserve_allcc = 15,
+             swiftcc = 16, cxx_fast_tlscc = 17, tailcc = 18,
+             cfguard_checkcc = 19, swifttailcc = 20, preserve_nonecc = 21,
+             x86_stdcallcc = 64, x86_fastcallcc = 65, arm_apcscc = 66,
+             arm_aapcscc = 67, arm_aapcs_vfpcc = 68, msp430_intrcc = 69,
+             x86_thiscallcc = 70, ptx_kernelcc = 71, ptx_devicecc = 72,
+             spir_funccc = 75, spir_kernelcc = 76, intel_ocl_bicc = 77,
+             x86_64_sysvcc = 78, win64cc = 79, x86_vectorcallcc = 80,
+             hhvmcc = 81, hhvm_ccc = 82, x86_intrcc = 83, avr_intrcc = 84,
+             avr_builtincc = 86, amdgpu_vscc = 87, amdgpu_gscc = 88,
+             amdgpu_cscc = 90, amdgpu_kernelcc = 91, x86_regcallcc = 92,
+             amdgpu_hscc = 93, msp430_builtincc = 94, amdgpu_lscc = 95,
+             amdgpu_escc = 96, aarch64_vectorcallcc = 97,
+             aarch64_sve_vectorcallcc = 98, wasm_emscripten_invokecc = 99,
+             amdgpu_gfxcc = 100, m68k_intrcc = 101 ];
   }
 
   enum TailCallKind {
@@ -189,18 +206,18 @@ dialect llvm {
 
   enum Visibility {
     Doc "Symbol visibility.";
-    Cases [ default = 0, hidden = 1, protected = 2 ];
+    Cases [ Default = 0, hidden = 1, protected = 2 ];
   }
 
   enum UnnamedAddr {
     Doc "unnamed_addr kinds.";
-    Cases [ none = 0, local = 1, global = 2 ];
+    Cases [ None = 0, local_unnamed_addr = 1, unnamed_addr = 2 ];
   }
 
   enum RoundingMode {
     Doc "Rounding modes of the constrained FP intrinsics (LLVMEnums.td:776-808).";
     Cases [ towardzero = 0, tonearest = 1, upward = 2, downward = 3,
-            tonearestaway = 4, dynamic = 7 ];
+             tonearestaway = 4, dynamic = 7, invalid = -1 ];
   }
 
   enum FPExceptionBehavior {
@@ -214,7 +231,7 @@ dialect llvm {
     Doc "Integer binary arithmetic with optional nsw/nuw flags; operands and result share one type (LLVM_IntArithmeticOpWithOverflowFlag, LLVMOps.td:59).";
     Operands   (lhs: integer, rhs: integer);
     Results    (res: integer);
-    Attributes (overflow_flags: OverflowFlags = none);
+    Attributes (overflow_flags: IntegerOverflowFlags = none);
     Properties [pure, no_memory_effect, same_type(lhs, rhs), same_type(rhs, res)];
     Assembly   { lhs "," rhs if overflow_flags { overflow_flags }
                  attr-dict ":" type(res) }
@@ -427,7 +444,7 @@ dialect llvm {
     Doc "Integer truncation; optional nuw/nsw flags (LLVM_CastOpWithOverflowFlag, LLVMOps.td:610). The separate llvm.intr.trunc op (LLVM_FTruncOp) prints the unary-intrinsic form.";
     Operands   (arg: integer);
     Results    (res: integer);
-    Attributes (overflow_flags: OverflowFlags = none);
+    Attributes (overflow_flags: IntegerOverflowFlags = none);
     Properties [pure];
     Assembly   { arg if overflow_flags { overflow_flags } attr-dict ":"
                  type(arg) "to" type(res) }
@@ -471,14 +488,15 @@ dialect llvm {
 
   enum FCmpPredicate {
     Doc "Floating-point comparison predicates for llvm.fcmp.";
-    Cases [ always_false = 0 "false", oeq = 1, ogt = 2, oge = 3, olt = 4,
-            ole = 5, one = 6, ord = 7, ueq = 8, ugt = 9, uge = 10, ult = 11,
-            ule = 12, une = 13, uno = 14, always_true = 15 "true" ];
+    Cases [ _false = 0, oeq = 1, ogt = 2, oge = 3, olt = 4, ole = 5, one = 6,
+             ord = 7, ueq = 8, ugt = 9, uge = 10, ult = 11, ule = 12,
+             une = 13, uno = 14, _true = 15 ];
   }
 
   enum GEPNoWrapFlags: bits {
     Doc "getelementptr no-wrap flags; inbounds implies nusw.";
-    Cases [ none = 0, inbounds = 1, nusw = 2, nuw = 4 ];
+    Cases [ none = 0, inbounds_flag = 1, nusw = 2, nuw = 4 ];
+    Groups [ inbounds = inbounds_flag | nusw ];
   }
 
   // ---- 内存 ----
@@ -486,7 +504,7 @@ dialect llvm {
   op alloca {
     Doc "Stack allocation; prints through the upstream hand-written printer/parser (LLVMOps.td:296). arraySize is in elements of elem_type, alignment is optional, inalloca marks a used-with-inalloca alloca.";
     Operands   (arraySize: integer);
-    Results    (res: pointer);
+    Results    (res: ptr);
     Attributes (alignment: optional<i64>, elem_type: type, inalloca: optional<unit>);
     Properties [memory_effect(allocate)];
     Assembly   Custom;
@@ -776,7 +794,7 @@ dialect llvm {
 
   op mlir.addressof {
     Doc "Pointer to a global, alias or function symbol (Pure, ConstantLike, LLVMOps.td:1370).";
-    Results    (res: pointer);
+    Results    (res: ptr);
     Attributes (global_name: symbol_ref);
     Properties [pure, constant_like];
     Assembly   { global_name attr-dict ":" qualified(type(res)) }
@@ -784,7 +802,7 @@ dialect llvm {
 
   op dso_local_equivalent {
     Doc "Pointer equal to the dso_local address of a function symbol (LLVMOps.td:1884).";
-    Results    (res: pointer);
+    Results    (res: ptr);
     Attributes (function_name: symbol_ref);
     Properties [pure, constant_like];
     Assembly   { function_name attr-dict ":" qualified(type(res)) }
@@ -792,7 +810,7 @@ dialect llvm {
 
   op blockaddress {
     Doc "Pointer to a basic block identified by function and tag (LLVMOps.td:1926).";
-    Results    (res: pointer);
+    Results    (res: ptr);
     Attributes (block_addr: attribute);
     Properties [pure, constant_like];
     Assembly   { block_addr attr-dict ":" qualified(type(res)) }
@@ -877,7 +895,7 @@ dialect llvm {
 
   op comdat_selector {
     Doc "Declaration of one COMDAT selector inside an llvm.comdat group (LLVMOps.td:2068).";
-    Attributes (sym_name: string, comdat: comdat_type,
+    Attributes (sym_name: string, comdat: string,
                 sym_visibility: optional<string>);
     Properties [symbol, symbol_visibility];
     Assembly   { if sym_visibility { sym_visibility } sym_name comdat attr-dict }
@@ -907,7 +925,7 @@ dialect llvm {
 
   op mlir.none {
     Doc "The LLVM none token literal as a !token SSA value (LLVMOps.td:2281).";
-    Results    (res: token_type);
+    Results    (res: token);
     Properties [pure];
     Assembly   { attr-dict ":" type(res) }
   }
@@ -943,7 +961,7 @@ dialect llvm {
 
   op mlir.metadata_as_value {
     Doc "Wraps an LLVM metadata constant so it can be used as an SSA value (LLVMOps.td:2687).";
-    Results    (res: metadata_type);
+    Results    (res: metadata);
     Attributes (metadata: attribute);
     Properties [pure, constant_like];
     Assembly   { metadata attr-dict }
@@ -970,7 +988,7 @@ dialect llvm {
   op cmpxchg {
     Doc "Atomic compare-and-exchange; val and cmp share a type and the result is the {T, i1} struct (LLVMOps.td:2552).";
     Operands   (ptr: llvm_ptr, cmp: llvm_type, val: llvm_type);
-    Results    (res: struct_type);
+    Results    (res: struct);
     Attributes (success_ordering: AtomicOrdering = seq_cst,
                 failure_ordering: AtomicOrdering = seq_cst,
                 syncscope: optional<string>, alignment: optional<i64>,
@@ -1613,7 +1631,7 @@ dialect llvm {
 
   op intr.annotation {
     Doc "Attach an annotation string to an integer value (LLVM_Annotation, LLVMIntrinsicOps.td); upstream has no assemblyFormat.";
-    Operands   (integer: integer, annotation: pointer, fileName: pointer,
+    Operands   (integer: integer, annotation: ptr, fileName: ptr,
                 line: i32);
     Results    (res: integer);
     Properties [same_type(res, integer), same_type(annotation, fileName)];
@@ -1665,7 +1683,7 @@ dialect llvm {
 
   op intr.masked.store {
     Doc "Masked vector store through a pointer (LLVM_MaskedStoreOp, LLVMIntrinsicOps.td:1140).";
-    Operands   (value: vector, data: pointer, mask: vector);
+    Operands   (value: vector, data: ptr, mask: vector);
     Attributes (alignment: optional<i64>);
     Assembly   { "(" value "," data "," mask ")"
                  if alignment { "," "alignment" "(" alignment ")" }
@@ -1685,34 +1703,34 @@ dialect llvm {
 
   op intr.masked.compressstore {
     Doc "Compress the unmasked elements and store them contiguously (LLVM_masked_compressstore); upstream has no assemblyFormat.";
-    Operands   (value: vector, ptr: pointer, mask: vector);
+    Operands   (value: vector, ptr: ptr, mask: vector);
     Assembly   Generic;
   }
 
   op intr.masked.expandload {
     Doc "Load contiguously and expand into the unmasked lanes (LLVM_masked_expandload); upstream has no assemblyFormat.";
-    Operands   (ptr: pointer, mask: vector);
+    Operands   (ptr: ptr, mask: vector);
     Results    (res: vector);
     Assembly   Generic;
   }
 
   op intr.memcpy {
     Doc "Copy a constant number of bytes (LLVM_MemcpyOp); upstream has no assemblyFormat.";
-    Operands   (dst: pointer, src: pointer);
+    Operands   (dst: ptr, src: ptr);
     Attributes (len: i64, isVolatile: bool);
     Assembly   Generic;
   }
 
   op intr.memmove {
     Doc "Copy a constant number of bytes allowing overlap; upstream has no assemblyFormat.";
-    Operands   (dst: pointer, src: pointer);
+    Operands   (dst: ptr, src: ptr);
     Attributes (len: i64, isVolatile: bool);
     Assembly   Generic;
   }
 
   op intr.memcpy.inline {
     Doc "Inlinable memcpy with a constant length; upstream has no assemblyFormat.";
-    Operands   (dst: pointer, src: pointer);
+    Operands   (dst: ptr, src: ptr);
     Attributes (len: i64, isVolatile: bool);
     Properties [memory_effect(read), memory_effect(write)];
     Assembly   Generic;
@@ -1720,14 +1738,14 @@ dialect llvm {
 
   op intr.memset {
     Doc "Fill a constant number of bytes (LLVM_MemsetOp); upstream has no assemblyFormat.";
-    Operands   (dst: pointer, val: i8);
+    Operands   (dst: ptr, val: i8);
     Attributes (len: i64, isVolatile: bool);
     Assembly   Generic;
   }
 
   op intr.memset.inline {
     Doc "Inlinable memset with a constant length; upstream has no assemblyFormat.";
-    Operands   (dst: pointer, val: i8);
+    Operands   (dst: ptr, val: i8);
     Attributes (len: i64, isVolatile: bool);
     Assembly   Generic;
   }
@@ -1742,24 +1760,24 @@ dialect llvm {
 
   op intr.prefetch {
     Doc "Prefetch hint for an address; rw/hint/cache are immediate attributes (LLVM_Prefetch, LLVMIntrinsicOps.td:164); upstream has no assemblyFormat.";
-    Operands   (addr: pointer);
+    Operands   (addr: ptr);
     Attributes (rw: i32, hint: i32, cache: i32);
     Assembly   Generic;
   }
 
   op intr.ptr.annotation {
     Doc "Attach an annotation to a pointer and return it (LLVM_PtrAnnotation); upstream has no assemblyFormat.";
-    Operands   (ptr: pointer, annotation: pointer, fileName: pointer, line: i32,
-                attr: pointer);
-    Results    (res: pointer);
+    Operands   (ptr: ptr, annotation: ptr, fileName: ptr, line: i32,
+                attr: ptr);
+    Results    (res: ptr);
     Properties [same_type(res, ptr), same_type(annotation, fileName)];
     Assembly   Generic;
   }
 
   op intr.var.annotation {
     Doc "Attach an annotation to an SSA value (LLVM_VarAnnotation); upstream has no assemblyFormat.";
-    Operands   (val: pointer, annotation: pointer, fileName: pointer, line: i32,
-                attr: pointer);
+    Operands   (val: ptr, annotation: ptr, fileName: ptr, line: i32,
+                attr: ptr);
     Properties [same_type(annotation, fileName)];
     Assembly   Generic;
   }
@@ -1767,7 +1785,7 @@ dialect llvm {
   op intr.sadd.with.overflow {
     Doc "Signed addition returning {result, overflow} (LLVM_SAddWithOverflowOp); upstream has no assemblyFormat.";
     Operands   (a: integer, b: integer);
-    Results    (res: struct_type);
+    Results    (res: struct);
     Properties [pure, same_element_type(a, b)];
     Assembly   Generic;
   }
@@ -1775,7 +1793,7 @@ dialect llvm {
   op intr.uadd.with.overflow {
     Doc "Unsigned addition returning {result, overflow}; upstream has no assemblyFormat.";
     Operands   (a: integer, b: integer);
-    Results    (res: struct_type);
+    Results    (res: struct);
     Properties [pure, same_element_type(a, b)];
     Assembly   Generic;
   }
@@ -1783,7 +1801,7 @@ dialect llvm {
   op intr.ssub.with.overflow {
     Doc "Signed subtraction returning {result, overflow}; upstream has no assemblyFormat.";
     Operands   (a: integer, b: integer);
-    Results    (res: struct_type);
+    Results    (res: struct);
     Properties [pure, same_element_type(a, b)];
     Assembly   Generic;
   }
@@ -1791,7 +1809,7 @@ dialect llvm {
   op intr.usub.with.overflow {
     Doc "Unsigned subtraction returning {result, overflow}; upstream has no assemblyFormat.";
     Operands   (a: integer, b: integer);
-    Results    (res: struct_type);
+    Results    (res: struct);
     Properties [pure, same_element_type(a, b)];
     Assembly   Generic;
   }
@@ -1799,7 +1817,7 @@ dialect llvm {
   op intr.smul.with.overflow {
     Doc "Signed multiplication returning {result, overflow}; upstream has no assemblyFormat.";
     Operands   (a: integer, b: integer);
-    Results    (res: struct_type);
+    Results    (res: struct);
     Properties [pure, same_element_type(a, b)];
     Assembly   Generic;
   }
@@ -1807,15 +1825,15 @@ dialect llvm {
   op intr.umul.with.overflow {
     Doc "Unsigned multiplication returning {result, overflow}; upstream has no assemblyFormat.";
     Operands   (a: integer, b: integer);
-    Results    (res: struct_type);
+    Results    (res: struct);
     Properties [pure, same_element_type(a, b)];
     Assembly   Generic;
   }
 
   op intr.threadlocal.address {
     Doc "Address of a thread-local global for the current thread (LLVM_ThreadLocalAddressOp); upstream has no assemblyFormat.";
-    Operands   (global: pointer);
-    Results    (res: pointer);
+    Operands   (global: ptr);
+    Results    (res: ptr);
     Properties [pure];
     Assembly   Generic;
   }
@@ -1823,7 +1841,7 @@ dialect llvm {
   op intr.vector.deinterleave2 {
     Doc "Split a vector into even and odd elements; upstream has no assemblyFormat.";
     Operands   (vec: vector);
-    Results    (res: struct_type);
+    Results    (res: struct);
     Properties [pure];
     Assembly   Generic;
   }
@@ -1838,14 +1856,14 @@ dialect llvm {
 
   op intr.vp.load {
     Doc "Vector-predicated load with mask and explicit vector length; upstream has no assemblyFormat.";
-    Operands   (ptr: pointer, mask: vector, evl: i32);
+    Operands   (ptr: ptr, mask: vector, evl: i32);
     Results    (res: vector);
     Assembly   Generic;
   }
 
   op intr.vp.store {
     Doc "Vector-predicated store with mask and explicit vector length; upstream has no assemblyFormat.";
-    Operands   (val: vector, ptr: pointer, mask: vector, evl: i32);
+    Operands   (val: vector, ptr: ptr, mask: vector, evl: i32);
     Assembly   Generic;
   }
 
@@ -1857,14 +1875,14 @@ dialect llvm {
 
   op intr.experimental.vp.strided.load {
     Doc "Strided vector-predicated load (LLVM_VPStridedLoadOp, LLVMIntrinsicOps.td:1973); upstream has no assemblyFormat.";
-    Operands   (ptr: pointer, stride: integer, mask: vector, evl: i32);
+    Operands   (ptr: ptr, stride: integer, mask: vector, evl: i32);
     Results    (res: vector);
     Assembly   Generic;
   }
 
   op intr.experimental.vp.strided.store {
     Doc "Strided vector-predicated store (LLVM_VPStridedStoreOp); upstream has no assemblyFormat.";
-    Operands   (val: vector, ptr: pointer, stride: integer, mask: vector,
+    Operands   (val: vector, ptr: ptr, stride: integer, mask: vector,
                 evl: i32);
     Assembly   Generic;
   }
@@ -2053,24 +2071,24 @@ dialect llvm {
 
   op intr.coro.id {
     Doc "Produce a coroutine id token; align/promise/coroaddr/fnaddrs print as a bare operand list (LLVM_CoroIdOp, LLVMIntrinsicOps.td:996).";
-    Operands   (align: i32, promise: pointer, coroaddr: pointer,
-                fnaddrs: array<pointer>);
-    Results    (res: token_type);
+    Operands   (align: i32, promise: ptr, coroaddr: ptr,
+                fnaddrs: array<ptr>);
+    Results    (res: token);
     Assembly   { align "," promise "," coroaddr "," fnaddrs attr-dict ":"
                  functional-type(operands, results) }
   }
 
   op intr.coro.begin {
     Doc "Begin a coroutine from an id token and a memory pointer.";
-    Operands   (token: token_type, mem: pointer);
-    Results    (res: pointer);
+    Operands   (token: token, mem: ptr);
+    Results    (res: ptr);
     Assembly   { token "," mem attr-dict ":"
                  functional-type(operands, results) }
   }
 
   op intr.coro.alloc {
     Doc "Whether the coroutine frame must be heap-allocated.";
-    Operands   (id: token_type);
+    Operands   (id: token);
     Results    (res: i1);
     Assembly   { id attr-dict ":" functional-type(operands, results) }
   }
@@ -2089,21 +2107,21 @@ dialect llvm {
 
   op intr.coro.save {
     Doc "Save the coroutine state into a token.";
-    Operands   (handle: pointer);
-    Results    (res: token_type);
+    Operands   (handle: ptr);
+    Results    (res: token);
     Assembly   { handle attr-dict ":" functional-type(operands, results) }
   }
 
   op intr.coro.suspend {
     Doc "Suspend the coroutine; save is the token, final marks the final suspend.";
-    Operands   (save: token_type, final: i1);
+    Operands   (save: token, final: i1);
     Results    (res: i8);
     Assembly   { save "," final attr-dict ":" type(res) }
   }
 
   op intr.coro.end {
     Doc "Mark the end of the coroutine body; unwind selects the unwind path.";
-    Operands   (handle: pointer, unwind: i1, retvals: variadic<llvm_type>);
+    Operands   (handle: ptr, unwind: i1, retvals: variadic<llvm_type>);
     Results    (res: i1);
     Assembly   { handle "," unwind "," retvals attr-dict ":"
                  functional-type(operands, results) }
@@ -2111,7 +2129,7 @@ dialect llvm {
 
   op intr.coro.free {
     Doc "Free the coroutine frame.";
-    Operands   (id: token_type, handle: pointer);
+    Operands   (id: token, handle: ptr);
     Results    (res: llvm_ptr);
     Assembly   { id "," handle attr-dict ":"
                  functional-type(operands, results) }
@@ -2119,39 +2137,39 @@ dialect llvm {
 
   op intr.coro.resume {
     Doc "Resume a suspended coroutine.";
-    Operands   (handle: pointer);
+    Operands   (handle: ptr);
     Assembly   { handle attr-dict ":" qualified(type(handle)) }
   }
 
   op intr.coro.promise {
     Doc "Address of a promise field at a given alignment.";
-    Operands   (handle: pointer, align: i32, from: pointer);
-    Results    (res: pointer);
+    Operands   (handle: ptr, align: i32, from: ptr);
+    Results    (res: ptr);
     Assembly   { handle "," align "," from attr-dict ":"
                  functional-type(operands, results) }
   }
 
   op intr.coro.frame {
     Doc "Address of the coroutine frame.";
-    Results    (res: pointer);
+    Results    (res: ptr);
     Assembly   { attr-dict ":" type(res) }
   }
 
   op intr.coro.noop {
     Doc "No-op marker that keeps a coroutine frame alive.";
-    Results    (res: pointer);
+    Results    (res: ptr);
     Assembly   { attr-dict ":" type(res) }
   }
 
   op intr.coro.destroy {
     Doc "Destroy a suspended coroutine.";
-    Operands   (handle: pointer);
+    Operands   (handle: ptr);
     Assembly   { handle attr-dict ":" qualified(type(handle)) }
   }
 
   op intr.coro.done {
     Doc "Whether the coroutine is at its final suspend point.";
-    Operands   (handle: pointer);
+    Operands   (handle: ptr);
     Results    (res: i1);
     Assembly   { handle attr-dict ":" functional-type(operands, results) }
   }
@@ -2164,13 +2182,13 @@ dialect llvm {
 
   op intr.coro.dead {
     Doc "Whether the coroutine is dead.";
-    Operands   (handle: pointer);
+    Operands   (handle: ptr);
     Assembly   { handle attr-dict ":" qualified(type(handle)) }
   }
 
   op intr.coro.await.suspend.void {
     Doc "Suspend until the awaiter is ready, void result.";
-    Operands   (awaiter: pointer, frame: pointer, wrapper: pointer);
+    Operands   (awaiter: ptr, frame: ptr, wrapper: ptr);
     Assembly   { awaiter "," frame "," wrapper attr-dict ":"
                  qualified(type(awaiter)) "," qualified(type(frame)) ","
                  qualified(type(wrapper)) }
@@ -2178,7 +2196,7 @@ dialect llvm {
 
   op intr.coro.await.suspend.bool {
     Doc "Suspend until the awaiter is ready, boolean result.";
-    Operands   (awaiter: pointer, frame: pointer, wrapper: pointer);
+    Operands   (awaiter: ptr, frame: ptr, wrapper: ptr);
     Results    (res: i1);
     Assembly   { awaiter "," frame "," wrapper attr-dict ":"
                  functional-type(operands, results) }
@@ -2186,7 +2204,7 @@ dialect llvm {
 
   op intr.coro.await.suspend.handle {
     Doc "Suspend until the awaiter is ready, coroutine handle result.";
-    Operands   (awaiter: pointer, frame: pointer, wrapper: pointer);
+    Operands   (awaiter: ptr, frame: ptr, wrapper: ptr);
     Assembly   { awaiter "," frame "," wrapper attr-dict ":"
                  qualified(type(awaiter)) "," qualified(type(frame)) ","
                  qualified(type(wrapper)) }
@@ -2196,7 +2214,7 @@ dialect llvm {
 
   op intr.dbg.declare {
     Doc "Describe how an address relates to a source variable; varInfo and locationExpr print with the dialect prefix (LLVM_DbgIntrOp, LLVMIntrinsicOps.td:1121).";
-    Operands   (addr: pointer);
+    Operands   (addr: ptr);
     Attributes (varInfo: attribute, locationExpr: optional<attribute>);
     Assembly   { qualified(varInfo) if locationExpr { qualified(locationExpr) }
                "=" addr ":" qualified(type(addr)) attr-dict }
@@ -2234,7 +2252,7 @@ dialect llvm {
 
   op intr.eh.typeid.for {
     Doc "Type id of a type info global used by exception handling.";
-    Attributes (type_info: pointer);
+    Attributes (type_info: ptr);
     Results    (res: i32);
     Assembly   { type_info attr-dict ":" functional-type(operands, results) }
   }
@@ -2281,35 +2299,35 @@ dialect llvm {
 
   op intr.lifetime.start {
     Doc "Start of a lifetime marker (LLVM_LifetimeBaseOp, LLVMIntrinsicOps.td:462).";
-    Operands   (ptr: pointer);
+    Operands   (ptr: ptr);
     Assembly   { ptr attr-dict ":" qualified(type(ptr)) }
   }
 
   op intr.lifetime.end {
     Doc "End of a lifetime marker.";
-    Operands   (ptr: pointer);
+    Operands   (ptr: ptr);
     Assembly   { ptr attr-dict ":" qualified(type(ptr)) }
   }
 
   op intr.invariant.start {
     Doc "Start of an invariant region; size is an immediate, result is a pointer (LLVM_InvariantStartOp).";
-    Operands   (ptr: pointer);
-    Results    (res: pointer);
+    Operands   (ptr: ptr);
+    Results    (res: ptr);
     Attributes (size: i64);
     Assembly   { size "," ptr attr-dict ":" qualified(type(ptr)) }
   }
 
   op intr.invariant.end {
     Doc "End of an invariant region; start is the pointer from invariant.start.";
-    Operands   (start: pointer, ptr: pointer);
+    Operands   (start: ptr, ptr: ptr);
     Attributes (size: i64);
     Assembly   { start "," size "," ptr attr-dict ":" qualified(type(ptr)) }
   }
 
   op intr.launder.invariant.group {
     Doc "Strip invariant.group information from a pointer (LLVM_LaunderInvariantGroupOp).";
-    Operands   (ptr: pointer);
-    Results    (res: pointer);
+    Operands   (ptr: ptr);
+    Results    (res: ptr);
     Properties [same_type(ptr, res)];
     Assembly   { ptr attr-dict ":" qualified(type(ptr)) }
   }
@@ -2318,7 +2336,7 @@ dialect llvm {
 
   op intr.matrix.column.major.load {
     Doc "Column-major strided 2-D matrix load; is_volatile/rows/columns are immediates (LLVM_MatrixColumnMajorLoadOp, LLVMIntrinsicOps.td:1364).";
-    Operands   (data: pointer, stride: integer);
+    Operands   (data: ptr, stride: integer);
     Results    (res: vector);
     Attributes (isVolatile: bool, rows: i32, columns: i32);
     Assembly   { data "," "<" "stride" "=" stride ">" ","
@@ -2329,7 +2347,7 @@ dialect llvm {
 
   op intr.matrix.column.major.store {
     Doc "Column-major strided 2-D matrix store.";
-    Operands   (matrix: vector, data: pointer, stride: integer);
+    Operands   (matrix: vector, data: ptr, stride: integer);
     Attributes (isVolatile: bool, rows: i32, columns: i32);
     Assembly   { matrix "," data "," "<" "stride" "=" stride ">" ","
                  "is_volatile" "=" isVolatile "," "rows" "=" rows ","
@@ -2361,8 +2379,8 @@ dialect llvm {
 
   op intr.ptrmask {
     Doc "Mask the address bits of a pointer (LLVM_PtrMaskOp, LLVMIntrinsicOps.td:448).";
-    Operands   (ptr: pointer, mask: integer);
-    Results    (res: pointer);
+    Operands   (ptr: ptr, mask: integer);
+    Results    (res: ptr);
     Properties [pure, same_type(ptr, res)];
     Assembly   { ptr "," mask attr-dict ":"
                  functional-type(operands, results) }
@@ -2378,13 +2396,13 @@ dialect llvm {
 
   op intr.stacksave {
     Doc "Save the current stack pointer (LLVM_StackSaveOp).";
-    Results    (res: pointer);
+    Results    (res: ptr);
     Assembly   { attr-dict ":" qualified(type(res)) }
   }
 
   op intr.stackrestore {
     Doc "Restore a previously saved stack pointer (LLVM_StackRestoreOp).";
-    Operands   (ptr: pointer);
+    Operands   (ptr: ptr);
     Assembly   { ptr attr-dict ":" qualified(type(ptr)) }
   }
 
@@ -2397,19 +2415,19 @@ dialect llvm {
 
   op intr.vastart {
     Doc "Initialize an llvm.struct va_list pointer (LLVM_VaStartOp, LLVMIntrinsicOps.td:1236).";
-    Operands   (arg_list: pointer);
+    Operands   (arg_list: ptr);
     Assembly   { arg_list attr-dict ":" qualified(type(arg_list)) }
   }
 
   op intr.vaend {
     Doc "Finish using an llvm.struct va_list pointer (LLVM_VaEndOp).";
-    Operands   (arg_list: pointer);
+    Operands   (arg_list: ptr);
     Assembly   { arg_list attr-dict ":" qualified(type(arg_list)) }
   }
 
   op intr.vacopy {
     Doc "Copy one llvm.struct va_list into another (LLVM_VaCopyOp, LLVMIntrinsicOps.td:1240).";
-    Operands   (src_list: pointer, dest_list: pointer);
+    Operands   (src_list: ptr, dest_list: ptr);
     Assembly   { src_list "to" dest_list attr-dict ":" type(operands) }
   }
 

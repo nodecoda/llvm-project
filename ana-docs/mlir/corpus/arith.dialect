@@ -25,14 +25,15 @@ dialect arith {
             always_true = 15 "true" ];
   }
 
-  enum OverflowFlags: bits {
+  enum IntegerOverflowFlags: bits {
     Doc "Integer overflow flags.";
     Cases [ none = 0, nsw = 1, nuw = 2 ];
   }
 
   enum RoundingMode {
     Doc "Floating point rounding modes.";
-    Cases [ to_nearest = 0, down = 1, up = 2, toward_zero = 3 ];
+    Cases [ to_nearest_even = 0, downward = 1, upward = 2, toward_zero = 3,
+             to_nearest_away = 4 ];
   }
 
   enum FastMathFlags: bits {
@@ -79,7 +80,7 @@ dialect arith {
   }
 
   schema IntBinaryWithOverflow extends IntBinary {
-    Attributes (overflow_flags: OverflowFlags = none);
+    Attributes (overflow_flags: IntegerOverflowFlags = none);
     Implements [IntegerOverflowFlagsInterface];
     Assembly   { lhs "," rhs if overflow_flags { "overflow" overflow_flags }
                  attr-dict ":" type(result) }
@@ -340,7 +341,7 @@ dialect arith {
     Doc "integer truncation";
     Operands   (input: fixed_int_like);
     Results    (output: fixed_int_like);
-    Attributes (overflow_flags: OverflowFlags = none);
+    Attributes (overflow_flags: IntegerOverflowFlags = none);
     Assembly   { input if overflow_flags { "overflow" overflow_flags }
                  attr-dict ":" type(input) "to" type(output) }
   }

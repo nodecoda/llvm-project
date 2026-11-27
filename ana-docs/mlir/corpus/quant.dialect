@@ -17,26 +17,23 @@ dialect quant {
 
   /* `!quant.uniform<i8:f32, 2.0:10>`：per-layer。
    * `!quant.uniform<i8:f32:1, {0.1,0.2}:{3,4}>`：per-axis，多一个轴号。
-   * 两者共用一个助记符，靠标点区分；`oilist` 正好表达"至多出现一种"。 */
+   * 两者共用一个助记符，靠标点区分；没有 ODS assemblyFormat，文本由 C++
+   * printer 决定，所以这里只留领域模型，文本用 Modeled 承认不可审计。 */
   type_def Uniform {
-    Doc "Uniform quantization: storage/expressed pair plus scales and zero points.";
+    Doc "Uniform quantization: storage/expressed pair plus scales and zero points. Prints as `!quant.uniform<i8:f32, 2.0:10>` (per-layer) or `!quant.uniform<i8:f32:1, {0.1,0.2}:{3,4}>` (per-axis).";
     Parameters (storage: storage, expressed: float_like,
                 axis: optional<i64>,
                 scales: array<f64>, zero_points: array<i64>);
-    Assembly { "<" storage ":" expressed if axis { ":" axis }
-               "," oilist("{" scales "}:{" zero_points "}"
-                          | scales ":" zero_points)
-               ">" }
+    Assembly   Modeled;   /* 文本由 C++ printer 决定，没有 ODS assemblyFormat */
   }
 
   /* `!quant.any<i8<-8:7>>`、`!quant.any<i8:f32>`：还没有比例，只有存储
    * 类型（可选择显式的存储范围）和可选的表达类型。 */
   type_def Any {
-    Doc "Storage type with an optional explicit range and optional expressed type.";
+    Doc "Storage type with an optional explicit range and optional expressed type. Prints as `!quant.any<i8<-8:7>>` or `!quant.any<i8:f32>`.";
     Parameters (storage: storage, range: optional<i64>,
                 expressed: optional<float_like>);
-    Assembly { "<" storage if range { "<" range ">" }
-               if expressed { ":" expressed } ">" }
+    Assembly   Modeled;   /* 文本由 C++ printer 决定，没有 ODS assemblyFormat */
   }
 
   /* `!quant.calibrated<f32<-1.0:1.0>>`：只观测到取值范围，还没有比例。 */

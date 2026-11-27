@@ -68,10 +68,12 @@ dialect acc {
   // 真实 TypeDef：data_bounds_ty 无参数，文本是裸类型名。
   type_def data_bounds_ty {
     Doc "!acc.data_bounds_ty: normalized data clause bounds produced by acc.bounds.";
+    Assembly   Generic;
   }
 
   type_def declare_token {
     Doc "!acc.declare_token: implicit data region token produced by acc.declare_enter and consumed by acc.declare_exit.";
+    Assembly   Generic;
   }
 
   // private_type 带一个元素类型参数；文本形态见上游 TypeDef 的 assemblyFormat。

@@ -178,7 +178,7 @@ dialect amdgpu {
     Cases [ RT = 0, NT = 1, HT = 2, LU = 3, NT_RT = 4, RT_NT = 5, NT_HT = 6 ];
   }
 
-  enum CacheScope {
+  enum Scope {
     Doc "Prefetch cache scopes; the case names are the printed mnemonics.";
     Cases [ WGP = 0, SE = 1, DEV = 2, SYS = 3 ];
   }
@@ -200,7 +200,7 @@ dialect amdgpu {
 
   attr_def cache_scope {
     Doc "#amdgpu.cache_scope carries one of WGP, SE, DEV or SYS.";
-    Parameters (value: CacheScope);
+    Parameters (value: Scope);
     Assembly { "<" value ">" }
   }
 
@@ -220,10 +220,12 @@ dialect amdgpu {
 
   type_def tdm_descriptor {
     Doc "Opaque tensor DMA descriptor used by tensor_load_to_lds and tensor_store_from_lds; no parameters, so it prints as a bare type name.";
+    Assembly   Generic;
   }
 
   type_def ds_barrier_state {
     Doc "State of an in-LDS barrier: 29-bit pending count, 3-bit phase and 32-bit init count; no parameters, so it prints as a bare type name.";
+    Assembly   Generic;
   }
 
   // ---- 共享骨架 ----

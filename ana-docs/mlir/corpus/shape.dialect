@@ -14,14 +14,17 @@ dialect shape {
 
   type_def shape {
     Doc "An unranked or ranked shape whose extents are size values, or the invalid shape.";
+    Assembly   Generic;
   }
 
   type_def size {
     Doc "A non-negative extent that can also be unknown or invalid.";
+    Assembly   Generic;
   }
 
   type_def value_shape {
     Doc "A value paired with the shape it conforms to; either half may be unknown.";
+    Assembly   Generic;
   }
 
   /* extent_tensor 不是新类型，是 rank-1 的 index 张量（ShapeBase.td:94）；
@@ -30,6 +33,7 @@ dialect shape {
 
   type_def witness {
     Doc "A compile-time proof that runtime shape assertions hold; it carries no data.";
+    Assembly   Generic;
   }
 
   constraint shape_or_size     = shape | size;

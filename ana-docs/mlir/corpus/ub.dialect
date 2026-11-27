@@ -12,7 +12,7 @@ dialect ub {
   /* 毒值属性没有参数：文本就是助记符本身，空串表示不打印任何负载。 */
   attr_def poison {
     Doc "#ub.poison：毒值属性；缺省（空）表示整体中毒。属性无参数，文本即助记符。";
-    Assembly { "" }
+    Assembly   Generic;
   }
 
   op poison {

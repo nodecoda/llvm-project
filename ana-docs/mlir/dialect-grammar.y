@@ -34,12 +34,13 @@
 %token KW_DOC KW_OPERANDS KW_RESULTS KW_ATTRIBUTES KW_REGIONS KW_SUCCESSORS
 %token KW_PROPERTIES KW_IMPLEMENTS KW_ASSEMBLY KW_CUSTOM
 %token KW_CASES KW_GROUPS KW_PARAMETERS
-%token KW_GENERIC
+%token KW_GENERIC KW_MODELED
 
 /* Assembly 模式 */
 %token A_ATTR_DICT A_ATTR_DICT_WITH_KEYWORD A_PROP_DICT A_TYPE A_IF
 %token A_FUNCTIONAL_TYPE A_QUALIFIED A_OILIST A_CUSTOM A_SUCCESSORS
 %token A_REF A_ELSE A_GAP
+%token A_PARAMS A_STRUCT
 
 %define parse.trace
 
@@ -295,11 +296,18 @@ fact_arg
 /*===--------------------------------------------------------------------===*/
 
 /* 文本通道必须显式写出：块格式、整体交给钩子、或明确"没有自定义格式"。
- * 省略 Assembly 子句不被解释为 generic——那样逃逸点就成了看不见的黑洞。 */
+ * 省略 Assembly 子句不被解释为 generic——那样逃逸点就成了看不见的黑洞。
+ *
+ * `Modeled` 是定义层独有的第四个通道：上游没有 ODS 记录（C++/内建类型），
+ * 文本形状由 tools/def-exceptions.tsv 的 witness 见证。它不是"随便写"：
+ *   - 只在 attr_def/type_def 里合法（op 用它会被 escape-audit 的 L0 拒绝）；
+ *   - 只有登记为 modeled 的定义才能用（def-audit D9 逐条核对）；
+ *   - 登记项必须被使用，witness 必须存在（D8 stale/witness）。 */
 assembly
   : L_BRACE asm_list R_BRACE
   | KW_CUSTOM SEMI
   | KW_GENERIC SEMI
+  | KW_MODELED SEMI   /* 只在 attr_def/type_def：文本由 modeled 登记表见证 */
   ;
 
 asm_list
@@ -339,8 +347,25 @@ asm_element
   | A_IF IDENT L_BRACE asm_list R_BRACE else_opt
                                  /* 可带 else：缺失时打印固定文本 */
   | A_SUCCESSORS                  /* 打印全部后继，名字不再逐个写出 */
+  | A_PARAMS                      /* 定义体的全部参数，位置式 */
+  | A_STRUCT L_PAREN A_PARAMS R_PAREN
+                                 /* 定义体的全部参数，key = value 式 */
   | A_GAP L_PAREN IDENT R_PAREN   /* 部分描述：命名的构造当前文法说不出 */
   ;
+
+/* params / struct(params)：AttrOrTypeDef 的两个总括指令。
+ *
+ * 它们只在 `attr_def`/`type_def` 的 Assembly 里有意义，文法与 op 共用
+ * assembly 产生式，所以作用域由 def-audit 的 D7 检查：op 块里出现即错。
+ * 语义是"覆盖整个参数维"，不是可以随手塞进钩子的实参：
+ *   - 一个定义体至多出现一次 params 或 struct(params)；
+ *   - 出现时不得再单独引用任何参数（否则同一个参数打印两次）；
+ *   - struct(params) 打印 name = value，声明顺序；解析接受任意顺序；
+ *     有默认值/可选的参数缺失时省略；
+ *   - 只接受 `struct(params)` 全量形式；子集 `struct($a, $b)` 没有见证，
+ *     要求像其它格式一样逐字写出。
+ * 上游见证是该定义的 assemblyFormat 里确有 `struct(params)`/`params`，
+ * 由 def-audit D4 核对。 */
 
 /* custom<Hook>(a, b)：钩子名是格式的实现细节，实参是部件引用。
  * `type` 是 Assembly 关键字，但也可以是一个部件名（memref.global 的 $type），

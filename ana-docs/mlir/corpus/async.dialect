@@ -21,28 +21,33 @@ dialect async {
 
   type_def token {
     Doc "async.token: becomes available when its producer finishes; carries nothing";
+    Assembly   Generic;
   }
 
   type_def group {
     Doc "async.group: a set of tokens or values whose size is fixed at creation";
+    Assembly   Generic;
   }
 
   type_def value {
     Doc "async.value: a future that will carry one element of the parameter type";
     Parameters (value_type: any);
-    Assembly   { "<" value_type ">" }
+    Assembly   Custom;
   }
 
   type_def coro.id {
     Doc "async.coro.id: identifies a switched-resume coroutine";
+    Assembly   Generic;
   }
 
   type_def coro.handle {
     Doc "async.coro.handle: handle to a coroutine frame";
+    Assembly   Generic;
   }
 
   type_def coro.state {
     Doc "async.coro.state: saved coroutine state consumed by suspension";
+    Assembly   Generic;
   }
 
   // 组操作的用户层与运行时层是同一形状，只有 assembly 里 attr-dict 的位置不同。

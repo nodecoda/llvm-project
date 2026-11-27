@@ -141,15 +141,15 @@ dialect tosa {
   }
 
   attr_def DenseElements {
-    Doc "A dense constant payload; its element type and shape are the tensor type.";
+    Doc "A dense constant payload; its element type and shape are the tensor type. Prints through the builtin `dense<...>` attribute printer.";
     Parameters (values: any);
-    Assembly Custom;
+    Assembly   Modeled;   /* 内建 attr 的文本，不是 Tosa 的格式 */
   }
 
   attr_def IndexElements {
-    Doc "A dense list of index values, used as a shape payload.";
+    Doc "A dense list of index values, used as a shape payload. Prints through the builtin `array<i64: ...>` attribute printer.";
     Parameters (values: array<index>);
-    Assembly Custom;
+    Assembly   Modeled;   /* 内建 attr 的文本，不是 Tosa 的格式 */
   }
 
   attr_def SymbolName {

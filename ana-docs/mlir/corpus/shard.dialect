@@ -33,6 +33,7 @@ dialect shard {
   /// sharding 类型没有参数，上游的 assemblyFormat 为空，文本就是裸类型名。
   type_def sharding {
     Doc "A sharding description of a tensor; it has no parameters and prints as bare !shard.sharding.";
+    Assembly   Generic;
   }
 
   enum reduction_kind {

@@ -62,6 +62,7 @@ dialect ml_program {
   /// 无参数类型，文本就是助记符本身（!ml_program.token）。
   type_def token {
     Doc "A token that establishes execution ordering in a graph; the type has no parameters, so its text is the mnemonic alone.";
+    Assembly   Generic;
   }
 
   /// 外部解析的全局初值。冒号后的类型是属性自带的自类型参数

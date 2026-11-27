@@ -18,9 +18,12 @@ The first three of the *claim* channels are checked against upstream TableGen:
                  or is registered as a corpus-local label in hook-registry.tsv;
                  its arguments must also match the upstream call shape (L3b:
                  value / type / ref(type) position by position, string
-                 configuration dropped on both sides)
-  L4  gap     => registered, exact witness, scope matches the text, and a
-                 closed gap never comes back (tools/gap-registry.tsv)
+                 configuration dropped on both sides); a local label must be
+                 introduced by the literal clause keyword it stands for (L3d),
+                 and a licence that nobody uses is retired
+  L4  gap     => registered, exact witness, scope matches the text, the scope
+                 is from a closed vocabulary, and a closed gap never comes back
+                 (tools/gap-registry.tsv)
   L5  fact    => registered, and a local fact stays in its owning dialect
   L6  budget  => global limits (Custom share, gap count, divergence)
   L7  shape   => at most one Gap per op, and never inside if/oilist/hook args
@@ -34,6 +37,10 @@ The first three of the *claim* channels are checked against upstream TableGen:
   L11 guard   => `if x` requires x to be omittable in the declaration
                  (optional/variadic/default/unit); regions excepted because
                  "absent" there means an empty region.
+  L12 scope   => `params` / `struct(params)` and `Modeled` are definition-only:
+                 they stand for an AttrOrTypeDef's parameter list / opaque C++
+                 spelling and are meaningless in an op (an op has parts, and
+                 every op has an upstream record to name a channel from).
 
 Normalizations are total, mechanical rewrites of upstream spelling, not
 escapes.  N1: upstream `enum($x)` prints attribute x through its own enum
@@ -99,6 +106,27 @@ def has_fmt(text):
             return True
     return None if unknown else False
 HOOK_RE = re.compile(r"custom\s*<\s*([A-Za-z_]\w*)\s*>")
+STR_LIT = re.compile(r'"((?:\\.|[^"])*)"')
+
+
+def norm_ident(text):
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def hook_intro(block, label):
+    """The clause keyword that introduces custom<label>(...), or None.
+
+    A local label stands for one clause; that clause's keyword is the last
+    non-punctuation literal before the hook call.  If the label is not
+    introduced by its own keyword, it is a name without a scope.
+    """
+    m = re.search(r"custom\s*<\s*%s\s*>" % re.escape(label), block)
+    if not m:
+        return None
+    for lit in reversed([x.group(1) for x in STR_LIT.finditer(block, 0, m.start())]):
+        if re.search(r"[A-Za-z0-9]", lit):
+            return lit
+    return None
 HOOK_CALL_RE = re.compile(r"custom\s*<\s*([A-Za-z_]\w*)\s*>\s*\(")
 INCLUDE_RE = re.compile(r'(?m)^\s*include\s+"([^"]+)"')
 
@@ -618,6 +646,8 @@ def parse_corpus(path):
             channel = "custom"
         elif re.search(r"Assembly\s+Generic\s*;", seg):
             channel = "generic"
+        elif re.search(r"Assembly\s+Modeled\s*;", seg):
+            channel = "modeled"
         elif re.search(r"Assembly\s*\{", seg):
             channel = "block"
         else:
@@ -738,15 +768,26 @@ def read_tsv(path):
     return rows
 
 
+# A gap may only be granted at one of these positions.  The value is the
+# syntactic feature that must be present in the text for that scope; the empty
+# string means "anywhere on the spine" and is checked by L7 at use time.
+GAP_SCOPES = {
+    "text-spine": "",
+    "optional-group": "if",
+    "hook-args": "custom<",
+    "oilist": "oilist",
+}
+
+
 def gap_findings(registry, gap_users, gap_blocks):
     """L4: the gap registry is a debt ledger.
 
     Open gaps match the corpus exactly; closed gaps keep their closure
-    evidence and must not reappear in the corpus.
+    evidence and must not reappear in the corpus.  The scope is a closed
+    vocabulary: a gap cannot be granted "somewhere else".
     """
     fails = []
-    SCOPE_FEATURE = {"optional-group": "if", "hook-args": "custom<",
-                     "oilist": "oilist"}
+    SCOPE_FEATURE = GAP_SCOPES
     for gap, users in sorted(gap_users.items()):
         entry = registry.get(gap)
         if not entry:
@@ -757,6 +798,10 @@ def gap_findings(registry, gap_users, gap_blocks):
             fails.append(["L4", "-", "-",
                           "gap %s witness mismatch: registry=%s corpus=%s"
                           % (gap, sorted(claimed), sorted(users))])
+        if entry["scope"] and entry["scope"] not in GAP_SCOPES:
+            fails.append(["L4", "-", "-",
+                          "gap %s has unknown scope `%s`"
+                          % (gap, entry["scope"])])
         feat = SCOPE_FEATURE.get(entry["scope"])
         if feat:
             for dialect, name, block in gap_blocks.get(gap, []):
@@ -832,6 +877,17 @@ def selftest():
     check("open but stale", len(gap_findings(reg, {}, {})), 1)
     nosc = {"g": dict(reg["g"], scope="")}
     check("missing scope", len(gap_findings(nosc, users, blocks)), 1)
+    badscope = {"g": dict(reg["g"], scope="somewhere-else")}
+    check("scope outside vocabulary",
+          len(gap_findings(badscope, users, blocks)), 1)
+    check("label intro",
+          hook_intro('"private" "(" custom<PrivateClause>(x)', "PrivateClause"),
+          "private")
+    check("label intro skips punctuation",
+          hook_intro('"task_reduction" "(" custom<TaskReductionClause>(x)',
+                     "TaskReductionClause"), "task_reduction")
+    check("label without intro",
+          hook_intro("x custom<PrivateClause>(x)", "PrivateClause"), None)
     wrong = {"g": [("d", "o", "Gap(g) a")]}
     check("scope mismatch", len(gap_findings(reg, users, wrong)), 1)
 
@@ -911,6 +967,10 @@ def main():
         table.update(ops)
         for name, e in ops.items():
             ch, gap = channel_of(table, name)
+            if ch == "modeled":
+                fails.append(["L12", dialect, name,
+                              "Modeled is definition-only; an op has an "
+                              "upstream record to name its channel from"])
             totals["ops"] += 1
             totals[ch] += 1
             if gap:
@@ -936,6 +996,19 @@ def main():
             if ch == "none":
                 totals["no_channel"] += 1
             eff = effective_block(table, name)
+            if re.search(r"\bparams\b|struct\s*\(\s*params\s*\)", eff):
+                fails.append(["L12", dialect, name,
+                              "params/struct(params) is definition-only"])
+            # L3d: a local label must be introduced by its clause keyword.
+            for h in HOOK_RE.findall(eff):
+                if h in all_hooks_upstream or h not in hook_registry:
+                    continue
+                kw = norm_ident(re.sub(r"(?:Clause|Op)$", "", h))
+                intro = hook_intro(eff, h)
+                if intro is None or norm_ident(intro) != kw:
+                    fails.append(["L3", dialect, name,
+                                  "local label %s is not introduced by a `%s`"
+                                  " literal" % (h, kw)])
             dstat[dialect]["ops"] += 1
             dstat[dialect][ch] += 1
             dstat[dialect]["gaps"] += 1 if gap else 0
@@ -1044,6 +1117,9 @@ def main():
         for col in ("scope", "retire_when"):
             if not entry.get(col, "").strip():
                 fails.append(["L3", "-", hook, "registry lacks %s" % col])
+        if hook not in unbacked_hooks:
+            fails.append(["L3", "-", hook,
+                          "registered label is not used by the corpus"])
 
     # L5: facts are registered; local facts stay in their owning dialect.
     local_single = 0

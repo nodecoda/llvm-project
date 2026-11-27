@@ -15,7 +15,7 @@
 ///
 /// 类型：SPIR-V 的类型系统用本文件的 type_def + constraint 建模：
 /// scalar/vector/composite/any_ptr/image/sampled_image/sampler/cooperative_matrix/
-/// matrix/any_struct/any_array/named_barrier/void/tensor_arm，元素域 fp、int_scalar、
+/// matrix/any_struct/any_array/named_barrier/unit/tensor_arm，元素域 fp、int_scalar、
 /// bool_scalar、fp_ext。tensor_arm 的 rank 0 表示上游只约束元素类型、未固定秩。
 /// 上游的 pointee/address space、image 维度、tensor 形状细节是类型参数或
 /// verifier 事实，文法写不出，只出现在 Doc。
@@ -268,33 +268,39 @@ dialect spirv {
   // ----------------------------------------------------------------
   type_def any_ptr {
     Doc "SPIR-V 指针类型；pointee 与 storage class 是类型参数/verifier 事实。";
+    Assembly   Modeled;
   }
   type_def image {
     Doc "SPIR-V image 类型；dim/depth/arrayed 等是类型参数。";
+    Assembly   Modeled;
   }
   type_def sampled_image {
     Doc "SPIR-V sampled image 类型（image + sampler）。";
+    Assembly   Modeled;
   }
   type_def sampler {
     Doc "SPIR-V sampler 类型。";
+    Assembly   Modeled;
   }
   type_def cooperative_matrix {
     Doc "SPIR-V cooperative matrix 类型；分量类型/行列数是参数。";
+    Assembly   Modeled;
   }
   type_def matrix {
     Doc "SPIR-V matrix 类型（列向量组成的复合类型）。";
+    Assembly   Modeled;
   }
   type_def any_struct {
     Doc "SPIR-V struct 类型；成员由元素类型给出。";
+    Assembly   Modeled;
   }
   type_def any_array {
     Doc "SPIR-V array 或 runtime array 类型。";
+    Assembly   Modeled;
   }
   type_def named_barrier {
     Doc "SPIR-V named barrier 类型。";
-  }
-  type_def void {
-    Doc "SPIR-V void 类型。";
+    Assembly   Modeled;
   }
   type_def tensor_arm {
     Doc "SPIR-V tensor 类型（ARM tensor 扩展）：元素类型 + 秩；rank 0 表示上游未固定秩。";
@@ -331,7 +337,7 @@ dialect spirv {
   constraint numerical = int_scalar | fp;
   constraint composite = scalar | vector | any_array | any_struct | cooperative_matrix | matrix;
   constraint select_type = scalar | vector;
-  constraint any_type = composite | any_ptr | image | sampled_image | sampler | void | named_barrier | tensor_arm<any, 0>;
+  constraint any_type = composite | any_ptr | image | sampled_image | sampler | unit | named_barrier | tensor_arm<any, 0>;
   constraint any_ptr_or_untyped_ptr = any_ptr;
   constraint matrix_or_coop_matrix = matrix | cooperative_matrix;
   constraint i32_vec4 = vector<i32, 4>;

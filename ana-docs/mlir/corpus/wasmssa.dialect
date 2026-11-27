@@ -72,10 +72,12 @@ dialect wasmssa {
 
   type_def funcref {
     Doc "Opaque function reference type (!wasmssa<funcref>); no parameters, printed as a bare type name.";
+    Assembly   Generic;
   }
 
   type_def externref {
     Doc "Opaque external reference type (!wasmssa<externref>); no parameters, printed as a bare type name.";
+    Assembly   Generic;
   }
 
   type_def limit {

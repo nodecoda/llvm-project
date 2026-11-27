@@ -56,13 +56,23 @@ dialect vector {
 
   enum CombiningKind {
     Doc "Reduction/contraction combinator.";
-    Cases [ add = 0, mul = 1, minsi = 2, minui = 3, maxsi = 4, maxui = 5,
-            and = 8, or = 9, xor = 10 ];
+    Cases [ add = 0, mul = 1, minui = 2, minsi = 3, minnumf = 4, maxui = 5,
+             maxsi = 6, maxnumf = 7, and = 8, or = 9, xor = 10,
+             maximumf = 12, minimumf = 11, maximumnumf = 14,
+             minimumnumf = 13 ];
   }
 
   enum PrintPunctuation {
     Doc "Trailing punctuation for vector.print.";
-    Cases [ newline = 0, no_newline = 1, open = 2, close = 3 ];
+    Cases [ no_punctuation = 0, newline = 1, comma = 2, open = 3,
+             close = 4 ];
+  }
+
+  /// contract 的 iterator_types 是 `array<iterator_type>`；它的取值域就是这个
+  /// 枚举（上游 I32EnumAttr，助记符即 case 拼写）。
+  enum IteratorType {
+    Doc "Iterator kind of a contraction dimension.";
+    Cases [ parallel = 0, reduction = 1 ];
   }
 
   // ---- 共享骨架 ----

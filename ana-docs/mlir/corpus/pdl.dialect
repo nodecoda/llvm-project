@@ -52,10 +52,12 @@ dialect pdl {
 
   type_def attribute {
     Doc "handle to an attribute";
+    Assembly   Generic;
   }
 
   type_def operation {
     Doc "handle to an operation";
+    Assembly   Generic;
   }
 
   type_def range {
@@ -66,11 +68,13 @@ dialect pdl {
 
   type_def type {
     Doc "handle to a type";
+    Assembly   Generic;
   }
 
   // operand/result 等 op 产出 !pdl.value；上游 PDLTypes.td 也声明了这个类型。
   type_def value {
     Doc "handle to an SSA value";
+    Assembly   Generic;
   }
 
   // PDL handle 的四种单值、它们的 range，以及"单值或同种 range"的常用形状。

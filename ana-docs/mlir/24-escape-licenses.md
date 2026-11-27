@@ -1,6 +1,7 @@
 # 24. 逃逸点契约：通道、范围、组合、退役
 
-> 配套：`tools/escape-audit.py`（L0–L11，`--selftest` 29 例，失败退出 1）、
+> 配套：`tools/escape-audit.py`（L0–L12，`--selftest` 33 例，失败退出 1）、
+> `tools/def-audit.py`（定义层 D0–D14，见 [25 章](25-definition-audit.md)）、
 > `tools/gap-registry.tsv`（债务账本）、`tools/hook-registry.tsv`、
 > `tools/fact-glossary.tsv`；文法：`dialect-grammar.y` 的 `Gap(name)`、
 > `ref(...)`、`else`、`oilist<sep>`；上位规则见 [19 章](19-escape-hatches.md)。
@@ -268,7 +269,7 @@ L10 的两处修正：
 `linalg.scaled_contract` 等）。现在锚定**行首**的 `Assembly` 子句，并只取
 配对的 `{...}`。这条修复没有改变任何许可证，却让 L10 的输入从"注释"变回"块"。
 
-## 6. 检测器（L0–L11）
+## 6. 检测器（L0–L12）
 
 `tools/escape-audit.py` 对每个方言做四件事：从语料取通道与形状，从上游 TD
 闭包取证据，从登记表取许可证，最后按预算结算。
@@ -280,22 +281,24 @@ L10 的两处修正：
 | L2 | `Generic` 的上游真没有自定义格式 | 用 Generic 逃避描述 |
 | L3 | 钩子名要么上游有，要么登记过 | 悬空钩子名/拼写错误 |
 | **L3b** | 钩子实参与上游数据参数逐位相等（字符串配置丢弃） | 钩子看到的世界比上游小/多 |
-| L4 | 缺口登记、见证精确、scope 与文本匹配、closed 不回潮 | 缺口被滥用或账本腐化 |
+| **L3d** | 本地标签必须由它代表的子句关键字字面量引出（`"private" "(" custom<PrivateClause>`）；登记未用的标签退役 | 标签变成没有范围的别名 |
+| L4 | 缺口登记、见证精确、scope 与文本匹配、scope 属于封闭词表、closed 不回潮 | 缺口被滥用或账本腐化 |
 | L5 | 事实登记、本地事实不跨方言 | 事实变成自由注释 |
 | L6 | 全局预算 | 逃逸总量失控 |
 | L7 | 一个 op 至多一个 Gap，且不在组/钩子实参里 | 逃逸组合 |
 | L9 | 每方言预算（Custom ≤ 80%、Gap ≤ 3） | 单方言失控被全局比例掩盖 |
 | **L10** | 块覆盖：operand/region/successor 出现，attribute/property 被命名或收口；家族名只在无同名部件时成立，且不是钩子数据 | 块在"选择性打印"，或家族名冒充部件 |
 | **L11** | `if x` 的 `x` 可缺失（optional/variadic/default/unit；region 例外） | 文本与声明对"能不能缺"说反了 |
+| **L12** | `params`/`struct(params)`/`Modeled` 是定义层指令，进 op 块即失败 | 跨层逃逸（op 有部件，没有参数） |
 
 L3b 的实现要点：上游实参先归一化成 `V` / `T` / `R(V)` / `R(T)`，字符串
 字面量返回 `None` 并被丢弃；语料侧用同一函数归一化，然后逐 op 比较。
 `ref(ref(x))` 在文法层就不存在，所以归一化不需要处理嵌套。
 
-`--selftest` 把每一类拒绝路径钉成用例（29 例）：
+`--selftest` 把每一类拒绝路径钉成用例（33 例）：
 
 ```bash
-python3 tools/escape-audit.py --selftest   # 29 cases, 0 failed
+python3 tools/escape-audit.py --selftest   # 33 cases, 0 failed
 ```
 
 零 open 缺口时，L4 的正常路径是空集；L10/L11 也可能因为语料恰好干净而全绿。
@@ -358,13 +361,16 @@ selftest 用合成部件把每条规则的拒绝路径钉住，保证绿灯不�
 
 ```bash
 cd ana-docs/mlir
-bison -Wall -Wcounterexamples -Werror -o /tmp/dg.c dialect-grammar.y   # 62 条规则 / 153 条产生式 / 0 冲突
+bison -Wall -Wcounterexamples -Werror -o /tmp/dg.c dialect-grammar.y   # 62 条规则 / 156 条产生式 / 0 冲突
 python3 tools/dialect-corpus.py        # 四段审计 + gap 计数
 export LLVM_TBLGEN=/path/to/build/bin/llvm-tblgen
 export LLVM_BUILD_DIR=/path/to/build
 python3 tools/dialect-coverage.py      # 50 个方言必须 missing=extra=0
-python3 tools/escape-audit.py          # L0–L11 + N1；失败退出 1
-python3 tools/escape-audit.py --selftest   # 29 例拒绝路径
+python3 tools/escape-audit.py          # L0–L12 + N1；失败退出 1
+python3 tools/escape-audit.py --selftest   # 33 例拒绝路径
+python3 tools/def-audit.py             # 定义层 D0–D14；失败退出 1
+python3 tools/def-audit.py --coverage  # 上游定义的覆盖（当前缺 386）
+python3 tools/def-audit.py --selftest  # 10 例拒绝路径
 ```
 
 三份登记表是唯一的扩展点：

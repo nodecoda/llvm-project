@@ -72,7 +72,7 @@ dialect emitc {
   type_def array {
     Doc "定长数组：每个维度后跟一个 x，再跟元素类型，如 10x20xf32；shape 非空，维度非负，元素不能是 array。";
     Parameters (shape: array<i64>, element: array_element);
-    Assembly { "<" shape "x" element ">" }
+    Assembly   Custom;
   }
 
   type_def ptr {
@@ -89,14 +89,17 @@ dialect emitc {
 
   type_def size_t {
     Doc "无符号、与指针同宽，对应标准头里的 size_t。";
+    Assembly   Generic;
   }
 
   type_def ssize_t {
     Doc "有符号、与指针同宽，可表示 -1，对应标准头里的 ssize_t；使用它即放弃 C99 合规。";
+    Assembly   Generic;
   }
 
   type_def ptrdiff_t {
     Doc "有符号指针差类型，与 size_t 同宽，对应标准头里的 ptrdiff_t。";
+    Assembly   Generic;
   }
 
   /* ---- 文件、函数与调用 ---- */

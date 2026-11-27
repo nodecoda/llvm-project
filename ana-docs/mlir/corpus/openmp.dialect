@@ -34,7 +34,7 @@
 ///      SingleBlock / SizedRegion<1> / SingleBlockImplicitTerminator 处写
 ///      single_block；其余只写 implicit_terminator(terminator) 表示结构化区
 ///      域的退出约定，不把“恰好一块”当事实。
-// GAP: Clause 枚举（ScheduleKind、ProcBindKind、MemoryOrderKind 等）在本树的
+// GAP: Clause 枚举（ClauseScheduleKind、ClauseProcBindKind、ClauseMemoryOrderKind 等）在本树的
 ///      OpenMP TD 里按 Attr 名引用，没有同名 TableGen 定义；语料按它们的
 ///      打印拼写声明，值编号沿用 LLVM 侧枚举。
 
@@ -45,10 +45,12 @@ dialect omp {
 
   type_def cli {
     Doc "!omp.cli: an opaque handle to a canonical loop; created by omp.new_cli.";
+    Assembly   Generic;
   }
 
   type_def map_bounds_ty {
     Doc "!omp.map_bounds_ty: normalized bounds produced by omp.map.bounds.";
+    Assembly   Generic;
   }
 
   type_def affinity_entry_ty {
@@ -65,10 +67,9 @@ dialect omp {
 
   // ---- 子句枚举（只声明语料实际引用的那些） ----
 
-  enum CancellationConstructType {
+  enum ClauseCancellationConstructType {
     Doc "Construct named by cancel and cancellation_point.";
-    Cases [ loop = 0 "loop", parallel = 1 "parallel",
-            sections = 2 "sections", taskgroup = 3 "taskgroup" ];
+    Cases [ parallel = 0, loop = 1, sections = 2, taskgroup = 3 ];
   }
 
   enum DataSharingClauseType {
@@ -88,7 +89,7 @@ dialect omp {
             spmd = 2 "spmd", spmd_no_loop = 3 "spmd_no_loop" ];
   }
 
-  enum ScheduleKind {
+  enum ClauseScheduleKind {
     Doc "OpenMP schedule kind; printed as the clause keyword.";
     Cases [ static = 0 "static", dynamic = 1 "dynamic", guided = 2 "guided",
             auto = 3 "auto", runtime = 4 "runtime", distribute = 5 "distribute" ];
@@ -100,21 +101,20 @@ dialect omp {
             nonmonotonic = 2 "nonmonotonic", simd = 3 "simd" ];
   }
 
-  enum ProcBindKind {
+  enum ClauseProcBindKind {
     Doc "Thread affinity policy of the proc_bind clause.";
     Cases [ primary = 0 "primary", master = 1 "master",
             close = 2 "close", spread = 3 "spread" ];
   }
 
-  enum BindKind {
+  enum ClauseBindKind {
     Doc "Binding region of the loop construct.";
-    Cases [ teams = 0 "teams", parallel = 1 "parallel", thread = 2 "thread" ];
+    Cases [ parallel = 0, teams = 1, thread = 2 ];
   }
 
-  enum OrderKind {
+  enum ClauseOrderKind {
     Doc "Ordering guarantee of the order clause.";
-    Cases [ concurrent = 0 "concurrent", reproducible = 1 "reproducible",
-            unconstrained = 2 "unconstrained" ];
+    Cases [ concurrent = 1 ];
   }
 
   enum OrderModifier {
@@ -122,10 +122,10 @@ dialect omp {
     Cases [ reproducible = 0 "reproducible", unconstrained = 1 "unconstrained" ];
   }
 
-  enum MemoryOrderKind {
+  enum ClauseMemoryOrderKind {
     Doc "Memory ordering of an atomic construct.";
-    Cases [ seq_cst = 0 "seq_cst", acq_rel = 1 "acq_rel", release = 2 "release",
-            acquire = 3 "acquire", relaxed = 4 "relaxed" ];
+    Cases [ seq_cst = 0, acq_rel = 1, acquire = 2, release = 3,
+             relaxed = 4 ];
   }
 
   enum ClauseDepend {
@@ -153,14 +153,12 @@ dialect omp {
 
   enum ClauseMapFlags : bits {
     Doc "Map type and modifier bits carried by omp.map.info.";
-    Cases [ none = 0 "none", storage = 0 "storage", to = 1 "to", from_ = 2 "from",
-            always = 3 "always", del = 4 "del", return_param = 5 "return_param",
-            priv = 6 "priv", literal = 7 "literal", implicit = 8 "implicit",
-            close = 9 "close", present = 10 "present", ompx_hold = 11 "ompx_hold",
-            attach = 12 "attach", attach_always = 13 "attach_always",
-            attach_never = 14 "attach_never", attach_auto = 15 "attach_auto",
-            ref_ptr = 16 "ref_ptr", ref_ptee = 17 "ref_ptee",
-            is_device_ptr = 18 "is_device_ptr", target_param = 19 "target_param" ];
+    Cases [ none = 0, storage = 1, to = 2, from_ = 4 "from", always = 8,
+             del = 16, return_param = 32, priv = 64, literal = 128,
+             implicit = 256, close = 512, present = 1024, ompx_hold = 2048,
+             attach = 4096, attach_always = 8192, attach_never = 16384,
+             attach_auto = 32768, ref_ptr = 65536, ref_ptee = 131072,
+             is_device_ptr = 262144, target_param = 524288 ];
   }
 
   enum VariableCaptureKind {
@@ -169,14 +167,14 @@ dialect omp {
             VLAType = 3 "VLAType" ];
   }
 
-  enum NumTasksType {
+  enum ClauseNumTasksType {
     Doc "Strictness of the num_tasks clause.";
-    Cases [ strict = 0 "strict", loose = 1 "loose" ];
+    Cases [ strict = 0 ];
   }
 
-  enum GrainsizeType {
+  enum ClauseGrainsizeType {
     Doc "Strictness of the grainsize clause.";
-    Cases [ strict = 0 "strict", loose = 1 "loose" ];
+    Cases [ strict = 0 ];
   }
 
   enum DeclareTargetDeviceType {
@@ -229,7 +227,7 @@ dialect omp {
     Parameters (ignore_denormal_mode: bool = false,
                 fine_grained_memory: bool = false,
                 remote_memory: bool = false);
-    Assembly   { "<" struct "(" params ")" ">" }
+    Assembly   { "<" struct(params) ">" }
   }
 
   // ---- 区域骨架 ----
@@ -434,7 +432,7 @@ dialect omp {
                 reduction_byref: optional<bool_array>,
                 reduction_syms: optional<symbol_array>,
                 reduction_assume_bounded_recipe_effects: optional<unit>,
-                proc_bind_kind: optional<ProcBindKind>);
+                proc_bind_kind: optional<ClauseProcBindKind>);
     Properties [recursive_effects, automatic_allocation_scope,
                 operand_segments_by_attribute];
     Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, type(allocate_vars), allocator_vars, type(allocator_vars)) ")"
@@ -691,8 +689,8 @@ dialect omp {
     Doc "Loop construct with bind, private, order and reduction clauses.";
     Operands   (private_vars: variadic<any>,
                 reduction_vars: variadic<pointer_like>);
-    Attributes (bind_kind: optional<BindKind>,
-                order: optional<OrderKind>,
+    Attributes (bind_kind: optional<ClauseBindKind>,
+                order: optional<ClauseOrderKind>,
                 order_mod: optional<OrderModifier>,
                 private_syms: optional<symbol_array>,
                 private_needs_barrier: optional<unit>,
@@ -722,7 +720,7 @@ dialect omp {
                 linear_modifiers: optional<linear_mod_array>,
                 linear_syms: optional<symbol_array>,
                 nowait: optional<unit>,
-                order: optional<OrderKind>,
+                order: optional<ClauseOrderKind>,
                 order_mod: optional<OrderModifier>,
                 ordered: optional<i64> [non_negative],
                 private_syms: optional<symbol_array>,
@@ -730,7 +728,7 @@ dialect omp {
                 reduction_mods: optional<reduction_mod_array>,
                 reduction_byref: optional<bool_array>,
                 reduction_syms: optional<symbol_array>,
-                schedule_kind: optional<ScheduleKind>,
+                schedule_kind: optional<ClauseScheduleKind>,
                 schedule_mod: optional<ScheduleModifier>,
                 schedule_simd: optional<unit>);
     Properties [recursive_effects, operand_segments_by_attribute];
@@ -760,7 +758,7 @@ dialect omp {
                 linear_var_types: optional<type_array>,
                 linear_modifiers: optional<linear_mod_array>,
                 linear_syms: optional<symbol_array>,
-                order: optional<OrderKind>,
+                order: optional<ClauseOrderKind>,
                 order_mod: optional<OrderModifier>,
                 private_syms: optional<symbol_array>,
                 private_needs_barrier: optional<unit>,
@@ -791,7 +789,7 @@ dialect omp {
     Attributes (allocate_alignments: optional<i64_array>,
                 allocate_private_indices: optional<i64_array>,
                 dist_schedule_static: optional<unit>,
-                order: optional<OrderKind>,
+                order: optional<ClauseOrderKind>,
                 order_mod: optional<OrderModifier>,
                 private_syms: optional<symbol_array>,
                 private_needs_barrier: optional<unit>);
@@ -866,12 +864,12 @@ dialect omp {
                 priority: optional<integer>);
     Attributes (allocate_alignments: optional<i64_array>,
                 allocate_private_indices: optional<i64_array>,
-                grainsize_mod: optional<GrainsizeType>,
+                grainsize_mod: optional<ClauseGrainsizeType>,
                 in_reduction_byref: optional<bool_array>,
                 in_reduction_syms: optional<symbol_array>,
                 mergeable: optional<unit>,
                 nogroup: optional<unit>,
-                num_tasks_mod: optional<NumTasksType>,
+                num_tasks_mod: optional<ClauseNumTasksType>,
                 private_syms: optional<symbol_array>,
                 private_needs_barrier: optional<unit>,
                 reduction_mods: optional<reduction_mod_array>,
@@ -1018,7 +1016,7 @@ dialect omp {
     Operands   (x: pointer_like, v: pointer_like);
     Attributes (element_type: type,
                 hint: i64 = 0,
-                memory_order: optional<MemoryOrderKind>);
+                memory_order: optional<ClauseMemoryOrderKind>);
     Properties [memory_effect(read), memory_effect(write)];
     Assembly   { v "=" x
                  oilist("hint" "(" hint ")"
@@ -1030,7 +1028,7 @@ dialect omp {
     Doc "Atomically writes expr to the address x.";
     Operands   (x: pointer_like, expr: any);
     Attributes (hint: i64 = 0,
-                memory_order: optional<MemoryOrderKind>);
+                memory_order: optional<ClauseMemoryOrderKind>);
     Properties [memory_effect(write)];
     Assembly   { x "=" expr
                  oilist("hint" "(" hint ")"
@@ -1043,7 +1041,7 @@ dialect omp {
     Operands   (x: pointer_like);
     Attributes (atomic_control: optional<atomic_control>,
                 hint: i64 = 0,
-                memory_order: optional<MemoryOrderKind>);
+                memory_order: optional<ClauseMemoryOrderKind>);
     Properties [recursive_effects, memory_effect(read), memory_effect(write)];
     Assembly   { oilist("hint" "(" hint ")"
                       | "memory_order" "(" custom<ClauseAttr>(memory_order) ")")
@@ -1055,7 +1053,7 @@ dialect omp {
   op atomic.capture {
     Doc "Atomic capture region containing an atomic update and one of read, write or compare; the region ends in omp.terminator.";
     Attributes (hint: i64 = 0,
-                memory_order: optional<MemoryOrderKind>,
+                memory_order: optional<ClauseMemoryOrderKind>,
                 fail_only: optional<unit>);
     Regions    (region: region [single_block, implicit_terminator(terminator)]);
     Properties [recursive_effects];
@@ -1069,8 +1067,8 @@ dialect omp {
     Operands   (x: pointer_like);
     Attributes (weak: optional<unit>,
                 hint: i64 = 0,
-                memory_order: optional<MemoryOrderKind>,
-                fail_memory_order: optional<MemoryOrderKind>);
+                memory_order: optional<ClauseMemoryOrderKind>,
+                fail_memory_order: optional<ClauseMemoryOrderKind>);
     Properties [recursive_effects, memory_effect(read), memory_effect(write)];
     Assembly   { oilist("hint" "(" hint ")"
                       | "memory_order" "(" custom<ClauseAttr>(memory_order) ")")
@@ -1236,14 +1234,14 @@ dialect omp {
   op cancel {
     Doc "Activates cancellation of the innermost enclosing construct of the named type, optionally under a condition.";
     Operands   (if_expr: optional<i1>);
-    Attributes (cancel_directive: CancellationConstructType);
+    Attributes (cancel_directive: ClauseCancellationConstructType);
     Assembly   { "cancellation_construct_type" "(" cancel_directive ")"
                  oilist("if" "(" if_expr ")") attr-dict }
   }
 
   op cancellation_point {
     Doc "Introduces a cancellation point for the innermost enclosing construct of the named type.";
-    Attributes (cancel_directive: CancellationConstructType);
+    Attributes (cancel_directive: ClauseCancellationConstructType);
     Assembly   { "cancellation_construct_type" "(" cancel_directive ")" attr-dict }
   }
 

@@ -5,7 +5,7 @@
  *   normal  —— 默认；`Assembly {` 之后切到 assembly 模式。
  *   assembly—— 字面量是 STRING；`attr-dict`/`attr-dict-with-keyword`/
  *              `prop-dict`/`type`/`if`/`functional-type`/`oilist`/`custom`/
- *              `ref`/`Gap` 是关键字，
+ *              `ref`/`params`/`struct(params)`/`Gap` 是关键字，
  *              其余标识符是部件引用；`{ }` 计深度，深度归零切回 normal。
  *
  * 名字允许 `.`（`reduce.return`），不允许 `-`；`attr-dict` 是 assembly 模式
@@ -94,6 +94,7 @@ static int normal_kw(const char *s) {
   if (!strcmp(s, "Assembly")) return KW_ASSEMBLY;
   if (!strcmp(s, "Custom")) return KW_CUSTOM;
   if (!strcmp(s, "Generic")) return KW_GENERIC;
+  if (!strcmp(s, "Modeled")) return KW_MODELED;
   if (!strcmp(s, "Cases")) return KW_CASES;
   if (!strcmp(s, "Groups")) return KW_GROUPS;
   if (!strcmp(s, "Parameters")) return KW_PARAMETERS;
@@ -118,7 +119,7 @@ static int asm_kw(const char *s) {
 
 int yylex(void) {
   for (;;) {
-    int c = getch();
+    int c = getch(), d;
     if (c == EOF) return 0;
     if (c == ' ' || c == '\t' || c == '\r' || c == '\n') continue;
 
@@ -155,6 +156,13 @@ int yylex(void) {
           ungetch(e);
           return e == '(' ? A_REF : IDENT;
         }
+        /* `struct` 是软关键字：只有紧贴 `(` 时才是 struct(params)。 */
+        if (!strcmp(ident, "struct")) {
+          int e = getch();
+          ungetch(e);
+          return e == '(' ? A_STRUCT : IDENT;
+        }
+        if (!strcmp(ident, "params")) return A_PARAMS;
         return asm_kw(ident);
       }
       switch (c) {
@@ -176,9 +184,16 @@ int yylex(void) {
     }
 
     if (c == '"') return read_string();
-    if (isdigit((unsigned char)c)) {
-      int v = c - '0';
-      while ((c = getch()) != EOF && isdigit((unsigned char)c)) v = v * 10 + (c - '0');
+    if (isdigit((unsigned char)c) ||
+        (c == '-' && (d = getch()) != EOF && isdigit((unsigned char)d))) {
+      int v;
+      if (c == '-') {
+        v = -(d - '0');
+        while ((c = getch()) != EOF && isdigit((unsigned char)c)) v = v * 10 - (c - '0');
+      } else {
+        v = c - '0';
+        while ((c = getch()) != EOF && isdigit((unsigned char)c)) v = v * 10 + (c - '0');
+      }
       ungetch(c);
       return INT;
     }

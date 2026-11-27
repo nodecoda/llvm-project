@@ -39,10 +39,12 @@ dialect smt {
   /// bool 与 int 没有参数，文本就是助记符本身（!smt.bool、!smt.int）。
   type_def bool {
     Doc "The SMT Bool sort; its text carries no parameters.";
+    Assembly   Generic;
   }
 
   type_def int {
     Doc "The SMT Int sort; its text carries no parameters.";
+    Assembly   Generic;
   }
 
   /// 位宽必须严格大于零；文本是 !smt.bv<8>。

@@ -76,6 +76,7 @@ dialect nvgpu {
 
   type_def device.async.token {
     Doc "!nvgpu.device.async.token: completion token of an asynchronous device operation.";
+    Assembly   Generic;
   }
 
   type_def mbarrier.group {
@@ -86,6 +87,7 @@ dialect nvgpu {
 
   type_def mbarrier.token {
     Doc "!nvgpu.mbarrier.token: token returned by the arrive operations.";
+    Assembly   Generic;
   }
 
   type_def tensormap.descriptor {

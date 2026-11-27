@@ -109,21 +109,19 @@ dialect xegpu {
     Doc "Metadata view of a memory region: static shape, element type, an optional block descriptor and an optional distribution layout. It holds no data; printed as !xegpu.tensor_desc<8x16xf32>.";
     Parameters (shape: array<i64>, element_type: type,
                 encoding: optional<attribute>, layout: optional<attribute>);
-    Assembly   { "<" shape "x" element_type
-                 if encoding { "," encoding }
-                 if layout { "," layout } ">" }
+    Assembly   Custom;
   }
 
   type_def mem_desc {
     Doc "Block of data in shared local memory: static shape, element type and an optional memory layout; printed as !xegpu.mem_desc<128x128xf16, #xegpu.mem_layout<...>>.";
     Parameters (shape: array<i64>, element_type: type,
                 mem_layout: optional<attribute>);
-    Assembly   { "<" shape "x" element_type
-                 if mem_layout { "," mem_layout } ">" }
+    Assembly   Custom;
   }
 
   type_def nbarrier {
     Doc "Opaque named-barrier handle (!xegpu.nbarrier); carries no parameters.";
+    Assembly   Generic;
   }
 
   // ---- 描述符创建 ----

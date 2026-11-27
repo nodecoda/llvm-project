@@ -76,10 +76,12 @@ dialect transform {
 
   type_def any_op {
     Doc "!transform.any_op: handle to any payload operations (TransformHandleTypeInterface).";
+    Assembly   Generic;
   }
 
   type_def any_value {
     Doc "!transform.any_value: handle to payload SSA values (TransformValueHandleTypeInterface).";
+    Assembly   Generic;
   }
 
   type_def operation {
@@ -96,6 +98,7 @@ dialect transform {
 
   type_def any_param {
     Doc "!transform.any_param: parameter value associated with any kind of attribute or type.";
+    Assembly   Generic;
   }
 
   type_def param {
@@ -106,10 +109,12 @@ dialect transform {
 
   type_def type_param {
     Doc "!transform.type: parameter value associated with type attributes.";
+    Assembly   Generic;
   }
 
   type_def affine_map_param {
     Doc "!transform.affine_map: parameter value associated with affine-map attributes.";
+    Assembly   Generic;
   }
 
   // handle 覆盖操作 handle 与值 handle；parameter 覆盖四种参数类型。

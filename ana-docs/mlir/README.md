@@ -65,7 +65,8 @@
 | [22-corpus-round-seven.md](22-corpus-round-seven.md) | 第七轮语料：amdgpu/openmp/smt（173 op），0 条产生式；`speculatable` 升级进核心（40→41）、本地词表 18→17；openmp 70 个子句钩子 + 0 个本地事实；共享名字空间的检查缺陷 |
 | [21-corpus-round-six.md](21-corpus-round-six.md) | 第六轮语料：ub/ptr/shard/arm_sve，81 个 op 换 0 条 op 形状产生式；`same_type` 升级进核心（39→40）、本地词表 19→18；`qualified` 第三个见证落地为文本产生式（11 处使用点）；空负载属性、符号非类型、Generic 是契约 |
 | [23-corpus-round-eight.md](23-corpus-round-eight.md) | 第八轮：三条恒真检查修成会失败、覆盖审计量出 258 个缺失 op 并补账、带引号的 `name`、schema 名全局解析缺陷 |
-| [24-escape-licenses.md](24-escape-licenses.md) | 逃逸点契约：断言与描述分离、五通道许可证、设计规则 E0–E10（封闭集/单通道/可证伪/实参即范围/不组合/有期限/不带语义/家族软名/覆盖收口/守卫可缺失）、范围细则 S1–S10、L0–L11 与 29 例 selftest、三条缺口关闭（`ref`/`oilist<sep>`/`else`）、分方言预算账本 |
+| [24-escape-licenses.md](24-escape-licenses.md) | 逃逸点契约：断言与描述分离、五通道许可证、设计规则 E0–E10（封闭集/单通道/可证伪/实参即范围/不组合/有期限/不带语义/家族软名/覆盖收口/守卫可缺失）、范围细则 S1–S10、L0–L12 与 33 例 selftest、三条缺口关闭（`ref`/`oilist<sep>`/`else`）、分方言预算账本 |
+| [25-definition-audit.md](25-definition-audit.md) | 定义层契约：四元组（范围/形状/证据/预算）、四通道（块/Custom/Generic/Modeled+脊）、D0–D14、category 封闭词表（rename/cxx-type/cxx-enum/builtin/constraint/borrowed-enum）、符号级见证、modeled 扁脊与 12/4 预算、覆盖与健全性分离（276 声明 / 缺 381） |
 
 ## 一页结论
 
@@ -228,7 +229,7 @@
 | `14-dialect-domain-model.md` | 领域模型：定义/生成边界、三投影、trait 分类、约束语义、schema refinement、v1 逐项判决 |
 | `15-corpus-driven-grammar.md` | 语料优先：方法论、语料统计、见证表、8 个修正、机械核对、与 v1/v2 差异、下一轮语料 |
 | `corpus/*.dialect` | 50 个方言源程序：2777 op；50 个方言覆盖缺口为 0（逐字对齐 tblgen），0 个 open 缺口 |
-| `dialect-grammar.y` | 从语料归纳的文法（bison，62 条规则 / 153 条产生式，0 冲突，`50/50 parse OK`），含 `ref(...)`、`else`、`oilist<sep>`、`qualified(x)`、`Gap(name)`、空字典默认值 `{}` |
+| `dialect-grammar.y` | 从语料归纳的文法（bison，62 条规则 / 156 条产生式，0 冲突，`50/50 parse OK`），含 `ref(...)`、`else`、`oilist<sep>`、`qualified(x)`、`Gap(name)`、空字典默认值 `{}`、`params`/`struct(params)`、`Modeled` |
 | `16-corpus-round-two.md` | 第二轮：10 项扩展、谓词组合、region 约束搬家、软关键字、见证表、机械核对 |
 | `corpus/gpu.dialect` | gpu：launch/module/func、内建 id/dim、barrier/printf/shuffle/all_reduce/subgroup_reduce/warp（18 op） |
 | `corpus/linalg.dialect` | linalg：`Structured` schema 收敛 59 个命名算符 + generic/map/reduce/transpose/broadcast/index/yield + softmax/winograd/pack/unpack（78 op） |
@@ -244,7 +245,7 @@
 | `corpus/tosa.dialect` | tosa：属性密集（定长数组/枚举/属性包/符号名），`avg_pool2d` 与 `avg_pool2d_adaptive` 两种窗口形状（36 op） |
 | `corpus/shape.dialect` | shape：纯类型层，`witness` 证明值与 `assuming` 单块 region（40 op） |
 | `corpus/async.dialect` | async：六个自有类型（token/group/value/coro.*）与“值既是结果又是 region 入口”（29 op） |
-| `corpus/quant.dialect` | quant：4 个类型的文法全在 C++ 里，用 `type_def` + `Assembly` 收回；3 个 cast（3 op） |
+| `corpus/quant.dialect` | quant：4 个类型的文法全在 C++ 里，用 `type_def` 描述领域模型并用 `Assembly Modeled;` 承认文本不可审计；3 个 cast（3 op） |
 | `19-escape-hatches.md` | 逃逸点宪章：五种通道、七条规则、核心词表 39 + 方言本地 19、无通道缺口清单、预算红线 |
 | `20-corpus-round-five.md` | 第五轮：92 op / 0 产生式、oilist 语义修正、`Assembly Generic;` 落地、字典属性、预算告警与单次事实复审 |
 | `corpus/emitc.dialect` | emitc：C 类型系统进 MLIR，`type_def` 为主（opaque/array/ptr/lvalue），55 op 只有 4 schema |
@@ -265,7 +266,9 @@
 | `corpus/ml_program.dialect` | ml_program：11 op、4 schema；符号表 + SSACFG/Graph 两种 region 种类（种类本身无核心词） |
 | `tools/dialect-coverage.py` | 覆盖审计：50 个方言 → 聚合 TD 入口的显式映射；上游取自 `llvm-tblgen --dump-json` 的 `opName`，与语料 `op` 集合**逐字相等**（不做后缀对齐）；missing/extra 非空则退出码 1 |
 | `tools/dialect-lex.c` | 参考词法器（normal / assembly 两模式，含 `Gap` 关键字） |
-| `tools/escape-audit.py` | 逃逸点许可证审计：L0–L11 + 规范化 N1（`enum($x)`）、tblgen 逐 op 证据、预算硬上限；L10 查块覆盖与家族软名，L11 查守卫可缺失；缺 `LLVM_TBLGEN` 或查不到上游记录即失败 |
+| `tools/escape-audit.py` | 逃逸点许可证审计：L0–L12 + 规范化 N1（`enum($x)`）、tblgen 逐 op 证据、预算硬上限；L3d 查本地标签的子句关键字，L4 的 scope 是封闭词表，L10 查块覆盖与家族软名，L11 查守卫可缺失，L12 拒绝定义层指令；缺 `LLVM_TBLGEN` 或查不到上游记录即失败 |
+| `tools/def-audit.py` | 定义层审计：D0–D14；通道与上游一致、参数全覆盖、enum 逐项一致、`params` 全量规则、modeled 符号级见证与扁平脊、12/4 预算、定义块钩子上游存在；`--coverage` 报缺失/伪造（alias 目标与 ledger 行不计欠账），`--selftest` 10 例 |
+| `tools/def-exceptions.tsv` | 定义层逃逸账本：7 列（dialect/kind/corpus/upstream/witness/category/reason），34 行 = 3 rename + 31 modeled（20 cxx-type、4 borrowed-enum、3 builtin、2 cxx-enum、2 constraint） |
 | `tools/fact-glossary.tsv` | 事实词表：41 核心 + 20 本地（含 owner 与释义），新词未登记即失败 |
 | `tools/gap-registry.tsv` | 表达力缺口登记：4 个名字 / 9 个 op，见证集合必须与语料一致 |
 | `tools/hook-registry.tsv` | 上游找不到同名 `custom<>` 的本地钩子标签及理由 |
