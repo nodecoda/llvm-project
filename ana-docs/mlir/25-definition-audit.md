@@ -1,10 +1,10 @@
 # 25. 定义层契约：范围、形状、证据、预算
 
-> 配套：`tools/def-audit.py`（D0–D14，`--selftest` 10 例，失败退出 1）、
+> 配套：`tools/def-audit.py`（D0–D14，`--selftest` 21 例，失败退出 1）、
 > `tools/def-exceptions.tsv`（7 列，34 行）、文法 `dialect-grammar.y`
 > （`Assembly Modeled;`、`params`、`struct(params)`）。
 > 上位规则见 [24 章](24-escape-licenses.md)：E0–E10、S1–S10、L0–L12。
-> 语料：50 个方言、276 个定义（100 type / 35 attr / 141 enum）。
+> 语料：50 个方言、278 个定义（100 type / 37 attr / 141 enum）。
 
 ## 0. 问题：逃逸点不是黑洞
 
@@ -135,38 +135,64 @@ type_def tensor_arm {
 用 `if` 和 `oilist` 才能表达。这正说明它**不是**一个脊，因此它只能是
 `Modeled;`，把两种拼写写进 `Doc` 作为人类可读的证据。
 
-## 6. 覆盖模式：绿灯不等于完整
+## 6. 覆盖模式：每个缺口都有分类
 
-`def-audit.py` 默认只证明"声明的东西是真的"，不证明"上游的东西都声明了"。
-后者是 `--coverage` 的职责，故意分开：
+`def-audit.py` 默认只证明"声明的东西是真的"。`--coverage` 回答"没声明的东西是
+什么"，并把每条上游记录按机械判据分成三类：
 
-| 模式 | 断言 | 当前 |
+| 类别 | 判据 | 当前 | 含义 |
+| --- | --- | --- | --- |
+| `unaccounted` | 语料在**声明面**的类型位置引用了它，却没声明 | **0** | 悬挂引用；非空即失败（C1）。先判它：语料自己打印的名字，不能拿"ODS 不可达"来豁免 |
+| `unreferenced` | 上游 op 没有通过**结构化 ODS 引用**到达它 | 208 | 它仍可能是某个 modeled 类型的参数（`spirv.Dim` 在 `!spirv.image<...>` 里），所以只声称"没有 op 字段引用"，不声称"从不打印" |
+| `substituted` | op 通过结构化引用到达它，但语料从未在声明面的类型位置引用它 | 171 | 语料把该字段换成了 i32/`any`/别的约束：范围决定，不是遗忘 |
+
+379 条"missing"因此不是欠账，而是两种范围决定。`unaccounted` 是唯一需要动手的
+类，它是**语料自己说了这个名字，但没给定义**。当前 0：每个被引用的名字都能解析。
+
+判据是算出来的，不是声明的：
+
+- **可达性**：从上游 op 记录出发，只沿 `{"def": ...}` 引用和 `!superclasses`
+  做 BFS。`description`/`summary`/`extraClassDeclaration`/`assemblyFormat` 是
+  散文和 C++，不是边——一句"returns `!llvm.func<...>`"不构成 op 对 `func` 的
+  引用。类别名 `unreferenced` 就是为了不越过这条证据边界。
+- **声明面**：先把双引号字符串和 `Assembly { ... }` 块遮掉，再只认 `: Name`、
+  `<Name>`、`| Name` 三种形状。类型名出现在 `Parameters`、子句绑定和约束右端；
+  它不出现在 `Assembly` 里——那里 `type(x)` 是指令、`x ":" type(y)` 是格式。
+- **先判 `unaccounted`**：顺序不是修辞。若先看可达性，一个被语料引用但 ODS
+  不可达的名字会被"豁免"成 `unreferenced`，悬挂引用就藏起来了。
+
+## 6.1 审计器自己的两个漏洞
+
+上一版判据跑了 195/184。把证据边界收紧后是 208/171：13 条从 `substituted` 退回
+`unreferenced`，没有一条新增 `unaccounted`。退回去的不是方言，是**审计器自己
+伪造的证据**：
+
+| 漏洞 | 旧行为 | 后果 | 现在 |
+| --- | --- | --- | --- |
+| 把散文当引用 | 在 JSON 的所有字符串里找 def 名 | `description`/`extraClassDeclaration` 提到某类型，就算"有 op 引用" | 只跟结构化 `def` 引用与 `!superclasses` |
+| 把格式当类型使用 | 扫整份语料文本 | `Doc "reads: address, ..."` 和 `Assembly { ":" type(x) }` 被当成类型位置；ptr 的 `address`、transform 的 `type` 因此误报 | 遮掉字符串与 `Assembly` 块，只扫声明面 |
+
+这就是"逃逸点不是黑洞"对审计器自己的应用：分类器也是一个断言，它的证据边界
+同样要能被证伪。旧判据的两个字符串扫描都没有边界，所以它们能"证明"任意结论。
+
+三类里最大的是三个"折叠"方言，各自在文件头写明政策：
+
+| 方言 | substituted | 政策 |
 | --- | --- | --- |
-| 默认 | 每条声明都有证据（D0–D14） | 276 条，0 problems |
-| `--coverage` | 上游的每个定义都被声明 | 缺 381 条 |
-| `--selftest` | 规则本身能拒绝坏输入 | 10 例，0 failed |
+| `nvvm` | 106 | 全部枚举属性按 i32/`optional<i32>` 建模；枚举值集合见文件头 |
+| `llvm` | 31 | DI 元数据属性只作为 `metadata` 字典里的不透明负载，用 `attribute`/`dictionary` 承载 |
+| `rocdl` | 24 | immarg 枚举按 i32 建模，取值集合见文件头 |
 
-覆盖表自己也修了两个"反黑洞"：
-- `extra` 只列"既没有上游记录、也没有 ledger 行"的声明。之前 modeled 行会被
-  算成 extra，真正的伪造声明可以混在里面；现在 ledger 行被扣除，`extra`
-  必须为空（当前 50/50 全空）。
+`--coverage --verbose` 逐条打印 `unreferenced` / `substituted`，供人工抽查；默认只打
+每方言的计数。这样"missing"不再是一个可以无限增长的沉默数字：每一条都有类，
+唯一的失败类是 `unaccounted`。
+
+覆盖表自己还有两条防空转规则：
+
+- `extra` 只列既没有上游记录、也没有 ledger 行的声明。modeled 行被扣除，
+  真正的伪造声明才会浮出来；当前 50/50 全空。
 - `missing` 扣除 alias 的目标。transform 的 `op`/`type`/`affine_map` 是改名
   声明，不是遗漏；不扣就会永久欠着三条假账。
-
-缺口的分布（按方言，数量从少到多）给出下一轮的顺序：
-
-| 方言 | 缺 | 方言 | 缺 |
-| --- | --- | --- | --- |
-| arith / arm_sme / complex / mpi / shard / transform | 各 1 | llvm | 100 |
-| amdgpu / nvgpu | 各 2 | nvvm | 106 |
-| irdl | 3 | spirv | 55 |
-| tosa | 4 | rocdl | 29 |
-| ptr / xegpu / xevm | 各 5 | acc | 20 |
-| linalg | 8 | gpu | 18 |
-| omp | 10 | 合计 | 381 |
-
-策略与 op 层一致：先小后大，每批补完跑全套四个审计器；枚举用上游 `Cases`
-逐项生成，`struct(params)` 形态直接写成 `<" struct(params) ">` 由 D7 验证。
 
 ## 7. 与 24 章的分工，以及本轮新增的三条 op 层约束
 

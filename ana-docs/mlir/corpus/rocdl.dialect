@@ -41,6 +41,8 @@
 ///     (`neg_a|neg_b`)，不是置换。
 ///   - `cbsz`/`abid`/`blgp`/`modC`/`fmtA`/`fmtB`/`scaleAType`/`fmtScaleA`/
 ///     `fmtScaleB` 等是计时常量 immarg；其枚举取值集合由 ROCDLAttrs.td 定义。
+///     定义层不声明这些枚举：本语料把值按 i32 建模，枚举没有文本载体，声明
+///     它们会是死声明；coverage 把它们记为 substituted。
 ///   - `sched.barrier` 的 mask 位域：none、valu、vmem_read、vmem_write、
 ///     ds_read、ds_write，以及包含 LDSDMA 的超集 all_vmem、all_ds、mfma_wmma。
 ///   - `asyncmark`/`wait.asyncmark` 的 stages 是 async stage 位掩码（all 或

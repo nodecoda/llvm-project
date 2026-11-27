@@ -63,12 +63,17 @@ Rules for `enum`:
                   separate `attr_def`.
   D6 kind      -- `: bits` matches a bit-enum record.
 
-`--coverage` additionally reports definitions that upstream has and the corpus
-does not (missing), and corpus declarations that are neither upstream records
-nor ledger rows (extra).  A ledger row is licensed; anything else is a
-fabrication, so `extra` must be empty.  That is completeness, not channel
-soundness; it is a separate opt-in mode so a green audit still means
-"everything declared is true", never "everything is declared".
+`--coverage` additionally classifies every upstream record the corpus does not
+declare.  A record the corpus names in a type position is `unaccounted`: a
+dangling reference that fails the mode, checked first.  Otherwise, a record no
+op reaches through a structured ODS reference is `unreferenced`; a record an op
+reaches but the corpus never uses as a type is `substituted` (the corpus types
+that field differently, e.g. as i32 or `any`).  So "missing" is never a silent
+number: every entry has a class, and `unaccounted == 0` is the gate.  Corpus declarations that are
+neither upstream records nor ledger rows are `extra`; a ledger row is licensed,
+so `extra` must be empty.  Coverage is still a separate opt-in mode: a green
+default run means "everything declared is true", never "everything is
+declared".
 
 Usage:
   LLVM_TBLGEN=... LLVM_BUILD_DIR=... tools/def-audit.py [--coverage] [--verbose]
@@ -531,6 +536,145 @@ def check_exceptions(aliases, modeled, used, rows):
     return problems
 
 
+def strip_strings(text):
+    """Blank double-quoted strings, preserving offsets and newlines.
+
+    Doc prose and Assembly literals are user-facing text, not declarations.
+    Leaving them in the type-surface scan lets `Doc "reads: address, ..."`
+    look like a use of a type named `address`.
+    """
+    out, i, n = [], 0, len(text)
+    while i < n:
+        if text[i] != '"':
+            out.append(text[i])
+            i += 1
+            continue
+        j = i + 1
+        while j < n:
+            if text[j] == "\\":
+                j += 2
+                continue
+            if text[j] == '"':
+                break
+            j += 1
+        out.append('""')
+        out.append("\n" * text.count("\n", i, j + 1))
+        i = j + 1
+    return "".join(out)
+
+
+def type_surface(text):
+    """The part of a corpus file where a type name is a declaration use.
+
+    Type names occur in `Parameters (...)`, clause bindings and constraint
+    right-hand sides.  They do not occur in `Assembly { ... }`: there, `type(x)`
+    is a directive and `x ":" type(y)` is a format.  Scanning the whole file
+    turns both into fake references.
+    """
+    text = strip_strings(text)
+    out, pos = [], 0
+    for m in re.finditer(r"\bAssembly\s*\{", text):
+        brace = text.find("{", m.start())
+        end = matching(text, brace, "{", "}")
+        if end < 0:
+            break
+        out.append(text[pos:brace])
+        out.append(" " * (end - brace + 1))
+        pos = end + 1
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def upstream_reachable(up):
+    """Def keys reachable from an op through structured ODS references.
+
+    Only a `{"def": ...}` reference or a `!superclasses` entry is an edge.
+    Descriptions, summaries and `extraClassDeclaration` are prose and C++:
+    a type mentioned there is not used by an op.  Counting those strings made
+    the `substituted` class claim "an op references it" on the strength of a
+    sentence, which is exactly the kind of unearned evidence this audit exists
+    to reject.
+    """
+    keys = set(up.json)
+    ops = [k for k, r in up.json.items()
+           if isinstance(r, dict)
+           and ("Op" in (r.get("!superclasses") or []) or r.get("opName"))]
+    seen, stack = set(ops), list(ops)
+    prose = {"description", "summary", "extraClassDeclaration",
+             "extraClassDefinition", "assemblyFormat", "!name"}
+
+    def walk(x, out, key=None):
+        if isinstance(x, dict):
+            ref = x.get("def")
+            if isinstance(ref, str) and ref in keys:
+                out.add(ref)
+            for k, v in x.items():
+                if k not in prose:
+                    walk(v, out, k)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v, out, key)
+        elif isinstance(x, str):
+            # `!superclasses` is the one string list that names records.
+            if key == "!superclasses" and x in keys:
+                out.add(x)
+
+    while stack:
+        k = stack.pop()
+        refs = set()
+        walk(up.json.get(k), refs)
+        for nxt in refs:
+            if nxt not in seen:
+                seen.add(nxt)
+                stack.append(nxt)
+    return seen
+
+
+def used_as_type(text, name):
+    """True when `name` appears in a type position in the corpus text.
+
+    Only `: Name`, `<Name>` and `| Name` count.  A bare word is usually the
+    attribute's own name (`comdat: string`) or part of an op mnemonic
+    (`llvm.func`), and counting those would turn every folding into a
+    dangling reference.  `=` is a legal follower because a parameter may carry
+    a default (`x: Foo = none`).
+    """
+    n = re.escape(name)
+    return bool(re.search(r":\s*%s(?=\s*[,)>=;\]]|$)|<\s*%s\s*>|\|\s*%s\b"
+                          % (n, n, n), text))
+
+
+def classify_missing(up, missing, text):
+    """Split upstream-but-undeclared records into scope classes.
+
+    unaccounted  -- the corpus names it in a type position and does not
+                    declare it; a dangling reference that must be fixed.
+                    Checked first: ODS reachability cannot excuse a name the
+                    corpus itself prints.
+    unreferenced -- no op reaches it through a structured ODS reference.  It
+                    may still be a parameter of a modeled type (`spirv.Dim`
+                    sits inside `!spirv.image<...>`), so the claim is about
+                    ODS references, never "never printed".
+    substituted  -- an op reaches it, but the corpus types that field as
+                    something else (i32, `any`, another constraint); a scope
+                    decision, not a forgotten declaration.
+    """
+    reach = upstream_reachable(up)
+    text = type_surface(text)
+    tables = {"type": up.types, "attr": up.attrs, "enum": up.enums}
+    out = {"unreferenced": [], "substituted": [], "unaccounted": []}
+    for kind, names in zip(("type", "attr", "enum"), missing):
+        for key in names:
+            name, rec = tables[kind][key]
+            if used_as_type(text, name):
+                out["unaccounted"].append((kind, name))
+            elif rec.get("!name") not in reach:
+                out["unreferenced"].append((kind, name))
+            else:
+                out["substituted"].append((kind, name))
+    return out
+
+
 def enum_cases(record, json):
     """({spelling: value}, {group spelling: value}) for an EnumInfo record."""
     cases, groups = OrderedDict(), OrderedDict()
@@ -853,6 +997,7 @@ def audit(path, verbose=False, aliases=None, modeled=None, used=None):
                     - licensed("attr", defs["attr_def"])),
              sorted({norm(x) for x in defs["enum"]} - set(up.enums)
                     - licensed("enum", defs["enum"])))
+    scope = classify_missing(up, missing, strip_comments(path.read_text()))
     return {
         "dialect": dialect,
         "file": path.name,
@@ -860,6 +1005,7 @@ def audit(path, verbose=False, aliases=None, modeled=None, used=None):
         "defs": defs,
         "problems": problems,
         "missing": missing,
+        "scope": scope,
         "extra": extra,
     }
 
@@ -891,21 +1037,38 @@ def audit_all():
 
     if coverage_mode:
         print("\n## definition coverage")
-        print("| dialect | missing type | missing attr | missing enum | extra |")
-        print("| --- | --- | --- | --- | --- |")
-        gaps = 0
+        print("| dialect | declared | unreferenced | substituted | unaccounted | extra |")
+        print("| --- | --- | --- | --- | --- | --- |")
+        total = {"unreferenced": 0, "substituted": 0, "unaccounted": 0}
         for r in rows:
-            m = r["missing"]
+            sc = r["scope"]
             e = r["extra"]
-            gaps += sum(len(x) for x in m)
-            if any(m) or any(e):
-                print("| %s | %s | %s | %s | %s |"
+            for k in total:
+                total[k] += len(sc[k])
+            if any(sc.values()) or any(e):
+                extra = e[0] + e[1] + e[2]
+                print("| %s | %d | %d | %d | %d | %s |"
                       % (r["dialect"],
-                         ", ".join(m[0]) or "-",
-                         ", ".join(m[1]) or "-",
-                         ", ".join(m[2]) or "-",
-                         ", ".join(e[0] + e[1] + e[2]) or "-"))
-        print("\nmissing definitions: %d" % gaps)
+                         sum(len(r["defs"][k]) for k in ("type_def", "attr_def", "enum")),
+                         len(sc["unreferenced"]), len(sc["substituted"]),
+                         len(sc["unaccounted"]),
+                         ", ".join(extra) or "-"))
+        print("\nmissing definitions: %d (unreferenced %d, substituted %d,"
+              " unaccounted %d)"
+              % (sum(total.values()), total["unreferenced"],
+                 total["substituted"], total["unaccounted"]))
+        for r in rows:
+            for kind, name in r["scope"]["unaccounted"]:
+                problems.append((r["dialect"], 0, "C1 dangling",
+                                 "%s `%s` is used as a type but not declared"
+                                 % (kind, name)))
+        if verbose:
+            print("\n## scope classes")
+            for r in rows:
+                for cls in ("unreferenced", "substituted"):
+                    for kind, name in r["scope"][cls]:
+                        print("- %s %s %s `%s`"
+                              % (r["dialect"], cls, kind, name))
 
     if problems:
         print("\n## problems")
@@ -961,6 +1124,34 @@ def selftest():
           witness_problem("gpu", "type",
                           "mlir/include/mlir/Dialect/GPU/IR/GPUBase.td:183",
                           "cxx-type", "`SparseDnTensorHandleType`"), None)
+    check("type position: attribute",
+          used_as_type("Attributes (x: Foo);", "Foo"), True)
+    check("type position: generic", used_as_type("optional<array<Foo>>", "Foo"), True)
+    check("type position: union", used_as_type("constraint c = a | Foo;", "Foo"), True)
+    check("type position: own name", used_as_type("Attributes (foo: string);", "foo"), False)
+    check("type position: op mnemonic", used_as_type("op llvm.func {", "func"), False)
+    check("type position: default value",
+          used_as_type("Parameters (x: Foo = none);", "Foo"), True)
+    check("type position: doc prose is not a use",
+          used_as_type(type_surface('Doc "reads: Foo, i1 mask";'), "Foo"), False)
+    check("type position: assembly directive is not a use",
+          used_as_type(type_surface('Assembly { x ":" type(y) }'), "type"), False)
+    check("type position: outside assembly still counts",
+          used_as_type(type_surface('Doc "x"; Assembly { "!" } Parameters (e: Foo);'),
+                       "Foo"), True)
+
+    class _Up:
+        json = {
+            "OpA": {"!superclasses": ["Op"],
+                    "description": "mentions TypeB in prose",
+                    "arguments": {"args": [[{"def": "TypeC", "kind": "def"},
+                                            "x"]]}},
+            "TypeB": {"!superclasses": ["TypeDef"]},
+            "TypeC": {"!superclasses": ["TypeDef"]},
+        }
+    reach = upstream_reachable(_Up())
+    check("reach: structured reference", "TypeC" in reach, True)
+    check("reach: prose is not an edge", "TypeB" in reach, False)
     check("witness: no quoted symbol",
           witness_problem("gpu", "type",
                           "mlir/include/mlir/Dialect/GPU/IR/GPUBase.td:183",

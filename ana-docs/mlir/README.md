@@ -66,7 +66,7 @@
 | [21-corpus-round-six.md](21-corpus-round-six.md) | 第六轮语料：ub/ptr/shard/arm_sve，81 个 op 换 0 条 op 形状产生式；`same_type` 升级进核心（39→40）、本地词表 19→18；`qualified` 第三个见证落地为文本产生式（11 处使用点）；空负载属性、符号非类型、Generic 是契约 |
 | [23-corpus-round-eight.md](23-corpus-round-eight.md) | 第八轮：三条恒真检查修成会失败、覆盖审计量出 258 个缺失 op 并补账、带引号的 `name`、schema 名全局解析缺陷 |
 | [24-escape-licenses.md](24-escape-licenses.md) | 逃逸点契约：断言与描述分离、五通道许可证、设计规则 E0–E10（封闭集/单通道/可证伪/实参即范围/不组合/有期限/不带语义/家族软名/覆盖收口/守卫可缺失）、范围细则 S1–S10、L0–L12 与 33 例 selftest、三条缺口关闭（`ref`/`oilist<sep>`/`else`）、分方言预算账本 |
-| [25-definition-audit.md](25-definition-audit.md) | 定义层契约：四元组（范围/形状/证据/预算）、四通道（块/Custom/Generic/Modeled+脊）、D0–D14、category 封闭词表（rename/cxx-type/cxx-enum/builtin/constraint/borrowed-enum）、符号级见证、modeled 扁脊与 12/4 预算、覆盖与健全性分离（276 声明 / 缺 381） |
+| [25-definition-audit.md](25-definition-audit.md) | 定义层契约：四元组（范围/形状/证据/预算）、四通道（块/Custom/Generic/Modeled+脊）、D0–D14、category 封闭词表（rename/cxx-type/cxx-enum/builtin/constraint/borrowed-enum）、符号级见证、modeled 扁脊与 12/4 预算、覆盖与健全性分离（278 声明；379 未声明 = 208 unreferenced + 171 substituted，0 unaccounted） |
 
 ## 一页结论
 
@@ -267,7 +267,7 @@
 | `tools/dialect-coverage.py` | 覆盖审计：50 个方言 → 聚合 TD 入口的显式映射；上游取自 `llvm-tblgen --dump-json` 的 `opName`，与语料 `op` 集合**逐字相等**（不做后缀对齐）；missing/extra 非空则退出码 1 |
 | `tools/dialect-lex.c` | 参考词法器（normal / assembly 两模式，含 `Gap` 关键字） |
 | `tools/escape-audit.py` | 逃逸点许可证审计：L0–L12 + 规范化 N1（`enum($x)`）、tblgen 逐 op 证据、预算硬上限；L3d 查本地标签的子句关键字，L4 的 scope 是封闭词表，L10 查块覆盖与家族软名，L11 查守卫可缺失，L12 拒绝定义层指令；缺 `LLVM_TBLGEN` 或查不到上游记录即失败 |
-| `tools/def-audit.py` | 定义层审计：D0–D14；通道与上游一致、参数全覆盖、enum 逐项一致、`params` 全量规则、modeled 符号级见证与扁平脊、12/4 预算、定义块钩子上游存在；`--coverage` 报缺失/伪造（alias 目标与 ledger 行不计欠账），`--selftest` 10 例 |
+| `tools/def-audit.py` | 定义层审计：D0–D14；通道与上游一致、参数全覆盖、enum 逐项一致、`params` 全量规则、modeled 符号级见证与扁平脊、12/4 预算、定义块钩子上游存在；`--coverage` 把未声明记录分成 unreferenced / substituted / unaccounted 三类（unaccounted 非空即失败），alias 目标与 ledger 行不计欠账，`--selftest` 21 例 |
 | `tools/def-exceptions.tsv` | 定义层逃逸账本：7 列（dialect/kind/corpus/upstream/witness/category/reason），34 行 = 3 rename + 31 modeled（20 cxx-type、4 borrowed-enum、3 builtin、2 cxx-enum、2 constraint） |
 | `tools/fact-glossary.tsv` | 事实词表：41 核心 + 20 本地（含 owner 与释义），新词未登记即失败 |
 | `tools/gap-registry.tsv` | 表达力缺口登记：4 个名字 / 9 个 op，见证集合必须与语料一致 |
