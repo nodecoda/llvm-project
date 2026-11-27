@@ -207,9 +207,9 @@ type_def tensor_arm {
 
 还有一条 **C2 policy**：某方言有 `substituted` 条，却不在文件头写
 `/// 定义层范围：`，`--coverage` 直接失败。范围决定可以不做，但不能只藏在
-审计器里——下一个读语料的人必须能在方言文件里看到它。当前 7 个有 substituted
-的方言（acc/gpu/irdl/llvm/nvvm/rocdl/shard）全部通过；其余方言没有需要
-解释的范围决定。
+审计器里——下一个读语料的人必须能在方言文件里看到它。当前 6 个有 substituted
+的方言（acc/gpu/irdl/llvm/nvvm/rocdl）全部通过；其余方言没有需要解释的
+范围决定。shard 的范围注记保留，因为它的 axisarray 是上一轮补的声明。
 
 覆盖表自己还有两条防空转规则：
 
