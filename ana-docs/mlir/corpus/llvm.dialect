@@ -1,0 +1,2443 @@
+/// llvm —— LLVM IR 方言的领域描述（corpus，不是最终语法）。
+///
+/// 上游：mlir/include/mlir/Dialect/LLVMIR/LLVMOps.td +
+/// LLVMIntrinsicOps.td（含 LLVMOpBase.td / LLVMAttrDefs.td / LLVMEnums.td 闭包）。
+/// 只有领域事实：部件、约束、文本、语义。没有 namespace/class/builder。
+///
+/// 范围与计数：dialect-coverage.py 以 `llvm-tblgen --dump-json` 的 opName 为准，
+/// 上游 323 个、本文件 323 条，严格集合相等（missing=0, extra=0）。opName 就是
+/// 打印助记符（含 `intr.` 前缀），所以语料声明名与上游逐字相同，不做后缀对齐；
+/// 一条语料 op 只对应一条上游记录。
+///
+/// 通道分布（按 escape-audit 的继承解析，即 op 经 `from` 取到 schema 的通道）：
+/// block 256（其中 10 条带 `custom<>` 钩子）、Generic 59、Custom 8、Gap 0。
+/// dialect-corpus.py 的 text-channels 表把任何带 `from` 的 op 记作 block，
+/// 因此它的表显示 284/8/31：多出的 28 条是从 Generic schema 继承了通道的 op
+/// （VectorReduceInt 9、VPReduceInt 9、VPReduceFloat 6、VPBinaryInt 4）。
+///
+/// 同名助记符字符串不等于同一个 op（重要）：
+///   严格口径下 `tblgen` 的 opName 已经区分了核心 op 与 intrinsic：核心加法是
+///   `add`，向量谓词归约是 `intr.vp.reduce.add`，向量归约是
+///   `intr.vector.reduce.add`。三者是三条上游记录，本文件也分别声明，不再有
+///   “只声明其中一种形态、另一种记进 Doc”的偏差。同理 `fadd`/`fmul`（核心）与
+///   `intr.experimental.constrained.fadd`/`intr.vector.reduce.fadd` 各自独立。
+///   `intr.vp.merge` 的基类 `LLVM_VPSelectBase` 用 `"vp." # mnem` 拼助记符，
+///   上游 opName 是 `intr.vp.merge`；此前的 `intr.merge` 是错误拼写，已改名。
+///
+/// 文本通道：所有 assemblyFormat 逐字转写；`$x` → `x`，`type($x)` → `type(x)`，
+/// `(fastmath `` $x^)?` → `if x { "fastmath" x }`，`oilist(...)` → `oilist(...)`，
+/// `prop-dict` 只在打印 properties 的 op 上出现（load/store/atomicrmw/cmpxchg/
+/// masked.load/gather/store/scatter）。
+///
+/// 新增族的通道依据（逐条核对 tblgen 的 assemblyFormat 字段）：
+///   - 核心 `add`/`mul`：`$lhs, $rhs ($overflowFlags^)? attr-dict : type($res)`
+///     （LLVMOps.td:59-71、add :156、mul :159）→ block。
+///   - 核心 `sdiv`/`udiv`：`(`exact` $isExact^)? $lhs, $rhs attr-dict : type($res)`
+///     （:78-94；sdiv :163、udiv :161）→ block；上游是 ConditionallySpeculatable，
+///     故只记 no_memory_effect，不冒充 pure。
+///   - 核心 `srem`/`urem`：`$lhs, $rhs attr-dict : type($res)`（:165、:168）→ block。
+///   - 核心 `and`/`xor`：同无 flag 形态（:171、:175）→ block；`or` 多
+///     `(`disjoint` $isDisjoint^)?`（:96-113、:172）→ block。
+///   - 核心 `fadd`/`fmul`：`$lhs, $rhs (fastmath^)? attr-dict : type($res)`
+///     （:116-132；fadd :245、fmul :247）→ block。
+///   - 核心 `fneg`：`$operand (fastmath^)? attr-dict : type($res)`
+///     （LLVM_UnaryFloatArithmeticOp :134-146；记录 LLVM_FNegOp :250）→ block。
+///   - `intr.trunc`：`(operands) (fastmath^)? attr-dict :
+///     functional-type(operands, results)`（LLVM_FTruncOp :175 经
+///     LLVM_UnaryIntrOpF :32-40）→ block，套 IntrinsicWithFastmath。
+///   - `intr.{smax,smin,umax,umin}`（:227-230）与
+///     `intr.{sadd,uadd,ssub,usub,sshl,ushl}.sat`（:902-907）：都经
+///     LLVM_BinarySameArgsIntrOpI/Base（:41-50、:53-56），格式
+///     `(operands) attr-dict : functional-type(operands, results)` → block。
+///   - `intr.experimental.constrained.*` 共 49 条，**全部有 assemblyFormat**
+///     （LLVMIntrinsicOps.td:502 起，族内基类与各 op 的 override），没有一条
+///     Generic。分形态：
+///       * 一元带 rm（LLVM_ConstrainedUnaryIntrRM :597，fmt :601）：
+///         sqrt/sin/cos/tan/asin/acos/atan/sinh/cosh/tanh/exp/exp2/log/log10/
+///         log2/rint/nearbyint（记录 :777-793）；
+///       * 一元无 rm（:609，fmt :613）：ceil/floor/round/roundeven/trunc
+///         （:796-800）；
+///       * 二元带 rm（:621，fmt :625）：pow/atan2（:803-804）；fadd/fsub/fmul/
+///         fdiv/frem 各有 override 的同一形态（:709-751）；
+///       * 二元无 rm（:633，fmt :637）：maxnum/minnum/maximum/minimum（:807-810）；
+///       * 三元带 rm（fma :754、fmuladd :763，fmt :758/:767）；
+///       * powi/ldexp（:812/:822，fmt :816/:826）用 functional-type；
+///       * FP→int 带 rm（:644，fmt :648）：lrint/llrint（:833-834）；
+///         FP→int 无 rm（:656，fmt :660）：lround/llround/fptosi/fptoui（:835-840）；
+///       * 单操作数转换 `type($arg_0) `to` type(results)`：uitofp :846、
+///         sitofp :855、fptrunc :864（带 rm）；fpext :873（无 rm）；
+///       * fcmp/fcmps（LLVM_ConstrainedFCmpIntrBase :667，fmt :686）：
+///         `$predicate $arg_0, $arg_1 $fpExceptionBehavior ... : type($arg_0)`。
+///   - `intr.vector.reduce.*` 共 17 条，分三种上游形态：
+///       * I 族 9 条 add/and/mul/or/smax/smin/umax/umin/xor
+///         （LLVM_VecReductionI，:1303-1306、:1328-1336）**没有 assemblyFormat**
+///         → Generic；
+///       * F 族 6 条 fmax/fmin/fmaximum/fminimum/fmaximumnum/fminimumnum
+///         （LLVM_VecReductionF，:1292-1301、:1338-1343）有
+///         `(operands) (fastmath^)? attr-dict : functional-type(operands, results)`
+///         → block；
+///       * Acc 族 2 条 fadd/fmul（LLVM_VecReductionAccBase，:1310-1323、
+///         :1345-1346）有同一形态 → block。
+///
+/// 钩子（钩子名恰好是上游 `custom<...>`）：CmpPredicate(icmp/fcmp)；
+/// InsertExtractValueElementType(extractvalue/insertvalue)；ShuffleType；
+/// GEPIndices；SwitchOpCases；IndirectBrOpSucessors（上游拼写如此）；
+/// OpBundles(assume)；LLVMLinkage(mlir.ifunc)。实参与上游逐位对应。
+///
+/// Custom 依据（上游 hasCustomAssemblyFormat = 1）：
+///   alloca(LLVMOps.td:296)、invoke(:805)、landingpad(:822)、call(:952)、
+///   mlir.global(:1658)、mlir.alias(:1811)、func(:2274)、call_intrinsic(:2781)。
+///
+/// 事实：只用 fact-glossary 的 core 词。Pure → pure；Commutative → commutative；
+/// Terminator → terminator；ConstantLike → constant_like；ReturnLike → return_like；
+/// NoMemoryEffect → no_memory_effect；MemoryEffects 读写/分配 →
+/// memory_effect(read|write|allocate)；SameOperandsAndResultType / AllTypesMatch →
+/// same_type；SameOperandsAndResultElementType → same_element_type；Symbol/SymbolName
+/// → symbol；SymbolTable → symbol_table；SymbolVisibility → symbol_visibility；
+/// IsolatedFromAbove → isolated_from_above；AutomaticAllocationScope →
+/// automatic_allocation_scope；AffineScope → affine_scope；NoTerminator →
+/// no_terminator；NoRegionArguments → no_region_args；SingleBlockImplicitTerminator
+/// → single_block + implicit_terminator(return)；AttrSizedOperandSegments →
+/// operand_segments_by_attribute。没有方言本地事实。
+///
+/// 只写进 Doc 的语义（文法没有对应谓词，或 core 词表达不了条件性）：
+///   - `sdiv`/`udiv`/`srem`/`urem`：上游是 ConditionallySpeculatable 而非 Pure；
+///     核心词 speculatable 表达不了“条件性”，故只记 no_memory_effect 与类型关系。
+///   - constrained `fcmp`/`fcmps`：结果的 i1 元素类型与操作数同形状由
+///     TypesMatchWith 表达，这里只记 same_type(arg_0, arg_1)，形状关系写进 Doc。
+///   - `powi`/`ldexp`：上游 overloadedOperands 指定了重载操作数下标（powi 无、
+///     ldexp 为 [1]），文法不记下标，只在 Doc 说明。
+///   - verifier/接口语义：load/store 的 alignment 与原子性约束；
+///     alloca 的 elem_type 与结果指针元素类型一致；GEP 的 inrange 只用于常量；
+///     call/invoke 的 callee 与 var_callee_type 一致；atomicrmw 的 bin_op 决定
+///     结果类型；cmpxchg 结果是 {T, i1} 结构；switch 的 case_operand_segments
+///     与 caseDestinations 一一对应；func 的 body 入口参数与 function_type 一致。
+///
+/// GAP：无。未使用 Gap 构造。
+
+dialect llvm {
+  Doc "LLVM IR dialect: SSA form of LLVM IR with LLVM-compatible types, memory, calls, atomics, coroutines and intrinsics.";
+
+  // ---- 类型 ----
+
+  type_def pointer {
+    Doc "LLVM pointer type (!llvm.ptr<addrspace>); address space defaults to 0.";
+  }
+  type_def struct_type {
+    Doc "LLVM literal struct type (!llvm.struct<(T0, T1, ...)>), possibly packed.";
+  }
+  type_def array_type {
+    Doc "LLVM array type (!llvm.array<N x T>).";
+  }
+  type_def metadata_type {
+    Doc "LLVM metadata type (!llvm.metadata), the SSA carrier of metadata attributes.";
+  }
+  type_def token_type {
+    Doc "LLVM token type (!llvm.token) used by coroutine intrinsics.";
+  }
+  type_def comdat_type {
+    Doc "LLVM comdat selector reference (!llvm.comdat), naming a comdat() group.";
+  }
+
+  constraint llvm_type = integer | float | pointer | struct_type | array_type | metadata_type | token_type | vector | function_type;
+  constraint llvm_scalar = integer | float;
+  constraint llvm_ptr = pointer | vector;
+  constraint aggregate = struct_type | array_type;
+
+  enum FastmathFlags: bits {
+    Doc "Floating-point fast-math flags; empty prints nothing.";
+    Cases [ none = 0, reassoc = 1, nnan = 2, ninf = 4, nsz = 8,
+            arcp = 16, contract = 32, afn = 64 ];
+    Groups [ fast = reassoc | nnan | ninf | nsz | arcp | contract | afn ];
+  }
+
+  enum OverflowFlags: bits {
+    Doc "Integer overflow flags on arithmetic and trunc.";
+    Cases [ none = 0, nsw = 1, nuw = 2 ];
+  }
+
+  enum AtomicOrdering {
+    Doc "LLVM atomic ordering.";
+    Cases [ not_atomic = 0 "not_atomic", unordered = 1, monotonic = 4,
+            acquire = 2, release = 3, acq_rel = 5, seq_cst = 6 ];
+  }
+
+  enum AtomicBinOp {
+    Doc "Operation of llvm.atomicrmw.";
+    Cases [ xchg = 0, add = 1, sub = 2, and_ = 3 "and", nand = 4, or_ = 5 "or",
+            xor = 6, max = 7, min = 8, umax = 9, umin = 10, fadd = 11,
+            fsub = 12, fmax = 13, fmin = 14, uinc_wrap = 15, udec_wrap = 16 ];
+  }
+
+  enum Linkage {
+    Doc "LLVM linkage kinds.";
+    Cases [ private = 0, internal = 1, available_externally = 2, linkonce = 3,
+            weak = 4, common = 5, appending = 6, extern_weak = 7,
+            linkonce_odr = 8, weak_odr = 9, external = 10 ];
+  }
+
+  enum CConv {
+    Doc "Calling conventions.";
+    Cases [ C = 0, fastcc = 8, coldcc = 9, ghccc = 10, tailcc = 20,
+            preserve_most = 21 ];
+  }
+
+  enum TailCallKind {
+    Doc "Tail call kinds.";
+    Cases [ none = 0, tail = 1, musttail = 2, notail = 3 ];
+  }
+
+  enum Visibility {
+    Doc "Symbol visibility.";
+    Cases [ default = 0, hidden = 1, protected = 2 ];
+  }
+
+  enum UnnamedAddr {
+    Doc "unnamed_addr kinds.";
+    Cases [ none = 0, local = 1, global = 2 ];
+  }
+
+  enum RoundingMode {
+    Doc "Rounding modes of the constrained FP intrinsics (LLVMEnums.td:776-808).";
+    Cases [ towardzero = 0, tonearest = 1, upward = 2, downward = 3,
+            tonearestaway = 4, dynamic = 7 ];
+  }
+
+  enum FPExceptionBehavior {
+    Doc "Exception behaviors of the constrained FP intrinsics (LLVMEnums.td:837-854).";
+    Cases [ ignore = 0, maytrap = 1, strict = 2 ];
+  }
+
+  // ---- 整数/浮点算术与比较 ----
+
+  schema IntBinaryWithOverflow {
+    Doc "Integer binary arithmetic with optional nsw/nuw flags; operands and result share one type (LLVM_IntArithmeticOpWithOverflowFlag, LLVMOps.td:59).";
+    Operands   (lhs: integer, rhs: integer);
+    Results    (res: integer);
+    Attributes (overflow_flags: OverflowFlags = none);
+    Properties [pure, no_memory_effect, same_type(lhs, rhs), same_type(rhs, res)];
+    Assembly   { lhs "," rhs if overflow_flags { overflow_flags }
+                 attr-dict ":" type(res) }
+  }
+
+  schema IntBinaryWithExact {
+    Doc "Integer binary arithmetic with an optional exact marker (LLVM_IntArithmeticOpWithExactFlag, LLVMOps.td:78).";
+    Operands   (lhs: integer, rhs: integer);
+    Results    (res: integer);
+    Attributes (exact: optional<unit>);
+    Properties [pure, no_memory_effect, same_type(lhs, rhs), same_type(rhs, res)];
+    Assembly   { if exact { "exact" } lhs "," rhs attr-dict ":" type(res) }
+  }
+
+  schema FloatBinary {
+    Doc "Floating-point binary arithmetic with optional fastmath flags (LLVM_FloatArithmeticOp, LLVMOps.td:116).";
+    Operands   (lhs: float, rhs: float);
+    Results    (res: float);
+    Attributes (fastmathFlags: FastmathFlags = none);
+    Properties [pure, no_memory_effect, same_type(lhs, rhs), same_type(rhs, res)];
+    Assembly   { lhs "," rhs if fastmathFlags { "fastmath" fastmathFlags }
+                 attr-dict ":" type(res) }
+  }
+
+  schema IntBinary {
+    Doc "Integer binary arithmetic without flags; operands and result share one type (LLVM_IntArithmeticOp, LLVMOps.td:51). Speculatability is stated per op: and/xor are Pure, while srem/urem are only ConditionallySpeculatable upstream.";
+    Operands   (lhs: integer, rhs: integer);
+    Results    (res: integer);
+    Properties [no_memory_effect, same_type(lhs, rhs), same_type(rhs, res)];
+    Assembly   { lhs "," rhs attr-dict ":" type(res) }
+  }
+
+  schema IntBinaryWithDisjoint {
+    Doc "Integer binary arithmetic with an optional disjoint marker (LLVM_IntArithmeticOpWithDisjointFlag, LLVMOps.td:96).";
+    Operands   (lhs: integer, rhs: integer);
+    Results    (res: integer);
+    Attributes (disjoint: optional<unit>);
+    Properties [pure, no_memory_effect, same_type(lhs, rhs), same_type(rhs, res)];
+    Assembly   { if disjoint { "disjoint" } lhs "," rhs attr-dict ":" type(res) }
+  }
+
+  schema IntBinaryWithExactConditional {
+    Doc "Integer binary arithmetic with an optional exact marker whose speculatability is conditional upstream (LLVM_IntArithmeticOpWithExactFlag with ConditionallySpeculatable, LLVMOps.td:78, 161-164). Pure is deliberately not claimed.";
+    Operands   (lhs: integer, rhs: integer);
+    Results    (res: integer);
+    Attributes (exact: optional<unit>);
+    Properties [no_memory_effect, same_type(lhs, rhs), same_type(rhs, res)];
+    Assembly   { if exact { "exact" } lhs "," rhs attr-dict ":" type(res) }
+  }
+
+  op add from IntBinaryWithOverflow {
+    Doc "Integer addition with optional nuw/nsw flags (LLVM_AddOp, LLVMOps.td:156).";
+    Properties [commutative];
+  }
+
+  op sub from IntBinaryWithOverflow {
+    Doc "Integer subtraction; optional nuw/nsw flags.";
+  }
+
+  op mul from IntBinaryWithOverflow {
+    Doc "Integer multiplication with optional nuw/nsw flags (LLVM_MulOp, LLVMOps.td:159).";
+    Properties [commutative];
+  }
+
+  op shl from IntBinaryWithOverflow {
+    Doc "Integer left shift; optional nuw/nsw flags.";
+  }
+
+  op lshr from IntBinaryWithExact {
+    Doc "Logical (unsigned) integer right shift with optional exact.";
+  }
+
+  op ashr from IntBinaryWithExact {
+    Doc "Arithmetic (signed) integer right shift with optional exact.";
+  }
+
+  op udiv from IntBinaryWithExactConditional {
+    Doc "Unsigned integer division with optional exact (LLVM_UDivOp, LLVMOps.td:161); upstream marks it ConditionallySpeculatable, not Pure.";
+  }
+
+  op sdiv from IntBinaryWithExactConditional {
+    Doc "Signed integer division with optional exact (LLVM_SDivOp, LLVMOps.td:163); upstream marks it ConditionallySpeculatable, not Pure.";
+  }
+
+  op urem from IntBinary {
+    Doc "Unsigned integer remainder (LLVM_URemOp, LLVMOps.td:165); upstream marks it ConditionallySpeculatable, not Pure.";
+  }
+
+  op srem from IntBinary {
+    Doc "Signed integer remainder (LLVM_SRemOp, LLVMOps.td:168); upstream marks it ConditionallySpeculatable, not Pure.";
+  }
+
+  op and from IntBinary {
+    Doc "Bitwise AND of two integers (LLVM_AndOp, LLVMOps.td:171).";
+    Properties [pure];
+  }
+
+  op or from IntBinaryWithDisjoint {
+    Doc "Bitwise OR of two integers with an optional disjoint marker (LLVM_OrOp, LLVMOps.td:172).";
+  }
+
+  op xor from IntBinary {
+    Doc "Bitwise XOR of two integers (LLVM_XOrOp, LLVMOps.td:175).";
+    Properties [pure];
+  }
+
+  op fadd from FloatBinary {
+    Doc "Floating-point addition (LLVM_FAddOp, LLVMOps.td:245).";
+  }
+
+  op fmul from FloatBinary {
+    Doc "Floating-point multiplication (LLVM_FMulOp, LLVMOps.td:247).";
+  }
+
+  op fsub from FloatBinary {
+    Doc "Floating-point subtraction.";
+  }
+
+  op fdiv from FloatBinary {
+    Doc "Floating-point division.";
+  }
+
+  op frem from FloatBinary {
+    Doc "Floating-point remainder with the sign of the dividend.";
+  }
+
+  op fneg {
+    Doc "Floating-point negation with optional fastmath flags (LLVM_UnaryFloatArithmeticOp, LLVMOps.td:134; record LLVM_FNegOp at LLVMOps.td:250).";
+    Operands   (operand: float);
+    Results    (res: float);
+    Attributes (fastmathFlags: FastmathFlags = none);
+    Properties [pure, same_type(operand, res)];
+    Assembly   { operand if fastmathFlags { "fastmath" fastmathFlags }
+                 attr-dict ":" type(res) }
+  }
+
+  op icmp {
+    Doc "Integer or pointer comparison; the predicate prints through the CmpPredicate hook, operands share one type, result is i1-shaped like the operands.";
+    Operands   (lhs: llvm_scalar, rhs: any);
+    Results    (res: i1);
+    Attributes (predicate: ICmpPredicate);
+    Properties [pure, same_type(lhs, rhs)];
+    Assembly   { custom<CmpPredicate>(predicate) lhs "," rhs attr-dict ":"
+                 type(lhs) }
+  }
+
+  op fcmp {
+    Doc "Floating-point comparison; predicate through the CmpPredicate hook, optional fastmath flags.";
+    Operands   (lhs: float, rhs: float);
+    Results    (res: i1);
+    Attributes (predicate: FCmpPredicate, fastmathFlags: FastmathFlags = none);
+    Properties [pure, same_type(lhs, rhs)];
+    Assembly   { custom<CmpPredicate>(predicate) lhs "," rhs
+                 if fastmathFlags { "fastmath" fastmathFlags }
+                 attr-dict ":" type(lhs) }
+  }
+
+  // ---- 类型转换 ----
+
+  schema Cast {
+    Doc "Type conversion with an explicit source and target type (LLVM_CastOp, LLVMOps.td:579).";
+    Operands   (arg: llvm_type);
+    Results    (res: llvm_type);
+    Properties [pure];
+    Assembly   { arg attr-dict ":" type(arg) "to" type(res) }
+  }
+
+  schema CastWithNNeg {
+    Doc "Conversion with an optional nneg marker (LLVM_CastOpWithNNegFlag, LLVMOps.td:593).";
+    Operands   (arg: llvm_type);
+    Results    (res: llvm_type);
+    Attributes (nonNeg: optional<unit>);
+    Properties [pure];
+    Assembly   { if nonNeg { "nneg" } arg attr-dict ":" type(arg) "to" type(res) }
+  }
+
+  op bitcast from Cast {
+    Doc "Bit-preserving conversion between non-aggregate types.";
+  }
+  op addrspacecast from Cast {
+    Doc "Pointer conversion that changes the address space.";
+  }
+  op ptrtoaddr from Cast {
+    Doc "Pointer-to-integer conversion that drops provenance; width follows the data layout.";
+  }
+  op ptrtoint from Cast {
+    Doc "Pointer-to-integer conversion.";
+  }
+  op sext from Cast {
+    Doc "Sign extension between integers of different widths.";
+  }
+  op sitofp from Cast {
+    Doc "Signed integer to floating-point conversion.";
+  }
+  op fptosi from Cast {
+    Doc "Floating-point to signed integer conversion (poison when out of range).";
+  }
+  op fptoui from Cast {
+    Doc "Floating-point to unsigned integer conversion (poison when out of range).";
+  }
+
+  op zext from CastWithNNeg {
+    Doc "Zero extension between integers; optional nneg promises the input is non-negative.";
+  }
+  op uitofp from CastWithNNeg {
+    Doc "Unsigned integer to floating-point conversion; optional nneg.";
+  }
+
+  op trunc {
+    Doc "Integer truncation; optional nuw/nsw flags (LLVM_CastOpWithOverflowFlag, LLVMOps.td:610). The separate llvm.intr.trunc op (LLVM_FTruncOp) prints the unary-intrinsic form.";
+    Operands   (arg: integer);
+    Results    (res: integer);
+    Attributes (overflow_flags: OverflowFlags = none);
+    Properties [pure];
+    Assembly   { arg if overflow_flags { overflow_flags } attr-dict ":"
+                 type(arg) "to" type(res) }
+  }
+
+  op fpext {
+    Doc "Floating-point extension; optional fastmath (LLVM_CastOpWithFastMathFlag, LLVMOps.td:627).";
+    Operands   (arg: float);
+    Results    (res: float);
+    Attributes (fastmathFlags: FastmathFlags = none);
+    Properties [pure];
+    Assembly   { arg if fastmathFlags { "fastmath" fastmathFlags } attr-dict ":"
+                 type(arg) "to" type(res) }
+  }
+
+  op fptrunc {
+    Doc "Floating-point truncation; optional fastmath.";
+    Operands   (arg: float);
+    Results    (res: float);
+    Attributes (fastmathFlags: FastmathFlags = none);
+    Properties [pure];
+    Assembly   { arg if fastmathFlags { "fastmath" fastmathFlags } attr-dict ":"
+                 type(arg) "to" type(res) }
+  }
+
+  op inttoptr {
+    Doc "Integer to pointer conversion with an optional dereferenceable byte count (LLVM_DereferenceableCastOp, LLVMOps.td:647).";
+    Operands   (arg: integer);
+    Results    (res: llvm_ptr);
+    Attributes (dereferenceable: optional<attribute>);
+    Properties [pure];
+    Assembly   { arg if dereferenceable { "dereferenceable" dereferenceable }
+                 attr-dict ":" type(arg) "to" type(res) }
+  }
+
+  enum ICmpPredicate {
+    Doc "Integer comparison predicates for llvm.icmp.";
+    Cases [ eq = 0, ne = 1, slt = 2, sle = 3, sgt = 4, sge = 5,
+            ult = 6, ule = 7, ugt = 8, uge = 9 ];
+  }
+
+  enum FCmpPredicate {
+    Doc "Floating-point comparison predicates for llvm.fcmp.";
+    Cases [ always_false = 0 "false", oeq = 1, ogt = 2, oge = 3, olt = 4,
+            ole = 5, one = 6, ord = 7, ueq = 8, ugt = 9, uge = 10, ult = 11,
+            ule = 12, une = 13, uno = 14, always_true = 15 "true" ];
+  }
+
+  enum GEPNoWrapFlags: bits {
+    Doc "getelementptr no-wrap flags; inbounds implies nusw.";
+    Cases [ none = 0, inbounds = 1, nusw = 2, nuw = 4 ];
+  }
+
+  // ---- 内存 ----
+
+  op alloca {
+    Doc "Stack allocation; prints through the upstream hand-written printer/parser (LLVMOps.td:296). arraySize is in elements of elem_type, alignment is optional, inalloca marks a used-with-inalloca alloca.";
+    Operands   (arraySize: integer);
+    Results    (res: pointer);
+    Attributes (alignment: optional<i64>, elem_type: type, inalloca: optional<unit>);
+    Properties [memory_effect(allocate)];
+    Assembly   Custom;
+  }
+
+  op getelementptr {
+    Doc "Pointer arithmetic mirroring LLVM getelementptr; the index list prints through the GEPIndices hook, elem_type is the pointee type and inrange is the constant-range qualifier (LLVMOps.td:301).";
+    Operands   (base: llvm_ptr, dynamicIndices: variadic<integer>,
+                operands: variadic<llvm_type>);
+    Results    (res: llvm_ptr, results: variadic<llvm_type>);
+    Attributes (rawConstantIndices: array<i32>, elem_type: type,
+                noWrapFlags: GEPNoWrapFlags = none,
+                inrange: optional<attribute>);
+    Properties [pure];
+    Assembly   { if noWrapFlags { noWrapFlags }
+                 if inrange { "inrange" inrange }
+                 base "[" custom<GEPIndices>(dynamicIndices, rawConstantIndices) "]"
+                 attr-dict ":" functional-type(operands, results)
+                 "," elem_type }
+  }
+
+  op load {
+    Doc "Load from a pointer; volatile/atomic/nontemporal/invariant/dereferenceable/noundef/range qualifiers print in a fixed order, properties carry the memory effects (LLVMOps.td:388).";
+    Operands   (addr: llvm_ptr);
+    Results    (res: llvm_type);
+    Attributes (alignment: optional<i64>, volatile_: optional<unit>,
+                nontemporal: optional<unit>, invariant: optional<unit>,
+                invariantGroup: optional<unit>,
+                ordering: AtomicOrdering = not_atomic,
+                syncscope: optional<string>,
+                dereferenceable: optional<attribute>, noundef: optional<unit>,
+                range: optional<attribute>);
+    Properties [memory_effect(read)];
+    Assembly   { if volatile_ { "volatile" } addr
+                 if ordering { "atomic"
+                               if syncscope { "syncscope" "(" syncscope ")" }
+                               ordering }
+                 oilist("invariant" invariant
+                        | "invariant_group" invariantGroup
+                        | "dereferenceable" dereferenceable
+                        | "noundef" noundef
+                        | "range" range)
+                 prop-dict attr-dict ":" qualified(type(addr)) "->" type(res) }
+  }
+
+  op store {
+    Doc "Store a value through a pointer; the volatile/atomic/invariant_group qualifiers print before the type list (LLVMOps.td:498).";
+    Operands   (value: llvm_type, addr: llvm_ptr);
+    Attributes (alignment: optional<i64>, volatile_: optional<unit>,
+                nontemporal: optional<unit>, invariantGroup: optional<unit>,
+                ordering: AtomicOrdering = not_atomic,
+                syncscope: optional<string>);
+    Properties [memory_effect(write)];
+    Assembly   { if volatile_ { "volatile" } value "," addr
+                 if ordering { "atomic"
+                               if syncscope { "syncscope" "(" syncscope ")" }
+                               ordering }
+                 oilist("invariant_group" invariantGroup)
+                 prop-dict attr-dict ":" type(value) ","
+                 qualified(type(addr)) }
+  }
+
+  // ---- 调用 / invoke / 变参 ----
+
+  op call {
+    Doc "Call to an LLVM function, direct (@callee) or indirect (first callee_operand); prints through the upstream hand-written printer/parser (LLVMOps.td:952).";
+    Operands   (callee_operands: variadic<llvm_type>);
+    Results    (result: optional<llvm_type>);
+    Attributes (var_callee_type: optional<type>, callee: optional<symbol_ref>,
+                arg_attrs: optional<array<dictionary>>,
+                res_attrs: optional<array<dictionary>>,
+                fastmathFlags: FastmathFlags = none,
+                CConv: CConv = C,
+                TailCallKind: TailCallKind = none,
+                memory_effects: optional<attribute>,
+                no_inline: optional<unit>, always_inline: optional<unit>,
+                inline_hint: optional<unit>);
+    Properties [operand_segments_by_attribute];
+    Assembly   Custom;
+  }
+
+  op invoke {
+    Doc "Invoke a callee and continue at normalDest or unwindDest; both successor operand lists are separate variadic groups (LLVMOps.td:805).";
+    Operands   (callee_operands: variadic<llvm_type>,
+                normalDestOperands: variadic<llvm_type>,
+                unwindDestOperands: variadic<llvm_type>);
+    Results    (result: optional<llvm_type>);
+    Successors (normalDest: successor, unwindDest: successor);
+    Attributes (var_callee_type: optional<type>, callee: optional<symbol_ref>,
+                arg_attrs: optional<array<dictionary>>,
+                res_attrs: optional<array<dictionary>>,
+                branch_weights: optional<array<i32>>, CConv: CConv = C);
+    Properties [terminator, operand_segments_by_attribute];
+    Assembly   Custom;
+  }
+
+  op landingpad {
+    Doc "Landing pad of an exception handler; cleanup marks a cleanup clause and the variadic operands are the catch/filter clauses (LLVMOps.td:822).";
+    Operands   (operands: variadic<llvm_type>);
+    Results    (res: llvm_type);
+    Attributes (cleanup: optional<unit>);
+    Assembly   Custom;
+  }
+
+  op va_arg {
+    Doc "Fetch the next variadic argument through an llvm.struct va_list pointer (LLVMOps.td:831).";
+    Operands   (arg: llvm_ptr);
+    Results    (res: llvm_type);
+    Assembly   { arg attr-dict ":" functional-type(arg, res) }
+  }
+
+  op call_intrinsic {
+    Doc "Call an llvm intrinsic by name, with optional operand bundles; prints through the upstream hand-written printer/parser (LLVMOps.td:2781).";
+    Operands   (args: variadic<llvm_type>, op_bundle_operands: variadic<llvm_type>);
+    Results    (results: optional<llvm_type>);
+    Attributes (intrin: string, fastmathFlags: FastmathFlags = none,
+                op_bundle_sizes: array<i32>,
+                op_bundle_tags: optional<array<i32>>,
+                arg_attrs: optional<array<dictionary>>,
+                res_attrs: optional<array<dictionary>>);
+    Properties [operand_segments_by_attribute];
+    Assembly   Custom;
+  }
+
+  // ---- 向量 / 聚合 ----
+
+  op extractelement {
+    Doc "Extract one element of an LLVM vector at an integer index (LLVMOps.td:964).";
+    Operands   (vector: vector, position: integer);
+    Results    (res: llvm_type);
+    Properties [pure];
+    Assembly   { vector "[" position ":" type(position) "]" attr-dict ":"
+                 type(vector) }
+  }
+
+  op insertelement {
+    Doc "Insert a value into an LLVM vector at an integer index (LLVMOps.td:991).";
+    Operands   (vector: vector, value: llvm_scalar, position: integer);
+    Results    (res: vector);
+    Properties [pure, same_type(res, vector)];
+    Assembly   { value "," vector "[" position ":" type(position) "]" attr-dict
+                 ":" type(vector) }
+  }
+
+  op shufflevector {
+    Doc "Build a permutation of two vectors; the result type prints through the ShuffleType hook (LLVMOps.td:1023).";
+    Operands   (v1: vector, v2: vector);
+    Results    (res: vector);
+    Attributes (mask: array<i32>);
+    Properties [pure, same_type(v1, v2)];
+    Assembly   { v1 "," v2 mask attr-dict ":" type(v1)
+                 custom<ShuffleType>(ref(type(v1)), type(res), ref(mask)) }
+  }
+
+  op extractvalue {
+    Doc "Extract a value from an aggregate at a constant index path; the result type prints through the InsertExtractValueElementType hook (LLVMOps.td:1063).";
+    Operands   (container: aggregate);
+    Results    (res: llvm_type);
+    Attributes (position: array<i64>);
+    Properties [pure];
+    Assembly   { container position attr-dict ":" type(container)
+                 custom<InsertExtractValueElementType>(type(res),
+                                                      ref(type(container)),
+                                                      ref(position)) }
+  }
+
+  op insertvalue {
+    Doc "Insert a value into an aggregate at a constant index path; the container and result share a type (LLVMOps.td:1097).";
+    Operands   (container: aggregate, value: llvm_scalar);
+    Results    (res: aggregate);
+    Attributes (position: array<i64>);
+    Properties [pure, same_type(container, res)];
+    Assembly   { value "," container position attr-dict ":" type(container)
+                 custom<InsertExtractValueElementType>(type(value),
+                                                      ref(type(container)),
+                                                      ref(position)) }
+  }
+
+  // ---- 杂项 ----
+
+  op select {
+    Doc "Select between two values on a boolean (or boolean vector); trueValue, falseValue and res share a type, optional fastmath (LLVMOps.td:1129).";
+    Operands   (condition: any, trueValue: llvm_type, falseValue: llvm_type);
+    Results    (res: llvm_type);
+    Attributes (fastmathFlags: FastmathFlags = none);
+    Properties [pure, same_type(trueValue, res), same_type(falseValue, res)];
+    Assembly   { operands if fastmathFlags { "fastmath" fastmathFlags }
+                 attr-dict ":" type(condition) "," type(res) }
+  }
+
+  op freeze {
+    Doc "Freeze a poison value into an arbitrary but fixed value (LLVMOps.td:1151).";
+    Operands   (val: llvm_type);
+    Results    (res: llvm_type);
+    Properties [pure, same_type(val, res)];
+    Assembly   { val attr-dict ":" type(val) }
+  }
+
+  // ---- 终结符 ----
+
+  op br {
+    Doc "Unconditional branch with an optional loop annotation (LLVM_TerminatorOp, LLVMOps.td:1166).";
+    Operands   (destOperands: variadic<llvm_type>);
+    Successors (dest: successor);
+    Attributes (loop_annotation: optional<attribute>);
+    Properties [terminator, pure];
+    Assembly   { dest
+                 if destOperands { "(" destOperands ":" type(destOperands) ")" }
+                 if loop_annotation { "loop_annotation" "=" loop_annotation }
+                 attr-dict }
+  }
+
+  op cond_br {
+    Doc "Conditional branch with optional branch weights and per-successor operand lists (LLVMOps.td:1194).";
+    Operands   (condition: i1, trueDestOperands: variadic<llvm_type>,
+                falseDestOperands: variadic<llvm_type>);
+    Successors (trueDest: successor, falseDest: successor);
+    Attributes (branch_weights: optional<array<i32>>,
+                loop_annotation: optional<attribute>);
+    Properties [terminator, pure, operand_segments_by_attribute];
+    Assembly   { condition
+                 if branch_weights { "weights" "(" branch_weights ")" } ","
+                 trueDest
+                 if trueDestOperands { "(" trueDestOperands ":"
+                                       type(trueDestOperands) ")" } ","
+                 falseDest
+                 if falseDestOperands { "(" falseDestOperands ":"
+                                        type(falseDestOperands) ")" }
+                 if loop_annotation { "loop_annotation" "=" loop_annotation }
+                 attr-dict }
+  }
+
+  op return {
+    Doc "Return from an llvm.func; the optional operand prints as its own type (ReturnLike, LLVMOps.td:1243).";
+    Operands   (arg: optional<llvm_type>);
+    Properties [terminator, pure, return_like];
+    Assembly   { attr-dict if arg { arg ":" type(arg) } }
+  }
+
+  op resume {
+    Doc "Resume unwinding with an exception value (LLVMOps.td:1271).";
+    Operands   (value: llvm_type);
+    Properties [terminator];
+    Assembly   { value attr-dict ":" type(value) }
+  }
+
+  op unreachable {
+    Doc "Terminates the block with undefined behavior if reached (LLVMOps.td:1282).";
+    Properties [terminator];
+    Assembly   { attr-dict }
+  }
+
+  op switch {
+    Doc "Multi-way branch; cases print through the SwitchOpCases hook and optional branch weights follow them (LLVMOps.td:1291).";
+    Operands   (value: integer, defaultOperands: variadic<llvm_type>,
+                caseOperands: variadic<llvm_type>);
+    Successors (defaultDestination: successor,
+                caseDestinations: variadic<successor>);
+    Attributes (case_values: optional<attribute>,
+                case_operand_segments: array<i32>,
+                branch_weights: optional<array<i32>>);
+    Properties [terminator, pure, operand_segments_by_attribute];
+    Assembly   { value ":" type(value) "," defaultDestination
+                 if defaultOperands { "(" defaultOperands ":"
+                                      type(defaultOperands) ")" }
+                 custom<SwitchOpCases>(ref(type(value)), case_values,
+                                       caseDestinations, caseOperands,
+                                       type(caseOperands))
+                 if branch_weights { "weights" "(" branch_weights ")" }
+                 attr-dict }
+  }
+
+  op indirectbr {
+    Doc "Branch to one of a variadic successor list through an address; successors and their operands print through the IndirectBrOpSucessors hook (LLVMOps.td:2004).";
+    Operands   (addr: llvm_ptr, succOperands: variadic<llvm_type>);
+    Successors (successor_list: variadic<successor>);
+    Attributes (indbr_operand_segments: array<i32>);
+    Properties [terminator, operand_segments_by_attribute];
+    Assembly   { addr ":" type(addr) ","
+                 custom<IndirectBrOpSucessors>(ref(type(addr)), successor_list,
+                                               succOperands,
+                                               type(succOperands))
+                 attr-dict }
+  }
+
+  // ---- 全局值的地址与符号 ----
+
+  op mlir.addressof {
+    Doc "Pointer to a global, alias or function symbol (Pure, ConstantLike, LLVMOps.td:1370).";
+    Results    (res: pointer);
+    Attributes (global_name: symbol_ref);
+    Properties [pure, constant_like];
+    Assembly   { global_name attr-dict ":" qualified(type(res)) }
+  }
+
+  op dso_local_equivalent {
+    Doc "Pointer equal to the dso_local address of a function symbol (LLVMOps.td:1884).";
+    Results    (res: pointer);
+    Attributes (function_name: symbol_ref);
+    Properties [pure, constant_like];
+    Assembly   { function_name attr-dict ":" qualified(type(res)) }
+  }
+
+  op blockaddress {
+    Doc "Pointer to a basic block identified by function and tag (LLVMOps.td:1926).";
+    Results    (res: pointer);
+    Attributes (block_addr: attribute);
+    Properties [pure, constant_like];
+    Assembly   { block_addr attr-dict ":" qualified(type(res)) }
+  }
+
+  op blocktag {
+    Doc "Tags the current block so that llvm.blockaddress can name it (LLVMOps.td:1972).";
+    Attributes (tag: attribute);
+    Assembly   { tag attr-dict }
+  }
+
+  // ---- 模块级 op ----
+
+  op mlir.global {
+    Doc "Module-level global variable with linkage, TLS mode, initializer region and optional value attribute; prints through the upstream hand-written printer/parser (LLVMOps.td:1658).";
+    Regions    (initializer: region [single_block, implicit_terminator(return)]);
+    Attributes (global_type: type, constant: optional<unit>, sym_name: string,
+                linkage: Linkage, dso_local: optional<unit>,
+                tls_mode: optional<i32>, externally_initialized: optional<unit>,
+                value: optional<attribute>, alignment: optional<i64>,
+                addr_space: i32 = 0, unnamed_addr: optional<UnnamedAddr>,
+                visibility_: Visibility = default,
+                sym_visibility: optional<string>);
+    Properties [symbol, symbol_visibility, isolated_from_above, single_block];
+    Assembly   Custom;
+  }
+
+  op mlir.global_ctors {
+    Doc "Global constructor list with priorities and associated data, translated to the global_ctors global (LLVMOps.td:1663).";
+    Attributes (ctors: array<symbol_ref>, priorities: array<i32>,
+                data: array<attribute>);
+    Assembly   { "ctors" "=" ctors "," "priorities" "=" priorities ","
+                 "data" "=" data attr-dict }
+  }
+
+  op mlir.global_dtors {
+    Doc "Global destructor list with priorities and associated data (LLVMOps.td:1699).";
+    Attributes (dtors: array<symbol_ref>, priorities: array<i32>,
+                data: array<attribute>);
+    Assembly   { "dtors" "=" dtors "," "priorities" "=" priorities ","
+                 "data" "=" data attr-dict }
+  }
+
+  op mlir.alias {
+    Doc "Module-level alias symbol whose initializer region yields the aliased address; prints through the upstream hand-written printer/parser (LLVMOps.td:1811).";
+    Regions    (initializer: region [single_block, implicit_terminator(return)]);
+    Attributes (alias_type: type, sym_name: string, linkage: Linkage,
+                dso_local: optional<unit>, tls_mode: optional<i32>,
+                unnamed_addr: optional<UnnamedAddr>,
+                visibility_: Visibility = default,
+                sym_visibility: optional<string>);
+    Properties [symbol, symbol_visibility, isolated_from_above, single_block];
+    Assembly   Custom;
+  }
+
+  op mlir.ifunc {
+    Doc "Indirect function whose address is resolved at runtime by a resolver function (LLVMOps.td:1816).";
+    Attributes (sym_name: string, i_func_type: type, resolver: symbol_ref,
+                resolver_type: type, linkage: Linkage, dso_local: optional<unit>,
+                address_space: i32 = 0, unnamed_addr: UnnamedAddr = none,
+                visibility_: Visibility = default,
+                sym_visibility: optional<string>);
+    Properties [symbol, symbol_visibility, isolated_from_above];
+    Assembly   { if sym_visibility { sym_visibility }
+                 custom<LLVMLinkage>(linkage)
+                 if visibility_ { visibility_ }
+                 if unnamed_addr { unnamed_addr }
+                 sym_name ":" i_func_type "," resolver_type resolver
+                 oilist<",">("dso_local" dso_local
+                              | "addr_space" "=" address_space)
+                 attr-dict }
+  }
+
+  op comdat {
+    Doc "COMDAT group region with a symbol table and no terminator (LLVMOps.td:2092).";
+    Regions    (body: region [single_block, no_terminator]);
+    Attributes (sym_name: string, sym_visibility: optional<string>);
+    Properties [symbol, symbol_table, symbol_visibility, no_terminator,
+                no_region_args];
+    Assembly   { if sym_visibility { sym_visibility } sym_name body attr-dict }
+  }
+
+  op comdat_selector {
+    Doc "Declaration of one COMDAT selector inside an llvm.comdat group (LLVMOps.td:2068).";
+    Attributes (sym_name: string, comdat: comdat_type,
+                sym_visibility: optional<string>);
+    Properties [symbol, symbol_visibility];
+    Assembly   { if sym_visibility { sym_visibility } sym_name comdat attr-dict }
+  }
+
+  op func {
+    Doc "LLVM function definition or declaration with linkage, calling convention, comdat and personality; prints through the upstream hand-written printer/parser (LLVMOps.td:2274).";
+    Regions    (body: region);
+    Attributes (sym_name: string, sym_visibility: optional<string>,
+                function_type: type, linkage: Linkage = external,
+                dso_local: optional<unit>, CConv: CConv = C,
+                comdat: optional<symbol_ref>, convergent: optional<unit>,
+                personality: optional<symbol_ref>,
+                garbageCollector: optional<string>,
+                passthrough: optional<array<attribute>>,
+                arg_attrs: optional<array<dictionary>>,
+                res_attrs: optional<array<dictionary>>,
+                function_entry_count: optional<attribute>,
+                use_sample_profile: optional<bool>,
+                disable_tail_calls: optional<bool>);
+    Properties [symbol, symbol_visibility, isolated_from_above, affine_scope,
+                automatic_allocation_scope];
+    Assembly   Custom;
+  }
+
+  // ---- 常量 ----
+
+  op mlir.none {
+    Doc "The LLVM none token literal as a !token SSA value (LLVMOps.td:2281).";
+    Results    (res: token_type);
+    Properties [pure];
+    Assembly   { attr-dict ":" type(res) }
+  }
+
+  op mlir.undef {
+    Doc "Value of an LLVM type that is undef, as opposed to the less-defined poison (LLVMOps.td:2305).";
+    Results    (res: llvm_type);
+    Properties [pure, constant_like];
+    Assembly   { attr-dict ":" type(res) }
+  }
+
+  op mlir.poison {
+    Doc "Value of an LLVM type that is poison (LLVMOps.td:2327).";
+    Results    (res: llvm_type);
+    Properties [pure, constant_like];
+    Assembly   { attr-dict ":" type(res) }
+  }
+
+  op mlir.zero {
+    Doc "The zeroinitializer constant of an LLVM type (LLVMOps.td:2350).";
+    Results    (res: llvm_type);
+    Properties [pure, constant_like];
+    Assembly   { attr-dict ":" type(res) }
+  }
+
+  op mlir.constant {
+    Doc "Literal constant given as an attribute in parentheses and typed by the result (LLVMOps.td:2376).";
+    Results    (res: llvm_type);
+    Attributes (value: attribute);
+    Properties [pure, constant_like];
+    Assembly   { "(" value ")" attr-dict ":" type(res) }
+  }
+
+  op mlir.metadata_as_value {
+    Doc "Wraps an LLVM metadata constant so it can be used as an SSA value (LLVMOps.td:2687).";
+    Results    (res: metadata_type);
+    Attributes (metadata: attribute);
+    Properties [pure, constant_like];
+    Assembly   { metadata attr-dict }
+  }
+
+  // ---- 原子 / 内存序 ----
+
+  op atomicrmw {
+    Doc "Atomic read-modify-write of a pointer location; the bin_op selects the operation and the result shares the value type (LLVMOps.td:2486).";
+    Operands   (ptr: llvm_ptr, val: llvm_type);
+    Results    (res: llvm_type);
+    Attributes (bin_op: AtomicBinOp,
+                ordering: AtomicOrdering = seq_cst,
+                syncscope: optional<string>, alignment: optional<i64>,
+                volatile_: optional<unit>, ignore_denormal_mode: optional<unit>);
+    Assembly   { if volatile_ { "volatile" }
+                 if ignore_denormal_mode { "ignore_denormal_mode" }
+                 bin_op ptr "," val
+                 if syncscope { "syncscope" "(" syncscope ")" }
+                 ordering prop-dict attr-dict ":" qualified(type(ptr)) ","
+                 type(val) }
+  }
+
+  op cmpxchg {
+    Doc "Atomic compare-and-exchange; val and cmp share a type and the result is the {T, i1} struct (LLVMOps.td:2552).";
+    Operands   (ptr: llvm_ptr, cmp: llvm_type, val: llvm_type);
+    Results    (res: struct_type);
+    Attributes (success_ordering: AtomicOrdering = seq_cst,
+                failure_ordering: AtomicOrdering = seq_cst,
+                syncscope: optional<string>, alignment: optional<i64>,
+                weak: optional<unit>, volatile_: optional<unit>);
+    Properties [same_type(cmp, val)];
+    Assembly   { if weak { "weak" } if volatile_ { "volatile" }
+                 ptr "," cmp "," val
+                 if syncscope { "syncscope" "(" syncscope ")" }
+                 success_ordering failure_ordering prop-dict attr-dict ":"
+                 qualified(type(ptr)) "," type(val) }
+  }
+
+  op fence {
+    Doc "Memory fence with an ordering and an optional syncscope (LLVMOps.td:2610).";
+    Attributes (ordering: AtomicOrdering = seq_cst,
+                syncscope: optional<string>);
+    Assembly   { if syncscope { "syncscope" "(" syncscope ")" } ordering
+                 attr-dict }
+  }
+
+  op inline_asm {
+    Doc "Inline assembly call; the qualifier prefix and the operand list print before the functional type (LLVMOps.td:2635).";
+    Operands   (operands: variadic<llvm_type>);
+    Results    (res: optional<llvm_type>);
+    Attributes (asm_string: string, constraints: string,
+                has_side_effects: optional<unit>, is_align_stack: optional<unit>,
+                tail_call_kind: TailCallKind = none, convergent: optional<unit>,
+                asm_dialect: optional<i32>,
+                operand_attrs: optional<array<attribute>>);
+    Assembly   { if has_side_effects { "has_side_effects" }
+                 if is_align_stack { "is_align_stack" }
+                 if tail_call_kind { "tail_call_kind" "=" tail_call_kind }
+                 if convergent { "convergent" }
+                 if asm_dialect { "asm_dialect" "=" asm_dialect }
+                 if operand_attrs { "operand_attrs" "=" operand_attrs }
+                 attr-dict asm_string "," constraints operands ":"
+                 functional-type(operands, results) }
+  }
+
+  op linker_options {
+    Doc "Options passed to the linker for the produced object file (LLVMOps.td:2794).";
+    Attributes (options: array<string>);
+    Assembly   { options attr-dict }
+  }
+
+  op module_flags {
+    Doc "Module flags translated to llvm.module.flags metadata triplets (LLVMOps.td:2827).";
+    Attributes (flags: array<attribute>);
+    Assembly   { flags attr-dict }
+  }
+
+  op named_metadata {
+    Doc "Module-level named metadata node holding a list of metadata nodes (LLVMOps.td:2861).";
+    Attributes (metadata_name: string, nodes: array<attribute>);
+    Assembly   { metadata_name nodes attr-dict }
+  }
+
+  // ---- intrinsic 骨架 ----
+
+  schema Intrinsic {
+    Doc "Intrinsic with all operands and results of one LLVM type: `(operands) attr-dict : functional-type(operands, results)` (LLVM_UnaryIntrOpBase / LLVM_BinarySameArgsIntrOpBase / LLVM_TernarySameArgsIntrOpBase, LLVMIntrinsicOps.td:16-94).";
+    Operands   (operands: variadic<llvm_type>);
+    Results    (results: variadic<llvm_type>);
+    Properties [pure, same_type(operands, results)];
+    Assembly   { "(" operands ")" attr-dict ":"
+                 functional-type(operands, results) }
+  }
+
+  schema IntrinsicPure {
+    Doc "Intrinsic with the plain operand/result text but without the same-type guarantee: `(operands) attr-dict : functional-type(operands, results)` (LLVM_IntRoundIntrOpBase, LLVM_CmpIntrOp, LLVMIntrinsicOps.td:191-205, 232).";
+    Operands   (operands: variadic<llvm_type>);
+    Results    (results: variadic<llvm_type>);
+    Properties [pure];
+    Assembly   { "(" operands ")" attr-dict ":"
+                 functional-type(operands, results) }
+  }
+
+  schema IntrinsicWithFastmathPure {
+    Doc "Same text as IntrinsicWithFastmath but only Pure is guaranteed (LLVM_PowIOp, LLVM_IntRoundIntrOpBase, LLVMIntrinsicOps.td:178-205).";
+    Operands   (operands: variadic<llvm_type>);
+    Results    (results: variadic<llvm_type>);
+    Attributes (fastmathFlags: FastmathFlags = none);
+    Properties [pure];
+    Assembly   { "(" operands ")"
+                 if fastmathFlags { "fastmath" fastmathFlags }
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema IntrinsicWithFastmath {
+    Doc "Same shape as Intrinsic plus an optional `fastmath` flags group (LLVM_UnaryIntrOpF and friends, LLVMIntrinsicOps.td:32-66).";
+    Operands   (operands: variadic<llvm_type>);
+    Results    (results: variadic<llvm_type>);
+    Attributes (fastmathFlags: FastmathFlags = none);
+    Properties [pure, same_type(operands, results)];
+    Assembly   { "(" operands ")"
+                 if fastmathFlags { "fastmath" fastmathFlags }
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema TwoResultIntrinsic {
+    Doc "Two-result float intrinsic (frexp/sincos/modf); the fastmath group prints between the operand list and attr-dict (LLVM_TwoResultIntrOp, LLVMIntrinsicOps.td:68-94).";
+    Operands   (operands: variadic<llvm_type>);
+    Results    (results: variadic<llvm_type>);
+    Attributes (fastmathFlags: FastmathFlags = none);
+    Properties [pure];
+    Assembly   { "(" operands ")"
+                 if fastmathFlags { "fastmath" fastmathFlags }
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema MaskedLoadLike {
+    Doc "Masked load/gather: operand list, optional alignment, printed properties, then the functional type (LLVM_MaskedLoadOp/LLVM_masked_gather, LLVMIntrinsicOps.td:1096-1145).";
+    Operands   (operands: variadic<llvm_type>);
+    Results    (results: variadic<llvm_type>);
+    Attributes (alignment: optional<i64>);
+    Assembly   { "(" operands ")"
+                 if alignment { "," "alignment" "(" alignment ")" }
+                 prop-dict attr-dict ":"
+                 functional-type(operands, results) }
+  }
+
+  // ---- 纯 intrinsic：无 fastmath ----
+
+  op intr.bitreverse from Intrinsic {
+    Doc "Reverse the bits of each integer element.";
+  }
+  op intr.bswap from Intrinsic {
+    Doc "Byte-swap each integer element.";
+  }
+  op intr.ctpop from Intrinsic {
+    Doc "Population count of each integer element.";
+  }
+  op intr.clmul from Intrinsic {
+    Doc "Carry-less multiplication.";
+  }
+  op intr.pdep from Intrinsic {
+    Doc "Parallel bit deposit.";
+  }
+  op intr.pext from Intrinsic {
+    Doc "Parallel bit extract.";
+  }
+  op intr.smulh from Intrinsic {
+    Doc "High half of a signed multiplication.";
+  }
+  op intr.umulh from Intrinsic {
+    Doc "High half of an unsigned multiplication.";
+  }
+  op intr.fshl from Intrinsic {
+    Doc "Funnel shift left.";
+  }
+  op intr.fshr from Intrinsic {
+    Doc "Funnel shift right.";
+  }
+  op intr.smax from Intrinsic {
+    Doc "Signed integer maximum of two same-typed values (LLVM_SMaxOp, LLVMIntrinsicOps.td:227).";
+  }
+
+  op intr.smin from Intrinsic {
+    Doc "Signed integer minimum of two same-typed values (LLVM_SMinOp, LLVMIntrinsicOps.td:228).";
+  }
+
+  op intr.umax from Intrinsic {
+    Doc "Unsigned integer maximum of two same-typed values (LLVM_UMaxOp, LLVMIntrinsicOps.td:229).";
+  }
+
+  op intr.umin from Intrinsic {
+    Doc "Unsigned integer minimum of two same-typed values (LLVM_UMinOp, LLVMIntrinsicOps.td:230).";
+  }
+
+  op intr.sadd.sat from Intrinsic {
+    Doc "Signed saturating addition (LLVM_SAddSat, LLVMIntrinsicOps.td:902).";
+  }
+
+  op intr.uadd.sat from Intrinsic {
+    Doc "Unsigned saturating addition (LLVM_UAddSat, LLVMIntrinsicOps.td:903).";
+  }
+
+  op intr.ssub.sat from Intrinsic {
+    Doc "Signed saturating subtraction (LLVM_SSubSat, LLVMIntrinsicOps.td:904).";
+  }
+
+  op intr.usub.sat from Intrinsic {
+    Doc "Unsigned saturating subtraction (LLVM_USubSat, LLVMIntrinsicOps.td:905).";
+  }
+
+  op intr.sshl.sat from Intrinsic {
+    Doc "Signed saturating left shift (LLVM_SSHLSat, LLVMIntrinsicOps.td:906).";
+  }
+
+  op intr.ushl.sat from Intrinsic {
+    Doc "Unsigned saturating left shift (LLVM_USHLSat, LLVMIntrinsicOps.td:907).";
+  }
+  op intr.scmp from IntrinsicPure {
+    Doc "Signed three-way comparison returning -1/0/1.";
+  }
+  op intr.ucmp from IntrinsicPure {
+    Doc "Unsigned three-way comparison returning -1/0/1.";
+  }
+  op intr.llrint from IntrinsicPure {
+    Doc "Round to the nearest integer using the current mode; result is i64.";
+  }
+  op intr.llround from IntrinsicPure {
+    Doc "Round half away from zero; result is i64.";
+  }
+  op intr.lrint from IntrinsicPure {
+    Doc "Round to the nearest integer using the current mode; result is i32.";
+  }
+  op intr.lround from IntrinsicPure {
+    Doc "Round half away from zero; result is i32.";
+  }
+  op intr.arithmetic.fence from Intrinsic {
+    Doc "Prevents floating-point value reassociation across the fence (LLVM_ArithmeticFenceOp, LLVMIntrinsicOps.td:117).";
+  }
+
+  // ---- 纯 intrinsic：带 fastmath ----
+
+  op intr.exp10 from IntrinsicWithFastmath {
+    Doc "Base-10 exponential.";
+  }
+  op intr.fabs from IntrinsicWithFastmath {
+    Doc "Floating-point absolute value.";
+  }
+  op intr.acos from IntrinsicWithFastmath {
+    Doc "Arc cosine.";
+  }
+  op intr.asin from IntrinsicWithFastmath {
+    Doc "Arc sine.";
+  }
+  op intr.atan from IntrinsicWithFastmath {
+    Doc "Arc tangent.";
+  }
+  op intr.atan2 from IntrinsicWithFastmath {
+    Doc "Two-argument arc tangent.";
+  }
+  op intr.ceil from IntrinsicWithFastmath {
+    Doc "Round up to the nearest integer.";
+  }
+  op intr.cos from IntrinsicWithFastmath {
+    Doc "Cosine.";
+  }
+  op intr.cosh from IntrinsicWithFastmath {
+    Doc "Hyperbolic cosine.";
+  }
+  op intr.exp from IntrinsicWithFastmath {
+    Doc "Base-e exponential.";
+  }
+  op intr.exp2 from IntrinsicWithFastmath {
+    Doc "Base-2 exponential.";
+  }
+  op intr.floor from IntrinsicWithFastmath {
+    Doc "Round down to the nearest integer.";
+  }
+  op intr.log from IntrinsicWithFastmath {
+    Doc "Natural logarithm.";
+  }
+  op intr.log10 from IntrinsicWithFastmath {
+    Doc "Base-10 logarithm.";
+  }
+  op intr.log2 from IntrinsicWithFastmath {
+    Doc "Base-2 logarithm.";
+  }
+  op intr.nearbyint from IntrinsicWithFastmath {
+    Doc "Round to the nearest integer in the current rounding mode without raising inexact.";
+  }
+  op intr.rint from IntrinsicWithFastmath {
+    Doc "Round to the nearest integer in the current rounding mode.";
+  }
+  op intr.round from IntrinsicWithFastmath {
+    Doc "Round half away from zero.";
+  }
+  op intr.roundeven from IntrinsicWithFastmath {
+    Doc "Round half to even.";
+  }
+  op intr.sin from IntrinsicWithFastmath {
+    Doc "Sine.";
+  }
+  op intr.sinh from IntrinsicWithFastmath {
+    Doc "Hyperbolic sine.";
+  }
+  op intr.sqrt from IntrinsicWithFastmath {
+    Doc "Square root.";
+  }
+  op intr.tan from IntrinsicWithFastmath {
+    Doc "Tangent.";
+  }
+  op intr.tanh from IntrinsicWithFastmath {
+    Doc "Hyperbolic tangent.";
+  }
+  op intr.copysign from IntrinsicWithFastmath {
+    Doc "Magnitude of the first operand with the sign of the second.";
+  }
+  op intr.maximumnum from IntrinsicWithFastmath {
+    Doc "Maximum that returns a number when either operand is a number (IEEE maximumNumber).";
+  }
+  op intr.minimumnum from IntrinsicWithFastmath {
+    Doc "Minimum that returns a number when either operand is a number (IEEE minimumNumber).";
+  }
+  op intr.fma from IntrinsicWithFastmath {
+    Doc "Fused multiply-add.";
+  }
+  op intr.fmuladd from IntrinsicWithFastmath {
+    Doc "Multiply-add that may or may not be fused.";
+  }
+  op intr.pow from IntrinsicWithFastmath {
+    Doc "Power.";
+  }
+  op intr.powi from IntrinsicWithFastmathPure {
+    Doc "Power with an integer exponent.";
+  }
+  op intr.maxnum from IntrinsicWithFastmath {
+    Doc "Maximum preferring a number over NaN.";
+  }
+  op intr.minnum from IntrinsicWithFastmath {
+    Doc "Minimum preferring a number over NaN.";
+  }
+  op intr.maximum from IntrinsicWithFastmath {
+    Doc "IEEE 754 maximum (NaN-propagating).";
+  }
+  op intr.minimum from IntrinsicWithFastmath {
+    Doc "IEEE 754 minimum (NaN-propagating).";
+  }
+
+  op intr.trunc from IntrinsicWithFastmath {
+    Doc "Floating-point truncation toward zero, with optional fastmath (LLVM_FTruncOp, LLVMIntrinsicOps.td:175).";
+  }
+
+  // ---- 双结果 intrinsic ----
+
+  op intr.frexp from TwoResultIntrinsic {
+    Doc "Split into a normalized fraction and an integral exponent of two.";
+  }
+  op intr.sincos from TwoResultIntrinsic {
+    Doc "Sine and cosine computed together.";
+  }
+  op intr.modf from TwoResultIntrinsic {
+    Doc "Split into integral and fractional parts.";
+  }
+
+  // ---- constrained FP intrinsic ----
+  //
+  // 全部 49 条都由 LLVM_ConstrainedIntr 族生成；逐条核对 tblgen 的
+  // assemblyFormat 字段：49 条都有 assemblyFormat，没有一条是 Generic。
+
+  schema ConstrainedUnaryRM {
+    Doc "Constrained unary FP intrinsic with a rounding mode and an exception behavior; arg_0 and res share one type (LLVM_ConstrainedUnaryIntrRM, LLVMIntrinsicOps.td:597; assemblyFormat at :601-603).";
+    Operands   (arg_0: llvm_type);
+    Results    (res: llvm_type);
+    Attributes (roundingmode: RoundingMode,
+                fpExceptionBehavior: FPExceptionBehavior,
+                fastmathFlags: FastmathFlags = none);
+    Properties [pure, same_type(arg_0, res)];
+    Assembly   { arg_0 roundingmode fpExceptionBehavior
+                 if fastmathFlags { "fastmath" fastmathFlags }
+                 attr-dict ":" type(arg_0) }
+  }
+
+  schema ConstrainedUnaryNoRM {
+    Doc "Constrained unary FP intrinsic without a rounding mode (LLVM_ConstrainedUnaryIntrNoRM, LLVMIntrinsicOps.td:609; assemblyFormat at :613-615).";
+    Operands   (arg_0: llvm_type);
+    Results    (res: llvm_type);
+    Attributes (fpExceptionBehavior: FPExceptionBehavior,
+                fastmathFlags: FastmathFlags = none);
+    Properties [pure, same_type(arg_0, res)];
+    Assembly   { arg_0 fpExceptionBehavior
+                 if fastmathFlags { "fastmath" fastmathFlags }
+                 attr-dict ":" type(arg_0) }
+  }
+
+  schema ConstrainedBinaryRM {
+    Doc "Constrained binary FP intrinsic with a rounding mode; both operands and the result share one type (LLVM_ConstrainedBinaryIntrRM, LLVMIntrinsicOps.td:621; assemblyFormat at :625-627).";
+    Operands   (arg_0: llvm_type, arg_1: llvm_type);
+    Results    (res: llvm_type);
+    Attributes (roundingmode: RoundingMode,
+                fpExceptionBehavior: FPExceptionBehavior,
+                fastmathFlags: FastmathFlags = none);
+    Properties [pure, same_type(arg_0, arg_1), same_type(arg_1, res)];
+    Assembly   { arg_0 "," arg_1 roundingmode fpExceptionBehavior
+                 if fastmathFlags { "fastmath" fastmathFlags }
+                 attr-dict ":" type(arg_0) }
+  }
+
+  schema ConstrainedBinaryNoRM {
+    Doc "Constrained binary FP intrinsic without a rounding mode (LLVM_ConstrainedBinaryIntrNoRM, LLVMIntrinsicOps.td:633; assemblyFormat at :637-639).";
+    Operands   (arg_0: llvm_type, arg_1: llvm_type);
+    Results    (res: llvm_type);
+    Attributes (fpExceptionBehavior: FPExceptionBehavior,
+                fastmathFlags: FastmathFlags = none);
+    Properties [pure, same_type(arg_0, arg_1), same_type(arg_1, res)];
+    Assembly   { arg_0 "," arg_1 fpExceptionBehavior
+                 if fastmathFlags { "fastmath" fastmathFlags }
+                 attr-dict ":" type(arg_0) }
+  }
+
+  schema ConstrainedTernaryRM {
+    Doc "Constrained ternary FP intrinsic (fma/fmuladd) with a rounding mode; all operands and the result share one type (LLVM_ConstrainedFMAIntr :754 and LLVM_ConstrainedFMulAddIntr :763, assemblyFormat at :758-760 / :767-769).";
+    Operands   (arg_0: llvm_type, arg_1: llvm_type, arg_2: llvm_type);
+    Results    (res: llvm_type);
+    Attributes (roundingmode: RoundingMode,
+                fpExceptionBehavior: FPExceptionBehavior,
+                fastmathFlags: FastmathFlags = none);
+    Properties [pure, same_type(arg_0, arg_1), same_type(arg_1, arg_2),
+                same_type(arg_2, res)];
+    Assembly   { arg_0 "," arg_1 "," arg_2 roundingmode fpExceptionBehavior
+                 if fastmathFlags { "fastmath" fastmathFlags }
+                 attr-dict ":" type(arg_0) }
+  }
+
+  schema ConstrainedConvertRM {
+    Doc "Constrained one-operand conversion with a rounding mode; the source and result types differ and print after the colon (LLVM_ConstrainedFPToIntIntrRM, LLVMIntrinsicOps.td:644, assemblyFormat at :648-651; also used by uitofp/sitofp/fptrunc).";
+    Operands   (arg_0: llvm_type);
+    Results    (res: llvm_type);
+    Attributes (roundingmode: RoundingMode,
+                fpExceptionBehavior: FPExceptionBehavior,
+                fastmathFlags: FastmathFlags = none);
+    Properties [pure];
+    Assembly   { arg_0 roundingmode fpExceptionBehavior
+                 if fastmathFlags { "fastmath" fastmathFlags }
+                 attr-dict ":" type(arg_0) "to" type(res) }
+  }
+
+  schema ConstrainedConvertNoRM {
+    Doc "Constrained one-operand conversion without a rounding mode (LLVM_ConstrainedFPToIntIntrNoRM, LLVMIntrinsicOps.td:656, assemblyFormat at :660-662; also used by fpext).";
+    Operands   (arg_0: llvm_type);
+    Results    (res: llvm_type);
+    Attributes (fpExceptionBehavior: FPExceptionBehavior,
+                fastmathFlags: FastmathFlags = none);
+    Properties [pure];
+    Assembly   { arg_0 fpExceptionBehavior
+                 if fastmathFlags { "fastmath" fastmathFlags }
+                 attr-dict ":" type(arg_0) "to" type(res) }
+  }
+
+  schema ConstrainedFCmp {
+    Doc "Constrained floating-point comparison: a predicate attribute, two same-typed operands and an i1-shaped result (LLVM_ConstrainedFCmpIntrBase, LLVMIntrinsicOps.td:667; assemblyFormat at :686-688).";
+    Operands   (arg_0: llvm_type, arg_1: llvm_type);
+    Results    (res: i1);
+    Attributes (predicate: FCmpPredicate,
+                fpExceptionBehavior: FPExceptionBehavior,
+                fastmathFlags: FastmathFlags = none);
+    Properties [pure, same_type(arg_0, arg_1)];
+    Assembly   { predicate arg_0 "," arg_1 fpExceptionBehavior
+                 if fastmathFlags { "fastmath" fastmathFlags }
+                 attr-dict ":" type(arg_0) }
+  }
+
+  schema ConstrainedPowiLdexp {
+    Doc "Constrained powi/ldexp: a free operand list, a rounding mode, then a functional type (LLVM_ConstrainedPowIIntr :812 and LLVM_ConstrainedLdexpIntr :822, assemblyFormat at :816-819 / :826-829).";
+    Operands   (operands: variadic<llvm_type>);
+    Results    (results: variadic<llvm_type>);
+    Attributes (roundingmode: RoundingMode,
+                fpExceptionBehavior: FPExceptionBehavior,
+                fastmathFlags: FastmathFlags = none);
+    Properties [pure];
+    Assembly   { operands roundingmode fpExceptionBehavior
+                 if fastmathFlags { "fastmath" fastmathFlags }
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  op intr.experimental.constrained.sqrt from ConstrainedUnaryRM {
+    Doc "Constrained square root (LLVM_ConstrainedSqrtIntr, LLVMIntrinsicOps.td:777).";
+  }
+  op intr.experimental.constrained.sin from ConstrainedUnaryRM {
+    Doc "Constrained sine (LLVM_ConstrainedSinIntr, LLVMIntrinsicOps.td:778).";
+  }
+  op intr.experimental.constrained.cos from ConstrainedUnaryRM {
+    Doc "Constrained cosine (LLVM_ConstrainedCosIntr, LLVMIntrinsicOps.td:779).";
+  }
+  op intr.experimental.constrained.tan from ConstrainedUnaryRM {
+    Doc "Constrained tangent (LLVM_ConstrainedTanIntr, LLVMIntrinsicOps.td:780).";
+  }
+  op intr.experimental.constrained.asin from ConstrainedUnaryRM {
+    Doc "Constrained arc sine (LLVM_ConstrainedASinIntr, LLVMIntrinsicOps.td:781).";
+  }
+  op intr.experimental.constrained.acos from ConstrainedUnaryRM {
+    Doc "Constrained arc cosine (LLVM_ConstrainedACosIntr, LLVMIntrinsicOps.td:782).";
+  }
+  op intr.experimental.constrained.atan from ConstrainedUnaryRM {
+    Doc "Constrained arc tangent (LLVM_ConstrainedATanIntr, LLVMIntrinsicOps.td:783).";
+  }
+  op intr.experimental.constrained.sinh from ConstrainedUnaryRM {
+    Doc "Constrained hyperbolic sine (LLVM_ConstrainedSinhIntr, LLVMIntrinsicOps.td:784).";
+  }
+  op intr.experimental.constrained.cosh from ConstrainedUnaryRM {
+    Doc "Constrained hyperbolic cosine (LLVM_ConstrainedCoshIntr, LLVMIntrinsicOps.td:785).";
+  }
+  op intr.experimental.constrained.tanh from ConstrainedUnaryRM {
+    Doc "Constrained hyperbolic tangent (LLVM_ConstrainedTanhIntr, LLVMIntrinsicOps.td:786).";
+  }
+  op intr.experimental.constrained.exp from ConstrainedUnaryRM {
+    Doc "Constrained base-e exponential (LLVM_ConstrainedExpIntr, LLVMIntrinsicOps.td:787).";
+  }
+  op intr.experimental.constrained.exp2 from ConstrainedUnaryRM {
+    Doc "Constrained base-2 exponential (LLVM_ConstrainedExp2Intr, LLVMIntrinsicOps.td:788).";
+  }
+  op intr.experimental.constrained.log from ConstrainedUnaryRM {
+    Doc "Constrained natural logarithm (LLVM_ConstrainedLogIntr, LLVMIntrinsicOps.td:789).";
+  }
+  op intr.experimental.constrained.log10 from ConstrainedUnaryRM {
+    Doc "Constrained base-10 logarithm (LLVM_ConstrainedLog10Intr, LLVMIntrinsicOps.td:790).";
+  }
+  op intr.experimental.constrained.log2 from ConstrainedUnaryRM {
+    Doc "Constrained base-2 logarithm (LLVM_ConstrainedLog2Intr, LLVMIntrinsicOps.td:791).";
+  }
+  op intr.experimental.constrained.rint from ConstrainedUnaryRM {
+    Doc "Constrained round to nearest integer in the current mode (LLVM_ConstrainedRIntIntr, LLVMIntrinsicOps.td:792).";
+  }
+  op intr.experimental.constrained.nearbyint from ConstrainedUnaryRM {
+    Doc "Constrained round to nearest integer without raising inexact (LLVM_ConstrainedNearbyIntIntr, LLVMIntrinsicOps.td:793).";
+  }
+  op intr.experimental.constrained.ceil from ConstrainedUnaryNoRM {
+    Doc "Constrained round up (LLVM_ConstrainedCeilIntr, LLVMIntrinsicOps.td:796).";
+  }
+  op intr.experimental.constrained.floor from ConstrainedUnaryNoRM {
+    Doc "Constrained round down (LLVM_ConstrainedFloorIntr, LLVMIntrinsicOps.td:797).";
+  }
+  op intr.experimental.constrained.round from ConstrainedUnaryNoRM {
+    Doc "Constrained round half away from zero (LLVM_ConstrainedRoundIntr, LLVMIntrinsicOps.td:798).";
+  }
+  op intr.experimental.constrained.roundeven from ConstrainedUnaryNoRM {
+    Doc "Constrained round half to even (LLVM_ConstrainedRoundEvenIntr, LLVMIntrinsicOps.td:799).";
+  }
+  op intr.experimental.constrained.trunc from ConstrainedUnaryNoRM {
+    Doc "Constrained truncation toward zero (LLVM_ConstrainedTruncIntr, LLVMIntrinsicOps.td:800).";
+  }
+  op intr.experimental.constrained.fadd from ConstrainedBinaryRM {
+    Doc "Constrained floating-point addition (LLVM_ConstrainedFAddIntr, LLVMIntrinsicOps.td:709).";
+  }
+  op intr.experimental.constrained.fsub from ConstrainedBinaryRM {
+    Doc "Constrained floating-point subtraction (LLVM_ConstrainedFSubIntr, LLVMIntrinsicOps.td:718).";
+  }
+  op intr.experimental.constrained.fmul from ConstrainedBinaryRM {
+    Doc "Constrained floating-point multiplication (LLVM_ConstrainedFMulIntr, LLVMIntrinsicOps.td:727).";
+  }
+  op intr.experimental.constrained.fdiv from ConstrainedBinaryRM {
+    Doc "Constrained floating-point division (LLVM_ConstrainedFDivIntr, LLVMIntrinsicOps.td:736).";
+  }
+  op intr.experimental.constrained.frem from ConstrainedBinaryRM {
+    Doc "Constrained floating-point remainder (LLVM_ConstrainedFRemIntr, LLVMIntrinsicOps.td:745).";
+  }
+  op intr.experimental.constrained.pow from ConstrainedBinaryRM {
+    Doc "Constrained power (LLVM_ConstrainedPowIntr, LLVMIntrinsicOps.td:803).";
+  }
+  op intr.experimental.constrained.atan2 from ConstrainedBinaryRM {
+    Doc "Constrained two-argument arc tangent (LLVM_ConstrainedATan2Intr, LLVMIntrinsicOps.td:804).";
+  }
+  op intr.experimental.constrained.maxnum from ConstrainedBinaryNoRM {
+    Doc "Constrained maximum preferring a number over NaN (LLVM_ConstrainedMaxNumIntr, LLVMIntrinsicOps.td:807).";
+  }
+  op intr.experimental.constrained.minnum from ConstrainedBinaryNoRM {
+    Doc "Constrained minimum preferring a number over NaN (LLVM_ConstrainedMinNumIntr, LLVMIntrinsicOps.td:808).";
+  }
+  op intr.experimental.constrained.maximum from ConstrainedBinaryNoRM {
+    Doc "Constrained IEEE 754 maximum (LLVM_ConstrainedMaximumIntr, LLVMIntrinsicOps.td:809).";
+  }
+  op intr.experimental.constrained.minimum from ConstrainedBinaryNoRM {
+    Doc "Constrained IEEE 754 minimum (LLVM_ConstrainedMinimumIntr, LLVMIntrinsicOps.td:810).";
+  }
+  op intr.experimental.constrained.fma from ConstrainedTernaryRM {
+    Doc "Constrained fused multiply-add (LLVM_ConstrainedFMAIntr, LLVMIntrinsicOps.td:754).";
+  }
+  op intr.experimental.constrained.fmuladd from ConstrainedTernaryRM {
+    Doc "Constrained multiply-add that may or may not be fused (LLVM_ConstrainedFMulAddIntr, LLVMIntrinsicOps.td:763).";
+  }
+  op intr.experimental.constrained.powi from ConstrainedPowiLdexp {
+    Doc "Constrained power with an integer exponent (LLVM_ConstrainedPowIIntr, LLVMIntrinsicOps.td:812).";
+  }
+  op intr.experimental.constrained.ldexp from ConstrainedPowiLdexp {
+    Doc "Constrained multiply by two raised to an integer exponent (LLVM_ConstrainedLdexpIntr, LLVMIntrinsicOps.td:822).";
+  }
+  op intr.experimental.constrained.lrint from ConstrainedConvertRM {
+    Doc "Constrained round to an i32 integer in the current mode (LLVM_ConstrainedLRintIntr, LLVMIntrinsicOps.td:833).";
+  }
+  op intr.experimental.constrained.llrint from ConstrainedConvertRM {
+    Doc "Constrained round to an i64 integer in the current mode (LLVM_ConstrainedLLRintIntr, LLVMIntrinsicOps.td:834).";
+  }
+  op intr.experimental.constrained.lround from ConstrainedConvertNoRM {
+    Doc "Constrained round half away from zero to an i32 (LLVM_ConstrainedLRoundIntr, LLVMIntrinsicOps.td:835).";
+  }
+  op intr.experimental.constrained.llround from ConstrainedConvertNoRM {
+    Doc "Constrained round half away from zero to an i64 (LLVM_ConstrainedLLRoundIntr, LLVMIntrinsicOps.td:836).";
+  }
+  op intr.experimental.constrained.fptosi from ConstrainedConvertNoRM {
+    Doc "Constrained float-to-signed-integer conversion (LLVM_ConstrainedFPToSIIntr, LLVMIntrinsicOps.td:839).";
+  }
+  op intr.experimental.constrained.fptoui from ConstrainedConvertNoRM {
+    Doc "Constrained float-to-unsigned-integer conversion (LLVM_ConstrainedFPToUIIntr, LLVMIntrinsicOps.td:840).";
+  }
+  op intr.experimental.constrained.uitofp from ConstrainedConvertRM {
+    Doc "Constrained unsigned-integer-to-float conversion (LLVM_ConstrainedUIToFP, LLVMIntrinsicOps.td:846).";
+  }
+  op intr.experimental.constrained.sitofp from ConstrainedConvertRM {
+    Doc "Constrained signed-integer-to-float conversion (LLVM_ConstrainedSIToFP, LLVMIntrinsicOps.td:855).";
+  }
+  op intr.experimental.constrained.fptrunc from ConstrainedConvertRM {
+    Doc "Constrained float truncation (LLVM_ConstrainedFPTruncIntr, LLVMIntrinsicOps.td:864).";
+  }
+  op intr.experimental.constrained.fpext from ConstrainedConvertNoRM {
+    Doc "Constrained float extension (LLVM_ConstrainedFPExtIntr, LLVMIntrinsicOps.td:873).";
+  }
+  op intr.experimental.constrained.fcmp from ConstrainedFCmp {
+    Doc "Constrained floating-point comparison (LLVM_ConstrainedFCmpIntr, LLVMIntrinsicOps.td:843).";
+  }
+  op intr.experimental.constrained.fcmps from ConstrainedFCmp {
+    Doc "Constrained floating-point comparison with a strict exception behavior (LLVM_ConstrainedFCmpSIntr, LLVMIntrinsicOps.td:844).";
+  }
+
+  // ---- 特例形态 ----
+
+  op intr.ldexp {
+    Doc "Multiply by two raised to an integer exponent (LLVM_LoadExpOp, LLVMIntrinsicOps.td:135).";
+    Operands   (val: float, exp: integer);
+    Results    (res: float);
+    Attributes (fastmathFlags: FastmathFlags = none);
+    Properties [pure];
+    Assembly   { "(" operands ")"
+                 if fastmathFlags { "fastmath" fastmathFlags }
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  op intr.assume {
+    Doc "Assume that cond holds, optionally with operand bundles; the bundle group prints through the OpBundles hook (LLVM_AssumeOp, LLVMIntrinsicOps.td:917).";
+    Operands   (cond: i1, op_bundle_operands: variadic<llvm_type>);
+    Attributes (op_bundle_tags: optional<array<i32>>);
+    Assembly   { cond
+                 if op_bundle_operands
+                   { "(" custom<OpBundles>(op_bundle_operands,
+                                           type(op_bundle_operands),
+                                           op_bundle_tags) ")" }
+                 ":" type(cond) attr-dict }
+  }
+
+  op intr.abs {
+    Doc "Absolute value with an is_int_min_poison immediate (LLVM_AbsOp, LLVMIntrinsicOps.td:106); upstream has no assemblyFormat.";
+    Operands   (in: integer);
+    Results    (res: integer);
+    Attributes (is_int_min_poison: bool);
+    Properties [pure];
+    Assembly   Generic;
+  }
+
+  op intr.annotation {
+    Doc "Attach an annotation string to an integer value (LLVM_Annotation, LLVMIntrinsicOps.td); upstream has no assemblyFormat.";
+    Operands   (integer: integer, annotation: pointer, fileName: pointer,
+                line: i32);
+    Results    (res: integer);
+    Properties [same_type(res, integer), same_type(annotation, fileName)];
+    Assembly   Generic;
+  }
+
+  op intr.ctlz {
+    Doc "Count leading zeros; is_zero_poison is an immediate (LLVM_CountZerosIntrOp, LLVMIntrinsicOps.td:96); upstream has no assemblyFormat.";
+    Operands   (in: integer);
+    Results    (res: integer);
+    Attributes (is_zero_poison: bool);
+    Properties [pure, same_type(in, res)];
+    Assembly   Generic;
+  }
+
+  op intr.cttz {
+    Doc "Count trailing zeros; is_zero_poison is an immediate; upstream has no assemblyFormat.";
+    Operands   (in: integer);
+    Results    (res: integer);
+    Attributes (is_zero_poison: bool);
+    Properties [pure, same_type(in, res)];
+    Assembly   Generic;
+  }
+
+  op intr.is.constant {
+    Doc "Returns whether the argument is a constant at lowering time (LLVM_IsConstantOp); upstream has no assemblyFormat.";
+    Operands   (val: llvm_type);
+    Results    (res: i1);
+    Properties [pure];
+    Assembly   Generic;
+  }
+
+  op intr.is.fpclass {
+    Doc "Test the class of a floating-point value against a bit mask attribute (LLVM_IsFPClass, LLVMIntrinsicOps.td:124); upstream has no assemblyFormat.";
+    Operands   (in: float);
+    Results    (res: i1);
+    Attributes (bit: i32);
+    Properties [pure];
+    Assembly   Generic;
+  }
+
+  op intr.masked.load from MaskedLoadLike {
+    Doc "Masked vector load from a pointer with an llvm.vector mask; alignment is a property.";
+  }
+
+  op intr.masked.gather from MaskedLoadLike {
+    Doc "Masked gather from a vector of pointers; alignment is a property.";
+  }
+
+  op intr.masked.store {
+    Doc "Masked vector store through a pointer (LLVM_MaskedStoreOp, LLVMIntrinsicOps.td:1140).";
+    Operands   (value: vector, data: pointer, mask: vector);
+    Attributes (alignment: optional<i64>);
+    Assembly   { "(" value "," data "," mask ")"
+                 if alignment { "," "alignment" "(" alignment ")" }
+                 prop-dict attr-dict ":" type(value) "," type(mask) "into"
+                 qualified(type(data)) }
+  }
+
+  op intr.masked.scatter {
+    Doc "Masked scatter through a vector of pointers.";
+    Operands   (value: vector, ptrs: vector, mask: vector);
+    Attributes (alignment: optional<i64>);
+    Assembly   { "(" value "," ptrs "," mask ")"
+                 if alignment { "," "alignment" "(" alignment ")" }
+                 prop-dict attr-dict ":" type(value) "," type(mask) "into"
+                 type(ptrs) }
+  }
+
+  op intr.masked.compressstore {
+    Doc "Compress the unmasked elements and store them contiguously (LLVM_masked_compressstore); upstream has no assemblyFormat.";
+    Operands   (value: vector, ptr: pointer, mask: vector);
+    Assembly   Generic;
+  }
+
+  op intr.masked.expandload {
+    Doc "Load contiguously and expand into the unmasked lanes (LLVM_masked_expandload); upstream has no assemblyFormat.";
+    Operands   (ptr: pointer, mask: vector);
+    Results    (res: vector);
+    Assembly   Generic;
+  }
+
+  op intr.memcpy {
+    Doc "Copy a constant number of bytes (LLVM_MemcpyOp); upstream has no assemblyFormat.";
+    Operands   (dst: pointer, src: pointer);
+    Attributes (len: i64, isVolatile: bool);
+    Assembly   Generic;
+  }
+
+  op intr.memmove {
+    Doc "Copy a constant number of bytes allowing overlap; upstream has no assemblyFormat.";
+    Operands   (dst: pointer, src: pointer);
+    Attributes (len: i64, isVolatile: bool);
+    Assembly   Generic;
+  }
+
+  op intr.memcpy.inline {
+    Doc "Inlinable memcpy with a constant length; upstream has no assemblyFormat.";
+    Operands   (dst: pointer, src: pointer);
+    Attributes (len: i64, isVolatile: bool);
+    Properties [memory_effect(read), memory_effect(write)];
+    Assembly   Generic;
+  }
+
+  op intr.memset {
+    Doc "Fill a constant number of bytes (LLVM_MemsetOp); upstream has no assemblyFormat.";
+    Operands   (dst: pointer, val: i8);
+    Attributes (len: i64, isVolatile: bool);
+    Assembly   Generic;
+  }
+
+  op intr.memset.inline {
+    Doc "Inlinable memset with a constant length; upstream has no assemblyFormat.";
+    Operands   (dst: pointer, val: i8);
+    Attributes (len: i64, isVolatile: bool);
+    Assembly   Generic;
+  }
+
+  op intr.vp.merge {
+    Doc "VP merge of two vectors on a mask (LLVM_VPMergeMinOp : LLVM_VPSelectBase<\"merge\">, LLVMIntrinsicOps.td:1940-1970); the base class concatenates \"vp.\" with the mnemonic, so the printed name is intr.vp.merge, not intr.merge. Upstream has no assemblyFormat.";
+    Operands   (cond: vector, true_val: vector, false_val: vector, evl: i32);
+    Results    (res: vector);
+    Properties [pure];
+    Assembly   Generic;
+  }
+
+  op intr.prefetch {
+    Doc "Prefetch hint for an address; rw/hint/cache are immediate attributes (LLVM_Prefetch, LLVMIntrinsicOps.td:164); upstream has no assemblyFormat.";
+    Operands   (addr: pointer);
+    Attributes (rw: i32, hint: i32, cache: i32);
+    Assembly   Generic;
+  }
+
+  op intr.ptr.annotation {
+    Doc "Attach an annotation to a pointer and return it (LLVM_PtrAnnotation); upstream has no assemblyFormat.";
+    Operands   (ptr: pointer, annotation: pointer, fileName: pointer, line: i32,
+                attr: pointer);
+    Results    (res: pointer);
+    Properties [same_type(res, ptr), same_type(annotation, fileName)];
+    Assembly   Generic;
+  }
+
+  op intr.var.annotation {
+    Doc "Attach an annotation to an SSA value (LLVM_VarAnnotation); upstream has no assemblyFormat.";
+    Operands   (val: pointer, annotation: pointer, fileName: pointer, line: i32,
+                attr: pointer);
+    Properties [same_type(annotation, fileName)];
+    Assembly   Generic;
+  }
+
+  op intr.sadd.with.overflow {
+    Doc "Signed addition returning {result, overflow} (LLVM_SAddWithOverflowOp); upstream has no assemblyFormat.";
+    Operands   (a: integer, b: integer);
+    Results    (res: struct_type);
+    Properties [pure, same_element_type(a, b)];
+    Assembly   Generic;
+  }
+
+  op intr.uadd.with.overflow {
+    Doc "Unsigned addition returning {result, overflow}; upstream has no assemblyFormat.";
+    Operands   (a: integer, b: integer);
+    Results    (res: struct_type);
+    Properties [pure, same_element_type(a, b)];
+    Assembly   Generic;
+  }
+
+  op intr.ssub.with.overflow {
+    Doc "Signed subtraction returning {result, overflow}; upstream has no assemblyFormat.";
+    Operands   (a: integer, b: integer);
+    Results    (res: struct_type);
+    Properties [pure, same_element_type(a, b)];
+    Assembly   Generic;
+  }
+
+  op intr.usub.with.overflow {
+    Doc "Unsigned subtraction returning {result, overflow}; upstream has no assemblyFormat.";
+    Operands   (a: integer, b: integer);
+    Results    (res: struct_type);
+    Properties [pure, same_element_type(a, b)];
+    Assembly   Generic;
+  }
+
+  op intr.smul.with.overflow {
+    Doc "Signed multiplication returning {result, overflow}; upstream has no assemblyFormat.";
+    Operands   (a: integer, b: integer);
+    Results    (res: struct_type);
+    Properties [pure, same_element_type(a, b)];
+    Assembly   Generic;
+  }
+
+  op intr.umul.with.overflow {
+    Doc "Unsigned multiplication returning {result, overflow}; upstream has no assemblyFormat.";
+    Operands   (a: integer, b: integer);
+    Results    (res: struct_type);
+    Properties [pure, same_element_type(a, b)];
+    Assembly   Generic;
+  }
+
+  op intr.threadlocal.address {
+    Doc "Address of a thread-local global for the current thread (LLVM_ThreadLocalAddressOp); upstream has no assemblyFormat.";
+    Operands   (global: pointer);
+    Results    (res: pointer);
+    Properties [pure];
+    Assembly   Generic;
+  }
+
+  op intr.vector.deinterleave2 {
+    Doc "Split a vector into even and odd elements; upstream has no assemblyFormat.";
+    Operands   (vec: vector);
+    Results    (res: struct_type);
+    Properties [pure];
+    Assembly   Generic;
+  }
+
+  op intr.vector.interleave2 {
+    Doc "Interleave two vectors; upstream has no assemblyFormat.";
+    Operands   (vec1: vector, vec2: vector);
+    Results    (res: vector);
+    Properties [pure, same_type(vec1, vec2)];
+    Assembly   Generic;
+  }
+
+  op intr.vp.load {
+    Doc "Vector-predicated load with mask and explicit vector length; upstream has no assemblyFormat.";
+    Operands   (ptr: pointer, mask: vector, evl: i32);
+    Results    (res: vector);
+    Assembly   Generic;
+  }
+
+  op intr.vp.store {
+    Doc "Vector-predicated store with mask and explicit vector length; upstream has no assemblyFormat.";
+    Operands   (val: vector, ptr: pointer, mask: vector, evl: i32);
+    Assembly   Generic;
+  }
+
+  op intr.vscale {
+    Doc "Runtime value of vscale for scalable vectors; upstream has no assemblyFormat.";
+    Results    (res: i32);
+    Assembly   Generic;
+  }
+
+  op intr.experimental.vp.strided.load {
+    Doc "Strided vector-predicated load (LLVM_VPStridedLoadOp, LLVMIntrinsicOps.td:1973); upstream has no assemblyFormat.";
+    Operands   (ptr: pointer, stride: integer, mask: vector, evl: i32);
+    Results    (res: vector);
+    Assembly   Generic;
+  }
+
+  op intr.experimental.vp.strided.store {
+    Doc "Strided vector-predicated store (LLVM_VPStridedStoreOp); upstream has no assemblyFormat.";
+    Operands   (val: vector, ptr: pointer, stride: integer, mask: vector,
+                evl: i32);
+    Assembly   Generic;
+  }
+
+  // ---- 向量归约 intrinsic ----
+
+  schema VectorReduceInt {
+    Doc "Integer vector reduction over a single vector (LLVM_VecReductionI, LLVMIntrinsicOps.td:1303-1306); upstream has no assemblyFormat, so the text channel is Generic.";
+    Operands   (in: vector);
+    Results    (res: integer);
+    Properties [pure, same_element_type(in, res)];
+    Assembly   Generic;
+  }
+
+  schema VectorReduceFloat {
+    Doc "Float vector reduction over a single vector with optional fastmath; upstream assemblyFormat is `(operands) (fastmath<...>)? attr-dict : functional-type(operands, results)` (LLVM_VecReductionF, LLVMIntrinsicOps.td:1292-1301).";
+    Operands   (in: vector);
+    Results    (res: float);
+    Attributes (fastmathFlags: FastmathFlags = none);
+    Properties [pure, same_element_type(in, res)];
+    Assembly   { "(" operands ")"
+                 if fastmathFlags { "fastmath" fastmathFlags }
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  schema VectorReduceAcc {
+    Doc "Float vector reduction with an initial value and permission to reassociate; same assemblyFormat shape as VectorReduceFloat (LLVM_VecReductionAccBase, LLVMIntrinsicOps.td:1310-1323).";
+    Operands   (start_value: float, input: vector);
+    Results    (res: float);
+    Attributes (fastmathFlags: FastmathFlags = none);
+    Properties [pure, same_element_type(start_value, res),
+                same_element_type(input, res)];
+    Assembly   { "(" operands ")"
+                 if fastmathFlags { "fastmath" fastmathFlags }
+                 attr-dict ":" functional-type(operands, results) }
+  }
+
+  op intr.vector.reduce.add from VectorReduceInt {
+    Doc "Integer vector reduction add (LLVM_vector_reduce_add, LLVMIntrinsicOps.td:1328); upstream LLVM_VecReductionI has no assemblyFormat, so this is Generic.";
+  }
+  op intr.vector.reduce.and from VectorReduceInt {
+    Doc "Integer vector reduction and (LLVM_vector_reduce_and, LLVMIntrinsicOps.td:1329); upstream LLVM_VecReductionI has no assemblyFormat, so this is Generic.";
+  }
+  op intr.vector.reduce.mul from VectorReduceInt {
+    Doc "Integer vector reduction mul (LLVM_vector_reduce_mul, LLVMIntrinsicOps.td:1330); upstream LLVM_VecReductionI has no assemblyFormat, so this is Generic.";
+  }
+  op intr.vector.reduce.or from VectorReduceInt {
+    Doc "Integer vector reduction or (LLVM_vector_reduce_or, LLVMIntrinsicOps.td:1331); upstream LLVM_VecReductionI has no assemblyFormat, so this is Generic.";
+  }
+  op intr.vector.reduce.smax from VectorReduceInt {
+    Doc "Integer vector reduction smax (LLVM_vector_reduce_smax, LLVMIntrinsicOps.td:1332); upstream LLVM_VecReductionI has no assemblyFormat, so this is Generic.";
+  }
+  op intr.vector.reduce.smin from VectorReduceInt {
+    Doc "Integer vector reduction smin (LLVM_vector_reduce_smin, LLVMIntrinsicOps.td:1333); upstream LLVM_VecReductionI has no assemblyFormat, so this is Generic.";
+  }
+  op intr.vector.reduce.umax from VectorReduceInt {
+    Doc "Integer vector reduction umax (LLVM_vector_reduce_umax, LLVMIntrinsicOps.td:1334); upstream LLVM_VecReductionI has no assemblyFormat, so this is Generic.";
+  }
+  op intr.vector.reduce.umin from VectorReduceInt {
+    Doc "Integer vector reduction umin (LLVM_vector_reduce_umin, LLVMIntrinsicOps.td:1335); upstream LLVM_VecReductionI has no assemblyFormat, so this is Generic.";
+  }
+  op intr.vector.reduce.xor from VectorReduceInt {
+    Doc "Integer vector reduction xor (LLVM_vector_reduce_xor, LLVMIntrinsicOps.td:1336); upstream LLVM_VecReductionI has no assemblyFormat, so this is Generic.";
+  }
+  op intr.vector.reduce.fmax from VectorReduceFloat {
+    Doc "Float vector reduction fmax with optional fastmath (LLVM_vector_reduce_fmax, LLVMIntrinsicOps.td:1338).";
+  }
+  op intr.vector.reduce.fmin from VectorReduceFloat {
+    Doc "Float vector reduction fmin with optional fastmath (LLVM_vector_reduce_fmin, LLVMIntrinsicOps.td:1339).";
+  }
+  op intr.vector.reduce.fmaximum from VectorReduceFloat {
+    Doc "Float vector reduction fmaximum with optional fastmath (LLVM_vector_reduce_fmaximum, LLVMIntrinsicOps.td:1340).";
+  }
+  op intr.vector.reduce.fminimum from VectorReduceFloat {
+    Doc "Float vector reduction fminimum with optional fastmath (LLVM_vector_reduce_fminimum, LLVMIntrinsicOps.td:1341).";
+  }
+  op intr.vector.reduce.fmaximumnum from VectorReduceFloat {
+    Doc "Float vector reduction fmaximumnum with optional fastmath (LLVM_vector_reduce_fmaximumnum, LLVMIntrinsicOps.td:1342).";
+  }
+  op intr.vector.reduce.fminimumnum from VectorReduceFloat {
+    Doc "Float vector reduction fminimumnum with optional fastmath (LLVM_vector_reduce_fminimumnum, LLVMIntrinsicOps.td:1343).";
+  }
+  op intr.vector.reduce.fadd from VectorReduceAcc {
+    Doc "Float vector reduction addition with an initial value (LLVM_vector_reduce_fadd, LLVMIntrinsicOps.td:1345); the initial value precedes the vector operand.";
+  }
+  op intr.vector.reduce.fmul from VectorReduceAcc {
+    Doc "Float vector reduction multiply with an initial value (LLVM_vector_reduce_fmul, LLVMIntrinsicOps.td:1346); the initial value precedes the vector operand.";
+  }
+
+  // ---- VP reduce ----
+
+  schema VPReduceInt {
+    Doc "VP integer reduction with a start value, a mask and an explicit vector length; upstream records LLVM_VPReduce*Op have no assemblyFormat (LLVMIntrinsicOps.td:1941-1960).";
+    Operands   (satrt_value: integer, val: vector, mask: vector, evl: i32);
+    Results    (res: integer);
+    Properties [pure];
+    Assembly   Generic;
+  }
+
+  schema VPReduceFloat {
+    Doc "VP float reduction with a start value, a mask and an explicit vector length (LLVM_VPReduceF*Op, no assemblyFormat).";
+    Operands   (satrt_value: float, val: vector, mask: vector, evl: i32);
+    Results    (res: float);
+    Properties [pure];
+    Assembly   Generic;
+  }
+
+  schema VPBinaryInt {
+    Doc "VP integer binary operation with a mask and an explicit vector length (LLVM_VPBinaryBase, LLVMIntrinsicOps.td:1922).";
+    Operands   (lhs: vector, rhs: vector, mask: vector, evl: i32);
+    Results    (res: vector);
+    Properties [pure];
+    Assembly   Generic;
+  }
+
+  op intr.vp.reduce.add from VPReduceInt {
+    Doc "VP integer reduction, addition (LLVM_VPReduceAddOp, LLVMIntrinsicOps.td:1952); upstream has no assemblyFormat. The core llvm.add op is a separate upstream record and is declared separately.";
+  }
+
+  op intr.vp.reduce.mul from VPReduceInt {
+    Doc "VP integer reduction, multiply; upstream record LLVM_VPReduceMulOp.";
+  }
+
+  op intr.vp.reduce.and from VPReduceInt {
+    Doc "VP integer reduction, and; upstream record LLVM_VPReduceAndOp.";
+  }
+
+  op intr.vp.reduce.or from VPReduceInt {
+    Doc "VP integer reduction, or; upstream record LLVM_VPReduceOrOp.";
+  }
+
+  op intr.vp.reduce.xor from VPReduceInt {
+    Doc "VP integer reduction, xor; upstream record LLVM_VPReduceXorOp.";
+  }
+
+  op intr.vp.reduce.smax from VPReduceInt {
+    Doc "VP signed integer reduction, maximum; upstream record LLVM_VPReduceSMaxOp.";
+  }
+
+  op intr.vp.reduce.smin from VPReduceInt {
+    Doc "VP signed integer reduction, minimum; upstream record LLVM_VPReduceSMinOp.";
+  }
+
+  op intr.vp.reduce.umax from VPReduceInt {
+    Doc "VP unsigned integer reduction, maximum; upstream record LLVM_VPReduceUMaxOp.";
+  }
+
+  op intr.vp.reduce.umin from VPReduceInt {
+    Doc "VP unsigned integer reduction, minimum; upstream record LLVM_VPReduceUMinOp.";
+  }
+
+  op intr.vp.reduce.fadd from VPReduceFloat {
+    Doc "VP float reduction, add, with a start value; upstream record LLVM_VPReduceFAddOp (no assemblyFormat).";
+  }
+
+  op intr.vp.reduce.fmul from VPReduceFloat {
+    Doc "VP float reduction, multiply; upstream record LLVM_VPReduceFMulOp.";
+  }
+  op intr.vp.reduce.fmax from VPReduceFloat {
+    Doc "VP float reduction, maximum; upstream record LLVM_VPReduceFMaxOp.";
+  }
+  op intr.vp.reduce.fmin from VPReduceFloat {
+    Doc "VP float reduction, minimum; upstream record LLVM_VPReduceFMinOp.";
+  }
+  op intr.vp.reduce.fmaximum from VPReduceFloat {
+    Doc "VP float reduction, IEEE maximum; upstream record LLVM_VPReduceFMaximumOp.";
+  }
+  op intr.vp.reduce.fminimum from VPReduceFloat {
+    Doc "VP float reduction, IEEE minimum; upstream record LLVM_VPReduceFMinimumOp.";
+  }
+
+  op intr.vp.sdiv from VPBinaryInt {
+    Doc "VP integer division, signed (LLVM_VPSDivOp); upstream has no assemblyFormat.";
+  }
+  op intr.vp.udiv from VPBinaryInt {
+    Doc "VP integer division, unsigned (LLVM_VPUDivOp).";
+  }
+  op intr.vp.srem from VPBinaryInt {
+    Doc "VP integer remainder, signed (LLVM_VPSRemOp).";
+  }
+  op intr.vp.urem from VPBinaryInt {
+    Doc "VP integer remainder, unsigned (LLVM_VPURemOp).";
+  }
+
+  // ---- 协程 intrinsic ----
+
+  op intr.coro.id {
+    Doc "Produce a coroutine id token; align/promise/coroaddr/fnaddrs print as a bare operand list (LLVM_CoroIdOp, LLVMIntrinsicOps.td:996).";
+    Operands   (align: i32, promise: pointer, coroaddr: pointer,
+                fnaddrs: array<pointer>);
+    Results    (res: token_type);
+    Assembly   { align "," promise "," coroaddr "," fnaddrs attr-dict ":"
+                 functional-type(operands, results) }
+  }
+
+  op intr.coro.begin {
+    Doc "Begin a coroutine from an id token and a memory pointer.";
+    Operands   (token: token_type, mem: pointer);
+    Results    (res: pointer);
+    Assembly   { token "," mem attr-dict ":"
+                 functional-type(operands, results) }
+  }
+
+  op intr.coro.alloc {
+    Doc "Whether the coroutine frame must be heap-allocated.";
+    Operands   (id: token_type);
+    Results    (res: i1);
+    Assembly   { id attr-dict ":" functional-type(operands, results) }
+  }
+
+  op intr.coro.size {
+    Doc "Size of the coroutine frame.";
+    Results    (res: i64);
+    Assembly   { attr-dict ":" type(res) }
+  }
+
+  op intr.coro.align {
+    Doc "Required alignment of the coroutine frame.";
+    Results    (res: i64);
+    Assembly   { attr-dict ":" type(res) }
+  }
+
+  op intr.coro.save {
+    Doc "Save the coroutine state into a token.";
+    Operands   (handle: pointer);
+    Results    (res: token_type);
+    Assembly   { handle attr-dict ":" functional-type(operands, results) }
+  }
+
+  op intr.coro.suspend {
+    Doc "Suspend the coroutine; save is the token, final marks the final suspend.";
+    Operands   (save: token_type, final: i1);
+    Results    (res: i8);
+    Assembly   { save "," final attr-dict ":" type(res) }
+  }
+
+  op intr.coro.end {
+    Doc "Mark the end of the coroutine body; unwind selects the unwind path.";
+    Operands   (handle: pointer, unwind: i1, retvals: variadic<llvm_type>);
+    Results    (res: i1);
+    Assembly   { handle "," unwind "," retvals attr-dict ":"
+                 functional-type(operands, results) }
+  }
+
+  op intr.coro.free {
+    Doc "Free the coroutine frame.";
+    Operands   (id: token_type, handle: pointer);
+    Assembly   { id "," handle attr-dict ":"
+                 functional-type(operands, results) }
+  }
+
+  op intr.coro.resume {
+    Doc "Resume a suspended coroutine.";
+    Operands   (handle: pointer);
+    Assembly   { handle attr-dict ":" qualified(type(handle)) }
+  }
+
+  op intr.coro.promise {
+    Doc "Address of a promise field at a given alignment.";
+    Operands   (handle: pointer, align: i32, from: pointer);
+    Results    (res: pointer);
+    Assembly   { handle "," align "," from attr-dict ":"
+                 functional-type(operands, results) }
+  }
+
+  op intr.coro.frame {
+    Doc "Address of the coroutine frame.";
+    Results    (res: pointer);
+    Assembly   { attr-dict ":" type(res) }
+  }
+
+  op intr.coro.noop {
+    Doc "No-op marker that keeps a coroutine frame alive.";
+    Results    (res: pointer);
+    Assembly   { attr-dict ":" type(res) }
+  }
+
+  op intr.coro.destroy {
+    Doc "Destroy a suspended coroutine.";
+    Operands   (handle: pointer);
+    Assembly   { handle attr-dict ":" qualified(type(handle)) }
+  }
+
+  op intr.coro.done {
+    Doc "Whether the coroutine is at its final suspend point.";
+    Operands   (handle: pointer);
+    Results    (res: i1);
+    Assembly   { handle attr-dict ":" functional-type(operands, results) }
+  }
+
+  op intr.coro.is_in_ramp {
+    Doc "Whether the coroutine is in a ramp (LLVM_CoroIsInRampOp).";
+    Results    (res: i1);
+    Assembly   { attr-dict ":" type(res) }
+  }
+
+  op intr.coro.dead {
+    Doc "Whether the coroutine is dead.";
+    Operands   (handle: pointer);
+    Assembly   { handle attr-dict ":" qualified(type(handle)) }
+  }
+
+  op intr.coro.await.suspend.void {
+    Doc "Suspend until the awaiter is ready, void result.";
+    Operands   (awaiter: pointer, frame: pointer, wrapper: pointer);
+    Assembly   { awaiter "," frame "," wrapper attr-dict ":"
+                 qualified(type(awaiter)) "," qualified(type(frame)) ","
+                 qualified(type(wrapper)) }
+  }
+
+  op intr.coro.await.suspend.bool {
+    Doc "Suspend until the awaiter is ready, boolean result.";
+    Operands   (awaiter: pointer, frame: pointer, wrapper: pointer);
+    Results    (res: i1);
+    Assembly   { awaiter "," frame "," wrapper attr-dict ":"
+                 functional-type(operands, results) }
+  }
+
+  op intr.coro.await.suspend.handle {
+    Doc "Suspend until the awaiter is ready, coroutine handle result.";
+    Operands   (awaiter: pointer, frame: pointer, wrapper: pointer);
+    Assembly   { awaiter "," frame "," wrapper attr-dict ":"
+                 qualified(type(awaiter)) "," qualified(type(frame)) ","
+                 qualified(type(wrapper)) }
+  }
+
+  // ---- 调试 intrinsic ----
+
+  op intr.dbg.declare {
+    Doc "Describe how an address relates to a source variable; varInfo and locationExpr print with the dialect prefix (LLVM_DbgIntrOp, LLVMIntrinsicOps.td:1121).";
+    Operands   (addr: pointer);
+    Attributes (varInfo: attribute, locationExpr: optional<attribute>);
+    Assembly   { qualified(varInfo) if locationExpr { qualified(locationExpr) }
+               "=" addr ":" qualified(type(addr)) attr-dict }
+  }
+
+  op intr.dbg.value {
+    Doc "Describe how a value relates to a source variable; varInfo and locationExpr print with the dialect prefix.";
+    Operands   (value: llvm_type);
+    Attributes (varInfo: attribute, locationExpr: optional<attribute>);
+    Assembly   { qualified(varInfo) if locationExpr { qualified(locationExpr) }
+               "=" value ":" qualified(type(value)) attr-dict }
+  }
+
+  op intr.dbg.label {
+    Doc "Relate the program point to a debug label (LLVM_DbgLabelOp).";
+    Attributes (label: attribute);
+    Assembly   { label attr-dict }
+  }
+
+  op intr.debugtrap {
+    Doc "Trap that debuggers may catch (LLVM_DebugTrap); upstream prints only attr-dict.";
+    Assembly   { attr-dict }
+  }
+
+  op intr.trap {
+    Doc "Unconditionally trap (LLVM_Trap); upstream prints only attr-dict.";
+    Assembly   { attr-dict }
+  }
+
+  op intr.ubsantrap {
+    Doc "Trap with a failure kind for UBSan (LLVM_UBSanTrap, LLVMIntrinsicOps.td:929).";
+    Attributes (failureKind: i8);
+    Assembly   { "failureKind" "=" failureKind attr-dict }
+  }
+
+  op intr.eh.typeid.for {
+    Doc "Type id of a type info global used by exception handling.";
+    Attributes (type_info: pointer);
+    Results    (res: i32);
+    Assembly   { type_info attr-dict ":" functional-type(operands, results) }
+  }
+
+  op intr.expect {
+    Doc "Branch-weight hint that val is likely equal to expected (LLVM_ExpectOp).";
+    Operands   (val: integer, expected: integer);
+    Results    (res: integer);
+    Properties [pure];
+    Assembly   { val "," expected attr-dict ":" type(val) }
+  }
+
+  op intr.expect.with.probability {
+    Doc "Branch-weight hint with an explicit probability (LLVM_ExpectWithProbabilityOp).";
+    Operands   (val: integer, expected: integer);
+    Results    (res: integer);
+    Attributes (prob: float);
+    Properties [pure];
+    Assembly   { val "," expected "," prob attr-dict ":" type(val) }
+  }
+
+  op intr.experimental.noalias.scope.decl {
+    Doc "Declare an alias scope that later aliasing metadata refers to (LLVM_NoAliasScopeDeclOp, LLVMIntrinsicOps.td:414).";
+    Attributes (scope: attribute);
+    Assembly   { scope attr-dict }
+  }
+
+  op intr.fake.use {
+    Doc "Keep a value alive in the IR (LLVM_FakeUseOp, LLVMIntrinsicOps.td:917).";
+    Operands   (args: variadic<llvm_type>);
+    Assembly   { args attr-dict ":" type(args) }
+  }
+
+  op intr.get.active.lane.mask {
+    Doc "Mask of the lanes below n for the base index (LLVM_GetActiveLaneMaskOp, LLVMIntrinsicOps.td:1475).";
+    Operands   (base: integer, n: integer);
+    Results    (res: vector);
+    Properties [pure];
+    Assembly   { base "," n attr-dict ":" type(base) "," type(n) "to"
+                 type(res) }
+  }
+
+  // ---- 内存标记 / 生命周期 ----
+
+  op intr.lifetime.start {
+    Doc "Start of a lifetime marker (LLVM_LifetimeBaseOp, LLVMIntrinsicOps.td:462).";
+    Operands   (ptr: pointer);
+    Assembly   { ptr attr-dict ":" qualified(type(ptr)) }
+  }
+
+  op intr.lifetime.end {
+    Doc "End of a lifetime marker.";
+    Operands   (ptr: pointer);
+    Assembly   { ptr attr-dict ":" qualified(type(ptr)) }
+  }
+
+  op intr.invariant.start {
+    Doc "Start of an invariant region; size is an immediate, result is a pointer (LLVM_InvariantStartOp).";
+    Operands   (ptr: pointer);
+    Results    (res: pointer);
+    Attributes (size: i64);
+    Assembly   { size "," ptr attr-dict ":" qualified(type(ptr)) }
+  }
+
+  op intr.invariant.end {
+    Doc "End of an invariant region; start is the pointer from invariant.start.";
+    Operands   (start: pointer, ptr: pointer);
+    Attributes (size: i64);
+    Assembly   { start "," size "," ptr attr-dict ":" qualified(type(ptr)) }
+  }
+
+  op intr.launder.invariant.group {
+    Doc "Strip invariant.group information from a pointer (LLVM_LaunderInvariantGroupOp).";
+    Operands   (ptr: pointer);
+    Results    (res: pointer);
+    Properties [same_type(ptr, res)];
+    Assembly   { ptr attr-dict ":" qualified(type(ptr)) }
+  }
+
+  // ---- 矩阵 intrinsic ----
+
+  op intr.matrix.column.major.load {
+    Doc "Column-major strided 2-D matrix load; is_volatile/rows/columns are immediates (LLVM_MatrixColumnMajorLoadOp, LLVMIntrinsicOps.td:1364).";
+    Operands   (data: pointer, stride: integer);
+    Results    (res: vector);
+    Attributes (isVolatile: bool, rows: i32, columns: i32);
+    Assembly   { data "," "<" "stride" "=" stride ">" ","
+                 "is_volatile" "=" isVolatile "," "rows" "=" rows ","
+                 "columns" "=" columns attr-dict ":" type(res) "from"
+                 qualified(type(data)) "stride" type(stride) }
+  }
+
+  op intr.matrix.column.major.store {
+    Doc "Column-major strided 2-D matrix store.";
+    Operands   (matrix: vector, data: pointer, stride: integer);
+    Attributes (isVolatile: bool, rows: i32, columns: i32);
+    Assembly   { matrix "," data "," "<" "stride" "=" stride ">" ","
+                 "is_volatile" "=" isVolatile "," "rows" "=" rows ","
+                 "columns" "=" columns attr-dict ":" type(matrix) "to"
+                 qualified(type(data)) "stride" type(stride) }
+  }
+
+  op intr.matrix.multiply {
+    Doc "Matrix multiply with explicit row/column counts (LLVM_MatrixMultiplyOp, LLVMIntrinsicOps.td:1428).";
+    Operands   (lhs: vector, rhs: vector);
+    Results    (res: vector);
+    Attributes (lhs_rows: i32, lhs_columns: i32, rhs_columns: i32);
+    Assembly   { lhs "," rhs "," "lhs_rows" "=" lhs_rows ","
+                 "lhs_columns" "=" lhs_columns ","
+                 "rhs_columns" "=" rhs_columns attr-dict ":"
+                 "(" type(lhs) "," type(rhs) ")" "->" type(res) }
+  }
+
+  op intr.matrix.transpose {
+    Doc "Matrix transpose with explicit row/column counts (LLVM_MatrixTransposeOp).";
+    Operands   (matrix: vector);
+    Results    (res: vector);
+    Attributes (rows: i32, columns: i32);
+    Assembly   { matrix "," "rows" "=" rows "," "columns" "=" columns
+                 attr-dict ":" type(matrix) "into" type(res) }
+  }
+
+  // ---- 其他 ----
+
+  op intr.ptrmask {
+    Doc "Mask the address bits of a pointer (LLVM_PtrMaskOp, LLVMIntrinsicOps.td:448).";
+    Operands   (ptr: pointer, mask: integer);
+    Results    (res: pointer);
+    Properties [pure, same_type(ptr, res)];
+    Assembly   { ptr "," mask attr-dict ":"
+                 functional-type(operands, results) }
+  }
+
+  op intr.ssa.copy {
+    Doc "Copy of a value that cannot be folded away (LLVM_SSACopyOp).";
+    Operands   (operand: llvm_type);
+    Results    (res: llvm_type);
+    Properties [pure, same_type(operand, res)];
+    Assembly   { operand attr-dict ":" type(operand) }
+  }
+
+  op intr.stacksave {
+    Doc "Save the current stack pointer (LLVM_StackSaveOp).";
+    Results    (res: pointer);
+    Assembly   { attr-dict ":" qualified(type(res)) }
+  }
+
+  op intr.stackrestore {
+    Doc "Restore a previously saved stack pointer (LLVM_StackRestoreOp).";
+    Operands   (ptr: pointer);
+    Assembly   { ptr attr-dict ":" qualified(type(ptr)) }
+  }
+
+  op intr.stepvector {
+    Doc "Vector of its own lane indices (LLVM_StepVectorOp).";
+    Results    (res: vector);
+    Properties [pure];
+    Assembly   { attr-dict ":" type(res) }
+  }
+
+  op intr.vastart {
+    Doc "Initialize an llvm.struct va_list pointer (LLVM_VaStartOp, LLVMIntrinsicOps.td:1236).";
+    Operands   (arg_list: pointer);
+    Assembly   { arg_list attr-dict ":" qualified(type(arg_list)) }
+  }
+
+  op intr.vaend {
+    Doc "Finish using an llvm.struct va_list pointer (LLVM_VaEndOp).";
+    Operands   (arg_list: pointer);
+    Assembly   { arg_list attr-dict ":" qualified(type(arg_list)) }
+  }
+
+  op intr.vacopy {
+    Doc "Copy one llvm.struct va_list into another (LLVM_VaCopyOp, LLVMIntrinsicOps.td:1240).";
+    Operands   (src_list: pointer, dest_list: pointer);
+    Assembly   { src_list "to" dest_list attr-dict ":" type(operands) }
+  }
+
+  op intr.vector.extract {
+    Doc "Extract element pos of a vector, keeping the source type (LLVM_vector_extract, LLVMIntrinsicOps.td:1885).";
+    Operands   (srcvec: vector);
+    Results    (res: vector);
+    Attributes (pos: i64);
+    Properties [pure];
+    Assembly   { srcvec "[" pos "]" attr-dict ":" type(res) "from"
+                 type(srcvec) }
+  }
+
+  op intr.vector.insert {
+    Doc "Insert srcvec into dstvec starting at element pos (LLVM_vector_insert).";
+    Operands   (srcvec: vector, dstvec: vector);
+    Results    (res: vector);
+    Attributes (pos: i64);
+    Properties [pure];
+    Assembly   { srcvec "," dstvec "[" pos "]" attr-dict ":" type(srcvec)
+                 "into" type(res) }
+  }
+
+  op intr.vector.repeat {
+    Doc "Repeat a vector (LLVM_vector_repeat, LLVMIntrinsicOps.td:1932).";
+    Operands   (vec: vector);
+    Results    (res: vector);
+    Properties [pure];
+    Assembly   { "(" operands ")" attr-dict ":"
+                 functional-type(operands, results) }
+  }
+}

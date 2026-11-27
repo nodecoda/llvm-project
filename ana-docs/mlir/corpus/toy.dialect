@@ -1,0 +1,124 @@
+/// toy —— MLIR 教程里的最小张量方言（mlir/examples/toy/Ch7）。
+///
+/// 这是"树内能被 mlir-tblgen 消费的方言定义"的第二个非 Dialect 语料：
+/// 它不在 mlir/include 下，但 ODS 的形状与正式方言完全一样。
+/// 文本通道：12 个 op 中 8 个块格式、4 个 Custom（constant/add/func/mul），
+/// 0 个 Generic。Custom 的依据是上游各自写了 hasCustomAssemblyFormat。
+
+dialect toy {
+  Doc "A tiny tensor DSL from the Toy tutorial: f64 tensors, a struct type, and functions over them.";
+
+  // Toy_StructType 是 DialectType，上游只有 hasCustomAssemblyFormat 之外的
+  // 默认类型打印；本 DSL 只声明参数与文本外壳。
+  type_def struct {
+    Doc "A Toy struct: an ordered list of element types, printed as !toy.struct<...>.";
+    Parameters (body: array<any>);
+    Assembly { "<" body ">" }
+  }
+
+  constraint toy_value = tensor<f64> | struct;
+  constraint printable = tensor<f64> | memref<f64>;
+
+  op constant {
+    Doc "Turn a literal tensor into an SSA value.";
+    Attributes (value: tensor<f64>);
+    Results    (result: tensor<f64>);
+    Properties [pure, constant_like];
+    Assembly Custom;
+  }
+
+  op add {
+    Doc "Element-wise addition of two f64 tensors of the same shape.";
+    Operands   (lhs: tensor<f64>, rhs: tensor<f64>);
+    Results    (result: tensor<f64>);
+    Properties [pure];
+    Assembly Custom;
+  }
+
+  op cast {
+    Doc "Shape cast between f64 tensors; only the shape changes.";
+    Operands   (input: tensor<f64>);
+    Results    (output: tensor<f64>);
+    Properties [pure, same_shape(input, output)];
+    Assembly   { input attr-dict ":" type(input) "to" type(output) }
+  }
+
+  op func {
+    Doc "A user-defined function holding one Toy computation region.";
+    Attributes (sym_name: string,
+                sym_visibility: optional<string>,
+                function_type: function_type,
+                arg_attrs: optional<array<dict>>,
+                res_attrs: optional<array<dict>>);
+    Regions    (body: region);
+    Properties [symbol, symbol_visibility, isolated_from_above];
+    Implements [FunctionOpInterface];
+    Assembly Custom;
+  }
+
+  op generic_call {
+    Doc "Call a named function with values whose types fix the signature.";
+    Operands   (inputs: variadic<toy_value>);
+    Results    (result: toy_value);
+    Attributes (callee: symbol_ref,
+                arg_attrs: optional<array<dict>>,
+                res_attrs: optional<array<dict>>);
+    Implements [CallOpInterface];
+    Assembly   { callee "(" inputs ")" prop-dict attr-dict
+               ":" functional-type(inputs, result) }
+  }
+
+  op mul {
+    Doc "Element-wise multiplication of two f64 tensors of the same shape.";
+    Operands   (lhs: tensor<f64>, rhs: tensor<f64>);
+    Results    (result: tensor<f64>);
+    Properties [pure];
+    Assembly Custom;
+  }
+
+  op print {
+    Doc "Print a tensor or memref to stdout.";
+    Operands   (input: printable);
+    Assembly   { input attr-dict ":" type(input) }
+  }
+
+  op reshape {
+    Doc "Reshape a tensor to a new static shape.";
+    Operands   (input: tensor<f64>);
+    Results    (result: tensor<f64>);
+    Properties [pure];
+    Assembly   { "(" input ":" type(input) ")" attr-dict "to" type(result) }
+  }
+
+  op return {
+    Doc "Return zero or more values from a toy function.";
+    Operands   (input: variadic<toy_value>);
+    Properties [pure, terminator, has_parent(func)];
+    Assembly   { if input { input ":" type(input) } attr-dict }
+  }
+
+  op struct_access {
+    Doc "Read one element of a Toy struct by index.";
+    Operands   (input: struct);
+    Results    (output: toy_value);
+    Attributes (index: i64);
+    Properties [pure];
+    Assembly   { input "[" index "]" attr-dict ":" type(input) "->" type(output) }
+  }
+
+  op struct_constant {
+    Doc "Build a Toy struct from a literal list of element types.";
+    Attributes (value: array<attribute>);
+    Results    (output: struct);
+    Properties [pure, constant_like];
+    Assembly   { value attr-dict ":" type(output) }
+  }
+
+  op transpose {
+    Doc "Transpose a rank-2 f64 tensor.";
+    Operands   (input: tensor<f64>);
+    Results    (result: tensor<f64>);
+    Properties [pure];
+    Assembly   { "(" input ":" type(input) ")" attr-dict "to" type(result) }
+  }
+}

@@ -26,7 +26,7 @@
   24 章随后把逃逸点从"许可证"推进到"契约"：语法层窄化形状（`ref` 不嵌套、
   `else` 只打字符串、`oilist` 分隔符显式），审计层逐位比对钩子实参（L3b），
   缺口登记成有期限、可销账的债。三条缺口在同一轮被三条产生式关掉，
-  语料到 44 个方言、1358 个 op、0 个 open 缺口。
+  语料到 50 个方言、2777 个 op、0 个 open 缺口。
 
 - 分析基线：worktree `/home/ubuntu/llvm/trees/pr-ctpop`，分支 `research/mlir`。
   01–09 基于 `5f7f36636abe`；10–24 基于 `53a80edfeb2e`（2026-11-27）。
@@ -227,15 +227,15 @@
 | `ods-asm-format.y` | `assemblyFormat` 子语言文法（bison，0 冲突） |
 | `14-dialect-domain-model.md` | 领域模型：定义/生成边界、三投影、trait 分类、约束语义、schema refinement、v1 逐项判决 |
 | `15-corpus-driven-grammar.md` | 语料优先：方法论、语料统计、见证表、8 个修正、机械核对、与 v1/v2 差异、下一轮语料 |
-| `corpus/*.dialect` | 44 个方言源程序：1358 op；44/44 覆盖缺口为 0，0 个 open 缺口 |
-| `dialect-grammar.y` | 从语料归纳的文法（bison，151 条产生式，0 冲突，`44/44 parse OK`），含 `ref(...)`、`else`、`oilist<sep>`、`Gap(name)` |
+| `corpus/*.dialect` | 50 个方言源程序：2777 op；50 个方言覆盖缺口为 0（逐字对齐 tblgen），0 个 open 缺口 |
+| `dialect-grammar.y` | 从语料归纳的文法（bison，62 条规则 / 152 条产生式，0 冲突，`50/50 parse OK`），含 `ref(...)`、`else`、`oilist<sep>`、`qualified(x)`、`Gap(name)` |
 | `16-corpus-round-two.md` | 第二轮：10 项扩展、谓词组合、region 约束搬家、软关键字、见证表、机械核对 |
 | `corpus/gpu.dialect` | gpu：launch/module/func、内建 id/dim、barrier/printf/shuffle/all_reduce/subgroup_reduce/warp（18 op） |
-| `corpus/linalg.dialect` | linalg：`Structured` schema + 5 个命名算符 + generic/map/reduce/transpose/broadcast/index/yield（12 op） |
+| `corpus/linalg.dialect` | linalg：`Structured` schema 收敛 59 个命名算符 + generic/map/reduce/transpose/broadcast/index/yield + softmax/winograd/pack/unpack（78 op） |
 | `corpus/tensor.dialect` | tensor：元素访问/切片/填充/生成，partial custom 与谓词析取（12 op） |
 | `17-corpus-round-three.md` | 第三轮：收敛验证、per-region 约束见证、`type` 作 custom 实参、跨方言枚举复用、见证表、机械核对 |
 | `corpus/memref.dialect` | memref：alloc/alloca/load/store/subview/reinterpret_cast/view/global/atomic_rmw/prefetch 等（18 op） |
-| `corpus/vector.dialect` | vector：transfer_read/write、maskedload/store、broadcast/fma/bitcast、extract/insert、reduction/contraction、print（20 op） |
+| `corpus/vector.dialect` | vector：transfer_read/write、maskedload/store、broadcast/fma/bitcast、extract/insert、scalable.extract/insert、reduction/contraction、print（39 op） |
 | `corpus/affine.dialect` | affine：apply/min/max/for/parallel/if/load/store/prefetch/delinearize_index（11 op） |
 | `corpus/math.dialect` | math：15 个 op 收敛为 4 个 schema，复用 arith 的 FastMathFlags/RoundingMode |
 | `corpus/index.dialect` | index：全部 operand/result 都是 `index`，10 个二元 op 共用一个 schema（16 op） |
@@ -263,9 +263,9 @@
 | `corpus/arm_neon.dialect` | arm_neon：7 op、3 schema；`"2d.sdot"` 用带引号名字保留以数字开头的打印名 |
 | `corpus/arm_sme.dialect` | arm_sme：68 op（25 核心 + 43 intrinsic）、15 schema；intrinsic 全部显式 `Assembly Generic;` |
 | `corpus/ml_program.dialect` | ml_program：11 op、4 schema；符号表 + SSACFG/Graph 两种 region 种类（种类本身无核心词） |
-| `tools/dialect-coverage.py` | 覆盖审计：47 个方言 → TD 文件的显式映射，助记符集合与语料 `op` 集合对差；missing 非空则退出码 1 |
+| `tools/dialect-coverage.py` | 覆盖审计：50 个方言 → 聚合 TD 入口的显式映射；上游取自 `llvm-tblgen --dump-json` 的 `opName`，与语料 `op` 集合**逐字相等**（不做后缀对齐）；missing/extra 非空则退出码 1 |
 | `tools/dialect-lex.c` | 参考词法器（normal / assembly 两模式，含 `Gap` 关键字） |
-| `tools/escape-audit.py` | 逃逸点许可证审计：L0–L6、上游 TD 闭包证据、预算硬上限，失败退出 1 |
+| `tools/escape-audit.py` | 逃逸点许可证审计：L0–L9 + 规范化 N1（`enum($x)`）、tblgen 逐 op 证据、预算硬上限；缺 `LLVM_TBLGEN` 或查不到上游记录即失败 |
 | `tools/fact-glossary.tsv` | 事实词表：41 核心 + 20 本地（含 owner 与释义），新词未登记即失败 |
 | `tools/gap-registry.tsv` | 表达力缺口登记：4 个名字 / 9 个 op，见证集合必须与语料一致 |
 | `tools/hook-registry.tsv` | 上游找不到同名 `custom<>` 的本地钩子标签及理由 |

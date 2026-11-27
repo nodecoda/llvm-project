@@ -1,0 +1,1669 @@
+/// nvvm —— NVIDIA NVVM 方言：PTX 特殊寄存器、同步、异步搬运、矩阵指令。
+///
+/// 领域：NVVMOps.td 把 PTX 指令暴露成 MLIR op。语料覆盖上游
+/// mlir/include/mlir/Dialect/LLVMIR/NVVMOps.td 中所有能被上游覆盖率工具
+/// 识别的打印助记符 op（219 个）：特殊寄存器读取、浮点算术、同步与屏障、
+/// mbarrier、cp.async 与 TMA、convert 家族、warp 级 MMA、wgmma 与 tcgen05。
+///
+/// 类型：本方言没有 TypeDef。上游的 LLVM 指针（generic/global/shared/const/
+/// local/shared_cluster/tensor）与 LLVM struct 在这里统一收成约束 ptr = any，
+/// Doc 保留每个操作数的真实地址空间。上游的枚举型属性（FPRoundingMode、
+/// SaturationMode、MMALayout、MatchSyncKind、MemScopeKind、ProxyKind 等）
+/// 在这里统一写成 i32 或 optional<i32>；文本里打印的是枚举助记符，参数类型
+/// 不在本语料的建模范围。
+///
+/// 文本通道：219 个 op 中 214 个块格式、1 个块格式加 CTAGroup 钩子、4 个
+/// Custom、0 个 Generic。Custom 的依据（上游 hasCustomAssemblyFormat = 1）：
+///   - mma.sync：NVVMOps.td:3560（NVVM_MmaOp，定义于 3421）
+///   - mma.sp.sync：NVVMOps.td:3772（NVVM_MmaSpOp，定义于 3669）
+///   - mma.block_scale：NVVMOps.td:3980（NVVM_MmaBlockScaleBase，block_scale
+///     与 sp.block_scale 都继承它；两个 op 分别定义于 3985 / 4039）
+///   - mma.sp.block_scale：同上，NVVMOps.td:3980
+/// 这四个 op 的上游手写打印器不接受 assemblyFormat 描述，结构仍在子句里声明，
+/// 只是文本整体交给 Custom。
+///
+/// 钩子：只有一个，custom<CTAGroup>(group)，出现在
+/// cp.async.bulk.tensor.shared.cluster.global（上游 NVVMOps.td:4241）。实参是
+/// 一个属性部件，与上游 custom<CTAGroup>($group) 逐位对应。
+///
+/// schema：18 个 schema 收敛 122 个同形 op：SRegRange(33 个 rangeable 特殊
+/// 寄存器)、SRegPure/SReg32/SReg64(44 个普通特殊寄存器：lanemask/smem 8 个、
+/// foreach 生成的 envreg0..31 复用 SRegPure、SReg32/SReg64 各 2 个)、
+/// VoidForm(8 个只有 attr-dict 的 op)、UnaryApprox(6 个一元浮点近似)、
+/// ClusterAligned(3 个 cluster 同步)、FloatBinary(addf/mulf/subf)、
+/// ConvertF32x4Stoch(3 个 f32x4 随机舍入)、ConvertF32x2ToF4F6(2 个)、
+/// ConvertFPx2ToF4F6(4 个 f16x2/bf16x2 到 f4x2/f6x2)、ConvertToF16x2(3 个)、
+/// ConvertToBF16x2(3 个)、ConvertF32x2ToFPx2(2 个 f32x2 到 f16x2/bf16x2)、
+/// MbarrierNoComplete(2 个)、MbarrierArrive(2 个)、MbarrierCompleteTx(2 个)、
+/// Tcgen05OpKind(2 个)。
+/// 其余 97 个 op 文本各自不同，直接写在 op 上。四个 Custom MMA 也直接写在
+/// op 上，各自显式声明自己的 Custom 通道。
+///
+/// 事实：只用核心词表：pure（上游 Pure）、commutative（Commutative）、
+/// operand_segments_by_attribute（AttrSizedOperandSegments）、same_type
+/// （SameOperandsAndResultType、AllTypesMatch、wgmma 的输入/结果结构同型
+/// PredOpTrait）。没有方言本地事实。其余上游 trait（NVVMRequiresSM 等、
+/// InferTypeOpAdaptor、BasicPtxBuilderOpInterface、AccessGroupOpInterface）
+/// 在核心词表里没有对应项，不写进 Properties。
+///
+/// 只写进 Doc 的语义（文法没有对应谓词）：
+///   - 所有 NVVMRequiresSM/SMa/SMf 的架构门限、BasicPtxBuilderOpInterface 的
+///     PTX 生成、InferTypeOpAdaptor 的类型推导规则、AccessGroupOpInterface
+///     的访问组语义，只在各 op 的 Doc 里点出，不写成事实。
+///   - 特殊寄存器的 range 属性必须是 LLVM ConstantRange 合法值；rangeable 的
+///     33 个 op 还实现了 InferIntRangeInterface。
+///   - mbarrier、cp.async、TMA、wgmma、tcgen05 的 PTX 语义、操作数地址空间、
+///     互斥/可选条件，都只在 Doc 说明。
+///
+/// 偏差（设计分歧，不是逃逸）：
+///   - 上游 f32x4 三个 op 的 class 实参别名是 f4x4/f6x4/f8x4，本语料按真实
+///     打印助记符 convert.f32x4.to.f4x4 等声明，工具按末段后缀对齐。
+///   - tensormap.replace 的 new_value 上游是 "属性或操作数二选一" 的缺省组
+///     ($new_value_attr^):($new_value)?；else 分支是部件而不是字符串字面量，
+///     本文法写不出，块里用 oilist(new_value_attr | new_value) 描述二选一，
+///     互斥性留在 Doc。
+///   - 上游默认值属性（aligned、init、exclusive、group 等）在可选组里按
+///     "非默认才打印" 处理；块格式的 if 只表达"出现"，Doc 保留默认值。
+
+dialect nvvm {
+  Doc "NVVM dialect: PTX special registers, synchronization, async copies, matrix instructions and tensor-memory ops.";
+
+  // ---- 类型域 ----
+
+  // LLVM 指针统一收成一个原子类型；真实地址空间写在各 op 的 Doc。
+  constraint ptr = any;
+
+  // SIMTFloatType：标量或两元素向量的浮点。
+  constraint simt_float = f16 | bf16 | f32 | f64
+                        | vector<f16, 2> | vector<bf16, 2>
+                        | vector<f32, 2> | vector<f64, 2>;
+
+  // divf 与 sqrt：f32/f64 标量。
+  constraint scalar_float = f32 | f64;
+
+  // 一元近似：f32、vector<1xf32>、f16x2、bf16x2。
+  constraint approx_value = f32 | f64
+                          | vector<f32, 1> | vector<f16, 2> | vector<bf16, 2>;
+
+  // redux/shfl 的值域。
+  constraint int_or_float = i32 | f32;
+
+  // f16x2/bf16x2 到 f4x2/f6x2 的打包源向量。
+  constraint fp16x2_or_bf16x2 = vector<f16, 2> | vector<bf16, 2>;
+
+  // f8x2/f6x2 的源是 vector<2xi8>，f4x2 的源是单 i8。
+  constraint packed_i8x2 = i8 | vector<i8, 2>;
+
+  // ---- 特殊寄存器 ----
+
+  // rangeable 寄存器：可选 range 属性，结果 i32。
+  schema SRegRange {
+    Doc "Read a rangeable PTX special register; the optional range attribute narrows the result to a constant range.";
+    Attributes (range: optional<any>);
+    Results    (res: i32);
+    Properties [pure];
+    Assembly   { if range { "range" range } attr-dict ":" type(res) }
+  }
+
+  // 无 range 的纯寄存器：lanemask 与三种 smem 大小。
+  schema SRegPure {
+    Doc "Read a pure PTX special register with no range attribute; the result is a 32-bit integer.";
+    Results    (res: i32);
+    Properties [pure];
+    Assembly   { attr-dict ":" type(res) }
+  }
+
+  schema SReg32 {
+    Doc "Read a 32-bit PTX special register that has side effects or depends on the clock domain.";
+    Results  (res: i32);
+    Assembly { attr-dict ":" type(res) }
+  }
+
+  schema SReg64 {
+    Doc "Read a 64-bit PTX special register (clock64 or globaltimer).";
+    Results  (res: i64);
+    Assembly { attr-dict ":" type(res) }
+  }
+
+  op read.ptx.sreg.laneid from SRegRange {
+    Doc "Read the lane id within the warp (laneid).";
+  }
+  op read.ptx.sreg.warpsize from SRegRange {
+    Doc "Read the warp size in threads (warpsize).";
+  }
+  op read.ptx.sreg.warpid from SRegRange {
+    Doc "Read the warp id within the CTA (warpid).";
+  }
+  op read.ptx.sreg.nwarpid from SRegRange {
+    Doc "Read the number of warps per CTA (nwarpid).";
+  }
+  op read.ptx.sreg.smid from SRegRange {
+    Doc "Read the SM id (smid).";
+  }
+  op read.ptx.sreg.nsmid from SRegRange {
+    Doc "Read the number of SMs (nsmid).";
+  }
+  op read.ptx.sreg.gridid from SRegRange {
+    Doc "Read the grid id (gridid).";
+  }
+  op read.ptx.sreg.tid.x from SRegRange {
+    Doc "Read the x coordinate of the thread id in the CTA (tid.x).";
+  }
+  op read.ptx.sreg.tid.y from SRegRange {
+    Doc "Read the y coordinate of the thread id in the CTA (tid.y).";
+  }
+  op read.ptx.sreg.tid.z from SRegRange {
+    Doc "Read the z coordinate of the thread id in the CTA (tid.z).";
+  }
+  op read.ptx.sreg.ntid.x from SRegRange {
+    Doc "Read the x dimension of the CTA (ntid.x).";
+  }
+  op read.ptx.sreg.ntid.y from SRegRange {
+    Doc "Read the y dimension of the CTA (ntid.y).";
+  }
+  op read.ptx.sreg.ntid.z from SRegRange {
+    Doc "Read the z dimension of the CTA (ntid.z).";
+  }
+  op read.ptx.sreg.ctaid.x from SRegRange {
+    Doc "Read the x coordinate of the CTA id in the grid (ctaid.x).";
+  }
+  op read.ptx.sreg.ctaid.y from SRegRange {
+    Doc "Read the y coordinate of the CTA id in the grid (ctaid.y).";
+  }
+  op read.ptx.sreg.ctaid.z from SRegRange {
+    Doc "Read the z coordinate of the CTA id in the grid (ctaid.z).";
+  }
+  op read.ptx.sreg.nctaid.x from SRegRange {
+    Doc "Read the x dimension of the grid (nctaid.x).";
+  }
+  op read.ptx.sreg.nctaid.y from SRegRange {
+    Doc "Read the y dimension of the grid (nctaid.y).";
+  }
+  op read.ptx.sreg.nctaid.z from SRegRange {
+    Doc "Read the z dimension of the grid (nctaid.z).";
+  }
+  op read.ptx.sreg.clusterid.x from SRegRange {
+    Doc "Read the x coordinate of the cluster id (clusterid.x); requires sm_90.";
+  }
+  op read.ptx.sreg.clusterid.y from SRegRange {
+    Doc "Read the y coordinate of the cluster id (clusterid.y).";
+  }
+  op read.ptx.sreg.clusterid.z from SRegRange {
+    Doc "Read the z coordinate of the cluster id (clusterid.z).";
+  }
+  op read.ptx.sreg.nclusterid.x from SRegRange {
+    Doc "Read the x dimension of the cluster (nclusterid.x).";
+  }
+  op read.ptx.sreg.nclusterid.y from SRegRange {
+    Doc "Read the y dimension of the cluster (nclusterid.y).";
+  }
+  op read.ptx.sreg.nclusterid.z from SRegRange {
+    Doc "Read the z dimension of the cluster (nclusterid.z).";
+  }
+  op read.ptx.sreg.cluster.ctaid.x from SRegRange {
+    Doc "Read the x coordinate of the CTA id within the cluster (cluster.ctaid.x); requires sm_90.";
+  }
+  op read.ptx.sreg.cluster.ctaid.y from SRegRange {
+    Doc "Read the y coordinate of the CTA id within the cluster (cluster.ctaid.y); requires sm_90.";
+  }
+  op read.ptx.sreg.cluster.ctaid.z from SRegRange {
+    Doc "Read the z coordinate of the CTA id within the cluster (cluster.ctaid.z); requires sm_90.";
+  }
+  op read.ptx.sreg.cluster.nctaid.x from SRegRange {
+    Doc "Read the x dimension of the CTA grid within the cluster (cluster.nctaid.x); requires sm_90.";
+  }
+  op read.ptx.sreg.cluster.nctaid.y from SRegRange {
+    Doc "Read the y dimension of the CTA grid within the cluster (cluster.nctaid.y); requires sm_90.";
+  }
+  op read.ptx.sreg.cluster.nctaid.z from SRegRange {
+    Doc "Read the z dimension of the CTA grid within the cluster (cluster.nctaid.z).";
+  }
+  op read.ptx.sreg.cluster.ctarank from SRegRange {
+    Doc "Read the rank of the CTA within its cluster (cluster.ctarank); requires sm_90.";
+  }
+  op read.ptx.sreg.cluster.nctarank from SRegRange {
+    Doc "Read the number of CTAs per cluster (cluster.nctarank).";
+  }
+
+  op read.ptx.sreg.lanemask.eq from SRegPure {
+    Doc "Read the lane mask of lanes with laneid equal to the current lane (lanemask.eq).";
+  }
+  op read.ptx.sreg.lanemask.le from SRegPure {
+    Doc "Read the lane mask of lanes with laneid less than or equal (lanemask.le).";
+  }
+  op read.ptx.sreg.lanemask.lt from SRegPure {
+    Doc "Read the lane mask of lanes with laneid less than the current lane (lanemask.lt).";
+  }
+  op read.ptx.sreg.lanemask.ge from SRegPure {
+    Doc "Read the lane mask of lanes with laneid greater than or equal (lanemask.ge).";
+  }
+  op read.ptx.sreg.lanemask.gt from SRegPure {
+    Doc "Read the lane mask of lanes with laneid greater than the current lane (lanemask.gt).";
+  }
+  op read.ptx.sreg.total.smem.size from SRegPure {
+    Doc "Read the total shared memory size of the CTA in bytes (total.smem.size); requires sm_90.";
+  }
+  op read.ptx.sreg.dynamic.smem.size from SRegPure {
+    Doc "Read the dynamic shared memory size of the CTA in bytes (dynamic.smem.size).";
+  }
+  op read.ptx.sreg.aggr.smem.size from SRegPure {
+    Doc "Read the aggregate shared memory size of the CTA in bytes (aggr.smem.size); requires sm_90.";
+  }
+
+  op read.ptx.sreg.clock from SReg32 {
+    Doc "Read the per-SM 32-bit clock counter (clock); not pure.";
+  }
+  op read.ptx.sreg.globaltimer.lo from SReg32 {
+    Doc "Read the low 32 bits of the global timer (globaltimer.lo); not pure.";
+  }
+  op read.ptx.sreg.clock64 from SReg64 {
+    Doc "Read the per-SM 64-bit clock counter (clock64); not pure.";
+  }
+  op read.ptx.sreg.globaltimer from SReg64 {
+    Doc "Read the 64-bit global timer (globaltimer); not pure.";
+  }
+
+  // foreach 生成的 32 个环境寄存器（NVVMOps.td:277-279，
+  // NVVM_PureSpecialRegisterOp：无操作数、i32 结果、attr-dict `:` type(res)、Pure）。
+  // 与 SRegPure 逐位同形，因此复用该 schema，只逐 op 写 Doc。
+  op read.ptx.sreg.envreg0 from SRegPure {
+    Doc "Read the pure environment register envreg0 (read.ptx.sreg.envreg0); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg1 from SRegPure {
+    Doc "Read the pure environment register envreg1 (read.ptx.sreg.envreg1); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg2 from SRegPure {
+    Doc "Read the pure environment register envreg2 (read.ptx.sreg.envreg2); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg3 from SRegPure {
+    Doc "Read the pure environment register envreg3 (read.ptx.sreg.envreg3); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg4 from SRegPure {
+    Doc "Read the pure environment register envreg4 (read.ptx.sreg.envreg4); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg5 from SRegPure {
+    Doc "Read the pure environment register envreg5 (read.ptx.sreg.envreg5); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg6 from SRegPure {
+    Doc "Read the pure environment register envreg6 (read.ptx.sreg.envreg6); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg7 from SRegPure {
+    Doc "Read the pure environment register envreg7 (read.ptx.sreg.envreg7); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg8 from SRegPure {
+    Doc "Read the pure environment register envreg8 (read.ptx.sreg.envreg8); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg9 from SRegPure {
+    Doc "Read the pure environment register envreg9 (read.ptx.sreg.envreg9); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg10 from SRegPure {
+    Doc "Read the pure environment register envreg10 (read.ptx.sreg.envreg10); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg11 from SRegPure {
+    Doc "Read the pure environment register envreg11 (read.ptx.sreg.envreg11); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg12 from SRegPure {
+    Doc "Read the pure environment register envreg12 (read.ptx.sreg.envreg12); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg13 from SRegPure {
+    Doc "Read the pure environment register envreg13 (read.ptx.sreg.envreg13); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg14 from SRegPure {
+    Doc "Read the pure environment register envreg14 (read.ptx.sreg.envreg14); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg15 from SRegPure {
+    Doc "Read the pure environment register envreg15 (read.ptx.sreg.envreg15); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg16 from SRegPure {
+    Doc "Read the pure environment register envreg16 (read.ptx.sreg.envreg16); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg17 from SRegPure {
+    Doc "Read the pure environment register envreg17 (read.ptx.sreg.envreg17); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg18 from SRegPure {
+    Doc "Read the pure environment register envreg18 (read.ptx.sreg.envreg18); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg19 from SRegPure {
+    Doc "Read the pure environment register envreg19 (read.ptx.sreg.envreg19); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg20 from SRegPure {
+    Doc "Read the pure environment register envreg20 (read.ptx.sreg.envreg20); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg21 from SRegPure {
+    Doc "Read the pure environment register envreg21 (read.ptx.sreg.envreg21); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg22 from SRegPure {
+    Doc "Read the pure environment register envreg22 (read.ptx.sreg.envreg22); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg23 from SRegPure {
+    Doc "Read the pure environment register envreg23 (read.ptx.sreg.envreg23); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg24 from SRegPure {
+    Doc "Read the pure environment register envreg24 (read.ptx.sreg.envreg24); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg25 from SRegPure {
+    Doc "Read the pure environment register envreg25 (read.ptx.sreg.envreg25); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg26 from SRegPure {
+    Doc "Read the pure environment register envreg26 (read.ptx.sreg.envreg26); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg27 from SRegPure {
+    Doc "Read the pure environment register envreg27 (read.ptx.sreg.envreg27); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg28 from SRegPure {
+    Doc "Read the pure environment register envreg28 (read.ptx.sreg.envreg28); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg29 from SRegPure {
+    Doc "Read the pure environment register envreg29 (read.ptx.sreg.envreg29); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg30 from SRegPure {
+    Doc "Read the pure environment register envreg30 (read.ptx.sreg.envreg30); the result is a 32-bit integer.";
+  }
+  op read.ptx.sreg.envreg31 from SRegPure {
+    Doc "Read the pure environment register envreg31 (read.ptx.sreg.envreg31); the result is a 32-bit integer.";
+  }
+
+  // ---- 空文本 / 单条命令 ----
+
+  schema VoidForm {
+    Doc "An operation that prints only its attribute dictionary and has no operands or results.";
+    Assembly { attr-dict }
+  }
+
+  op breakpoint from VoidForm {
+    Doc "Debugger breakpoint (breakpoint).";
+  }
+  op cp.async.commit.group from VoidForm {
+    Doc "Commit the prior uncommitted cp.async operations into an async group (cp.async.commit.group).";
+  }
+  op cp.async.bulk.commit.group from VoidForm {
+    Doc "Commit the prior uncommitted cp.async.bulk operations into a bulk group (cp.async.bulk.commit.group).";
+  }
+  op exit from VoidForm {
+    Doc "End execution of the current thread (exit).";
+  }
+  op fence.mbarrier.init from VoidForm {
+    Doc "Fence making prior mbarrier initializations visible (fence.mbarrier.init); requires sm_90.";
+  }
+  op fence.sc.cluster from VoidForm {
+    Doc "Cluster-scope sequentially consistent fence (fence.sc.cluster).";
+  }
+  op wgmma.fence.aligned from VoidForm {
+    Doc "Warpgroup fence before wgmma operations (wgmma.fence.aligned); requires sm_90a.";
+  }
+  op wgmma.commit.group.sync.aligned from VoidForm {
+    Doc "Commit the current warpgroup MMA group (wgmma.commit.group.sync.aligned); requires sm_90a.";
+  }
+
+  // ---- 一元浮点近似 ----
+
+  schema UnaryApprox {
+    Doc "A unary floating-point approximation with an optional flush-to-zero flag; source and result share one type.";
+    Operands   (src: approx_value);
+    Results    (res: approx_value);
+    Attributes (ftz: i1 = false);
+    Properties [pure, same_type(src, res)];
+    Assembly   { src oilist("ftz" "=" ftz) attr-dict ":" type(src) }
+  }
+
+  op sin from UnaryApprox {
+    Doc "Sine approximation (sin); f32 result in radians.";
+  }
+  op cos from UnaryApprox {
+    Doc "Cosine approximation (cos); f32 result in radians.";
+  }
+  op log2 from UnaryApprox {
+    Doc "Base-2 logarithm approximation (log2); f32 input.";
+  }
+  op ex2 from UnaryApprox {
+    Doc "Base-2 exponential approximation (ex2); supports f32, vector of one f32, and packed f16x2/bf16x2.";
+  }
+  op rsqrt from UnaryApprox {
+    Doc "Reciprocal square root approximation (rsqrt); supports f32 and f64.";
+  }
+  op sqrt.approx from UnaryApprox {
+    Doc "Fast square root approximation (sqrt.approx); f32 input.";
+  }
+
+  // ---- 浮点二元 / 三元 ----
+
+  schema FloatBinary {
+    Doc "A floating-point binary arithmetic instruction with rounding, saturation and flush-to-zero attributes; operands and result share one SIMT float type.";
+    Operands   (lhs: simt_float, rhs: simt_float);
+    Results    (res: simt_float);
+    Attributes (rnd: i32 = none, sat: i32 = none, ftz: i1 = false);
+    Properties [pure, same_type(lhs, rhs), same_type(rhs, res)];
+    Assembly   { lhs "," rhs oilist("rnd" "=" rnd | "sat" "=" sat | "ftz" "=" ftz)
+                 attr-dict ":" type(res) }
+  }
+
+  op addf from FloatBinary {
+    Doc "Floating-point addition of two values of one type (addf); commutative.";
+    Properties [commutative];
+  }
+  op subf from FloatBinary {
+    Doc "Floating-point subtraction of two values of one type (subf).";
+  }
+  op mulf from FloatBinary {
+    Doc "Floating-point multiplication of two values of one type (mulf); commutative.";
+    Properties [commutative];
+  }
+
+  op divf {
+    Doc "Floating-point division with rounding, flush-to-zero, approximate and full-precision modes (divf).";
+    Operands   (lhs: scalar_float, rhs: scalar_float);
+    Results    (res: scalar_float);
+    Attributes (rnd: i32 = none, ftz: i1 = false,
+                approx: i1 = false, full: i1 = false);
+    Properties [pure, same_type(lhs, rhs), same_type(rhs, res)];
+    Assembly   { lhs "," rhs
+                 oilist("rnd" "=" rnd | "ftz" "=" ftz
+                        | "approx" "=" approx | "full" "=" full)
+                 attr-dict ":" type(res) }
+  }
+
+  op fma {
+    Doc "Fused multiply-add a * b + c with rounding, saturation, flush-to-zero, relu and out-of-bounds flags (fma); operands and result share one type.";
+    Operands   (a: simt_float, b: simt_float, c: simt_float);
+    Results    (res: simt_float);
+    Attributes (rnd: i32, sat: i32 = none, ftz: i1 = false,
+                relu: i1 = false, oob: i1 = false);
+    Properties [pure, same_type(a, b), same_type(b, c), same_type(c, res)];
+    Assembly   { a "," b "," c "," "rnd" "=" rnd
+                 oilist("sat" "=" sat | "ftz" "=" ftz
+                        | "relu" "=" relu | "oob" "=" oob)
+                 attr-dict ":" type(a) }
+  }
+
+  op sqrt {
+    Doc "Square root with a mandatory rounding mode and optional flush-to-zero (sqrt); f32 or f64.";
+    Operands   (src: scalar_float);
+    Results    (res: scalar_float);
+    Attributes (rnd: i32, ftz: i1 = false);
+    Properties [pure, same_type(src, res)];
+    Assembly   { src "," "rnd" "=" rnd oilist("ftz" "=" ftz)
+                 attr-dict ":" type(src) }
+  }
+
+  op rcp.approx.ftz.f {
+    Doc "Reciprocal approximation with flush-to-zero semantics (rcp.approx.ftz.f); f32 in, f32 out.";
+    Operands   (arg: f32);
+    Results    (res: f32);
+    Properties [pure];
+    Assembly   { arg attr-dict ":" type(res) }
+  }
+
+  // ---- cluster 同步 ----
+
+  schema ClusterAligned {
+    Doc "Cluster-level synchronization instruction with an optional aligned unit attribute.";
+    Attributes (aligned: optional<unit>);
+    Assembly   { if aligned { "aligned" } attr-dict }
+  }
+
+  op cluster.arrive from ClusterAligned {
+    Doc "Signal arrival at the cluster barrier (cluster.arrive); requires sm_90.";
+  }
+  op cluster.arrive.relaxed from ClusterAligned {
+    Doc "Relaxed cluster barrier arrival (cluster.arrive.relaxed); requires sm_90.";
+  }
+  op cluster.wait from ClusterAligned {
+    Doc "Wait at the cluster barrier (cluster.wait); requires sm_90.";
+  }
+
+  // ---- 屏障 / fence / 杂项 ----
+
+  op barrier {
+    Doc "Named barrier with optional barrier id, optional thread count and aligned flag (barrier).";
+    Operands   (barrierId: optional<i32>, numberOfThreads: optional<i32>);
+    Attributes (aligned: i1 = true);
+    Assembly   { oilist("id" "=" barrierId
+                        | "number_of_threads" "=" numberOfThreads
+                        | "aligned" "=" aligned)
+                 attr-dict }
+  }
+
+  op barrier.arrive {
+    Doc "Non-blocking barrier arrival with mandatory thread count (barrier.arrive).";
+    Operands   (barrierId: optional<i32>, numberOfThreads: i32);
+    Attributes (aligned: i1 = true);
+    Assembly   { if barrierId { "id" "=" barrierId }
+                 "number_of_threads" "=" numberOfThreads
+                 if aligned { "aligned" "=" aligned } attr-dict }
+  }
+
+  op barrier.reduction {
+    Doc "Barrier and reduction across participating threads (barrier.reduction).";
+    Operands   (barrierId: optional<i32>, reductionPredicate: i32);
+    Results    (res: i32);
+    Attributes (reductionOp: i32, aligned: i1 = true);
+    Assembly   { qualified(reductionOp) reductionPredicate
+                 if barrierId { "id" "=" barrierId }
+                 "->" type(res)
+                 if aligned { "aligned" "=" aligned } attr-dict }
+  }
+
+  op bar.warp.sync {
+    Doc "Warp-level barrier over the threads named by the mask (bar.warp.sync).";
+    Operands (mask: i32);
+    Assembly { mask attr-dict ":" type(mask) }
+  }
+
+  op memory.barrier {
+    Doc "Memory barrier at the given scope (memory.barrier).";
+    Attributes (scope: i32);
+    Assembly   { scope attr-dict }
+  }
+
+  op fence.proxy {
+    Doc "Fence between proxy kinds with an optional shared-space selector (fence.proxy).";
+    Attributes (kind: i32, space: optional<i32>);
+    Assembly   { kind if space { "," "space" "=" space } attr-dict }
+  }
+
+  op fence.proxy.acquire {
+    Doc "Proxy acquire fence over an address range (fence.proxy.acquire).";
+    Operands   (addr: ptr, size: i32);
+    Attributes (scope: i32, fromProxy: i32, toProxy: i32);
+    Assembly   { scope addr "," size
+                 oilist("from_proxy" "=" fromProxy | "to_proxy" "=" toProxy)
+                 attr-dict }
+  }
+
+  op fence.proxy.release {
+    Doc "Proxy release fence without an address (fence.proxy.release).";
+    Attributes (scope: i32, fromProxy: i32, toProxy: i32);
+    Assembly   { scope
+                 oilist("from_proxy" "=" fromProxy | "to_proxy" "=" toProxy)
+                 attr-dict }
+  }
+
+  op fence.proxy.sync_restrict {
+    Doc "Synchronizing proxy fence with restricted ordering (fence.proxy.sync_restrict).";
+    Attributes (order: i32, fromProxy: i32, toProxy: i32);
+    Assembly   { order
+                 oilist("from_proxy" "=" fromProxy | "to_proxy" "=" toProxy)
+                 attr-dict }
+  }
+
+  op fence.sync_restrict {
+    Doc "Synchronizing fence with restricted memory ordering (fence.sync_restrict).";
+    Attributes (order: i32);
+    Assembly   { order attr-dict }
+  }
+
+  op griddepcontrol {
+    Doc "Grid dependency control action (griddepcontrol).";
+    Attributes (kind: i32);
+    Assembly   { kind attr-dict }
+  }
+
+  op nanosleep {
+    Doc "Suspend the thread for the given nanoseconds (nanosleep).";
+    Operands (duration: i32);
+    Assembly { attr-dict duration }
+  }
+
+  op pmevent {
+    Doc "Performance monitor event trigger with optional id and masked id (pmevent).";
+    Attributes (maskedEventId: optional<i16>, eventId: optional<i32>);
+    Assembly   { attr-dict if eventId { "id" "=" eventId }
+                 if maskedEventId { "mask" "=" maskedEventId } }
+  }
+
+  op setmaxregister {
+    Doc "Set the maximum register count for the executing thread (setmaxregister).";
+    Attributes (regCount: i32, action: i32);
+    Assembly   { action regCount attr-dict }
+  }
+
+  op elect.sync {
+    Doc "Elect one leader thread from the member mask (elect.sync); default mask is 0xFFFFFFFF.";
+    Operands (membermask: optional<i32>);
+    Results  (pred: i1);
+    Assembly { if membermask { membermask } attr-dict "->" type(results) }
+  }
+
+  op vote.sync {
+    Doc "Warp vote over the mask and predicate (vote.sync).";
+    Operands   (mask: i32, pred: i1);
+    Results    (res: any);
+    Attributes (kind: i32);
+    Assembly   { kind mask "," pred attr-dict "->" type(res) }
+  }
+
+  op match.sync {
+    Doc "Match a value across threads and return a mask or struct (match.sync).";
+    Operands   (thread_mask: i32, val: any);
+    Results    (res: any);
+    Attributes (kind: i32);
+    Assembly   { kind thread_mask "," val attr-dict ":" type(val) "->" type(res) }
+  }
+
+  op shfl.sync {
+    Doc "Warp shuffle with mode, offset and clamp mask (shfl.sync); requires sm_30.";
+    Operands   (thread_mask: i32, val: int_or_float, offset: i32, mask_and_clamp: i32);
+    Results    (res: any);
+    Attributes (kind: i32, return_value_and_is_valid: optional<unit>);
+    Assembly   { kind thread_mask "," val "," offset "," mask_and_clamp
+                 if return_value_and_is_valid { "return_value_and_is_valid" }
+                 attr-dict ":" type(val) "->" type(res) }
+  }
+
+  op redux.sync {
+    Doc "Warp reduction over val with abs/nan modifiers (redux.sync); result and value share one type; requires sm_80.";
+    Operands   (val: int_or_float, mask_and_clamp: i32);
+    Results    (res: int_or_float);
+    Attributes (kind: i32, abs: i1 = false, nan: i1 = false);
+    Properties [same_type(res, val)];
+    Assembly   { kind val "," mask_and_clamp
+                 oilist("abs" "=" abs | "nan" "=" nan)
+                 attr-dict ":" type(val) "->" type(res) }
+  }
+
+  op clusterlaunchcontrol.query.cancel {
+    Doc "Query a cluster launch cancellation (clusterlaunchcontrol.query.cancel); requires sm_100.";
+    Operands   (try_cancel_response: i128);
+    Results    (res: any);
+    Attributes (query_type: i32);
+    Assembly   { "query" "=" query_type "," try_cancel_response
+                 attr-dict ":" type(res) }
+  }
+
+  op clusterlaunchcontrol.try.cancel {
+    Doc "Try to cancel a cluster launch via a shared-memory response and mbarrier (clusterlaunchcontrol.try.cancel); requires sm_100.";
+    Operands   (smemAddress: ptr, mbarrier: ptr);
+    Attributes (multicast: optional<unit>);
+    Assembly   { if multicast { "multicast" "," } smemAddress "," mbarrier attr-dict }
+  }
+
+  // ---- mbarrier ----
+
+  op mbarrier.init {
+    Doc "Initialize an mbarrier with a pending count and optional layout and predicate (mbarrier.init); requires sm_80.";
+    Operands   (addr: ptr, count: i32);
+    Attributes (layout: i32 = 0, predicate: i32);
+    Assembly   { addr "," count if layout { "layout" "=" layout }
+                 if predicate { "," "predicate" "=" predicate }
+                 attr-dict ":" type(operands) }
+  }
+
+  op mbarrier.inval {
+    Doc "Invalidate an mbarrier (mbarrier.inval); requires sm_80.";
+    Operands (addr: ptr);
+    Assembly { addr attr-dict ":" type(operands) }
+  }
+
+  schema MbarrierCompleteTx {
+    Doc "mbarrier transaction-count update; shared or shared-cluster address, tx count and optional multicast mask.";
+    Operands   (addr: ptr, txcount: i32, multicastMask: optional<i32>);
+    Attributes (scope: i32 = none);
+    Assembly   { addr "," txcount
+                 if multicastMask { "multicast_mask" "=" multicastMask }
+                 oilist("scope" "=" scope) attr-dict ":" type(operands) }
+  }
+
+  op mbarrier.complete_tx from MbarrierCompleteTx {
+    Doc "Complete a transaction on the mbarrier (mbarrier.complete_tx); requires sm_90.";
+  }
+  op mbarrier.expect_tx from MbarrierCompleteTx {
+    Doc "Expect a transaction count on the mbarrier (mbarrier.expect_tx); requires sm_90.";
+  }
+
+  schema MbarrierArrive {
+    Doc "mbarrier arrival with optional count, multicast mask, scope and relaxed flag; the optional i64 result is the state token.";
+    Operands   (addr: ptr, count: optional<i32>, multicastMask: optional<i32>);
+    Results    (res: optional<i64>);
+    Attributes (scope: i32 = none, relaxed: i1 = false);
+    Properties [operand_segments_by_attribute];
+    Assembly   { addr if count { "," count }
+                 if multicastMask { "multicast_mask" "=" multicastMask }
+                 oilist("scope" "=" scope | "relaxed" "=" relaxed)
+                 attr-dict ":" type(addr) if res { "->" type(res) } }
+  }
+
+  op mbarrier.arrive from MbarrierArrive {
+    Doc "Arrive at the mbarrier (mbarrier.arrive); requires sm_80.";
+  }
+  op mbarrier.arrive_drop from MbarrierArrive {
+    Doc "Arrive and drop the mbarrier reference (mbarrier.arrive_drop); requires sm_80.";
+  }
+
+  schema MbarrierNoComplete {
+    Doc "mbarrier arrival that does not complete the current phase; returns an i64 state token.";
+    Operands (addr: ptr, count: i32);
+    Results  (res: i64);
+    Assembly { addr "," count attr-dict ":" type(operands) "->" type(res) }
+  }
+
+  op mbarrier.arrive.nocomplete from MbarrierNoComplete {
+    Doc "Non-completing mbarrier arrival (mbarrier.arrive.nocomplete); requires sm_80.";
+  }
+  op mbarrier.arrive_drop.nocomplete from MbarrierNoComplete {
+    Doc "Non-completing mbarrier arrival that drops the reference (mbarrier.arrive_drop.nocomplete); requires sm_80.";
+  }
+
+  op mbarrier.arrive.expect_tx {
+    Doc "Arrive and expect a transaction count (mbarrier.arrive.expect_tx); optional predicate and multicast mask; requires sm_90.";
+    Operands   (addr: ptr, txcount: i32, multicastMask: optional<i32>);
+    Results    (res: optional<i64>);
+    Attributes (scope: i32 = none, relaxed: i1 = false, predicate: i32);
+    Properties [operand_segments_by_attribute];
+    Assembly   { addr "," txcount
+                 if predicate { "," "predicate" "=" predicate }
+                 if multicastMask { "multicast_mask" "=" multicastMask }
+                 oilist("scope" "=" scope | "relaxed" "=" relaxed)
+                 attr-dict ":" type(operands) if res { "->" type(res) } }
+  }
+
+  op mbarrier.arrive_drop.expect_tx {
+    Doc "Arrive, drop the reference and expect a transaction count (mbarrier.arrive_drop.expect_tx); requires sm_90.";
+    Operands   (addr: ptr, txcount: i32, multicastMask: optional<i32>);
+    Results    (res: optional<i64>);
+    Attributes (scope: i32 = none, relaxed: i1 = false);
+    Assembly   { addr "," txcount
+                 if multicastMask { "multicast_mask" "=" multicastMask }
+                 oilist("scope" "=" scope | "relaxed" "=" relaxed)
+                 attr-dict ":" type(operands) if res { "->" type(res) } }
+  }
+
+  op mbarrier.try_wait {
+    Doc "Try to wait on an mbarrier with a state or phase and optional tick budget (mbarrier.try_wait); requires sm_90.";
+    Operands   (addr: ptr, stateOrPhase: any, ticks: optional<i32>);
+    Results    (res: i1);
+    Attributes (scope: i32 = none, relaxed: i1 = false);
+    Assembly   { addr "," stateOrPhase if ticks { "," ticks }
+                 oilist("scope" "=" scope | "relaxed" "=" relaxed)
+                 attr-dict ":" type(operands) "->" type(res) }
+  }
+
+  op mbarrier.test.wait {
+    Doc "Test whether an mbarrier wait would succeed (mbarrier.test.wait); requires sm_80.";
+    Operands   (addr: ptr, stateOrPhase: any);
+    Results    (res: i1);
+    Attributes (scope: i32 = none, relaxed: i1 = false);
+    Assembly   { addr "," stateOrPhase
+                 oilist("scope" "=" scope | "relaxed" "=" relaxed)
+                 attr-dict ":" type(operands) "->" type(res) }
+  }
+
+  op mbarrier.try_wait.parity {
+    Doc "Try to wait on an mbarrier phase parity with a tick budget (mbarrier.try_wait.parity); requires sm_90.";
+    Operands (addr: ptr, phase: i32, ticks: i32);
+    Assembly { addr "," phase "," ticks attr-dict ":" type(operands) }
+  }
+
+  op mbarrier.check_layout {
+    Doc "Check the mbarrier shared-memory layout selector (mbarrier.check_layout); requires sm_90.";
+    Operands   (addr: ptr);
+    Results    (res: i1);
+    Attributes (layout: i32 = 0);
+    Assembly   { addr if layout { "layout" "=" layout }
+                 attr-dict ":" type(addr) "->" type(res) }
+  }
+
+  // ---- cp.async / TMA ----
+
+  op cp.async.shared.global {
+    Doc "Asynchronous copy from global to shared memory with cache modifier and optional cp-size (cp.async.shared.global).";
+    Operands   (dst: ptr, src: ptr, cpSize: optional<i32>);
+    Attributes (size: i32, modifier: i32);
+    Assembly   { dst "," src "," size "," "cache" "=" modifier
+                 if cpSize { "," cpSize } attr-dict ":" type(operands) }
+  }
+
+  op cp.async.wait.group {
+    Doc "Wait until the given number of async groups remain in flight (cp.async.wait.group).";
+    Attributes (n: i32);
+    Assembly   { n attr-dict }
+  }
+
+  op cp.async.mbarrier.arrive {
+    Doc "Async-copy mbarrier arrival, optionally without incrementing the pending count (cp.async.mbarrier.arrive).";
+    Operands   (addr: ptr);
+    Attributes (noinc: i1 = 0);
+    Assembly   { addr oilist("noinc" "=" noinc) attr-dict ":" type(operands) }
+  }
+
+  op cp.async.bulk.wait_group {
+    Doc "Wait for bulk async groups, optionally requiring all reads to complete (cp.async.bulk.wait_group); requires sm_90.";
+    Attributes (group: i32, read: optional<unit>);
+    Assembly   { group if read { "read" } attr-dict }
+  }
+
+  op cp.async.bulk.global.shared.cta {
+    Doc "Bulk copy from shared CTA memory to global memory with optional L2 hint and byte mask (cp.async.bulk.global.shared.cta).";
+    Operands   (dstMem: ptr, srcMem: ptr, size: i32,
+                l2CacheHint: optional<i64>, byteMask: optional<i16>);
+    Properties [operand_segments_by_attribute];
+    Assembly   { dstMem "," srcMem "," size
+                 if l2CacheHint { "l2_cache_hint" "=" l2CacheHint }
+                 if byteMask { "byte_mask" "=" byteMask }
+                 attr-dict ":" type(dstMem) "," type(srcMem) }
+  }
+
+  op cp.async.bulk.shared.cluster.global {
+    Doc "Bulk copy from global to shared-cluster memory with optional multicast mask and L2 hint (cp.async.bulk.shared.cluster.global).";
+    Operands   (dstMem: ptr, srcMem: ptr, mbar: ptr, size: i32,
+                multicastMask: optional<i16>, l2CacheHint: optional<i64>);
+    Properties [operand_segments_by_attribute];
+    Assembly   { dstMem "," srcMem "," mbar "," size
+                 if multicastMask { "multicast_mask" "=" multicastMask }
+                 if l2CacheHint { "l2_cache_hint" "=" l2CacheHint }
+                 attr-dict ":" type(dstMem) "," type(srcMem) }
+  }
+
+  op cp.async.bulk.shared.cluster.shared.cta {
+    Doc "Bulk copy from shared CTA memory to shared-cluster memory (cp.async.bulk.shared.cluster.shared.cta).";
+    Operands (dstMem: ptr, srcMem: ptr, mbar: ptr, size: i32);
+    Assembly { dstMem "," srcMem "," mbar "," size
+               attr-dict ":" type(dstMem) "," type(srcMem) }
+  }
+
+  op cp.async.bulk.prefetch {
+    Doc "Bulk prefetch of global memory into L2 with an optional L2 cache hint (cp.async.bulk.prefetch).";
+    Operands (srcMem: ptr, size: i32, l2CacheHint: optional<i64>);
+    Assembly { srcMem "," size
+               if l2CacheHint { "l2_cache_hint" "=" l2CacheHint }
+               attr-dict ":" type(srcMem) }
+  }
+
+  op cp.async.bulk.tensor.global.shared.cta {
+    Doc "TMA tensor copy from shared CTA memory to global memory; box, L2 hint, predicate and mode (cp.async.bulk.tensor.global.shared.cta).";
+    Operands   (tmaDescriptor: ptr, srcMem: ptr, coordinates: variadic<i32>,
+                l2CacheHint: optional<i64>);
+    Attributes (mode: i32, predicate: i32);
+    Properties [operand_segments_by_attribute];
+    Assembly   { tmaDescriptor "," srcMem "," "box" "[" coordinates "]"
+                 oilist("l2_cache_hint" "=" l2CacheHint
+                        | "predicate" "=" predicate
+                        | "mode" "=" mode)
+                 attr-dict ":" type(tmaDescriptor) "," type(srcMem) }
+  }
+
+  op cp.async.bulk.tensor.global.shared.cta.override {
+    Doc "TMA tensor copy with an explicit override address, strides and mode (cp.async.bulk.tensor.global.shared.cta.override).";
+    Operands   (tmaDescriptor: ptr, srcMem: ptr, overrideAddr: ptr,
+                coordinates: variadic<i32>, tensorSize: variadic<i16>,
+                lowerStride: variadic<i32>, upperStride: optional<i16>,
+                l2CacheHint: optional<i64>);
+    Attributes (mode: i32);
+    Properties [operand_segments_by_attribute];
+    Assembly   { tmaDescriptor "," srcMem "," overrideAddr ","
+                 "box" "[" coordinates "]"
+                 oilist("tensor_size" "[" tensorSize "]"
+                        | "lower_stride" "[" lowerStride "]"
+                        | "upper_stride" "[" upperStride "]"
+                        | "l2_cache_hint" "=" l2CacheHint
+                        | "mode" "=" mode)
+                 attr-dict ":" type(tmaDescriptor) "," type(srcMem)
+                 "," type(overrideAddr) }
+  }
+
+  op cp.async.bulk.tensor.prefetch {
+    Doc "TMA tensor prefetch with box, optional im2col offsets and mode (cp.async.bulk.tensor.prefetch).";
+    Operands   (tmaDescriptor: ptr, coordinates: variadic<i32>,
+                im2colOffsets: variadic<i16>, l2CacheHint: optional<i64>);
+    Attributes (mode: i32);
+    Properties [operand_segments_by_attribute];
+    Assembly   { tmaDescriptor "," "box" "[" coordinates "]"
+                 oilist("im2col" "[" im2colOffsets "]"
+                        | "l2_cache_hint" "=" l2CacheHint
+                        | "mode" "=" mode)
+                 attr-dict ":" type(tmaDescriptor) }
+  }
+
+  op cp.async.bulk.tensor.reduce {
+    Doc "TMA tensor reduction with a reduction kind and optional mode (cp.async.bulk.tensor.reduce).";
+    Operands   (tmaDescriptor: ptr, srcMem: ptr, coordinates: variadic<i32>,
+                l2CacheHint: optional<i64>);
+    Attributes (redKind: i32, mode: i32);
+    Properties [operand_segments_by_attribute];
+    Assembly   { tmaDescriptor "," srcMem "," "box" "[" coordinates "]"
+                 if l2CacheHint { "l2_cache_hint" "=" l2CacheHint }
+                 "," "reduction" "=" redKind oilist("mode" "=" mode)
+                 attr-dict ":" type(tmaDescriptor) "," type(srcMem) }
+  }
+
+  op cp.async.bulk.tensor.reduce.override {
+    Doc "TMA tensor reduction with override address and strides (cp.async.bulk.tensor.reduce.override).";
+    Operands   (tmaDescriptor: ptr, srcMem: ptr, overrideAddr: ptr,
+                coordinates: variadic<i32>, tensorSize: variadic<i16>,
+                lowerStride: variadic<i32>, upperStride: optional<i16>,
+                l2CacheHint: optional<i64>);
+    Attributes (redKind: i32, mode: i32);
+    Properties [operand_segments_by_attribute];
+    Assembly   { tmaDescriptor "," srcMem "," overrideAddr ","
+                 "box" "[" coordinates "]"
+                 if tensorSize { "tensor_size" "[" tensorSize "]" }
+                 if lowerStride { "lower_stride" "[" lowerStride "]" }
+                 if upperStride { "upper_stride" "[" upperStride "]" }
+                 if l2CacheHint { "l2_cache_hint" "=" l2CacheHint }
+                 "," "reduction" "=" redKind oilist("mode" "=" mode)
+                 attr-dict ":" type(tmaDescriptor) "," type(srcMem)
+                 "," type(overrideAddr) }
+  }
+
+  op cp.async.bulk.tensor.shared.cluster.global {
+    Doc "TMA tensor load from global to shared-cluster memory; box, im2col, multicast mask, L2 hint, predicate, mode, CTA-only and CTAGroup group (cp.async.bulk.tensor.shared.cluster.global); requires sm_90.";
+    Operands   (dstMem: ptr, tmaDescriptor: ptr, coordinates: variadic<i32>,
+                mbar: ptr, im2colOffsets: variadic<i16>,
+                multicastMask: optional<i16>, l2CacheHint: optional<i64>);
+    Attributes (mode: i32, isCTAOnly: i1 = false, group: optional<i32>,
+                predicate: i32);
+    Properties [operand_segments_by_attribute];
+    Assembly   { dstMem "," tmaDescriptor "," mbar "," "box" "[" coordinates "]"
+                 oilist("im2col" "[" im2colOffsets "]"
+                        | "multicast_mask" "=" multicastMask
+                        | "l2_cache_hint" "=" l2CacheHint
+                        | "predicate" "=" predicate
+                        | "mode" "=" mode
+                        | "cta_only" "=" isCTAOnly
+                        | "group" "=" custom<CTAGroup>(group))
+                 attr-dict ":" type(dstMem) "," type(tmaDescriptor) }
+  }
+
+  op store.async.global {
+    Doc "Asynchronous store to global memory with scope and multimem/mmio modifiers (store.async.global); requires sm_100.";
+    Operands   (addr: ptr, value: any);
+    Attributes (scope: i32, multimem: i1 = false, mmio: i1 = false);
+    Assembly   { addr "," value "scope" "=" scope
+                 oilist("multimem" "=" multimem | "mmio" "=" mmio)
+                 attr-dict ":" type(addr) "," type(value) }
+  }
+
+  op store.async.shared {
+    Doc "Asynchronous store to shared-cluster memory with an mbarrier completion token (store.async.shared); requires sm_90.";
+    Operands (addr: ptr, value: any, mbarrier: ptr);
+    Assembly { addr "," value "," "mbarrier" "=" mbarrier
+               attr-dict ":" type(addr) "," type(value) "," type(mbarrier) }
+  }
+
+  op st.bulk {
+    Doc "Fill a global or shared memory range with a byte value (st.bulk); the size converts to an integer.";
+    Operands   (addr: ptr, size: any);
+    Attributes (initVal: i64 = 0);
+    Assembly   { addr "," "size" "=" size
+                 if initVal { "," "init" "=" initVal }
+                 attr-dict ":" type(addr) "," type(size) }
+  }
+
+  // ---- 转换 ----
+
+  op convert.float.to.tf32 {
+    Doc "Convert f32 to the TF32 format with rounding, saturation and relu flags (convert.float.to.tf32).";
+    Operands   (src: f32);
+    Results    (res: i32);
+    Attributes (rnd: i32 = none, sat: i32 = none, relu: i1 = false);
+    Assembly   { src oilist("rnd" "=" rnd | "sat" "=" sat | "relu" "=" relu)
+                 attr-dict }
+  }
+
+  schema ConvertF32x2ToF4F6 {
+    Doc "Convert two f32 values to a packed fp4/fp6 pair with optional scale factor, rounding, relu and pzo.";
+    Operands   (a: f32, b: f32, scale_factor: optional<i8>);
+    Results    (dst: any);
+    Attributes (rnd: i32 = none, relu: i1 = false, pzo: i1 = false, dstTy: any);
+    Assembly   { a "," b if scale_factor { "," scale_factor }
+                 oilist("rnd" "=" rnd | "relu" "=" relu | "pzo" "=" pzo)
+                 attr-dict ":" type(dst) "(" dstTy ")" }
+  }
+
+  op convert.f32x2.to.f4x2 from ConvertF32x2ToF4F6 {
+    Doc "Convert two f32 values to packed f4x2 (convert.f32x2.to.f4x2); result is i8.";
+  }
+  op convert.f32x2.to.f6x2 from ConvertF32x2ToF4F6 {
+    Doc "Convert two f32 values to packed f6x2 (convert.f32x2.to.f6x2); result is i16 or vector of two i8.";
+  }
+
+  // f16x2/bf16x2 到 f4x2/f6x2：单个打包 src 向量（与上面 a,b 两个 f32 不同）。
+  // 源类 NVVM_ConvertFPx2ToF4x2Op（NVVMOps.td:1961，assemblyFormat 1989）与
+  // NVVM_ConvertFPx2ToF6x2Op（NVVMOps.td:2070，assemblyFormat 2102），
+  // def 分别在 NVVMOps.td:2008/2009 与 2126/2127。
+  schema ConvertFPx2ToF4F6 {
+    Doc "Convert a packed f16x2 or bf16x2 vector to a packed fp4/fp6 pair with optional scale factor, rounding, relu and pzo.";
+    Operands   (src: fp16x2_or_bf16x2, scale_factor: optional<i8>);
+    Results    (dst: any);
+    Attributes (relu: i1 = false, dstTy: any, rnd: i32 = none, pzo: i1 = false);
+    Assembly   { src if scale_factor { "," scale_factor }
+                 oilist("rnd" "=" rnd | "relu" "=" relu | "pzo" "=" pzo)
+                 attr-dict ":" type(src) "->" type(dst) "(" dstTy ")" }
+  }
+
+  op convert.f16x2.to.f4x2 from ConvertFPx2ToF4F6 {
+    Doc "Convert a packed f16x2 (vector<2xf16>) to packed f4x2 (convert.f16x2.to.f4x2); result is i8.";
+  }
+  op convert.bf16x2.to.f4x2 from ConvertFPx2ToF4F6 {
+    Doc "Convert a packed bf16x2 (vector<2xbf16>) to packed f4x2 (convert.bf16x2.to.f4x2); result is i8.";
+  }
+  op convert.f16x2.to.f6x2 from ConvertFPx2ToF4F6 {
+    Doc "Convert a packed f16x2 (vector<2xf16>) to packed f6x2 (convert.f16x2.to.f6x2); result is i16 or vector of two i8.";
+  }
+  op convert.bf16x2.to.f6x2 from ConvertFPx2ToF4F6 {
+    Doc "Convert a packed bf16x2 (vector<2xbf16>) to packed f6x2 (convert.bf16x2.to.f6x2); result is i16 or vector of two i8.";
+  }
+
+  op convert.f32x2.to.f8x2 {
+    Doc "Convert two f32 values to packed f8x2 with rounding, saturation, relu and pzo (convert.f32x2.to.f8x2).";
+    Operands   (a: f32, b: f32, scale_factor: optional<i8>);
+    Results    (dst: any);
+    Attributes (rnd: i32 = none, sat: i32 = none, relu: i1 = false,
+                pzo: i1 = false, dstTy: any);
+    Assembly   { a "," b if scale_factor { "," scale_factor }
+                 oilist("rnd" "=" rnd | "sat" "=" sat
+                        | "relu" "=" relu | "pzo" "=" pzo)
+                 attr-dict ":" type(dst) "(" dstTy ")" }
+  }
+
+  op convert.f32x2.to.s2f6x2 {
+    Doc "Convert two f32 values to packed s2f6x2 with scale factor and relu (convert.f32x2.to.s2f6x2).";
+    Operands   (a: f32, b: f32, scaleFactor: optional<i16>);
+    Results    (dst: any);
+    Attributes (relu: i1 = false);
+    Assembly   { a "," b
+                 oilist("scale_factor" "=" scaleFactor | "relu" "=" relu)
+                 attr-dict ":" type(dst) }
+  }
+
+  op convert.f16x2.to.f8x2 {
+    Doc "Convert packed f16x2 to packed f8x2 (convert.f16x2.to.f8x2).";
+    Operands   (a: vector<f16, 2>, scale_factor: optional<i8>);
+    Results    (dst: any);
+    Attributes (sat: i32 = none, relu: i1 = false, rnd: i32 = none,
+                pzo: i1 = false, dstTy: any);
+    Assembly   { a if scale_factor { "," scale_factor }
+                 oilist("rnd" "=" rnd | "sat" "=" sat
+                        | "relu" "=" relu | "pzo" "=" pzo)
+                 attr-dict ":" type(a) "->" type(dst) "(" dstTy ")" }
+  }
+
+  op convert.bf16x2.to.f8x2 {
+    Doc "Convert packed bf16x2 to packed f8x2 (convert.bf16x2.to.f8x2).";
+    Operands   (src: vector<bf16, 2>, scale_factor: optional<i8>);
+    Results    (dst: any);
+    Attributes (rnd: i32 = none, sat: i32 = none, relu: i1 = false,
+                pzo: i1 = false, dstTy: any);
+    Assembly   { src if scale_factor { "," scale_factor }
+                 oilist("rnd" "=" rnd | "sat" "=" sat
+                        | "relu" "=" relu | "pzo" "=" pzo)
+                 attr-dict ":" type(src) "->" type(dst) "(" dstTy ")" }
+  }
+
+  // f8x2/f6x2/f4x2 到 f16x2/bf16x2：源类 NVVM_ConvertToFP16x2Op_Base
+  // （NVVMOps.td:2310，assemblyFormat 在 2344 的 !if 两分支）。目标为 F16 时
+  // 参数只有 src/relu，缺 scale_factor 与 sat；目标为 BF16 时才有这两项。
+  // def 见 NVVMOps.td:2352/2355（f8x2）、2379/2382（f6x2）、2406/2408（f4x2）。
+  schema ConvertToF16x2 {
+    Doc "Convert a packed f8x2/f6x2/f4x2 source to vector<2xf16>, with the source format as a type attribute and an optional relu.";
+    Operands   (src: packed_i8x2);
+    Results    (dst: vector<f16, 2>);
+    Attributes (srcType: any, relu: i1 = false);
+    Assembly   { src oilist("relu" "=" relu)
+                 attr-dict ":" type(src) "(" srcType ")" "->" type(dst) }
+  }
+
+  schema ConvertToBF16x2 {
+    Doc "Convert a packed f8x2/f6x2/f4x2 source to vector<2xbf16>, with the source format as a type attribute, an optional packed scale factor, saturation and relu.";
+    Operands   (src: packed_i8x2, scaleFactor: optional<i16>);
+    Results    (dst: vector<bf16, 2>);
+    Attributes (srcType: any, sat: i32 = none, relu: i1 = false);
+    Assembly   { src oilist("scale_factor" "=" scaleFactor
+                            | "sat" "=" sat | "relu" "=" relu)
+                 attr-dict ":" type(src) "(" srcType ")" "->" type(dst) }
+  }
+
+  op convert.f8x2.to.f16x2 from ConvertToF16x2 {
+    Doc "Convert a packed f8x2 (vector<2xi8>) to vector<2xf16> (convert.f8x2.to.f16x2); source format in the parenthesized attribute.";
+  }
+  op convert.f8x2.to.bf16x2 from ConvertToBF16x2 {
+    Doc "Convert a packed f8x2 (vector<2xi8>) to vector<2xbf16> with saturation and optional scale factor (convert.f8x2.to.bf16x2).";
+  }
+  op convert.f6x2.to.f16x2 from ConvertToF16x2 {
+    Doc "Convert a packed f6x2 (vector<2xi8>) to vector<2xf16> (convert.f6x2.to.f16x2); source format in the parenthesized attribute.";
+  }
+  op convert.f6x2.to.bf16x2 from ConvertToBF16x2 {
+    Doc "Convert a packed f6x2 (vector<2xi8>) to vector<2xbf16> with saturation and optional scale factor (convert.f6x2.to.bf16x2).";
+  }
+  op convert.f4x2.to.f16x2 from ConvertToF16x2 {
+    Doc "Convert a packed f4x2 (single i8) to vector<2xf16> (convert.f4x2.to.f16x2); source format in the parenthesized attribute.";
+  }
+  op convert.f4x2.to.bf16x2 from ConvertToBF16x2 {
+    Doc "Convert a packed f4x2 (single i8) to vector<2xbf16> with saturation and optional scale factor (convert.f4x2.to.bf16x2).";
+  }
+
+  op convert.bf16x2.to.s2f6x2 {
+    Doc "Convert packed bf16x2 to packed s2f6x2 with scale factor and relu (convert.bf16x2.to.s2f6x2).";
+    Operands   (src: vector<bf16, 2>, scaleFactor: optional<i16>);
+    Results    (dst: any);
+    Attributes (relu: i1 = false);
+    Assembly   { src oilist("scale_factor" "=" scaleFactor | "relu" "=" relu)
+                 attr-dict ":" type(src) "->" type(dst) }
+  }
+
+  op convert.s2f6x2.to.bf16x2 {
+    Doc "Convert packed s2f6x2 to packed bf16x2 with scale factor, saturation and relu (convert.s2f6x2.to.bf16x2).";
+    Operands   (src: vector<i8, 2>, scaleFactor: optional<i16>);
+    Results    (dst: vector<bf16, 2>);
+    Attributes (sat: i32 = none, relu: i1 = false);
+    Assembly   { src oilist("scale_factor" "=" scaleFactor
+                            | "sat" "=" sat | "relu" "=" relu)
+                 attr-dict ":" type(src) "->" type(dst) }
+  }
+
+  // f32x2 到 f16x2/bf16x2：源类 NVVM_ConvertF32x2ToFPx2OpBase（NVVMOps.td:2552，
+  // assemblyFormat 2584），带 Pure；def 见 NVVMOps.td:2609/2612。
+  schema ConvertF32x2ToFPx2 {
+    Doc "Convert two f32 values to a packed f16x2/bf16x2 vector with optional random bits, rounding, saturation, relu and pzo.";
+    Operands   (src_hi: f32, src_lo: f32, random_bits: optional<i32>);
+    Results    (dst: any);
+    Attributes (rnd: i32 = none, sat: i32 = none, relu: i1 = false, pzo: i1 = false);
+    Properties [pure];
+    Assembly   { src_hi "," src_lo
+                 oilist("random_bits" "=" random_bits | "rnd" "=" rnd
+                        | "sat" "=" sat | "relu" "=" relu | "pzo" "=" pzo)
+                 attr-dict ":" type(dst) }
+  }
+
+  op convert.f32x2.to.f16x2 from ConvertF32x2ToFPx2 {
+    Doc "Convert src_hi/src_lo f32 values to vector<2xf16> with PTX a/b operand order (convert.f32x2.to.f16x2).";
+  }
+  op convert.f32x2.to.bf16x2 from ConvertF32x2ToFPx2 {
+    Doc "Convert src_hi/src_lo f32 values to vector<2xbf16> with PTX a/b operand order (convert.f32x2.to.bf16x2).";
+  }
+
+  schema ConvertF32x4Stoch {
+    Doc "Convert four f32 values to a packed fp4/fp6/fp8 x4 format with stochastic rounding and relu.";
+    Operands   (src: vector<f32, 4>, rbits: i32);
+    Results    (dst: any);
+    Attributes (relu: i1 = false, dstTy: any);
+    Properties [pure];
+    Assembly   { src "," rbits oilist("relu" "=" relu) attr-dict
+                 ":" type(src) "->" type(dst) "(" dstTy ")" }
+  }
+
+  op convert.f32x4.to.f4x4 from ConvertF32x4Stoch {
+    Doc "Convert vector<4xf32> to packed f4x4 with stochastic rounding (convert.f32x4.to.f4x4); requires sm_100/103.";
+  }
+  op convert.f32x4.to.f6x4 from ConvertF32x4Stoch {
+    Doc "Convert vector<4xf32> to packed f6x4 with stochastic rounding (convert.f32x4.to.f6x4); requires sm_100/103.";
+  }
+  op convert.f32x4.to.f8x4 from ConvertF32x4Stoch {
+    Doc "Convert vector<4xf32> to packed f8x4 with stochastic rounding (convert.f32x4.to.f8x4); requires sm_100/103.";
+  }
+
+  // ---- 置换 / 点积 / 稀疏 ----
+
+  op prmt {
+    Doc "Byte permute of lo and optional hi under selector and mode (prmt); the mode attribute is printed before the operands.";
+    Operands   (lo: i32, hi: optional<i32>, selector: i32);
+    Results    (res: i32);
+    Attributes (mode: i32);
+    Properties [pure];
+    Assembly   { mode selector "," lo if hi { "," hi }
+                 attr-dict ":" type(res) }
+  }
+
+  op dot.accumulate.2way {
+    Doc "Two-way integer dot-product accumulate with signedness attributes and optional b_hi (dot.accumulate.2way).";
+    Operands   (a: vector<i16, 2>, b: vector<i8, 4>, c: i32);
+    Results    (res: i32);
+    Attributes (a_type: i32, b_type: i32, b_hi: i1);
+    Assembly   { a a_type "," b b_type "," c "," "b_hi" "=" b_hi
+                 attr-dict ":" type(a) "," type(b) }
+  }
+
+  op dot.accumulate.4way {
+    Doc "Four-way integer dot-product accumulate with signedness attributes (dot.accumulate.4way).";
+    Operands   (a: vector<i8, 4>, b: vector<i8, 4>, c: i32);
+    Results    (res: i32);
+    Attributes (a_type: i32, b_type: i32);
+    Assembly   { a a_type "," b b_type "," c attr-dict
+                 ":" type(a) "," type(b) }
+  }
+
+  op sparse.compress {
+    Doc "Compress a dense vector using structured sparsity metadata (sparse.compress); requires sm_107.";
+    Operands   (spDesc: i32, data: any);
+    Results    (metadata: any, compressed_data: any);
+    Attributes (idxSize: i32);
+    Properties [pure];
+    Assembly   { spDesc "," data "idx_size" "=" idxSize attr-dict
+                 ":" type(operands) "->" type(metadata) "," type(compressed_data) }
+  }
+
+  op sparse.decompress {
+    Doc "Decompress structured-sparse data back to a dense vector (sparse.decompress); requires sm_107.";
+    Operands   (metadata: any, compressed_data: any);
+    Results    (data: any);
+    Attributes (idxSize: i32, numTgt: i32);
+    Properties [pure];
+    Assembly   { metadata "," compressed_data "idx_size" "=" idxSize
+                 "num_tgt" "=" numTgt attr-dict
+                 ":" type(metadata) "," type(compressed_data) "->" type(data) }
+  }
+
+  // ---- warp 级矩阵 ----
+
+  op ldmatrix {
+    Doc "Load a matrix fragment from shared memory with shape and element type attributes (ldmatrix); the result type is carried by a functional type.";
+    Operands   (ptr: ptr);
+    Results    (res: any);
+    Attributes (num: i32, layout: i32, shape: i32, eltType: i32);
+    Assembly   { ptr "," "num" "=" num "," "layout" "=" layout ","
+                 "shape" "=" shape "," "element_type" "=" eltType
+                 attr-dict ":" functional-type(ptr, res) }
+  }
+
+  op stmatrix {
+    Doc "Store matrix fragment registers to shared memory (stmatrix); sources is variadic i32.";
+    Operands   (ptr: ptr, sources: variadic<i32>);
+    Attributes (layout: i32, shape: i32, eltType: i32);
+    Assembly   { ptr "," sources "layout" "=" layout "," "shape" "=" shape
+                 "," "element_type" "=" eltType attr-dict ":" type(operands) }
+  }
+
+  op movmatrix {
+    Doc "Move a matrix fragment between registers, optionally changing layout (movmatrix); requires sm_75.";
+    Operands   (src: i32);
+    Results    (dst: i32);
+    Attributes (shape: i32, eltType: i32, layout: i32);
+    Assembly   { src "," "shape" "=" shape "," "element_type" "=" eltType
+                 if layout { "," "layout" "=" layout } attr-dict ":" type(src) }
+  }
+
+  op wmma.load {
+    Doc "Warp-level matrix load from memory with shape, layout, element type and fragment attributes (wmma.load).";
+    Operands   (ptr: ptr, stride: i32);
+    Results    (res: any);
+    Attributes (m: i32, n: i32, k: i32, layout: i32, eltype: i32, frag: i32);
+    Assembly   { ptr "," stride "," "m" "=" m "," "n" "=" n "," "k" "=" k
+                 "," "layout" "=" layout "," "element_type" "=" eltype
+                 "," "fragment" "=" frag attr-dict
+                 ":" functional-type(ptr, res) }
+  }
+
+  op wmma.mma {
+    Doc "Warp-level matrix multiply-accumulate with variadic fragment arguments (wmma.mma).";
+    Operands   (args: variadic<any>);
+    Results    (res: any);
+    Attributes (m: i32, n: i32, k: i32, layoutA: i32, layoutB: i32,
+                eltypeA: i32, eltypeB: i32);
+    Assembly   { args "m" "=" m "," "n" "=" n "," "k" "=" k
+                 "," "layout_a" "=" layoutA "," "layout_b" "=" layoutB
+                 "," "element_type_a" "=" eltypeA
+                 "," "element_type_b" "=" eltypeB
+                 attr-dict ":" functional-type(args, res) }
+  }
+
+  op wmma.store {
+    Doc "Warp-level matrix store to memory with shape, layout and element type attributes (wmma.store).";
+    Operands   (ptr: ptr, args: variadic<any>, stride: i32);
+    Attributes (m: i32, n: i32, k: i32, layout: i32, eltype: i32);
+    Assembly   { ptr "," stride "," args "m" "=" m "," "n" "=" n
+                 "," "k" "=" k "," "layout" "=" layout
+                 "," "element_type" "=" eltype attr-dict
+                 ":" qualified(type(ptr)) "," type(args) }
+  }
+
+  op wgmma.mma_async {
+    Doc "Warpgroup-level async MMA with descriptors, inout struct, shape and typed D/A/B descriptors (wgmma.mma_async); input and result struct types must match.";
+    Operands   (descriptorA: i64, descriptorB: i64, inouts: any);
+    Results    (results: any);
+    Attributes (shape: any, typeA: i32, typeB: i32, typeD: i32,
+                scaleD: i32, scaleA: i32, scaleB: i32, layoutA: i32,
+                layoutB: i32, satfinite: optional<i32>);
+    Properties [same_type(inouts, results)];
+    Assembly   { descriptorA "," descriptorB "," inouts "," shape ","
+                 "D" "[" typeD "," scaleD if satfinite { "," satfinite } "]"
+                 "," "A" "[" typeA "," scaleA "," layoutA "]"
+                 "," "B" "[" typeB "," scaleB "," layoutB "]"
+                 attr-dict ":" type(inouts) "->" type(results) }
+  }
+
+  op wgmma.wait.group.sync.aligned {
+    Doc "Wait for the given warpgroup MMA group to complete (wgmma.wait.group.sync.aligned); requires sm_90a.";
+    Attributes (group: i64);
+    Assembly   { attr-dict group }
+  }
+
+  op mma.sync {
+    Doc "Dense warp-level matrix multiply-accumulate (mma.sync); layout and optional overflow/type attributes select the PTX form; the textual form is produced by an upstream handwritten printer.";
+    Operands   (operandA: variadic<any>, operandB: variadic<any>,
+                operandC: variadic<any>);
+    Results    (res: any);
+    Attributes (shape: any, b1Op: optional<i32>, intOverflowBehavior: optional<i32>,
+                layoutA: i32, layoutB: i32,
+                multiplicandAPtxType: optional<i32>,
+                multiplicandBPtxType: optional<i32>);
+    Properties [operand_segments_by_attribute];
+    Assembly   Custom;
+  }
+
+  op mma.sp.sync {
+    Doc "Sparse warp-level matrix multiply-accumulate with 2:4 sparsity (mma.sp.sync); sparseMetadata and sparsitySelector index the A operand; the textual form is produced by an upstream handwritten printer.";
+    Operands   (operandA: variadic<any>, operandB: variadic<any>,
+                operandC: variadic<any>, sparseMetadata: i32,
+                sparsitySelector: i32);
+    Results    (res: any);
+    Attributes (shape: any, intOverflowBehavior: optional<i32>,
+                multiplicandAPtxType: optional<i32>,
+                multiplicandBPtxType: optional<i32>,
+                orderedMetadata: optional<unit>, kind: optional<i32>);
+    Properties [operand_segments_by_attribute];
+    Assembly   Custom;
+  }
+
+  op mma.block_scale {
+    Doc "Dense warp-level MMA with block scaling factors for A and B (mma.block_scale); scaleAData/byteIdA/threadIdA and the B trio carry the scale vectors; the textual form is produced by an upstream handwritten printer.";
+    Operands   (operandA: variadic<any>, operandB: variadic<any>,
+                operandC: variadic<any>, scaleAData: i32, byteIdA: i16,
+                threadIdA: i16, scaleBData: i32, byteIdB: i16,
+                threadIdB: i16);
+    Results    (res: any);
+    Attributes (shape: any, multiplicandAPtxType: optional<i32>,
+                multiplicandBPtxType: optional<i32>, scaleVecSize: i32,
+                blockScaleFormat: i32, kind: i32);
+    Properties [operand_segments_by_attribute];
+    Assembly   Custom;
+  }
+
+  op mma.sp.block_scale {
+    Doc "Sparse warp-level MMA with block scaling (mma.sp.block_scale); always uses ordered metadata; the textual form is produced by an upstream handwritten printer.";
+    Operands   (operandA: variadic<any>, operandB: variadic<any>,
+                operandC: variadic<any>, sparseMetadata: i32,
+                sparsitySelector: i32, scaleAData: i32, byteIdA: i16,
+                threadIdA: i16, scaleBData: i32, byteIdB: i16,
+                threadIdB: i16);
+    Results    (res: any);
+    Attributes (shape: any, multiplicandAPtxType: optional<i32>,
+                multiplicandBPtxType: optional<i32>,
+                orderedMetadata: optional<unit>, scaleVecSize: i32,
+                blockScaleFormat: i32, kind: i32);
+    Properties [operand_segments_by_attribute];
+    Assembly   Custom;
+  }
+
+  // ---- tcgen05 ----
+
+  schema Tcgen05OpKind {
+    Doc "A tcgen05 fence or wait instruction identified by a bare kind keyword.";
+    Attributes (kind: i32);
+    Assembly   { kind attr-dict }
+  }
+
+  op tcgen05.fence from Tcgen05OpKind {
+    Doc "tcgen05 fence with a phase kind (tcgen05.fence); requires sm_100/101/110.";
+  }
+  op tcgen05.wait from Tcgen05OpKind {
+    Doc "tcgen05 wait with a phase kind (tcgen05.wait); requires sm_100/101/110.";
+  }
+
+  op tcgen05.alloc {
+    Doc "Allocate tensor memory columns in a CTA group (tcgen05.alloc); optional group and exclusive flag.";
+    Operands   (addr: ptr, nCols: i32);
+    Attributes (group: i32 = none, isExclusive: i1 = false);
+    Assembly   { addr "," nCols if group { "," "group" "=" group }
+                 if isExclusive { "exclusive" "=" isExclusive }
+                 attr-dict ":" type(operands) }
+  }
+
+  op tcgen05.dealloc {
+    Doc "Deallocate tensor memory columns in a CTA group (tcgen05.dealloc).";
+    Operands   (taddr: ptr, nCols: i32);
+    Attributes (group: i32 = none, isExclusive: i1 = false);
+    Assembly   { taddr "," nCols if group { "," "group" "=" group }
+                 if isExclusive { "exclusive" "=" isExclusive }
+                 attr-dict ":" type(operands) }
+  }
+
+  op tcgen05.commit {
+    Doc "Commit pending tcgen05 operations with an optional multicast mask, CTA group and smem_a_read flag (tcgen05.commit).";
+    Operands   (addr: ptr, multicastMask: optional<any>);
+    Attributes (group: i32 = none, smem_a_read: i1 = false);
+    Assembly   { addr if multicastMask
+                     { "," "multicast_mask" "=" multicastMask }
+                 oilist("group" "=" group | "smem_a_read" "=" smem_a_read)
+                 attr-dict ":" type(operands) }
+  }
+
+  op tcgen05.cp {
+    Doc "Copy between shared memory and tensor memory with a copy shape (tcgen05.cp).";
+    Operands   (taddr: ptr, smem_desc: i64);
+    Attributes (shape: i32, group: i32 = none, multicast: i32 = none,
+                srcFormat: optional<i32>);
+    Assembly   { taddr "," smem_desc "," "shape" "=" shape
+                 oilist("group" "=" group | "multicast" "=" multicast
+                        | "source_format" "=" srcFormat)
+                 attr-dict }
+  }
+
+  op tcgen05.relinquish_alloc_permit {
+    Doc "Relinquish the tensor-memory allocation permit for a CTA group (tcgen05.relinquish_alloc_permit).";
+    Attributes (group: i32 = none);
+    Assembly   { if group { "group" "=" group } attr-dict }
+  }
+
+  op tcgen05.shift {
+    Doc "Shift a tensor-memory address by a CTA group offset (tcgen05.shift); requires sm_100/101/103/110.";
+    Operands   (taddr: ptr);
+    Attributes (group: i32 = none);
+    Assembly   { taddr if group { "," "group" "=" group }
+                 attr-dict ":" type(operands) }
+  }
+
+  op tcgen05.ld {
+    Doc "Load a vector from tensor memory with shape and optional offset and pack (tcgen05.ld).";
+    Operands   (tmemAddr: ptr, offset: optional<i64>);
+    Results    (res: any);
+    Attributes (pack: optional<unit>, shape: i32);
+    Assembly   { tmemAddr if offset { "," offset } if pack { "pack" }
+                 "shape" "=" shape attr-dict ":" type(res) }
+  }
+
+  op tcgen05.st {
+    Doc "Store a vector to tensor memory with shape and optional offset and unpack (tcgen05.st).";
+    Operands   (tmemAddr: ptr, val: any, offset: optional<i64>);
+    Attributes (unpack: optional<unit>, shape: i32);
+    Assembly   { tmemAddr "," val if offset { "," offset } if unpack { "unpack" }
+                 "shape" "=" shape attr-dict ":" type(val) }
+  }
+
+  op tcgen05.ld.red {
+    Doc "Load from tensor memory and reduce with abs/nan modifiers (tcgen05.ld.red); requires sm_101/110.";
+    Operands   (addr: ptr, offset: optional<i64>);
+    Results    (data: any, redVal: any);
+    Attributes (shape: i32, op: i32, abs: optional<unit>, nan: optional<unit>);
+    Assembly   { op addr if offset { "," offset } "shape" "=" shape
+                 oilist("abs" abs | "nan" nan)
+                 attr-dict ":" type(data) "," type(redVal) }
+  }
+
+  op tcgen05.mma {
+    Doc "Tensor-memory MMA with optional scale input, output-lane mask, kind, CTA group and collector options (tcgen05.mma).";
+    Operands   (matrixD: ptr, matrixA: any, matrixB: i64, idesc: i32,
+                enableInputD: i1, scaleInputD: optional<i64>,
+                disableOutputLane: optional<any>);
+    Attributes (kind: i32, ctaGroup: i32, collectorOp: i32 = none,
+                collectorOpB: i32 = none, aShift: optional<unit>);
+    Properties [operand_segments_by_attribute];
+    Assembly   { matrixD "," matrixA "," matrixB "," idesc "," enableInputD
+                 oilist("scale" "=" scaleInputD | "mask" "=" disableOutputLane)
+                 "," "kind" "=" kind "," "cta_group" "=" ctaGroup
+                 oilist("collector_a" "=" collectorOp
+                        | "collector_b" "=" collectorOpB | "a_shift" aShift)
+                 attr-dict ":" "(" type(operands) ")" }
+  }
+
+  op tcgen05.mma.sp {
+    Doc "Sparse tensor-memory MMA with sparse metadata (tcgen05.mma.sp); requires sm_100/101/110.";
+    Operands   (matrixD: ptr, matrixA: any, matrixB: i64, idesc: i32,
+                enableInputD: i1, sparseMetadata: ptr,
+                scaleInputD: optional<i64>, disableOutputLane: optional<any>);
+    Attributes (kind: i32, ctaGroup: i32, collectorOp: i32 = none,
+                collectorOpB: i32 = none, aShift: optional<unit>);
+    Properties [operand_segments_by_attribute];
+    Assembly   { matrixD "," matrixA "," matrixB "," idesc "," enableInputD
+                 "," sparseMetadata
+                 oilist("scale" "=" scaleInputD | "mask" "=" disableOutputLane)
+                 "," "kind" "=" kind "," "cta_group" "=" ctaGroup
+                 oilist("collector_a" "=" collectorOp
+                        | "collector_b" "=" collectorOpB | "a_shift" aShift)
+                 attr-dict ":" "(" type(operands) ")" }
+  }
+
+  op tcgen05.mma.ws {
+    Doc "Weight-stationary tensor-memory MMA with optional zero-column mask and collector-b buffer (tcgen05.mma.ws).";
+    Operands   (matrixD: ptr, matrixA: any, matrixB: i64, idesc: i32,
+                enableInputD: i1, zeroColMask: optional<i64>);
+    Attributes (kind: i32, collectorBBuffer: i32 = none, collectorOp: i32 = none);
+    Assembly   { matrixD "," matrixA "," matrixB "," idesc "," enableInputD
+                 if zeroColMask { "," zeroColMask }
+                 "kind" "=" kind
+                 oilist("collector_b_buffer" "=" collectorBBuffer
+                        | "collector_b" "=" collectorOp)
+                 attr-dict ":" "(" type(operands) ")" }
+  }
+
+  op tcgen05.mma.ws.sp {
+    Doc "Sparse weight-stationary tensor-memory MMA (tcgen05.mma.ws.sp); requires sm_100/101/110.";
+    Operands   (matrixD: ptr, matrixA: any, matrixB: i64, idesc: i32,
+                enableInputD: i1, sparseMetadata: ptr,
+                zeroColMask: optional<i64>);
+    Attributes (kind: i32, collectorBBuffer: i32 = none, collectorOp: i32 = none);
+    Assembly   { matrixD "," matrixA "," matrixB "," idesc "," enableInputD
+                 "," sparseMetadata if zeroColMask { "," zeroColMask }
+                 "kind" "=" kind
+                 oilist("collector_b_buffer" "=" collectorBBuffer
+                        | "collector_b" "=" collectorOp)
+                 attr-dict ":" "(" type(operands) ")" }
+  }
+
+  op tcgen05.mma.block_scale {
+    Doc "Tensor-memory MMA with block scaling matrices scaleA and scaleB (tcgen05.mma.block_scale).";
+    Operands   (matrixD: ptr, matrixA: any, matrixB: i64, idesc: i32,
+                enableInputD: i1, scaleA: ptr, scaleB: ptr);
+    Attributes (kind: i32, ctaGroup: i32, blockScale: i32 = none,
+                collectorOp: i32 = none, collectorOpB: i32 = none);
+    Assembly   { matrixD "," matrixA "," matrixB "," idesc "," enableInputD
+                 "," scaleA "," scaleB "," "kind" "=" kind
+                 "," "cta_group" "=" ctaGroup
+                 oilist("block_scale" "=" blockScale
+                        | "collector_a" "=" collectorOp
+                        | "collector_b" "=" collectorOpB)
+                 attr-dict ":" "(" type(operands) ")" }
+  }
+
+  op tcgen05.mma.sp.block_scale {
+    Doc "Sparse tensor-memory MMA with block scaling and sparse metadata (tcgen05.mma.sp.block_scale).";
+    Operands   (matrixD: ptr, matrixA: any, matrixB: i64, idesc: i32,
+                enableInputD: i1, sparseMetadata: ptr, scaleA: ptr, scaleB: ptr);
+    Attributes (kind: i32, ctaGroup: i32, blockScale: i32 = none,
+                collectorOp: i32 = none, collectorOpB: i32 = none);
+    Assembly   { matrixD "," matrixA "," matrixB "," idesc "," enableInputD
+                 "," sparseMetadata "," scaleA "," scaleB
+                 "," "kind" "=" kind "," "cta_group" "=" ctaGroup
+                 oilist("block_scale" "=" blockScale
+                        | "collector_a" "=" collectorOp
+                        | "collector_b" "=" collectorOpB)
+                 attr-dict ":" "(" type(operands) ")" }
+  }
+
+  op tcgen05.mma.decompress_b {
+    Doc "Tensor-memory MMA that decompresses the B matrix from pre-compressed metadata (tcgen05.mma.decompress_b); requires sm_107.";
+    Operands   (matrixD: ptr, matrixA: any, matrixB: i64, idesc: i32,
+                enableInputD: i1, decompressBMetadata: ptr,
+                disableOutputLane: optional<any>);
+    Attributes (ctaGroup: i32, collectorOpA: i32 = none,
+                collectorOpB: i32 = none);
+    Assembly   { matrixD "," matrixA "," matrixB "," idesc "," enableInputD
+                 "," decompressBMetadata
+                 if disableOutputLane
+                     { "," "mask" "=" disableOutputLane }
+                 "cta_group" "=" ctaGroup
+                 oilist("collector_a" "=" collectorOpA
+                        | "collector_b" "=" collectorOpB)
+                 attr-dict ":" "(" type(operands) ")" }
+  }
+
+  op tcgen05.mma.block_scale.decompress_b {
+    Doc "Block-scaled tensor-memory MMA with pre-compressed B metadata (tcgen05.mma.block_scale.decompress_b); requires sm_107.";
+    Operands   (matrixD: ptr, matrixA: any, matrixB: i64, idesc: i32,
+                enableInputD: i1, scaleA: ptr, scaleB: ptr,
+                decompressBMetadata: ptr);
+    Attributes (ctaGroup: i32, blockScale: i32 = none,
+                collectorOpA: i32 = none, collectorOpB: i32 = none);
+    Assembly   { matrixD "," matrixA "," matrixB "," idesc "," enableInputD
+                 "," scaleA "," scaleB "," decompressBMetadata
+                 "cta_group" "=" ctaGroup
+                 oilist("block_scale" "=" blockScale
+                        | "collector_a" "=" collectorOpA
+                        | "collector_b" "=" collectorOpB)
+                 attr-dict ":" "(" type(operands) ")" }
+  }
+
+  op tcgen05.mma_smem_desc {
+    Doc "Build a 64-bit shared-memory descriptor for a matrix from its address and layout fields (tcgen05.mma_smem_desc).";
+    Operands   (startAddr: i32, leadingDimOffset: i32, strideDimOffset: i32,
+                baseOffset: i8, leadingDimMode: i1, swizzleMode: i8);
+    Results    (res: i64);
+    Assembly   { "(" operands ")" attr-dict ":" "(" type(operands) ")"
+                 "->" type(res) }
+  }
+
+  // ---- 预取 / TMA 替换 / inline PTX ----
+
+  op prefetch {
+    Doc "Prefetch memory with optional cache level, uniform, tensormap, parameter-space and eviction-priority selectors (prefetch).";
+    Operands   (addr: ptr);
+    Attributes (cacheLevel: optional<i32>, evictPriority: optional<i32>,
+                predicate: i32, tensormap: optional<unit>,
+                uniform: optional<unit>, in_param_space: optional<unit>);
+    Assembly   { if cacheLevel
+                     { "level" "=" cacheLevel if uniform { "uniform" } "," }
+                 if tensormap
+                     { "tensormap" if in_param_space { "in_param_space" } "," }
+                 if evictPriority { "evict_priority" "=" evictPriority "," }
+                 addr if predicate { "," "predicate" "=" predicate }
+                 attr-dict ":" type(operands) }
+  }
+
+  op prefetch.valid_addr {
+    Doc "Prefetch from a known-valid address with an explicit cache level (prefetch.valid_addr); requires sm_90.";
+    Operands   (addr: ptr);
+    Attributes (cacheLevel: i32);
+    Assembly   { "level" "=" cacheLevel "," addr attr-dict ":" type(addr) }
+  }
+
+  op tensormap.replace {
+    Doc "Replace one field of a tensormap in memory (tensormap.replace); new_value is either the new_value_attr attribute or the new_value operand; requires sm_90/103 or sm_100/101/110/120.";
+    Operands   (addr: ptr, new_value: optional<any>);
+    Attributes (field: i32, ord: optional<i32>, new_value_attr: optional<any>);
+    Assembly   { "field" "=" field if ord { "[" ord "]" }
+                 "," "new_value" "=" oilist(new_value_attr | new_value)
+                 "in" addr attr-dict ":" type(operands) }
+  }
+
+  op inline_ptx {
+    Doc "Insert a block of inline PTX with read-only, read-write and write-only values, predicate and memory clobber (inline_ptx).";
+    Operands   (readOnlyArgs: variadic<any>, readWriteArgs: variadic<any>);
+    Results    (writeOnlyArgs: variadic<any>);
+    Attributes (ptxCode: string, predicate: i32, memoryClobber: i1 = false);
+    Properties [operand_segments_by_attribute];
+    Assembly   { ptxCode
+                 if readOnlyArgs
+                     { "ro" "(" readOnlyArgs ":" type(readOnlyArgs) ")" }
+                 if readWriteArgs
+                     { "rw" "(" readWriteArgs ":" type(readWriteArgs) ")" }
+                 if memoryClobber { "memory_clobber" "=" memoryClobber }
+                 if predicate { "," "predicate" "=" predicate }
+                 attr-dict
+                 if writeOnlyArgs { "->" type(writeOnlyArgs) } }
+  }
+
+  op mapa {
+    Doc "Map an address from one address space to another (mapa); requires sm_90.";
+    Operands   (a: ptr, b: i32);
+    Results    (res: ptr);
+    Assembly   { a "," b attr-dict ":" type(a) "->" type(res) }
+  }
+}

@@ -1,9 +1,34 @@
 /// linalg —— 结构化线性代数：generic 形态 + 共享 ins/outs 形状的命名算符。
 ///
+/// 覆盖：LinalgAllOps.td include 闭包的全部 78 个 opName（llvm-tblgen 口径）：
+/// 59 个 YAML 生成的命名结构化算符（LinalgNamedStructuredOps.yaml）、11 个手写
+/// structured base 派生、softmax 与 3 个 winograd 变换、index/yield，以及
+/// pack/unpack（LinalgRelayoutOps.td）。missing=0 extra=0。
+///
 /// 命名算符不是手写的：它们由同一份结构化描述生成，只有输入/输出元数与
 /// 迭代语义不同。领域里这就是 "一个 schema + 每个 op 的定元事实"。
 /// softmax 与 winograd_* 是另一形态：TD 里它们不继承 structured base，没有
 /// combiner region，只带维度/tile 属性，所以在此各自独立建模。
+/// pack/unpack 也不继承 structured base：具名 source/dest（pack 另有可选
+/// padding_value）、可选结果与 tile 属性，文本整体交给 Custom。
+///
+/// 文本通道：78 个 op 中 71 个块格式、7 个 Custom（generic/map/reduce/
+/// transpose/broadcast 与 pack/unpack），0 个 Generic。YAML 命名算符上游是
+/// hasCustomAssemblyFormat=1，手写打印器发出的文本即 `ins(...) outs(...)
+/// attr-dict`，故复用 Structured 的块格式表达其形状。
+///
+/// 事实：只用核心词表：destination_style、recursive_effects（Structured）、
+/// elementwise（copy/fill）、contraction（matmul 族与实现
+/// LinalgContractionOpInterface 的命名算符）、arity、same_element_type、
+/// pure、terminator、single_block。上游的 LinalgConvolutionOpInterface /
+/// LinalgFillOpInterface / relayout 接口，以及 conv/pooling 的 strides/
+/// dilations 缺省数组，核心词表没有对应项，只写进各 op 的 Doc。
+///
+/// 偏差（设计分歧，不是逃逸）：
+///   - YAML 命名算符的上游属性（copy 的 cast、conv/pooling 的 strides/dilations）
+///     与接口不逐个展开，统一收敛到 Structured + arity/contraction，语义留在 Doc。
+///   - 这些 op 的上游文本是 Custom（hasCustomAssemblyFormat=1）；语料用块格式
+///     描述手写打印器的输出形状，与既有 copy/fill 一致。
 
 dialect linalg {
   Doc "Structured linear-algebra operations: generic, named, yield.";
@@ -120,11 +145,6 @@ dialect linalg {
     Properties [arity(inputs, 1), arity(outputs, 1), elementwise];
   }
 
-  op add from Structured {
-    Doc "Add two tensors elementwise.";
-    Properties [arity(inputs, 2), arity(outputs, 1), elementwise];
-  }
-
   op matmul from Structured {
     Doc "Matrix multiplication of two 2-D inputs.";
     Properties [arity(inputs, 2), arity(outputs, 1), contraction];
@@ -159,6 +179,305 @@ dialect linalg {
     Doc "Contraction with a scale input per data input; scale maps describe tensor/dim/block scaling.";
     Attributes (indexing_maps: array<affine_map>, cast: TypeFn = cast_signed);
     Properties [contraction];
+  }
+
+  // ---- YAML 生成的命名算符：与 copy/fill 同形，复用 Structured ----
+  // 全部 57 个来自 LinalgNamedStructuredOps.yaml（yamlgen 后由
+  // LinalgStructuredOps.td:1425 include），操作数/结果/region 统一为
+  // inputs/outputs/result_tensors/region（基类 LinalgStructuredOps.td:28）。
+  // 上游 hasCustomAssemblyFormat=1，手写打印器发出的文本即
+  // `ins(...) outs(...) attr-dict`，故沿用 Structured 的块格式。
+  // 行号均指 LinalgNamedStructuredOps.yaml 的 op 定义起始（metadata 行）；
+  // arity 来自 YAML 的 input_tensor/scalar 与 output_tensor 计数。
+
+  // contraction 族：均实现 LinalgContractionOpInterface。
+  op mmt4d from Structured {  // LinalgNamedStructuredOps.yaml:152
+    Doc "Matrix-multiply-transpose of two 4-D (M,K)/(N,K) tiles into a 4-D accumulator.";
+    Properties [arity(inputs, 2), arity(outputs, 1), contraction];
+  }
+
+  op batch_mmt4d from Structured {  // LinalgNamedStructuredOps.yaml:231
+    Doc "Batched 4-D matrix-multiply-transpose into a 4-D accumulator.";
+    Properties [arity(inputs, 2), arity(outputs, 1), contraction];
+  }
+
+  op matvec from Structured {  // LinalgNamedStructuredOps.yaml:414
+    Doc "Matrix-vector multiplication, reducing the matrix columns with the vector.";
+    Properties [arity(inputs, 2), arity(outputs, 1), contraction];
+  }
+
+  op vecmat from Structured {  // LinalgNamedStructuredOps.yaml:481
+    Doc "Vector-matrix multiplication, reducing the vector with the matrix rows.";
+    Properties [arity(inputs, 2), arity(outputs, 1), contraction];
+  }
+
+  op batch_matvec from Structured {  // LinalgNamedStructuredOps.yaml:548
+    Doc "Batched matrix-vector multiplication.";
+    Properties [arity(inputs, 2), arity(outputs, 1), contraction];
+  }
+
+  op batch_vecmat from Structured {  // LinalgNamedStructuredOps.yaml:616
+    Doc "Batched vector-matrix multiplication.";
+    Properties [arity(inputs, 2), arity(outputs, 1), contraction];
+  }
+
+  op dot from Structured {  // LinalgNamedStructuredOps.yaml:684
+    Doc "Dot product of two vectors into a scalar result.";
+    Properties [arity(inputs, 2), arity(outputs, 1), contraction];
+  }
+
+  // quantized 族：无 LinalgContractionOpInterface，收缩语义只在 Doc。
+  op quantized_matmul from Structured {  // LinalgNamedStructuredOps.yaml:48
+    Doc "Matmul with zero-point offsets on both inputs (quantized variant); two extra scalar operands carry the zero points.";
+    Properties [arity(inputs, 4), arity(outputs, 1)];
+  }
+
+  op quantized_batch_matmul from Structured {  // LinalgNamedStructuredOps.yaml:309
+    Doc "Batched matmul with zero-point offsets on both inputs; two extra scalar operands carry the zero points.";
+    Properties [arity(inputs, 4), arity(outputs, 1)];
+  }
+
+  // conv 族：均实现 LinalgConvolutionOpInterface；可选 strides/dilations 见 Doc。
+  op conv_1d from Structured {  // LinalgNamedStructuredOps.yaml:750
+    Doc "1-D convolution without channels.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op conv_2d from Structured {  // LinalgNamedStructuredOps.yaml:817
+    Doc "2-D convolution without channels.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op conv_3d from Structured {  // LinalgNamedStructuredOps.yaml:886
+    Doc "3-D convolution without channels.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op conv_1d_nwc_wcf from Structured {  // LinalgNamedStructuredOps.yaml:958
+    Doc "1-D convolution, NWC input / WCF filter layout; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op conv_1d_ncw_fcw from Structured {  // LinalgNamedStructuredOps.yaml:1042
+    Doc "1-D convolution, NCW input / FCW filter layout; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op conv_2d_nhwc_hwcf from Structured {  // LinalgNamedStructuredOps.yaml:1130
+    Doc "2-D convolution, NHWC input / HWCF filter layout; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op conv_2d_nhwc_fhwc from Structured {  // LinalgNamedStructuredOps.yaml:1228
+    Doc "2-D convolution, NHWC input / FHWC filter layout; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op conv_2d_nhwc_hwcf_q from Structured {  // LinalgNamedStructuredOps.yaml:1326
+    Doc "2-D NHWC/HWCF convolution with zero-point offsets; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op conv_2d_nhwc_fhwc_q from Structured {  // LinalgNamedStructuredOps.yaml:1463
+    Doc "2-D NHWC/FHWC convolution with zero-point offsets; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op conv_2d_nchw_fchw from Structured {  // LinalgNamedStructuredOps.yaml:1737
+    Doc "2-D convolution, NCHW input / FCHW filter layout; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op conv_2d_nchw_fchw_q from Structured {  // LinalgNamedStructuredOps.yaml:1600
+    Doc "2-D NCHW/FCHW convolution with zero-point offsets; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op conv_2d_ngchw_fgchw from Structured {  // LinalgNamedStructuredOps.yaml:1835
+    Doc "2-D grouped convolution, NGCHW input / FGCHW filter layout; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op conv_2d_ngchw_gfchw from Structured {  // LinalgNamedStructuredOps.yaml:1934
+    Doc "2-D grouped convolution, NGCHW input / GFCHW filter layout; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op conv_2d_nhwgc_gfhwc from Structured {  // LinalgNamedStructuredOps.yaml:2033
+    Doc "2-D grouped convolution, NHWGC input / GFHWC filter layout; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op conv_2d_nhwgc_gfhwc_q from Structured {  // LinalgNamedStructuredOps.yaml:2132
+    Doc "2-D NHWGC/GFHWC grouped convolution with zero-point offsets; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op conv_2d_ngchw_gfchw_q from Structured {  // LinalgNamedStructuredOps.yaml:2270
+    Doc "2-D NGCHW/GFCHW grouped convolution with zero-point offsets; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op conv_3d_ndhwc_dhwcf from Structured {  // LinalgNamedStructuredOps.yaml:2408
+    Doc "3-D convolution, NDHWC input / DHWCF filter layout; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op conv_3d_ndhwc_dhwcf_q from Structured {  // LinalgNamedStructuredOps.yaml:2508
+    Doc "3-D NDHWC/DHWCF convolution with zero-point offsets; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op conv_3d_ncdhw_fcdhw from Structured {  // LinalgNamedStructuredOps.yaml:2647
+    Doc "3-D convolution, NCDHW input / FCDHW filter layout; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  // depthwise conv 族：均实现 LinalgConvolutionOpInterface。
+  op depthwise_conv_1d_nwc_wc from Structured {  // LinalgNamedStructuredOps.yaml:2747
+    Doc "Depth-wise 1-D convolution, NWC input / WC filter layout; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op depthwise_conv_1d_ncw_cw from Structured {  // LinalgNamedStructuredOps.yaml:2830
+    Doc "Depth-wise 1-D convolution, NCW input / CW filter layout; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op depthwise_conv_1d_nwc_wcm from Structured {  // LinalgNamedStructuredOps.yaml:2913
+    Doc "Depth-wise 1-D convolution with a multiplier channel, NWC input / WCM filter layout; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op depthwise_conv_2d_nhwc_hwc from Structured {  // LinalgNamedStructuredOps.yaml:2998
+    Doc "Depth-wise 2-D convolution, NHWC input / HWC filter layout; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op depthwise_conv_2d_nchw_chw from Structured {  // LinalgNamedStructuredOps.yaml:3091
+    Doc "Depth-wise 2-D convolution, NCHW input / CHW filter layout; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op depthwise_conv_2d_nhwc_hwc_q from Structured {  // LinalgNamedStructuredOps.yaml:3184
+    Doc "Depth-wise 2-D NHWC/HWC convolution with zero-point offsets; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op depthwise_conv_2d_nhwc_hwcm from Structured {  // LinalgNamedStructuredOps.yaml:3314
+    Doc "Depth-wise 2-D convolution with a multiplier channel, NHWC input / HWCM filter layout; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op depthwise_conv_2d_nhwc_hwcm_q from Structured {  // LinalgNamedStructuredOps.yaml:3408
+    Doc "Depth-wise 2-D NHWC/HWCM convolution with multiplier and zero-point offsets; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op depthwise_conv_3d_ndhwc_dhwc from Structured {  // LinalgNamedStructuredOps.yaml:3540
+    Doc "Depth-wise 3-D convolution, NDHWC input / DHWC filter layout; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op depthwise_conv_3d_ncdhw_cdhw from Structured {  // LinalgNamedStructuredOps.yaml:3639
+    Doc "Depth-wise 3-D convolution, NCDHW input / CDHW filter layout; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op depthwise_conv_3d_ndhwc_dhwcm from Structured {  // LinalgNamedStructuredOps.yaml:3738
+    Doc "Depth-wise 3-D convolution with a multiplier channel, NDHWC input / DHWCM filter layout; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  // pooling 族：均实现 LinalgConvolutionOpInterface，输入为数据与窗口张量。
+  op pooling_nhwc_sum from Structured {  // LinalgNamedStructuredOps.yaml:3838
+    Doc "Sum pooling over an NHWC input using an HW window; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op pooling_nchw_sum from Structured {  // LinalgNamedStructuredOps.yaml:3921
+    Doc "Sum pooling over an NCHW input using an HW window; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op pooling_nhwc_max from Structured {  // LinalgNamedStructuredOps.yaml:4004
+    Doc "Signed max pooling over an NHWC input using an HW window; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op pooling_nhwc_max_unsigned from Structured {  // LinalgNamedStructuredOps.yaml:4083
+    Doc "Unsigned max pooling over an NHWC input using an HW window; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op pooling_nchw_max from Structured {  // LinalgNamedStructuredOps.yaml:4162
+    Doc "Signed max pooling over an NCHW input using an HW window; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op pooling_nhwc_min from Structured {  // LinalgNamedStructuredOps.yaml:4241
+    Doc "Signed min pooling over an NHWC input using an HW window; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op pooling_nhwc_min_unsigned from Structured {  // LinalgNamedStructuredOps.yaml:4320
+    Doc "Unsigned min pooling over an NHWC input using an HW window; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op pooling_nwc_sum from Structured {  // LinalgNamedStructuredOps.yaml:4399
+    Doc "Sum pooling over an NWC input using a W window; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op pooling_ncw_sum from Structured {  // LinalgNamedStructuredOps.yaml:4472
+    Doc "Sum pooling over an NCW input using a W window; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op pooling_nwc_max from Structured {  // LinalgNamedStructuredOps.yaml:4545
+    Doc "Signed max pooling over an NWC input using a W window; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op pooling_nwc_max_unsigned from Structured {  // LinalgNamedStructuredOps.yaml:4614
+    Doc "Unsigned max pooling over an NWC input using a W window; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op pooling_ncw_max from Structured {  // LinalgNamedStructuredOps.yaml:4683
+    Doc "Signed max pooling over an NCW input using a W window; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op pooling_nwc_min from Structured {  // LinalgNamedStructuredOps.yaml:4752
+    Doc "Signed min pooling over an NWC input using a W window; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op pooling_nwc_min_unsigned from Structured {  // LinalgNamedStructuredOps.yaml:4821
+    Doc "Unsigned min pooling over an NWC input using a W window; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op pooling_ndhwc_sum from Structured {  // LinalgNamedStructuredOps.yaml:4890
+    Doc "3-D sum pooling over an NDHWC input using a DHW window; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op pooling_ndhwc_max from Structured {  // LinalgNamedStructuredOps.yaml:4975
+    Doc "3-D signed max pooling over an NDHWC input using a DHW window; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op pooling_ndhwc_min from Structured {  // LinalgNamedStructuredOps.yaml:5060
+    Doc "3-D signed min pooling over an NDHWC input using a DHW window; optional strides and dilations attrs.";
+    Properties [arity(inputs, 2), arity(outputs, 1)];
+  }
+
+  op fill_rng_2d from Structured {  // LinalgNamedStructuredOps.yaml:5180
+    Doc "Fill a 2-D output with pseudo-random values from a per-element LCG; min/max/seed are scalar operands.";
+    Properties [arity(inputs, 3), arity(outputs, 1)];
   }
 
   // ---- 非 structured 形态：聚合算符与 Winograd 变换 ----
@@ -215,6 +534,37 @@ dialect linalg {
                  "ins" "(" value ":" type(value) ")"
                  "outs" "(" output ":" type(output) ")"
                  "->" type(result) }
+  }
+
+  // ---- relayout：pack/unpack 来自 LinalgRelayoutOps.td，不继承 structured base ----
+  // 基类 Linalg_RelayoutOp 在 LinalgRelayoutOps.td:29；两者都实现
+  // DestinationStyleOpInterface，结果可选且只在 tensor 形态出现。
+  // 文本通道均为 Custom：hasCustomAssemblyFormat=1（pack :302、unpack :427）。
+
+  op pack {  // LinalgRelayoutOps.td:96
+    Doc "Pack a rank-n source into tiles: inner_dims_pos/inner_tiles describe the tiling, optional outer_dims_perm permutes the outer dims, optional padding_value pads ragged tiles; result type matches dest.";
+    Operands   (source: any, dest: any,
+                padding_value: optional<any>,
+                inner_tiles: variadic<index>);
+    Results    (result: optional<any>);
+    Attributes (outer_dims_perm: optional<array<integer>>,
+                inner_dims_pos: array<integer>,
+                static_inner_tiles: array<integer>);
+    Properties [destination_style, operand_segments_by_attribute];
+    Implements [DestinationStyleOpInterface, LinalgRelayoutOpInterface];
+    Assembly Custom;
+  }
+
+  op unpack {  // LinalgRelayoutOps.td:309
+    Doc "Unpack a tiled source back to rank-n dest: inner_dims_pos/inner_tiles describe the tiling and optional outer_dims_perm permutes the outer dims; result type matches dest.";
+    Operands   (source: any, dest: any, inner_tiles: variadic<index>);
+    Results    (result: optional<any>);
+    Attributes (outer_dims_perm: optional<array<integer>>,
+                inner_dims_pos: array<integer>,
+                static_inner_tiles: array<integer>);
+    Properties [destination_style];
+    Implements [DestinationStyleOpInterface, LinalgRelayoutOpInterface];
+    Assembly Custom;
   }
 
   // ---- 区域内操作 ----

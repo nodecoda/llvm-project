@@ -1173,7 +1173,9 @@ dialect tosa {
                 initial_value: optional<any>);
     Properties [symbol, symbol_visibility];
     Implements [TosaOpInterface];
-    Assembly Custom;
+    // 上游是声明式格式；类型与初值由一个钩子一起处理。
+    Assembly   { if sym_visibility { sym_visibility } sym_name attr-dict
+               custom<VariableOpTypeOrInitialValue>(var_shape, type, initial_value) }
   }
 
   op variable_write {

@@ -437,7 +437,7 @@ dialect omp {
                 proc_bind_kind: optional<ProcBindKind>);
     Properties [recursive_effects, automatic_allocation_scope,
                 operand_segments_by_attribute];
-    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, allocator_vars) ")"
+    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, type(allocate_vars), allocator_vars, type(allocator_vars)) ")"
                         if allocate_alignments { "allocate_alignments" "(" allocate_alignments ")" }
                         if allocate_private_indices { "allocate_private_indices" "(" allocate_private_indices ")" }
                       | "if" "(" if_expr ")"
@@ -471,10 +471,10 @@ dialect omp {
                 reduction_syms: optional<symbol_array>,
                 reduction_assume_bounded_recipe_effects: optional<unit>);
     Properties [recursive_effects, operand_segments_by_attribute];
-    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, allocator_vars) ")"
+    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, type(allocate_vars), allocator_vars, type(allocator_vars)) ")"
                         if allocate_alignments { "allocate_alignments" "(" allocate_alignments ")" }
                         if allocate_private_indices { "allocate_private_indices" "(" allocate_private_indices ")" }
-                      | "dyn_groupprivate" "(" custom<DynGroupprivateClause>(dyn_groupprivate_access_group, dyn_groupprivate_fallback, dyn_groupprivate_size) ")"
+                      | "dyn_groupprivate" "(" custom<DynGroupprivateClause>(dyn_groupprivate_access_group, dyn_groupprivate_fallback, dyn_groupprivate_size, type(dyn_groupprivate_size)) ")"
                       | "if" "(" if_expr ")"
                       | "num_teams" "(" if num_teams_lower { num_teams_lower ":" type(num_teams_lower) "to" }
                                      num_teams_upper_vars ":" type(num_teams_upper_vars) ")"
@@ -501,7 +501,7 @@ dialect omp {
                 reduction_syms: optional<symbol_array>,
                 reduction_assume_bounded_recipe_effects: optional<unit>);
     Properties [recursive_effects, operand_segments_by_attribute];
-    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, allocator_vars) ")"
+    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, type(allocate_vars), allocator_vars, type(allocator_vars)) ")"
                         if allocate_alignments { "allocate_alignments" "(" allocate_alignments ")" }
                         if allocate_private_indices { "allocate_private_indices" "(" allocate_private_indices ")" }
                       | "nowait" nowait
@@ -529,10 +529,10 @@ dialect omp {
                 private_needs_barrier: optional<unit>,
                 private_assume_bounded_recipe_effects: optional<unit>);
     Properties [recursive_effects, operand_segments_by_attribute];
-    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, allocator_vars) ")"
+    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, type(allocate_vars), allocator_vars, type(allocator_vars)) ")"
                         if allocate_alignments { "allocate_alignments" "(" allocate_alignments ")" }
                         if allocate_private_indices { "allocate_private_indices" "(" allocate_private_indices ")" }
-                      | "copyprivate" "(" custom<Copyprivate>(copyprivate_vars, copyprivate_syms) ")"
+                      | "copyprivate" "(" custom<Copyprivate>(copyprivate_vars, type(copyprivate_vars), copyprivate_syms) ")"
                       | "nowait" nowait
                       | "private" "(" custom<PrivateClause>(private_vars, private_syms) ")")
                  attr-dict region }
@@ -553,7 +553,7 @@ dialect omp {
                 reduction_byref: optional<bool_array>,
                 reduction_syms: optional<symbol_array>);
     Properties [operand_segments_by_attribute];
-    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, allocator_vars) ")"
+    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, type(allocate_vars), allocator_vars, type(allocator_vars)) ")"
                         if allocate_alignments { "allocate_alignments" "(" allocate_alignments ")" }
                         if allocate_private_indices { "allocate_private_indices" "(" allocate_private_indices ")" }
                       | "nowait" nowait
@@ -734,16 +734,16 @@ dialect omp {
                 schedule_mod: optional<ScheduleModifier>,
                 schedule_simd: optional<unit>);
     Properties [recursive_effects, operand_segments_by_attribute];
-    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, allocator_vars) ")"
+    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, type(allocate_vars), allocator_vars, type(allocator_vars)) ")"
                         if allocate_alignments { "allocate_alignments" "(" allocate_alignments ")" }
                         if allocate_private_indices { "allocate_private_indices" "(" allocate_private_indices ")" }
-                      | "linear" "(" custom<LinearClause>(linear_vars, linear_step_vars) ")"
+                      | "linear" "(" custom<LinearClause>(linear_vars, type(linear_vars), linear_step_vars, type(linear_step_vars), linear_modifiers, linear_syms) ")"
                       | "nowait" nowait
                       | "order" "(" order if order_mod { ":" order_mod } ")"
                       | "ordered" "(" ordered ")"
                       | "private" "(" custom<PrivateClause>(private_vars, private_syms) ")"
                       | "reduction" "(" custom<ReductionClause>(reduction_vars, reduction_mods, reduction_byref, reduction_syms) ")"
-                      | "schedule" "(" custom<ScheduleClause>(schedule_kind, schedule_mod, schedule_simd, schedule_chunk) ")")
+                      | "schedule" "(" custom<ScheduleClause>(schedule_kind, schedule_mod, schedule_simd, schedule_chunk, type(schedule_chunk)) ")")
                  attr-dict region }
   }
 
@@ -770,9 +770,9 @@ dialect omp {
                 safelen: optional<i64> [positive],
                 simdlen: optional<i64> [positive]);
     Properties [recursive_effects, operand_segments_by_attribute];
-    Assembly   { oilist("aligned" "(" custom<AlignedClause>(aligned_vars, alignments) ")"
+    Assembly   { oilist("aligned" "(" custom<AlignedClause>(aligned_vars, type(aligned_vars), alignments) ")"
                       | "if" "(" if_expr ")"
-                      | "linear" "(" custom<LinearClause>(linear_vars, linear_step_vars) ")"
+                      | "linear" "(" custom<LinearClause>(linear_vars, type(linear_vars), linear_step_vars, type(linear_step_vars), linear_modifiers, linear_syms) ")"
                       | "nontemporal" "(" nontemporal_vars ":" type(nontemporal_vars) ")"
                       | "order" "(" order if order_mod { ":" order_mod } ")"
                       | "private" "(" custom<PrivateClause>(private_vars, private_syms) ")"
@@ -796,7 +796,7 @@ dialect omp {
                 private_syms: optional<symbol_array>,
                 private_needs_barrier: optional<unit>);
     Properties [recursive_effects, operand_segments_by_attribute];
-    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, allocator_vars) ")"
+    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, type(allocate_vars), allocator_vars, type(allocator_vars)) ")"
                         if allocate_alignments { "allocate_alignments" "(" allocate_alignments ")" }
                         if allocate_private_indices { "allocate_private_indices" "(" allocate_private_indices ")" }
                       | "dist_schedule_static" dist_schedule_static
@@ -834,15 +834,15 @@ dialect omp {
                 untied: optional<unit>);
     Properties [automatic_allocation_scope,
                 operand_segments_by_attribute];
-    Assembly   { oilist("affinity" "(" custom<AffinityClause>(iterated, affinity_vars) ")"
-                      | "allocate" "(" custom<AllocateAndAllocator>(allocate_vars, allocator_vars) ")"
+    Assembly   { oilist("affinity" "(" custom<AffinityClause>(iterated, affinity_vars, type(iterated), type(affinity_vars)) ")"
+                      | "allocate" "(" custom<AllocateAndAllocator>(allocate_vars, type(allocate_vars), allocator_vars, type(allocator_vars)) ")"
                         if allocate_alignments { "allocate_alignments" "(" allocate_alignments ")" }
                         if allocate_private_indices { "allocate_private_indices" "(" allocate_private_indices ")" }
                       | "depend" "(" custom<DependVarList>(depend_vars, type(depend_vars), depend_kinds,
                                    depend_iterated, type(depend_iterated), depend_iterated_kinds) ")"
                       | "final" "(" final ")"
                       | "if" "(" if_expr ")"
-                      | "in_reduction" "(" custom<InReductionClause>(in_reduction_vars, in_reduction_byref, in_reduction_syms) ")"
+                      | "in_reduction" "(" custom<InReductionClause>(in_reduction_vars, type(in_reduction_vars), in_reduction_byref, in_reduction_syms) ")"
                       | "mergeable" mergeable
                       | "priority" "(" priority ":" type(priority) ")"
                       | "private" "(" custom<PrivateClause>(private_vars, private_syms) ")"
@@ -881,16 +881,16 @@ dialect omp {
                 untied: optional<unit>);
     Properties [recursive_effects, automatic_allocation_scope,
                 operand_segments_by_attribute];
-    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, allocator_vars) ")"
+    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, type(allocate_vars), allocator_vars, type(allocator_vars)) ")"
                         if allocate_alignments { "allocate_alignments" "(" allocate_alignments ")" }
                         if allocate_private_indices { "allocate_private_indices" "(" allocate_private_indices ")" }
                       | "final" "(" final ")"
-                      | "grainsize" "(" custom<GrainsizeClause>(grainsize_mod, grainsize) ")"
+                      | "grainsize" "(" custom<GrainsizeClause>(grainsize_mod, grainsize, type(grainsize)) ")"
                       | "if" "(" if_expr ")"
-                      | "in_reduction" "(" custom<InReductionClause>(in_reduction_vars, in_reduction_byref, in_reduction_syms) ")"
+                      | "in_reduction" "(" custom<InReductionClause>(in_reduction_vars, type(in_reduction_vars), in_reduction_byref, in_reduction_syms) ")"
                       | "mergeable" mergeable
                       | "nogroup" nogroup
-                      | "num_tasks" "(" custom<NumTasksClause>(num_tasks_mod, num_tasks) ")"
+                      | "num_tasks" "(" custom<NumTasksClause>(num_tasks_mod, num_tasks, type(num_tasks)) ")"
                       | "priority" "(" priority ":" type(priority) ")"
                       | "private" "(" custom<PrivateClause>(private_vars, private_syms) ")"
                       | "reduction" "(" custom<ReductionClause>(reduction_vars, reduction_mods, reduction_byref, reduction_syms) ")"
@@ -916,7 +916,7 @@ dialect omp {
                 task_reduction_assume_bounded_recipe_effects: optional<unit>);
     Properties [recursive_effects, automatic_allocation_scope,
                 operand_segments_by_attribute];
-    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, allocator_vars) ")"
+    Assembly   { oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, type(allocate_vars), allocator_vars, type(allocator_vars)) ")"
                         if allocate_alignments { "allocate_alignments" "(" allocate_alignments ")" }
                         if allocate_private_indices { "allocate_private_indices" "(" allocate_private_indices ")" }
                       | "task_reduction" "(" custom<TaskReductionClause>(task_reduction_vars, task_reduction_byref, task_reduction_syms) ")")
@@ -989,17 +989,17 @@ dialect omp {
                 kernel_type: TargetExecMode);
     Properties [isolated_from_above, operand_segments_by_attribute];
     Assembly   { "kernel_type" "(" kernel_type ")"
-                 oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, allocator_vars) ")"
+                 oilist("allocate" "(" custom<AllocateAndAllocator>(allocate_vars, type(allocate_vars), allocator_vars, type(allocator_vars)) ")"
                         if allocate_alignments { "allocate_alignments" "(" allocate_alignments ")" }
                         if allocate_private_indices { "allocate_private_indices" "(" allocate_private_indices ")" }
                       | "depend" "(" custom<DependVarList>(depend_vars, type(depend_vars), depend_kinds,
                                    depend_iterated, type(depend_iterated), depend_iterated_kinds) ")"
                       | "device" "(" device ":" type(device) ")"
-                      | "dyn_groupprivate" "(" custom<DynGroupprivateClause>(dyn_groupprivate_access_group, dyn_groupprivate_fallback, dyn_groupprivate_size) ")"
+                      | "dyn_groupprivate" "(" custom<DynGroupprivateClause>(dyn_groupprivate_access_group, dyn_groupprivate_fallback, dyn_groupprivate_size, type(dyn_groupprivate_size)) ")"
                       | "has_device_addr" "(" has_device_addr_vars ":" type(has_device_addr_vars) ")"
                       | "host_eval" "(" host_eval_vars ":" type(host_eval_vars) ")"
                       | "if" "(" if_expr ")"
-                      | "in_reduction" "(" custom<InReductionClause>(in_reduction_vars, in_reduction_byref, in_reduction_syms) ")"
+                      | "in_reduction" "(" custom<InReductionClause>(in_reduction_vars, type(in_reduction_vars), in_reduction_byref, in_reduction_syms) ")"
                       | "is_device_ptr" "(" is_device_ptr_vars ":" type(is_device_ptr_vars) ")"
                       | "map_entries" "(" map_vars ":" type(map_vars) ")"
                       | "map_iterated" "(" map_iterated ":" type(map_iterated) ")"
@@ -1214,9 +1214,9 @@ dialect omp {
                 notinbranch: optional<unit>,
                 simdlen: optional<i64> [positive]);
     Properties [operand_segments_by_attribute];
-    Assembly   { oilist("aligned" "(" custom<AlignedClause>(aligned_vars, alignments) ")"
+    Assembly   { oilist("aligned" "(" custom<AlignedClause>(aligned_vars, type(aligned_vars), alignments) ")"
                       | "inbranch" inbranch
-                      | "linear" "(" custom<LinearClause>(linear_vars, linear_step_vars) ")"
+                      | "linear" "(" custom<LinearClause>(linear_vars, type(linear_vars), linear_step_vars, type(linear_step_vars), linear_modifiers, linear_syms) ")"
                       | "notinbranch" notinbranch
                       | "simdlen" "(" simdlen ")"
                       | "uniform" "(" uniform_vars ":" type(uniform_vars) ")")

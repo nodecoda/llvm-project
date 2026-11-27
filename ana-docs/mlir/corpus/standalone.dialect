@@ -1,0 +1,23 @@
+/// standalone —— MLIR 的最小扩展示例（mlir/examples/standalone）。
+///
+/// 1 个 op、1 个 type_def，用来验证 corpus 的口径：示例目录里的 ODS 定义
+/// 与正式方言用同一套规则描述。standalone.custom 是带参数的定制类型，
+/// 上游 assemblyFormat 是 "<" $value ">"。
+
+dialect standalone {
+  Doc "The minimal example dialect: one pure op and one parameterized type.";
+
+  type_def custom {
+    Doc "A custom type carrying one string value, printed as !standalone.custom<...>.";
+    Parameters (value: string);
+    Assembly { "<" value ">" }
+  }
+
+  op foo {
+    Doc "Apply the identity-shaped foo operation to an i32.";
+    Operands   (input: i32);
+    Results    (res: i32);
+    Properties [pure, same_type(input, res)];
+    Assembly   { input attr-dict ":" type(input) }
+  }
+}

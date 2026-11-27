@@ -1,0 +1,2936 @@
+/// spirv —— MLIR SPIR-V 方言的领域模型（corpus，不是最终语法）。
+///
+/// 覆盖：SPIRVOps.td 及其 include 的 25 个 SPIRV*Ops.td 中带打印助记符的
+/// 全部 430 个 op（OpName 已去掉 `spirv.` 前缀）。每个 op 都恰好落在一个
+/// 文本通道上；同形 op 由族 schema 收敛。
+///
+/// 文本通道：397 个块格式，33 个 Custom，0 个 Generic。SPIR-V 的所有 op 都从
+/// SPIRV_Op 继承 hasCustomAssemblyFormat = 1，但 ODS 的 genParser/genPrinter
+/// 在 op 自带 assemblyFormat 时先生成声明式 parse/print（早于
+/// hasCustomAssemblyFormat 检查）；所以本文件按"有无 assemblyFormat"选通道：
+/// 有声明式格式的写块格式，33 个没有 assemblyFormat、在
+/// mlir/lib/Dialect/SPIRV/IR/*.cpp 里有手写 parse/print 的写 Assembly Custom。
+/// 33 个 Custom 与 33 个 `::parse(` 定义逐一对应；397 个 ODS 生成 printer
+/// 见 build 的 SPIRVOps.cpp.inc。Custom 逐条依据见文末清单。
+///
+/// 类型：SPIR-V 的类型系统用本文件的 type_def + constraint 建模：
+/// scalar/vector/composite/any_ptr/image/sampled_image/sampler/cooperative_matrix/
+/// matrix/any_struct/any_array/named_barrier/void/tensor_arm，元素域 fp、int_scalar、
+/// bool_scalar、fp_ext。tensor_arm 的 rank 0 表示上游只约束元素类型、未固定秩。
+/// 上游的 pointee/address space、image 维度、tensor 形状细节是类型参数或
+/// verifier 事实，文法写不出，只出现在 Doc。
+///
+/// 属性：SPIR-V 的枚举属性很多，统一用 enum + Cases 声明（取值抄 SPIRVBase.td
+/// 的枚举）；MemoryAccess/ImageOperands 等位集也按上游数值列出。复杂属性
+/// （LinkageAttributes、VerCapExt、DenseElements 形态的窗参数）建模为 any，
+/// 详见各 op 的 Doc。
+///
+/// 事实：只用 tools/fact-glossary.tsv 的 core 词：pure（Pure）、commutative、
+/// speculatable（AlwaysSpeculatable）、no_memory_effect（NoMemoryEffect）、
+/// terminator、symbol/symbol_visibility/symbol_table、isolated_from_above、
+/// constant_like、return_like、automatic_allocation_scope、
+/// same_type（SameTypeOperands/SameOperandsAndResultType/AllTypesMatch）、
+/// same_shape（SameOperandsAndResultShape 与 getMatchingBoolType 的 TypesMatchWith）、
+/// same_element_type（AllElementTypesMatch）、same_rank（AllRanksMatch）、
+/// broadcastable（MatchBroadcastableShapes）、element_type_matches（PointeeTypeMatchTrait）、
+/// has_parent（InFunctionScope→func、InModuleScope→module、InGraphScope→ARM.Graph）、
+/// 区域事实 single_block/no_terminator/no_region_args，以及 binding 上的
+/// non_negative（Confined IntNonNegative）。没有方言本地事实。
+///
+/// schema：33 个族收敛 207 个同形 op（一元/二元算术、比较、类型转换、位运算、
+/// 原子、subgroup/TOSA/GL/CL 的族）；其余 op 各自声明。所有 op 都 from SpirvOp，
+/// 后者承载 SPIRV_Op 的四个 availability 查询接口。
+///
+/// 仅写进 Doc 的语义（文法没有对应谓词）：SPIR-V 的 availability（version/
+/// extension/capability）、execution scope 校验（如 Subgroup）、tensor 的
+/// rank/长度上界、指针的 storage class/pointee、image 的 dim/depth、以及
+/// TypesMatchWith 之外的 verifier。
+///
+/// 偏差：上游 mnemonics 是 CamelCase（spirv.FAdd）。当前 tools 已支持：
+/// dialect-coverage.py 的 TD 用 SPIRV*Ops.td 通配、助记符/声明正则接受大写；
+/// escape-audit.py 的 resolve 让 assemblyFormat 优先于继承的
+/// hasCustomAssemblyFormat。coverage 报 upstream=414 / corpus=430 /
+/// missing=0 / extra=0：414 是因为 ext-inst 的前缀（CL./GL./TOSA./ARM./
+/// INTEL./KHR.）由 TD 的 setPrefix 拼接，RECORD 只截到末段，按末段对齐；
+/// escape 报 430 op / 33 Custom (8%) / 0 gap / 0 divergence。按 JSON/闭包
+/// 复核，本语料的 430 个 op 与 include 闭包的 430 个助记符一一对应。
+
+dialect spirv {
+  Doc "SPIR-V dialect: types, constants, memory, arithmetic, control flow, image/group/matrix operations, plus GL/CL/TOSA/INTEL/ARM extensions.";
+
+  // ----------------------------------------------------------------
+  // 枚举属性（取值与拼写抄 SPIRVBase.td）
+  // ----------------------------------------------------------------
+  enum Scope {
+    Doc "SPIR-V Scope enum attribute.";
+    Cases [ cross_device = 0 "CrossDevice", device = 1 "Device", workgroup = 2 "Workgroup",
+            subgroup = 3 "Subgroup", invocation = 4 "Invocation", queue_family = 5 "QueueFamily",
+            shader_call_khr = 6 "ShaderCallKHR"];
+  }
+  enum MemorySemantics: bits {
+    Doc "SPIR-V MemorySemantics enum attribute.";
+    Cases [ none = 0 "None", acquire = 2 "Acquire", release = 4 "Release",
+            acquire_release = 8 "AcquireRelease",
+            sequentially_consistent = 16 "SequentiallyConsistent",
+            uniform_memory = 64 "UniformMemory", subgroup_memory = 128 "SubgroupMemory",
+            workgroup_memory = 256 "WorkgroupMemory",
+            cross_workgroup_memory = 512 "CrossWorkgroupMemory",
+            atomic_counter_memory = 1024 "AtomicCounterMemory", image_memory = 2048 "ImageMemory",
+            output_memory = 4096 "OutputMemory", make_available = 8192 "MakeAvailable",
+            make_visible = 16384 "MakeVisible", volatile = 32768 "Volatile"];
+  }
+  enum LoopControl: bits {
+    Doc "SPIR-V LoopControl enum attribute.";
+    Cases [ none = 0 "None", unroll = 1 "Unroll", dont_unroll = 2 "DontUnroll",
+            dependency_infinite = 4 "DependencyInfinite", dependency_length = 8 "DependencyLength",
+            min_iterations = 16 "MinIterations", max_iterations = 32 "MaxIterations",
+            iteration_multiple = 64 "IterationMultiple", peel_count = 128 "PeelCount",
+            partial_count = 256 "PartialCount",
+            initiation_interval_intel = 65536 "InitiationIntervalINTEL",
+            loop_coalesce_intel = 1048576 "LoopCoalesceINTEL",
+            max_concurrency_intel = 131072 "MaxConcurrencyINTEL",
+            max_interleaving_intel = 2097152 "MaxInterleavingINTEL",
+            dependency_array_intel = 262144 "DependencyArrayINTEL",
+            speculated_iterations_intel = 4194304 "SpeculatedIterationsINTEL",
+            pipeline_enable_intel = 524288 "PipelineEnableINTEL",
+            no_fusion_intel = 8388608 "NoFusionINTEL"];
+  }
+  enum SelectionControl: bits {
+    Doc "SPIR-V SelectionControl enum attribute.";
+    Cases [ none = 0 "None", flatten = 1 "Flatten", dont_flatten = 2 "DontFlatten"];
+  }
+  enum CooperativeMatrixLayoutKHR {
+    Doc "SPIR-V CooperativeMatrixLayoutKHR enum attribute.";
+    Cases [ row_major = 0 "RowMajor", column_major = 1 "ColumnMajor"];
+  }
+  enum MemoryAccess: bits {
+    Doc "SPIR-V MemoryAccess enum attribute.";
+    Cases [ none = 0 "None", volatile = 1 "Volatile", aligned = 2 "Aligned",
+            nontemporal = 4 "Nontemporal", make_pointer_available = 8 "MakePointerAvailable",
+            make_pointer_visible = 16 "MakePointerVisible",
+            non_private_pointer = 32 "NonPrivatePointer",
+            alias_scope_intel_mask = 65536 "AliasScopeINTELMask",
+            no_alias_intel_mask = 131072 "NoAliasINTELMask"];
+  }
+  enum CooperativeMatrixOperandsKHR: bits {
+    Doc "SPIR-V CooperativeMatrixOperandsKHR enum attribute.";
+    Cases [ none = 0 "None", a_signed = 1 "ASigned", b_signed = 2 "BSigned",
+            c_signed = 4 "CSigned", result_signed = 8 "ResultSigned", acc_sat = 16 "AccSat"];
+  }
+  enum GroupOperation {
+    Doc "SPIR-V GroupOperation enum attribute.";
+    Cases [ reduce = 0 "Reduce", inclusive_scan = 1 "InclusiveScan",
+            exclusive_scan = 2 "ExclusiveScan", clustered_reduce = 3 "ClusteredReduce",
+            partitioned_reduce_nv = 6 "PartitionedReduceNV",
+            partitioned_inclusive_scan_nv = 7 "PartitionedInclusiveScanNV",
+            partitioned_exclusive_scan_nv = 8 "PartitionedExclusiveScanNV"];
+  }
+  enum ImageOperands: bits {
+    Doc "SPIR-V ImageOperands enum attribute.";
+    Cases [ none = 0 "None", bias = 1 "Bias", lod = 2 "Lod", grad = 4 "Grad",
+            const_offset = 8 "ConstOffset", offset = 16 "Offset",
+            const_offsets = 32 "ConstOffsets", sample = 64 "Sample", min_lod = 128 "MinLod",
+            make_texel_available = 256 "MakeTexelAvailable",
+            make_texel_visible = 512 "MakeTexelVisible",
+            non_private_texel = 1024 "NonPrivateTexel", volatile_texel = 2048 "VolatileTexel",
+            sign_extend = 4096 "SignExtend", offsets = 65536 "Offsets",
+            zero_extend = 8192 "ZeroExtend", nontemporal = 16384 "Nontemporal"];
+  }
+  enum PackedVectorFormat {
+    Doc "SPIR-V PackedVectorFormat enum attribute.";
+    Cases [ packed_vector_format4x8_bit = 0 "PackedVectorFormat4x8Bit"];
+  }
+  enum StorageClass {
+    Doc "SPIR-V StorageClass enum attribute.";
+    Cases [ uniform_constant = 0 "UniformConstant", input = 1 "Input", uniform = 2 "Uniform",
+            output = 3 "Output", workgroup = 4 "Workgroup", cross_workgroup = 5 "CrossWorkgroup",
+            private = 6 "Private", function = 7 "Function", generic = 8 "Generic",
+            push_constant = 9 "PushConstant", atomic_counter = 10 "AtomicCounter",
+            image = 11 "Image", storage_buffer = 12 "StorageBuffer",
+            callable_data_khr = 5328 "CallableDataKHR",
+            incoming_callable_data_khr = 5329 "IncomingCallableDataKHR",
+            ray_payload_khr = 5338 "RayPayloadKHR", hit_attribute_khr = 5339 "HitAttributeKHR",
+            incoming_ray_payload_khr = 5342 "IncomingRayPayloadKHR",
+            shader_record_buffer_khr = 5343 "ShaderRecordBufferKHR",
+            physical_storage_buffer = 5349 "PhysicalStorageBuffer",
+            task_payload_workgroup_ext = 5402 "TaskPayloadWorkgroupEXT",
+            code_section_intel = 5605 "CodeSectionINTEL",
+            device_only_intel = 5936 "DeviceOnlyINTEL", host_only_intel = 5937 "HostOnlyINTEL"];
+  }
+  enum QuadSwapDirection {
+    Doc "SPIR-V QuadSwapDirection enum attribute.";
+    Cases [ horizontal = 0 "Horizontal", vertical = 1 "Vertical", diagonal = 2 "Diagonal"];
+  }
+  enum ExecutionModel {
+    Doc "SPIR-V ExecutionModel enum attribute.";
+    Cases [ vertex = 0 "Vertex", tessellation_control = 1 "TessellationControl",
+            tessellation_evaluation = 2 "TessellationEvaluation", geometry = 3 "Geometry",
+            fragment = 4 "Fragment", gl_compute = 5 "GLCompute", kernel = 6 "Kernel",
+            ray_generation_khr = 5313 "RayGenerationKHR",
+            intersection_khr = 5314 "IntersectionKHR", any_hit_khr = 5315 "AnyHitKHR",
+            closest_hit_khr = 5316 "ClosestHitKHR", miss_khr = 5317 "MissKHR",
+            callable_khr = 5318 "CallableKHR", task_ext = 5364 "TaskEXT", mesh_ext = 5365 "MeshEXT"];
+  }
+  enum ExecutionMode {
+    Doc "SPIR-V ExecutionMode enum attribute.";
+    Cases [ invocations = 0 "Invocations", spacing_equal = 1 "SpacingEqual",
+            spacing_fractional_even = 2 "SpacingFractionalEven",
+            spacing_fractional_odd = 3 "SpacingFractionalOdd", vertex_order_cw = 4 "VertexOrderCw",
+            vertex_order_ccw = 5 "VertexOrderCcw", pixel_center_integer = 6 "PixelCenterInteger",
+            origin_upper_left = 7 "OriginUpperLeft", origin_lower_left = 8 "OriginLowerLeft",
+            early_fragment_tests = 9 "EarlyFragmentTests", point_mode = 10 "PointMode",
+            xfb = 11 "Xfb", depth_replacing = 12 "DepthReplacing",
+            depth_greater = 14 "DepthGreater", depth_less = 15 "DepthLess",
+            depth_unchanged = 16 "DepthUnchanged", local_size = 17 "LocalSize",
+            local_size_hint = 18 "LocalSizeHint", input_points = 19 "InputPoints",
+            input_lines = 20 "InputLines", input_lines_adjacency = 21 "InputLinesAdjacency",
+            triangles = 22 "Triangles", input_triangles_adjacency = 23 "InputTrianglesAdjacency",
+            quads = 24 "Quads", isolines = 25 "Isolines", output_vertices = 26 "OutputVertices",
+            output_points = 27 "OutputPoints", output_line_strip = 28 "OutputLineStrip",
+            output_triangle_strip = 29 "OutputTriangleStrip", vec_type_hint = 30 "VecTypeHint",
+            contraction_off = 31 "ContractionOff", initializer = 33 "Initializer",
+            finalizer = 34 "Finalizer", subgroup_size = 35 "SubgroupSize",
+            subgroups_per_workgroup = 36 "SubgroupsPerWorkgroup",
+            subgroups_per_workgroup_id = 37 "SubgroupsPerWorkgroupId",
+            local_size_id = 38 "LocalSizeId", local_size_hint_id = 39 "LocalSizeHintId",
+            subgroup_uniform_control_flow_khr = 4421 "SubgroupUniformControlFlowKHR",
+            post_depth_coverage = 4446 "PostDepthCoverage",
+            denorm_preserve = 4459 "DenormPreserve",
+            denorm_flush_to_zero = 4460 "DenormFlushToZero",
+            signed_zero_inf_nan_preserve = 4461 "SignedZeroInfNanPreserve",
+            rounding_mode_rte = 4462 "RoundingModeRTE", rounding_mode_rtz = 4463 "RoundingModeRTZ",
+            early_and_late_fragment_tests_amd = 5017 "EarlyAndLateFragmentTestsAMD",
+            stencil_ref_replacing_ext = 5027 "StencilRefReplacingEXT",
+            stencil_ref_unchanged_front_amd = 5079 "StencilRefUnchangedFrontAMD",
+            stencil_ref_greater_front_amd = 5080 "StencilRefGreaterFrontAMD",
+            stencil_ref_less_front_amd = 5081 "StencilRefLessFrontAMD",
+            stencil_ref_unchanged_back_amd = 5082 "StencilRefUnchangedBackAMD",
+            stencil_ref_greater_back_amd = 5083 "StencilRefGreaterBackAMD",
+            stencil_ref_less_back_amd = 5084 "StencilRefLessBackAMD",
+            output_lines_ext = 5269 "OutputLinesEXT",
+            output_primitives_ext = 5270 "OutputPrimitivesEXT",
+            derivative_group_quads_nv = 5289 "DerivativeGroupQuadsNV",
+            derivative_group_linear_nv = 5290 "DerivativeGroupLinearNV",
+            output_triangles_ext = 5298 "OutputTrianglesEXT",
+            pixel_interlock_ordered_ext = 5366 "PixelInterlockOrderedEXT",
+            pixel_interlock_unordered_ext = 5367 "PixelInterlockUnorderedEXT",
+            sample_interlock_ordered_ext = 5368 "SampleInterlockOrderedEXT",
+            sample_interlock_unordered_ext = 5369 "SampleInterlockUnorderedEXT",
+            shading_rate_interlock_ordered_ext = 5370 "ShadingRateInterlockOrderedEXT",
+            shading_rate_interlock_unordered_ext = 5371 "ShadingRateInterlockUnorderedEXT",
+            shared_local_memory_size_intel = 5618 "SharedLocalMemorySizeINTEL",
+            rounding_mode_rtpintel = 5620 "RoundingModeRTPINTEL",
+            rounding_mode_rtnintel = 5621 "RoundingModeRTNINTEL",
+            floating_point_mode_altintel = 5622 "FloatingPointModeALTINTEL",
+            floating_point_mode_ieeeintel = 5623 "FloatingPointModeIEEEINTEL",
+            max_workgroup_size_intel = 5893 "MaxWorkgroupSizeINTEL",
+            max_work_dim_intel = 5894 "MaxWorkDimINTEL",
+            no_global_offset_intel = 5895 "NoGlobalOffsetINTEL",
+            num_simd_workitems_intel = 5896 "NumSIMDWorkitemsINTEL",
+            scheduler_target_fmax_mhz_intel = 5903 "SchedulerTargetFmaxMhzINTEL",
+            streaming_interface_intel = 6154 "StreamingInterfaceINTEL",
+            named_barrier_count_intel = 6417 "NamedBarrierCountINTEL"];
+  }
+  enum FunctionControl: bits {
+    Doc "SPIR-V FunctionControl enum attribute.";
+    Cases [ none = 0 "None", inline = 1 "Inline", dont_inline = 2 "DontInline", pure = 4 "Pure",
+            const = 8 "Const", opt_none_intel = 65536 "OptNoneINTEL"];
+  }
+  enum AddressingModel {
+    Doc "SPIR-V AddressingModel enum attribute.";
+    Cases [ logical = 0 "Logical", physical32 = 1 "Physical32", physical64 = 2 "Physical64",
+            physical_storage_buffer64 = 5348 "PhysicalStorageBuffer64"];
+  }
+  enum MemoryModel {
+    Doc "SPIR-V MemoryModel enum attribute.";
+    Cases [ simple = 0 "Simple", glsl450 = 1 "GLSL450", open_cl = 2 "OpenCL", vulkan = 3 "Vulkan"];
+  }
+  enum TosaExtNaNPropagationModeType {
+    Doc "SPIR-V TosaExtNaNPropagationModeType enum attribute.";
+    Cases [ propagate = 1 "Propagate", ignore = 2 "Ignore"];
+  }
+  enum TosaExtAccType {
+    Doc "SPIR-V TosaExtAccType enum attribute.";
+    Cases [ int32 = 1 "INT32", fp16 = 2 "FP16", fp32 = 3 "FP32", int48 = 4 "INT48"];
+  }
+  enum TosaExtResizeModeType {
+    Doc "SPIR-V TosaExtResizeModeType enum attribute.";
+    Cases [ nearest_neighbor = 1 "NearestNeighbor", bilinear = 2 "Bilinear"];
+  }
+  enum TosaExtRoundingModeType {
+    Doc "SPIR-V TosaExtRoundingModeType enum attribute.";
+    Cases [ single_round = 1 "SingleRound", inexact_round = 2 "InexactRound",
+            double_round = 3 "DoubleRound"];
+  }
+
+  // ----------------------------------------------------------------
+  // 类型域
+  // ----------------------------------------------------------------
+  type_def any_ptr {
+    Doc "SPIR-V 指针类型；pointee 与 storage class 是类型参数/verifier 事实。";
+  }
+  type_def image {
+    Doc "SPIR-V image 类型；dim/depth/arrayed 等是类型参数。";
+  }
+  type_def sampled_image {
+    Doc "SPIR-V sampled image 类型（image + sampler）。";
+  }
+  type_def sampler {
+    Doc "SPIR-V sampler 类型。";
+  }
+  type_def cooperative_matrix {
+    Doc "SPIR-V cooperative matrix 类型；分量类型/行列数是参数。";
+  }
+  type_def matrix {
+    Doc "SPIR-V matrix 类型（列向量组成的复合类型）。";
+  }
+  type_def any_struct {
+    Doc "SPIR-V struct 类型；成员由元素类型给出。";
+  }
+  type_def any_array {
+    Doc "SPIR-V array 或 runtime array 类型。";
+  }
+  type_def named_barrier {
+    Doc "SPIR-V named barrier 类型。";
+  }
+  type_def void {
+    Doc "SPIR-V void 类型。";
+  }
+  type_def tensor_arm {
+    Doc "SPIR-V tensor 类型（ARM tensor 扩展）：元素类型 + 秩；rank 0 表示上游未固定秩。";
+    Parameters (element: any, rank: integer);
+    Assembly { "<" element "," rank ">" }
+  }
+
+  constraint fp = f16 | f32 | f64;
+  constraint fp16_or_fp32 = f16 | f32;
+  constraint fp_ext = fp | bf16 | fp8 | f6 | f4;
+  constraint fp8 = f8e4m3fn | f8e5m2;
+  constraint f6 = f6e2m3fn | f6e3m2fn;
+  constraint f4 = f4e2m1fn;
+  constraint int_scalar = i8 | i16 | i32 | i64;
+  constraint bool_scalar = bool;
+  constraint scalar = bool_scalar | int_scalar | fp;
+  constraint vector = vector<scalar, 1>;
+  constraint fp_vec = vector<fp, 1>;
+  constraint int_vec = vector<int_scalar, 1>;
+  constraint bool_vec = vector<bool_scalar, 1>;
+  constraint fp_scalar_or_vector = fp | fp_vec;
+  constraint fp16_or_fp32_scalar_or_vector = fp16_or_fp32 | vector<fp16_or_fp32, 1>;
+  constraint i32_scalar_or_vector = i32 | vector<i32, 1>;
+  constraint f32_scalar_or_vector = f32 | vector<f32, 1>;
+  constraint i16_scalar_or_vector = i16 | vector<i16, 1>;
+  constraint int_scalar_or_vector = int_scalar | int_vec;
+  constraint bool_scalar_or_vector = bool_scalar | bool_vec;
+  constraint scalar_or_vector = scalar | vector;
+  constraint scalar_or_vector_or_ptr_or_coop_matrix = scalar | vector | any_ptr | cooperative_matrix;
+  constraint fp_scalar_vector_or_coop_matrix = fp | fp_vec | cooperative_matrix;
+  constraint int_scalar_vector_or_coop_matrix = int_scalar | int_vec | cooperative_matrix;
+  constraint fp_ext_scalar_or_vector = fp_ext | vector<fp_ext, 1>;
+  constraint fp_ext_scalar_vector_or_coop_matrix = fp_ext | vector<fp_ext, 1> | cooperative_matrix;
+  constraint numerical = int_scalar | fp;
+  constraint composite = scalar | vector | any_array | any_struct | cooperative_matrix | matrix;
+  constraint select_type = scalar | vector;
+  constraint any_type = composite | any_ptr | image | sampled_image | sampler | void | named_barrier | tensor_arm<any, 0>;
+  constraint any_ptr_or_untyped_ptr = any_ptr;
+  constraint matrix_or_coop_matrix = matrix | cooperative_matrix;
+  constraint i32_vec4 = vector<i32, 4>;
+  constraint int_vec4 = vector<i32, 4>;
+  constraint float_ext_scalar_or_vector = fp_ext | vector<fp_ext, 1>;
+
+  // ----------------------------------------------------------------
+  // 基础 schema：SPIRV_Op 的四个 availability 接口
+  // ----------------------------------------------------------------
+  schema SpirvOp {
+    Doc "SPIRV_Op 基类：每个 op 都实现 version/extension/capability 查询接口。";
+    Implements [QueryMinVersionInterface, QueryMaxVersionInterface, QueryExtensionInterface, QueryCapabilityInterface];
+  }
+
+  // ----------------------------------------------------------------
+  // 族 schema
+  // ----------------------------------------------------------------
+  schema CLUnaryFP extends SpirvOp {
+    Doc "OpenCL 一元浮点函数：单操作数、同型结果、无属性。";
+    Operands   (operand: fp_scalar_or_vector);
+    Results    (result: fp_scalar_or_vector);
+    Properties [pure, same_type];
+    Assembly { operand ":" type(operand) attr-dict }
+  }
+
+  schema GLUnaryFP16Or32 extends SpirvOp {
+    Doc "GLSL 一元浮点函数（f16/f32）：可推测、无副作用。";
+    Operands   (operand: fp16_or_fp32_scalar_or_vector);
+    Results    (result: fp16_or_fp32_scalar_or_vector);
+    Properties [no_memory_effect, speculatable, same_type];
+    Assembly { operand ":" type(operand) attr-dict }
+  }
+
+  schema GLUnaryFP extends SpirvOp {
+    Doc "GLSL 一元浮点函数（任意浮点）：可推测、无副作用。";
+    Operands   (operand: fp_scalar_or_vector);
+    Results    (result: fp_scalar_or_vector);
+    Properties [no_memory_effect, speculatable, same_type];
+    Assembly { operand ":" type(operand) attr-dict }
+  }
+
+  schema AtomicRMWInt extends SpirvOp {
+    Doc "原子读改写：指针 + 整数值，结果是指针元素类型。";
+    Operands   (pointer: any_ptr, value: int_scalar);
+    Results    (result: int_scalar);
+    Attributes (memory_scope: Scope, semantics: MemorySemantics);
+    Properties [element_type_matches(value, pointer), element_type_matches(result, pointer)];
+    Assembly { memory_scope semantics pointer "," value attr-dict ":" type(pointer) }
+  }
+
+  schema NonUniformBinaryInt extends SpirvOp {
+    Doc "subgroup 非一致整数归约：execution_scope/group_operation 决定范围。";
+    Operands   (value: int_scalar_or_vector, cluster_size: optional<int_scalar>);
+    Results    (results: int_scalar_or_vector);
+    Attributes (execution_scope: Scope, group_operation: GroupOperation);
+    Properties [same_type(value, results)];
+    Assembly { execution_scope group_operation value if cluster_size { "cluster_size" "(" cluster_size ")" } attr-dict ":" type(value) if cluster_size { "," type(cluster_size) } "->" type(results) }
+  }
+
+  schema CLBinaryFP extends SpirvOp {
+    Doc "OpenCL 二元浮点函数：两操作数与结果同型。";
+    Operands   (lhs: fp_scalar_or_vector, rhs: fp_scalar_or_vector);
+    Results    (result: fp_scalar_or_vector);
+    Properties [pure, same_type];
+    Assembly { lhs "," rhs attr-dict ":" type(result) }
+  }
+
+  schema FPCompareOrdered extends SpirvOp {
+    Doc "有序/无序浮点比较：结果是操作数的 i1 形状对应。";
+    Operands   (operand1: fp_scalar_or_vector, operand2: fp_scalar_or_vector);
+    Results    (result: bool_scalar_or_vector);
+    Properties [pure, same_type, same_shape, same_shape(result, operand1)];
+    Assembly { operand1 "," operand2 ":" type(operand1) attr-dict }
+  }
+
+  schema IntCompare extends SpirvOp {
+    Doc "整数比较：有符号或无符号，结果是 i1 形状对应。";
+    Operands   (operand1: int_scalar_or_vector, operand2: int_scalar_or_vector);
+    Results    (result: bool_scalar_or_vector);
+    Properties [pure, same_type, same_shape, same_shape(result, operand1)];
+    Assembly { operand1 "," operand2 ":" type(operand1) attr-dict }
+  }
+
+  schema TosaUnaryElementwise extends SpirvOp {
+    Doc "TOSA 一元逐元素函数：输入输出同为浮点张量。";
+    Operands   (input1: tensor_arm<f16 | f32 | bf16>);
+    Results    (results: tensor_arm<f16 | f32 | bf16>);
+    Properties [pure, has_parent(ARM.Graph), same_type(input1, results)];
+    Assembly { input1 attr-dict ":" type(input1) "->" type(results) }
+  }
+
+  schema GLBinaryFP extends SpirvOp {
+    Doc "GLSL 二元浮点函数：可推测、无副作用。";
+    Operands   (lhs: fp_scalar_or_vector, rhs: fp_scalar_or_vector);
+    Results    (result: fp_scalar_or_vector);
+    Properties [no_memory_effect, speculatable, same_type];
+    Assembly { lhs "," rhs attr-dict ":" type(result) }
+  }
+
+  schema IntUnary extends SpirvOp {
+    Doc "整数一元位运算：操作数与结果同型。";
+    Operands   (operand: int_scalar_or_vector);
+    Results    (result: int_scalar_or_vector);
+    Properties [pure, same_type];
+    Assembly { operand ":" type(operand) attr-dict }
+  }
+
+  schema GroupBinaryInt extends SpirvOp {
+    Doc "subgroup 整数归约：execution_scope 与 group_operation 是属性。";
+    Operands   (x: int_scalar_or_vector);
+    Results    (result: int_scalar_or_vector);
+    Attributes (execution_scope: Scope, group_operation: GroupOperation);
+    Properties [pure, same_type(x, result)];
+    Assembly { execution_scope group_operation x attr-dict ":" type(x) }
+  }
+
+  schema CLBinaryInt extends SpirvOp {
+    Doc "OpenCL 二元整数函数。";
+    Operands   (lhs: int_scalar_or_vector, rhs: int_scalar_or_vector);
+    Results    (result: int_scalar_or_vector);
+    Properties [pure, same_type];
+    Assembly { lhs "," rhs attr-dict ":" type(result) }
+  }
+
+  schema GLBinaryInt extends SpirvOp {
+    Doc "GLSL 二元整数函数：可推测。";
+    Operands   (lhs: int_scalar_or_vector, rhs: int_scalar_or_vector);
+    Results    (result: int_scalar_or_vector);
+    Properties [no_memory_effect, speculatable, same_type];
+    Assembly { lhs "," rhs attr-dict ":" type(result) }
+  }
+
+  schema NonUniformBinaryFP extends SpirvOp {
+    Doc "subgroup 非一致浮点归约。";
+    Operands   (value: fp_scalar_or_vector, cluster_size: optional<int_scalar>);
+    Results    (results: fp_scalar_or_vector);
+    Attributes (execution_scope: Scope, group_operation: GroupOperation);
+    Properties [same_type(value, results)];
+    Assembly { execution_scope group_operation value if cluster_size { "cluster_size" "(" cluster_size ")" } attr-dict ":" type(value) if cluster_size { "," type(cluster_size) } "->" type(results) }
+  }
+
+  schema FPClassTest extends SpirvOp {
+    Doc "浮点分类判定：结果是操作数的 i1 形状对应。";
+    Operands   (operand: fp_scalar_or_vector);
+    Results    (result: bool_scalar_or_vector);
+    Properties [pure, same_type, same_shape, same_shape(result, operand)];
+    Assembly { operand ":" type(operand) attr-dict }
+  }
+
+  schema GroupBinaryFP extends SpirvOp {
+    Doc "subgroup 浮点归约。";
+    Operands   (x: fp_scalar_or_vector);
+    Results    (result: fp_scalar_or_vector);
+    Attributes (execution_scope: Scope, group_operation: GroupOperation);
+    Properties [pure, same_type(x, result)];
+    Assembly { execution_scope group_operation x attr-dict ":" type(x) }
+  }
+
+  schema BoolBinary extends SpirvOp {
+    Doc "布尔二元逻辑/相等比较。";
+    Operands   (operand1: bool_scalar_or_vector, operand2: bool_scalar_or_vector);
+    Results    (result: bool_scalar_or_vector);
+    Properties [commutative, pure, same_type, same_shape, same_shape(result, operand1)];
+    Assembly { operand1 "," operand2 ":" type(operand1) attr-dict }
+  }
+
+  schema IntBitwiseBinary extends SpirvOp {
+    Doc "整数位运算：可交换。";
+    Operands   (operand1: int_scalar_or_vector, operand2: int_scalar_or_vector);
+    Results    (result: int_scalar_or_vector);
+    Properties [commutative, pure, same_type];
+    Assembly { operand1 "," operand2 attr-dict ":" type(result) }
+  }
+
+  schema GLUnaryInt extends SpirvOp {
+    Doc "GLSL 一元整数函数。";
+    Operands   (operand: int_scalar_or_vector);
+    Results    (result: int_scalar_or_vector);
+    Properties [no_memory_effect, speculatable, same_type];
+    Assembly { operand ":" type(operand) attr-dict }
+  }
+
+  schema NonUniformBinaryBool extends SpirvOp {
+    Doc "subgroup 非一致布尔逻辑归约。";
+    Operands   (value: bool_scalar_or_vector, cluster_size: optional<int_scalar>);
+    Results    (results: bool_scalar_or_vector);
+    Attributes (execution_scope: Scope, group_operation: GroupOperation);
+    Properties [same_type(value, results)];
+    Assembly { execution_scope group_operation value if cluster_size { "cluster_size" "(" cluster_size ")" } attr-dict ":" type(value) if cluster_size { "," type(cluster_size) } "->" type(results) }
+  }
+
+  schema PtrCast extends SpirvOp {
+    Doc "指针类型转换：结果与操作数都是指针。";
+    Operands   (pointer: any_ptr);
+    Results    (result: any_ptr);
+    Properties [pure];
+    Assembly { pointer attr-dict ":" type(pointer) "to" type(result) }
+  }
+
+  schema DotAccSat extends SpirvOp {
+    Doc "整数点积累加饱和：向量与累加器分开。";
+    Operands   (vector1: int_scalar_or_vector, vector2: int_scalar_or_vector, accumulator: int_scalar);
+    Results    (result: int_scalar);
+    Attributes (format: optional<PackedVectorFormat>);
+    Properties [pure, same_type(vector1, vector2), same_type(accumulator, result)];
+    Assembly { vector1 "," vector2 "," accumulator if format { "," format } attr-dict ":" type(vector1) "->" type(result) }
+  }
+
+  schema ShiftBinary extends SpirvOp {
+    Doc "整数移位：结果与操作数同型。";
+    Operands   (operand1: int_scalar_or_vector, operand2: int_scalar_or_vector);
+    Results    (result: int_scalar_or_vector);
+    Properties [pure, same_shape, same_type(operand1, result)];
+    Assembly { operand1 "," operand2 attr-dict ":" type(operand1) "," type(operand2) }
+  }
+
+  schema TosaBinaryInt extends SpirvOp {
+    Doc "TOSA 整数二元位运算：可广播。";
+    Operands   (input1: tensor_arm<i8 | i16 | i32>, input2: tensor_arm<i8 | i16 | i32>);
+    Results    (results: tensor_arm<i8 | i16 | i32>);
+    Properties [pure, same_element_type, same_rank, broadcastable, has_parent(ARM.Graph)];
+    Assembly { input1 "," input2 attr-dict ":" type(input1) "," type(input2) "->" type(results) }
+  }
+
+  schema TosaCompare extends SpirvOp {
+    Doc "TOSA 比较：结果是 bool 张量。";
+    Operands   (input1: tensor_arm<i32 | f16 | f32 | bf16>, input2: tensor_arm<i32 | f16 | f32 | bf16>);
+    Results    (results: tensor_arm<bool_scalar>);
+    Properties [pure, same_element_type, broadcastable, has_parent(ARM.Graph)];
+    Assembly { input1 "," input2 attr-dict ":" type(input1) "," type(input2) "->" type(results) }
+  }
+
+  schema TosaUnaryActivation extends SpirvOp {
+    Doc "TOSA 一元激活函数。";
+    Operands   (input: tensor_arm<f16 | f32 | bf16>);
+    Results    (results: tensor_arm<f16 | f32 | bf16>);
+    Properties [pure, has_parent(ARM.Graph), same_type(input, results)];
+    Assembly { input attr-dict ":" type(input) "->" type(results) }
+  }
+
+  schema TosaLogical extends SpirvOp {
+    Doc "TOSA 布尔逻辑运算。";
+    Operands   (input1: tensor_arm<bool_scalar>, input2: tensor_arm<bool_scalar>);
+    Results    (results: tensor_arm<bool_scalar>);
+    Properties [pure, same_element_type, same_rank, broadcastable, has_parent(ARM.Graph)];
+    Assembly { input1 "," input2 attr-dict ":" type(input1) "," type(input2) "->" type(results) }
+  }
+
+  schema ArithBinaryFP extends SpirvOp {
+    Doc "算术二元浮点（含协作矩阵）：结果与操作数同型。";
+    Operands   (operand1: fp_scalar_vector_or_coop_matrix, operand2: fp_scalar_vector_or_coop_matrix);
+    Results    (result: fp_scalar_vector_or_coop_matrix);
+    Properties [pure, same_type(operand1, operand2), same_type(operand2, result)];
+    Assembly { operand1 "," operand2 attr-dict ":" type(result) }
+  }
+
+  schema ArithBinaryIntCoop extends SpirvOp {
+    Doc "算术二元整数（含协作矩阵）。";
+    Operands   (operand1: int_scalar_vector_or_coop_matrix, operand2: int_scalar_vector_or_coop_matrix);
+    Results    (result: int_scalar_vector_or_coop_matrix);
+    Properties [pure, same_type(operand1, operand2), same_type(operand2, result)];
+    Assembly { operand1 "," operand2 attr-dict ":" type(result) }
+  }
+
+  schema ArithBinaryFPPlain extends SpirvOp {
+    Doc "算术二元浮点（不含协作矩阵）。";
+    Operands   (operand1: fp_scalar_or_vector, operand2: fp_scalar_or_vector);
+    Results    (result: fp_scalar_or_vector);
+    Properties [pure, same_type(operand1, operand2), same_type(operand2, result)];
+    Assembly { operand1 "," operand2 attr-dict ":" type(result) }
+  }
+
+  schema ArithBinaryIntPlain extends SpirvOp {
+    Doc "算术二元整数（不含协作矩阵）。";
+    Operands   (operand1: int_scalar_or_vector, operand2: int_scalar_or_vector);
+    Results    (result: int_scalar_or_vector);
+    Properties [pure, same_type(operand1, operand2), same_type(operand2, result)];
+    Assembly { operand1 "," operand2 attr-dict ":" type(result) }
+  }
+
+  schema AccessChainPair extends SpirvOp {
+    Doc "访问链：基指针 + 变长索引。";
+    Operands   (base_ptr: any_ptr, indices: variadic<int_scalar>);
+    Results    (results: any_ptr);
+    Properties [pure];
+    Assembly { base_ptr "[" indices "]" attr-dict ":" type(base_ptr) "," type(indices) "->" type(results) }
+  }
+
+  // ----------------------------------------------------------------
+  // ops（按上游文件顺序）
+  // ----------------------------------------------------------------
+
+  // == SPIRVArithmeticOps.td
+  op FAdd from ArithBinaryFP {
+    Doc "Floating-point addition of Operand 1 and Operand 2.";
+    Properties [commutative];
+  }
+  op FDiv from ArithBinaryFP {
+    Doc "Floating-point division of Operand 1 divided by Operand 2.";
+  }
+  op FMod from ArithBinaryFPPlain {
+    Doc "The floating-point remainder whose sign matches the sign of Operand 2.";
+  }
+  op FMul from ArithBinaryFP {
+    Doc "Floating-point multiplication of Operand 1 and Operand 2.";
+    Properties [commutative];
+  }
+  op FNegate from SpirvOp {
+    Doc "Inverts the sign bit of Operand. (Note, however, that OpFNegate is still considered a floating-point instruction, and so is subject to the general floating-point rules regarding, for example, subno.";
+    Operands   (operand: fp_scalar_vector_or_coop_matrix);
+    Results    (result: fp_scalar_vector_or_coop_matrix);
+    Properties [pure, same_type(operand, result)];
+    Assembly { operand attr-dict ":" type(result) }
+  }
+  op FRem from ArithBinaryFPPlain {
+    Doc "The floating-point remainder whose sign matches the sign of Operand 1.";
+  }
+  op FSub from ArithBinaryFP {
+    Doc "Floating-point subtraction of Operand 2 from Operand 1.";
+  }
+  op IAdd from ArithBinaryIntCoop {
+    Doc "Integer addition of Operand 1 and Operand 2.";
+    Properties [commutative];
+  }
+  op IAddCarry from SpirvOp {
+    Doc "Integer addition of Operand 1 and Operand 2, including the carry.";
+    Operands   (operand1: int_scalar_or_vector, operand2: int_scalar_or_vector);
+    Results    (result: any_struct);
+    Properties [commutative, pure];
+    Assembly Custom;
+  }
+  op IMul from ArithBinaryIntCoop {
+    Doc "Integer multiplication of Operand 1 and Operand 2.";
+    Properties [commutative];
+  }
+  op ISub from ArithBinaryIntCoop {
+    Doc "Integer subtraction of Operand 2 from Operand 1.";
+  }
+  op ISubBorrow from SpirvOp {
+    Doc "Result is the unsigned integer subtraction of Operand 2 from Operand 1, and what it needed to borrow.";
+    Operands   (operand1: int_scalar_or_vector, operand2: int_scalar_or_vector);
+    Results    (result: any_struct);
+    Properties [pure];
+    Assembly Custom;
+  }
+  op Dot from SpirvOp {
+    Doc "Dot product of Vector 1 and Vector 2";
+    Operands   (vector1: scalar_or_vector, vector2: scalar_or_vector);
+    Results    (result: any_type);
+    Properties [pure, same_element_type, same_type(vector1, vector2)];
+    Assembly { vector1 "," vector2 attr-dict ":" type(vector1) "->" type(result) }
+  }
+  op SDiv from ArithBinaryIntCoop {
+    Doc "Signed-integer division of Operand 1 divided by Operand 2.";
+  }
+  op SMod from ArithBinaryIntPlain {
+    Doc "Signed remainder operation for the remainder whose sign matches the sign of Operand 2.";
+  }
+  op SMulExtended from SpirvOp {
+    Doc "Result is the full value of the signed integer multiplication of Operand 1 and Operand 2.";
+    Operands   (operand1: int_scalar_or_vector, operand2: int_scalar_or_vector);
+    Results    (result: any_struct);
+    Properties [pure, commutative];
+    Assembly Custom;
+  }
+  op SNegate from SpirvOp {
+    Doc "Signed-integer subtract of Operand from zero.";
+    Operands   (operand: int_scalar_vector_or_coop_matrix);
+    Results    (result: int_scalar_vector_or_coop_matrix);
+    Properties [pure, same_type(operand, result)];
+    Assembly { operand attr-dict ":" type(result) }
+  }
+  op SRem from ArithBinaryIntPlain {
+    Doc "Signed remainder operation for the remainder whose sign matches the sign of Operand 1.";
+  }
+  op UDiv from ArithBinaryIntCoop {
+    Doc "Unsigned-integer division of Operand 1 divided by Operand 2.";
+  }
+  op UMulExtended from SpirvOp {
+    Doc "Result is the full value of the unsigned integer multiplication of Operand 1 and Operand 2.";
+    Operands   (operand1: int_scalar_or_vector, operand2: int_scalar_or_vector);
+    Results    (result: any_struct);
+    Properties [pure, commutative];
+    Assembly Custom;
+  }
+  op VectorTimesScalar from SpirvOp {
+    Doc "Scale a floating-point vector.";
+    Operands   (vector: any_type, scalar: fp);
+    Results    (result: any_type);
+    Properties [pure];
+    Assembly { vector "," scalar attr-dict ":" "(" type(vector) "," type(scalar) ")" "->" type(result) }
+  }
+  op UMod from ArithBinaryIntPlain {
+    Doc "Unsigned modulo operation of Operand 1 modulo Operand 2.";
+  }
+
+  // == SPIRVAtomicOps.td
+  op AtomicAnd from AtomicRMWInt {
+    Doc "Perform the following steps atomically with respect to any other atomic accesses within Scope to the same location:";
+  }
+  op AtomicCompareExchange from SpirvOp {
+    Doc "Perform the following steps atomically with respect to any other atomic accesses within Scope to the same location:";
+    Operands   (pointer: any_ptr, value: int_scalar, comparator: int_scalar);
+    Results    (result: int_scalar);
+    Attributes (memory_scope: Scope, equal_semantics: MemorySemantics, unequal_semantics: MemorySemantics);
+    Properties [element_type_matches(result, pointer), element_type_matches(value, pointer), element_type_matches(comparator, pointer)];
+    Assembly { memory_scope equal_semantics unequal_semantics pointer "," value "," comparator attr-dict ":" type(pointer) }
+  }
+  op AtomicCompareExchangeWeak from SpirvOp {
+    Doc "Deprecated (use OpAtomicCompareExchange).";
+    Operands   (pointer: any_ptr, value: int_scalar, comparator: int_scalar);
+    Results    (result: int_scalar);
+    Attributes (memory_scope: Scope, equal_semantics: MemorySemantics, unequal_semantics: MemorySemantics);
+    Properties [element_type_matches(result, pointer), element_type_matches(value, pointer), element_type_matches(comparator, pointer)];
+    Assembly { memory_scope equal_semantics unequal_semantics pointer "," value "," comparator attr-dict ":" type(pointer) }
+  }
+  op AtomicLoad from SpirvOp {
+    Doc "Atomically load through Pointer using the given Semantics.";
+    Operands   (pointer: any_ptr);
+    Results    (result: numerical);
+    Attributes (memory_scope: Scope, semantics: MemorySemantics);
+    Properties [element_type_matches(result, pointer)];
+    Assembly { memory_scope semantics pointer attr-dict ":" type(pointer) }
+  }
+  op AtomicStore from SpirvOp {
+    Doc "Atomically store through Pointer using the given Semantics.";
+    Operands   (pointer: any_ptr, value: numerical);
+    Attributes (memory_scope: Scope, semantics: MemorySemantics);
+    Properties [element_type_matches(value, pointer)];
+    Assembly { memory_scope semantics pointer "," value attr-dict ":" type(pointer) }
+  }
+  op AtomicExchange from SpirvOp {
+    Doc "Perform the following steps atomically with respect to any other atomic accesses within Scope to the same location:";
+    Operands   (pointer: any_ptr, value: numerical);
+    Results    (result: numerical);
+    Attributes (memory_scope: Scope, semantics: MemorySemantics);
+    Properties [element_type_matches(value, pointer), element_type_matches(result, pointer)];
+    Assembly { memory_scope semantics pointer "," value attr-dict ":" type(pointer) }
+  }
+  op EXT.AtomicFAdd from SpirvOp {
+    Doc "TBD";
+    Operands   (pointer: any_ptr, value: fp);
+    Results    (result: fp);
+    Attributes (memory_scope: Scope, semantics: MemorySemantics);
+    Properties [element_type_matches(result, pointer), element_type_matches(value, pointer)];
+    Assembly { memory_scope semantics pointer "," value attr-dict ":" type(pointer) }
+  }
+  op AtomicIAdd from AtomicRMWInt {
+    Doc "Perform the following steps atomically with respect to any other atomic accesses within Scope to the same location:";
+  }
+  op AtomicIDecrement from SpirvOp {
+    Doc "Perform the following steps atomically with respect to any other atomic accesses within Scope to the same location:";
+    Operands   (pointer: any_ptr);
+    Results    (result: int_scalar);
+    Attributes (memory_scope: Scope, semantics: MemorySemantics);
+    Properties [element_type_matches(result, pointer)];
+    Assembly { memory_scope semantics pointer attr-dict ":" type(pointer) }
+  }
+  op AtomicIIncrement from SpirvOp {
+    Doc "Perform the following steps atomically with respect to any other atomic accesses within Scope to the same location:";
+    Operands   (pointer: any_ptr);
+    Results    (result: int_scalar);
+    Attributes (memory_scope: Scope, semantics: MemorySemantics);
+    Properties [element_type_matches(result, pointer)];
+    Assembly { memory_scope semantics pointer attr-dict ":" type(pointer) }
+  }
+  op AtomicISub from AtomicRMWInt {
+    Doc "Perform the following steps atomically with respect to any other atomic accesses within Scope to the same location:";
+  }
+  op AtomicOr from AtomicRMWInt {
+    Doc "Perform the following steps atomically with respect to any other atomic accesses within Scope to the same location:";
+  }
+  op AtomicSMax from AtomicRMWInt {
+    Doc "Perform the following steps atomically with respect to any other atomic accesses within Scope to the same location:";
+  }
+  op AtomicSMin from AtomicRMWInt {
+    Doc "Perform the following steps atomically with respect to any other atomic accesses within Scope to the same location:";
+  }
+  op AtomicUMax from AtomicRMWInt {
+    Doc "Perform the following steps atomically with respect to any other atomic accesses within Scope to the same location:";
+  }
+  op AtomicUMin from AtomicRMWInt {
+    Doc "Perform the following steps atomically with respect to any other atomic accesses within Scope to the same location:";
+  }
+  op AtomicXor from AtomicRMWInt {
+    Doc "Perform the following steps atomically with respect to any other atomic accesses within Scope to the same location:";
+  }
+
+  // == SPIRVBarrierOps.td
+  op ControlBarrier from SpirvOp {
+    Doc "Wait for other invocations of this module to reach the current point of execution.";
+    Attributes (execution_scope: Scope, memory_scope: Scope, memory_semantics: MemorySemantics);
+    Assembly { execution_scope "," memory_scope "," memory_semantics attr-dict }
+  }
+  op MemoryBarrier from SpirvOp {
+    Doc "Control the order that memory accesses are observed.";
+    Attributes (memory_scope: Scope, memory_semantics: MemorySemantics);
+    Assembly { memory_scope "," memory_semantics attr-dict }
+  }
+  op NamedBarrierInitialize from SpirvOp {
+    Doc "Initialize a named barrier with a subgroup count.";
+    Operands   (subgroup_count: i32);
+    Results    (result: named_barrier);
+    Assembly { subgroup_count attr-dict ":" type(subgroup_count) "->" type(result) }
+  }
+  op MemoryNamedBarrier from SpirvOp {
+    Doc "Wait on a named barrier and apply a memory barrier.";
+    Operands   (named_barrier: named_barrier);
+    Attributes (memory_scope: Scope, memory_semantics: MemorySemantics);
+    Assembly { named_barrier "," memory_scope "," memory_semantics attr-dict ":" type(named_barrier) }
+  }
+
+  // == SPIRVBitOps.td
+  op BitCount from IntUnary {
+    Doc "Count the number of set bits in an object.";
+  }
+  op BitFieldInsert from SpirvOp {
+    Doc "Make a copy of an object, with a modified bit field that comes from another object.";
+    Operands   (base: int_scalar_or_vector, insert: int_scalar_or_vector, offset: int_scalar, count: int_scalar);
+    Results    (result: int_scalar_or_vector);
+    Properties [pure, same_type(base, insert), same_type(insert, result)];
+    Assembly { base "," insert "," offset "," count attr-dict ":" type(base) "," type(offset) "," type(count) }
+  }
+  op BitFieldSExtract from SpirvOp {
+    Doc "Extract a bit field from an object, with sign extension.";
+    Operands   (base: int_scalar_or_vector, offset: int_scalar, count: int_scalar);
+    Results    (result: int_scalar_or_vector);
+    Properties [pure, same_type(base, result)];
+    Assembly { base "," offset "," count attr-dict ":" type(base) "," type(offset) "," type(count) }
+  }
+  op BitFieldUExtract from SpirvOp {
+    Doc "Extract a bit field from an object, without sign extension.";
+    Operands   (base: int_scalar_or_vector, offset: int_scalar, count: int_scalar);
+    Results    (result: int_scalar_or_vector);
+    Properties [pure, same_type(base, result)];
+    Assembly { base "," offset "," count attr-dict ":" type(base) "," type(offset) "," type(count) }
+  }
+  op BitReverse from IntUnary {
+    Doc "Reverse the bits in an object.";
+  }
+  op BitwiseAnd from IntBitwiseBinary {
+    Doc "Result is 1 if both Operand 1 and Operand 2 are 1. Result is 0 if either Operand 1 or Operand 2 are 0.";
+  }
+  op BitwiseOr from IntBitwiseBinary {
+    Doc "Result is 1 if either Operand 1 or Operand 2 is 1. Result is 0 if both Operand 1 and Operand 2 are 0.";
+  }
+  op BitwiseXor from IntBitwiseBinary {
+    Doc "Result is 1 if exactly one of Operand 1 or Operand 2 is 1. Result is 0 if Operand 1 and Operand 2 have the same value.";
+  }
+  op ShiftLeftLogical from ShiftBinary {
+    Doc "Shift the bits in Base left by the number of bits specified in Shift. The least-significant bits are zero filled.";
+  }
+  op ShiftRightArithmetic from ShiftBinary {
+    Doc "Shift the bits in Base right by the number of bits specified in Shift. The most-significant bits are filled with the sign bit from Base.";
+  }
+  op ShiftRightLogical from ShiftBinary {
+    Doc "Shift the bits in Base right by the number of bits specified in Shift. The most-significant bits are zero filled.";
+  }
+  op Not from IntUnary {
+    Doc "Complement the bits of Operand.";
+  }
+
+  // == SPIRVCastOps.td
+  op Bitcast from SpirvOp {
+    Doc "Bit pattern-preserving type conversion.";
+    Operands   (operand: scalar_or_vector_or_ptr_or_coop_matrix);
+    Results    (result: scalar_or_vector_or_ptr_or_coop_matrix);
+    Properties [pure];
+    Assembly { operand attr-dict ":" type(operand) "to" type(result) }
+  }
+  op BitcastExtractEXT from SpirvOp {
+    Doc "Extract a bit field and reinterpret it as a numerical value";
+    Operands   (base: fp_ext_scalar_or_vector, offset: int_scalar);
+    Results    (result: fp_ext_scalar_or_vector);
+    Properties [pure];
+    Assembly { base "," offset attr-dict ":" type(base) "," type(offset) "to" type(result) }
+  }
+  op ConvertFToS from SpirvOp {
+    Doc "Convert value numerically from floating point to signed integer, with round toward 0.0.";
+    Operands   (operand: fp_ext_scalar_vector_or_coop_matrix);
+    Results    (result: int_scalar_vector_or_coop_matrix);
+    Properties [pure, same_shape];
+    Assembly { operand attr-dict ":" type(operand) "to" type(result) }
+  }
+  op ConvertFToU from SpirvOp {
+    Doc "Convert value numerically from floating point to unsigned integer, with round toward 0.0.";
+    Operands   (operand: fp_ext_scalar_vector_or_coop_matrix);
+    Results    (result: int_scalar_vector_or_coop_matrix);
+    Properties [pure, same_shape];
+    Assembly { operand attr-dict ":" type(operand) "to" type(result) }
+  }
+  op ConvertSToF from SpirvOp {
+    Doc "Convert value numerically from signed integer to floating point.";
+    Operands   (operand: int_scalar_vector_or_coop_matrix);
+    Results    (result: fp_ext_scalar_vector_or_coop_matrix);
+    Properties [pure, same_shape];
+    Assembly { operand attr-dict ":" type(operand) "to" type(result) }
+  }
+  op ConvertUToF from SpirvOp {
+    Doc "Convert value numerically from unsigned integer to floating point.";
+    Operands   (operand: int_scalar_vector_or_coop_matrix);
+    Results    (result: fp_ext_scalar_vector_or_coop_matrix);
+    Properties [pure, same_shape];
+    Assembly { operand attr-dict ":" type(operand) "to" type(result) }
+  }
+  op FConvert from SpirvOp {
+    Doc "Convert value numerically from one floating-point width to another width.";
+    Operands   (operand: fp_ext_scalar_vector_or_coop_matrix);
+    Results    (result: fp_ext_scalar_vector_or_coop_matrix);
+    Properties [pure, same_shape];
+    Assembly { operand attr-dict ":" type(operand) "to" type(result) }
+  }
+  op SConvert from SpirvOp {
+    Doc "Convert signed width. This is either a truncate or a sign extend.";
+    Operands   (operand: int_scalar_vector_or_coop_matrix);
+    Results    (result: int_scalar_vector_or_coop_matrix);
+    Properties [pure, same_shape];
+    Assembly { operand attr-dict ":" type(operand) "to" type(result) }
+  }
+  op UConvert from SpirvOp {
+    Doc "Convert unsigned width. This is either a truncate or a zero extend.";
+    Operands   (operand: int_scalar_vector_or_coop_matrix);
+    Results    (result: int_scalar_vector_or_coop_matrix);
+    Properties [pure, same_shape];
+    Assembly { operand attr-dict ":" type(operand) "to" type(result) }
+  }
+  op SatConvertSToU from SpirvOp {
+    Doc "Convert a signed integer to unsigned integer. Converted values outside the representable range of Result Type are clamped to the nearest representable value of Result Type.";
+    Operands   (operand: int_scalar_or_vector);
+    Results    (result: int_scalar_or_vector);
+    Properties [pure, same_shape];
+    Assembly { operand attr-dict ":" type(operand) "to" type(result) }
+  }
+  op SatConvertUToS from SpirvOp {
+    Doc "Convert an unsigned integer to signed integer. Converted values outside the representable range of Result Type are clamped to the nearest representable value of Result Type.";
+    Operands   (operand: int_scalar_or_vector);
+    Results    (result: int_scalar_or_vector);
+    Properties [pure, same_shape];
+    Assembly { operand attr-dict ":" type(operand) "to" type(result) }
+  }
+  op ConvertPtrToU from SpirvOp {
+    Doc "Bit pattern-preserving conversion of a pointer to an unsigned scalar integer of possibly different bit width.";
+    Operands   (pointer: any_ptr);
+    Results    (result: int_scalar);
+    Assembly { pointer attr-dict ":" type(pointer) "to" type(result) }
+  }
+  op ConvertUToPtr from SpirvOp {
+    Doc "Bit pattern-preserving conversion of an unsigned scalar integer to a pointer.";
+    Operands   (operand: int_scalar);
+    Results    (result: any_ptr);
+    Assembly { operand attr-dict ":" type(operand) "to" type(result) }
+  }
+  op PtrCastToGeneric from PtrCast {
+    Doc "Convert a pointer’s Storage Class to Generic.";
+  }
+  op GenericCastToPtr from PtrCast {
+    Doc "Convert a pointer’s Storage Class to a non-Generic class.";
+  }
+  op GenericCastToPtrExplicit from PtrCast {
+    Doc "Attempts to explicitly convert Pointer to Storage storage-class pointer value.";
+  }
+
+  // == SPIRVCompositeOps.td
+  op CompositeConstruct from SpirvOp {
+    Doc "Construct a new composite object from a set of constituent objects.";
+    Operands   (constituents: variadic<any_type>);
+    Results    (result: composite);
+    Properties [pure];
+    Assembly { constituents attr-dict ":" "(" type(constituents) ")" "->" type(result) }
+  }
+  op CompositeExtract from SpirvOp {
+    Doc "Extract a part of a composite object.";
+    Operands   (composite: composite);
+    Results    (component: any_type);
+    Attributes (indices: array<i32>);
+    Properties [pure];
+    Assembly Custom;
+  }
+  op CompositeInsert from SpirvOp {
+    Doc "Make a copy of a composite object, while modifying one part of it.";
+    Operands   (object: any_type, composite: composite);
+    Results    (result: composite);
+    Attributes (indices: array<i32>);
+    Properties [pure];
+    Assembly Custom;
+  }
+  op CopyObject from SpirvOp {
+    Doc "Make a copy of Operand. There are no pointer dereferences involved.";
+    Operands   (operand: any_type);
+    Results    (result: any_type);
+    Properties [pure, same_type(operand, result)];
+    Assembly { operand attr-dict ":" type(operand) }
+  }
+  op VectorExtractDynamic from SpirvOp {
+    Doc "Extract a single, dynamically selected, component of a vector.";
+    Operands   (vector: scalar_or_vector, index: int_scalar);
+    Results    (result: scalar);
+    Properties [pure];
+    Assembly { vector "[" index "]" attr-dict ":" type(vector) "," type(index) }
+  }
+  op VectorInsertDynamic from SpirvOp {
+    Doc "Make a copy of a vector, with a single, variably selected, component modified.";
+    Operands   (vector: scalar_or_vector, component: scalar, index: int_scalar);
+    Results    (result: scalar_or_vector);
+    Properties [pure, same_type(vector, result)];
+    Assembly { component "," vector "[" index "]" attr-dict ":" type(vector) "," type(index) }
+  }
+  op VectorShuffle from SpirvOp {
+    Doc "Select arbitrary components from two vectors to make a new vector.";
+    Operands   (vector1: scalar_or_vector, vector2: scalar_or_vector);
+    Results    (result: scalar_or_vector);
+    Attributes (components: array<i32>);
+    Properties [pure, same_element_type];
+    Assembly { attr-dict components vector1 "," vector2 ":" type(vector1) "," type(vector2) "->" type(result) }
+  }
+
+  // == SPIRVControlFlowOps.td
+  op Branch from SpirvOp {
+    Doc "Unconditional branch to target block.";
+    Operands   (targetOperands: variadic<any_type>);
+    Successors (target: successor);
+    Properties [has_parent(func), pure, terminator];
+    Implements [BranchOpInterface];
+    Assembly { target if targetOperands { "(" targetOperands ":" type(targetOperands) ")" } attr-dict }
+  }
+  op BranchConditional from SpirvOp {
+    Doc "If Condition is true, branch to true block, otherwise branch to false block.";
+    Operands   (condition: bool_scalar, trueTargetOperands: variadic<any_type>, falseTargetOperands: variadic<any_type>);
+    Attributes (branch_weights: optional<array<i32>>);
+    Successors (trueTarget: successor, falseTarget: successor);
+    Properties [has_parent(func), pure, terminator];
+    Implements [BranchOpInterface];
+    Assembly Custom;
+  }
+  op FunctionCall from SpirvOp {
+    Doc "Call a function.";
+    Operands   (arguments: variadic<any_type>);
+    Results    (results: optional<any_type>);
+    Attributes (callee: symbol_ref, arg_attrs: optional<array<dictionary>>, res_attrs: optional<array<dictionary>>);
+    Properties [has_parent(func)];
+    Implements [CallOpInterface, SymbolUserOpInterface];
+    Assembly { callee "(" arguments ")" if arg_attrs { "arg_attrs" "=" arg_attrs } if res_attrs { "res_attrs" "=" res_attrs } attr-dict ":" functional-type(arguments, results) }
+  }
+  op Switch from SpirvOp {
+    Doc "Multi-way branch to one of the operand label `<id>`.";
+    Operands   (selector: int_scalar, defaultOperands: variadic<any_type>, targetOperands: variadic<variadic<any_type>>);
+    Attributes (literals: optional<array<i32>>, case_operand_segments: array<i32>);
+    Successors (defaultTarget: successor, targets: variadic<successor>);
+    Properties [has_parent(func), pure, terminator];
+    Implements [BranchOpInterface];
+    Assembly { selector ":" type(selector) "," "[" "\n" custom<SwitchOpCases>(ref(type(selector)), defaultTarget, defaultOperands, type(defaultOperands), literals, targets, targetOperands, type(targetOperands)) "]" attr-dict }
+  }
+  op KHR.Abort from SpirvOp {
+    Doc "Ceases all further processing in the invocation that executes it.";
+    Operands   (message: any_type);
+    Properties [has_parent(func), terminator];
+    Assembly { message attr-dict ":" type(message) }
+  }
+  op Kill from SpirvOp {
+    Doc "Deprecated (use OpTerminateInvocation or OpDemoteToHelperInvocation).";
+    Properties [terminator];
+    Assembly { attr-dict }
+  }
+  op LifetimeStart from SpirvOp {
+    Doc "Declare that an object was not defined before this instruction.";
+    Operands   (pointer: any_ptr);
+    Attributes (size: i32);
+    Properties [has_parent(func)];
+    Assembly { pointer "," size attr-dict ":" type(pointer) }
+  }
+  op LifetimeStop from SpirvOp {
+    Doc "Declare that an object is dead after this instruction.";
+    Operands   (pointer: any_ptr);
+    Attributes (size: i32);
+    Properties [has_parent(func)];
+    Assembly { pointer "," size attr-dict ":" type(pointer) }
+  }
+  op mlir.loop from SpirvOp {
+    Doc "Define a structured loop.";
+    Results    (results: variadic<any_type>);
+    Attributes (loop_control: LoopControl);
+    Regions    (body: region);
+    Properties [has_parent(func)];
+    Assembly Custom;
+  }
+  op mlir.merge from SpirvOp {
+    Doc "A special terminator for merging a structured selection/loop.";
+    Operands   (operands: variadic<any_type>);
+    Properties [pure, terminator, return_like];
+    Assembly { attr-dict if operands { operands ":" type(operands) } }
+  }
+  op Return from SpirvOp {
+    Doc "Return with no value from a function with void return type.";
+    Properties [has_parent(func), pure, return_like, terminator];
+    Assembly { attr-dict }
+  }
+  op Unreachable from SpirvOp {
+    Doc "Behavior is undefined if this instruction is executed.";
+    Properties [has_parent(func), terminator];
+    Assembly { attr-dict }
+  }
+  op ReturnValue from SpirvOp {
+    Doc "Return a value from a function.";
+    Operands   (value: any_type);
+    Properties [has_parent(func), pure, return_like, terminator];
+    Assembly { value attr-dict ":" type(value) }
+  }
+  op mlir.selection from SpirvOp {
+    Doc "Define a structured selection.";
+    Results    (results: variadic<any_type>);
+    Attributes (selection_control: SelectionControl);
+    Regions    (body: region);
+    Properties [has_parent(func)];
+    Assembly Custom;
+  }
+
+  // == SPIRVCooperativeMatrixOps.td
+  op KHR.CooperativeMatrixLength from SpirvOp {
+    Doc "Queries the number of cooperative matrix components";
+    Results    (result: i32);
+    Attributes (cooperative_matrix_type: type);
+    Properties [pure];
+    Assembly { attr-dict ":" cooperative_matrix_type }
+  }
+  op KHR.CooperativeMatrixLoad from SpirvOp {
+    Doc "Loads a cooperative matrix through a pointer";
+    Operands   (pointer: any_ptr, stride: i32);
+    Results    (result: cooperative_matrix);
+    Attributes (matrix_layout: CooperativeMatrixLayoutKHR, memory_operand: optional<MemoryAccess>, alignment: optional<i32>);
+    Implements [AlignmentAttrOpInterface];
+    Assembly { pointer "," stride "," matrix_layout if memory_operand { "," memory_operand } if alignment { "," alignment } attr-dict ":" type(pointer) "," type(stride) "->" type(result) }
+  }
+  op KHR.CooperativeMatrixStore from SpirvOp {
+    Doc "Stores a cooperative matrix through a pointer";
+    Operands   (pointer: any_ptr, object: cooperative_matrix, stride: i32);
+    Attributes (matrix_layout: CooperativeMatrixLayoutKHR, memory_operand: optional<MemoryAccess>, alignment: optional<i32>);
+    Implements [AlignmentAttrOpInterface];
+    Assembly { pointer "," object "," stride "," matrix_layout if memory_operand { "," memory_operand } if alignment { "," alignment } attr-dict ":" type(pointer) "," type(object) "," type(stride) }
+  }
+  op KHR.CooperativeMatrixMulAdd from SpirvOp {
+    Doc "Returns the result of `(A x B) + C` of matrices A, B, and C";
+    Operands   (a: cooperative_matrix, b: cooperative_matrix, c: cooperative_matrix);
+    Results    (result: cooperative_matrix);
+    Attributes (matrix_operands: optional<CooperativeMatrixOperandsKHR>);
+    Properties [pure, same_type(c, result)];
+    Assembly { a "," b "," c if matrix_operands { "," matrix_operands } attr-dict ":" type(a) "," type(b) "->" type(c) }
+  }
+
+  // == SPIRVExperimentalMLOps.td
+  op ExperimentalML.Call from SpirvOp {
+    Doc "Call an Arm experimental ML operation.";
+    Operands   (parameters: variadic<any_type>);
+    Results    (output: any_type);
+    Attributes (opcode: i32);
+    Assembly { "opcode" "=" opcode "," parameters attr-dict ":" functional-type(parameters, output) }
+  }
+
+  // == SPIRVIntelExtOps.td
+  op INTEL.ConvertFToBF16 from SpirvOp {
+    Doc "See extension SPV_INTEL_bfloat16_conversion";
+    Operands   (operand: f32_scalar_or_vector);
+    Results    (result: i16_scalar_or_vector);
+    Properties [same_shape];
+    Assembly { operand attr-dict ":" type(operand) "to" type(result) }
+  }
+  op INTEL.ConvertBF16ToF from SpirvOp {
+    Doc "See extension SPV_INTEL_bfloat16_conversion";
+    Operands   (operand: i16_scalar_or_vector);
+    Results    (result: f32_scalar_or_vector);
+    Properties [same_shape];
+    Assembly { operand attr-dict ":" type(operand) "to" type(result) }
+  }
+  op INTEL.RoundFToTF32 from SpirvOp {
+    Doc "See extension SPV_INTEL_tensor_float32_conversion";
+    Operands   (operand: f32_scalar_or_vector);
+    Results    (result: f32_scalar_or_vector);
+    Properties [same_shape];
+    Assembly { operand attr-dict ":" type(operand) "to" type(result) }
+  }
+  op INTEL.ControlBarrierArrive from SpirvOp {
+    Doc "See extension SPV_INTEL_split_barrier";
+    Attributes (execution_scope: Scope, memory_scope: Scope, memory_semantics: MemorySemantics);
+    Assembly { execution_scope memory_scope memory_semantics attr-dict }
+  }
+  op INTEL.ControlBarrierWait from SpirvOp {
+    Doc "See extension SPV_INTEL_split_barrier";
+    Attributes (execution_scope: Scope, memory_scope: Scope, memory_semantics: MemorySemantics);
+    Assembly { execution_scope memory_scope memory_semantics attr-dict }
+  }
+  op INTEL.MaskedGather from SpirvOp {
+    Doc "Gather values from memory using a vector of pointers and a mask";
+    Operands   (ptr_vector: scalar_or_vector, alignment: i32, mask: scalar_or_vector, fill_empty: scalar_or_vector);
+    Results    (result: scalar_or_vector);
+    Properties [same_type(fill_empty, result), same_shape(mask, result)];
+    Assembly { ptr_vector "," alignment "," mask "," fill_empty attr-dict ":" type(ptr_vector) "," type(alignment) "," type(mask) "," type(fill_empty) "->" type(result) }
+  }
+  op INTEL.MaskedScatter from SpirvOp {
+    Doc "Scatter values to memory using a vector of pointers and a mask";
+    Operands   (ptr_vector: scalar_or_vector, alignment: i32, mask: scalar_or_vector, input_vector: scalar_or_vector);
+    Properties [same_shape(mask, input_vector)];
+    Assembly { ptr_vector "," alignment "," mask "," input_vector attr-dict ":" type(ptr_vector) "," type(alignment) "," type(mask) "," type(input_vector) }
+  }
+  op INTEL.FunctionPointerCall from SpirvOp {
+    Doc "Call a function through a function pointer";
+    Operands   (function_pointer: any_type, arguments: variadic<any_type>);
+    Results    (results: optional<any_type>);
+    Properties [has_parent(func)];
+    Assembly { function_pointer "(" arguments ")" attr-dict ":" type(function_pointer) "," functional-type(arguments, results) }
+  }
+
+  // == SPIRVGLOps.td
+  op GL.FAbs from GLUnaryFP {
+    Doc "Absolute value of operand";
+  }
+  op GL.SAbs from GLUnaryInt {
+    Doc "Absolute value of operand";
+  }
+  op GL.Ceil from GLUnaryFP {
+    Doc "Rounds up to the next whole number";
+  }
+  op GL.Cos from GLUnaryFP16Or32 {
+    Doc "Cosine of operand in radians";
+  }
+  op GL.Sin from GLUnaryFP16Or32 {
+    Doc "Sine of operand in radians";
+  }
+  op GL.Tan from GLUnaryFP16Or32 {
+    Doc "Tangent of operand in radians";
+  }
+  op GL.Asin from GLUnaryFP16Or32 {
+    Doc "Arc Sine of operand in radians";
+  }
+  op GL.Acos from GLUnaryFP16Or32 {
+    Doc "Arc Cosine of operand in radians";
+  }
+  op GL.Atan from GLUnaryFP16Or32 {
+    Doc "Arc Tangent of operand in radians";
+  }
+  op GL.Exp from GLUnaryFP16Or32 {
+    Doc "Exponentiation of Operand 1";
+  }
+  op GL.Floor from GLUnaryFP {
+    Doc "Rounds down to the next whole number";
+  }
+  op GL.Round from GLUnaryFP {
+    Doc "Rounds to the nearest whole number";
+  }
+  op GL.RoundEven from GLUnaryFP {
+    Doc "Rounds to the nearest even whole number";
+  }
+  op GL.Trunc from GLUnaryFP {
+    Doc "Rounds to the nearest whole number toward zero";
+  }
+  op GL.InverseSqrt from GLUnaryFP {
+    Doc "Reciprocal of sqrt(operand)";
+  }
+  op GL.Log from GLUnaryFP16Or32 {
+    Doc "Natural logarithm of the operand";
+  }
+  op GL.FMax from GLBinaryFP {
+    Doc "Return maximum of two floating-point operands";
+  }
+  op GL.UMax from GLBinaryInt {
+    Doc "Return maximum of two unsigned integer operands";
+  }
+  op GL.SMax from GLBinaryInt {
+    Doc "Return maximum of two signed integer operands";
+  }
+  op GL.FMin from GLBinaryFP {
+    Doc "Return minimum of two floating-point operands";
+  }
+  op GL.UMin from GLBinaryInt {
+    Doc "Return minimum of two unsigned integer operands";
+  }
+  op GL.SMin from GLBinaryInt {
+    Doc "Return minimum of two signed integer operands";
+  }
+  op GL.Pow from SpirvOp {
+    Doc "Return x raised to the y power of two operands";
+    Operands   (lhs: fp16_or_fp32_scalar_or_vector, rhs: fp16_or_fp32_scalar_or_vector);
+    Results    (result: fp16_or_fp32_scalar_or_vector);
+    Properties [no_memory_effect, same_type];
+    Assembly { lhs "," rhs attr-dict ":" type(result) }
+  }
+  op GL.FSign from GLUnaryFP {
+    Doc "Returns the sign of the operand";
+  }
+  op GL.SSign from GLUnaryInt {
+    Doc "Returns the sign of the operand";
+  }
+  op GL.Sqrt from GLUnaryFP {
+    Doc "Returns the square root of the operand";
+  }
+  op GL.Sinh from GLUnaryFP16Or32 {
+    Doc "Hyperbolic sine of operand in radians";
+  }
+  op GL.Cosh from GLUnaryFP16Or32 {
+    Doc "Hyperbolic cosine of operand in radians";
+  }
+  op GL.Tanh from GLUnaryFP16Or32 {
+    Doc "Hyperbolic tangent of operand in radians";
+  }
+  op GL.Asinh from GLUnaryFP16Or32 {
+    Doc "Arc hyperbolic sine of operand in radians.";
+  }
+  op GL.Acosh from GLUnaryFP16Or32 {
+    Doc "Arc hyperbolic cosine of operand in radians.";
+  }
+  op GL.Atanh from GLUnaryFP16Or32 {
+    Doc "Arc hyperbolic tangent of operand in radians.";
+  }
+  op GL.Atan2 from SpirvOp {
+    Doc "Arc tangent of y / x in radians";
+    Operands   (lhs: fp16_or_fp32_scalar_or_vector, rhs: fp16_or_fp32_scalar_or_vector);
+    Results    (result: fp16_or_fp32_scalar_or_vector);
+    Properties [no_memory_effect, same_type];
+    Assembly { lhs "," rhs attr-dict ":" type(result) }
+  }
+  op GL.Radians from GLUnaryFP16Or32 {
+    Doc "Convert a quantity in degrees to radians";
+  }
+  op GL.Degrees from GLUnaryFP16Or32 {
+    Doc "Convert a quantity in radians to degrees";
+  }
+  op GL.Exp2 from GLUnaryFP16Or32 {
+    Doc "Result is 2 raised to the x power";
+  }
+  op GL.Log2 from GLUnaryFP16Or32 {
+    Doc "Result is the base-2 logarithm of x";
+  }
+  op GL.FClamp from SpirvOp {
+    Doc "Clamp x between min and max values.";
+    Operands   (x: fp_scalar_or_vector, y: fp_scalar_or_vector, z: fp_scalar_or_vector);
+    Results    (result: fp_scalar_or_vector);
+    Properties [no_memory_effect];
+    Assembly Custom;
+  }
+  op GL.UClamp from SpirvOp {
+    Doc "Clamp x between min and max values.";
+    Operands   (x: int_scalar_or_vector, y: int_scalar_or_vector, z: int_scalar_or_vector);
+    Results    (result: int_scalar_or_vector);
+    Properties [no_memory_effect];
+    Assembly Custom;
+  }
+  op GL.SClamp from SpirvOp {
+    Doc "Clamp x between min and max values.";
+    Operands   (x: int_scalar_or_vector, y: int_scalar_or_vector, z: int_scalar_or_vector);
+    Results    (result: int_scalar_or_vector);
+    Properties [no_memory_effect];
+    Assembly Custom;
+  }
+  op GL.NMax from GLBinaryFP {
+    Doc "Return maximum of two floating-point operands, NaN-aware";
+  }
+  op GL.NMin from GLBinaryFP {
+    Doc "Return minimum of two floating-point operands, NaN-aware";
+  }
+  op GL.NClamp from SpirvOp {
+    Doc "Clamp x between min and max values, NaN-aware";
+    Operands   (x: fp_scalar_or_vector, y: fp_scalar_or_vector, z: fp_scalar_or_vector);
+    Results    (result: fp_scalar_or_vector);
+    Properties [no_memory_effect];
+    Assembly Custom;
+  }
+  op GL.Fma from SpirvOp {
+    Doc "Computes a * b + c.";
+    Operands   (x: fp_scalar_or_vector, y: fp_scalar_or_vector, z: fp_scalar_or_vector);
+    Results    (result: fp_scalar_or_vector);
+    Properties [no_memory_effect, speculatable];
+    Assembly Custom;
+  }
+  op GL.FrexpStruct from SpirvOp {
+    Doc "Splits x into two components such that x = significand * 2^exponent";
+    Operands   (operand: fp_scalar_or_vector);
+    Results    (result: any_struct);
+    Properties [no_memory_effect];
+    Assembly { attr-dict operand ":" type(operand) "->" type(result) }
+  }
+  op GL.Ldexp from SpirvOp {
+    Doc "Builds y such that y = significand * 2^exponent";
+    Operands   (x: fp_scalar_or_vector, exp: int_scalar_or_vector);
+    Results    (y: fp_scalar_or_vector);
+    Properties [no_memory_effect, same_type(x, y)];
+    Assembly { attr-dict x ":" type(x) "," exp ":" type(exp) "->" type(y) }
+  }
+  op GL.FMix from SpirvOp {
+    Doc "Builds the linear blend of x and y";
+    Operands   (x: fp_scalar_or_vector, y: fp_scalar_or_vector, a: fp_scalar_or_vector);
+    Results    (result: fp_scalar_or_vector);
+    Properties [pure, same_type(x, y), same_type(y, a), same_type(a, result)];
+    Assembly { attr-dict x ":" type(x) "," y ":" type(y) "," a ":" type(a) "->" type(result) }
+  }
+  op GL.Length from SpirvOp {
+    Doc "Return the length of a vector x";
+    Operands   (operand: fp_scalar_or_vector);
+    Results    (result: fp);
+    Properties [pure];
+    Assembly { operand attr-dict ":" type(operand) "->" type(result) }
+  }
+  op GL.Distance from SpirvOp {
+    Doc "Return distance between two points";
+    Operands   (p0: fp_scalar_or_vector, p1: fp_scalar_or_vector);
+    Results    (result: fp);
+    Properties [pure, same_type(p0, p1)];
+    Assembly { p0 "," p1 attr-dict ":" type(p0) "," type(p1) "->" type(result) }
+  }
+  op GL.Cross from GLBinaryFP {
+    Doc "Return the cross product of two 3-component vectors";
+  }
+  op GL.Normalize from GLUnaryFP {
+    Doc "Normalizes a vector operand";
+  }
+  op GL.Reflect from GLBinaryFP {
+    Doc "Calculate reflection direction vector";
+  }
+  op GL.Step from GLBinaryFP {
+    Doc "Return 0.0 if x < edge, else 1.0";
+  }
+  op GL.SmoothStep from SpirvOp {
+    Doc "Return smooth Hermite interpolation between 0 and 1";
+    Operands   (x: fp_scalar_or_vector, y: fp_scalar_or_vector, z: fp_scalar_or_vector);
+    Results    (result: fp_scalar_or_vector);
+    Properties [no_memory_effect];
+    Assembly Custom;
+  }
+  op GL.FindILsb from GLUnaryInt {
+    Doc "Integer least-significant bit";
+  }
+  op GL.FindSMsb from SpirvOp {
+    Doc "Signed-integer most-significant bit, with Value interpreted as a signed integer";
+    Operands   (operand: i32_scalar_or_vector);
+    Results    (result: i32_scalar_or_vector);
+    Properties [no_memory_effect, speculatable, same_type];
+    Assembly { operand ":" type(operand) attr-dict }
+  }
+  op GL.FindUMsb from SpirvOp {
+    Doc "Unsigned-integer most-significant bit";
+    Operands   (operand: i32_scalar_or_vector);
+    Results    (result: i32_scalar_or_vector);
+    Properties [no_memory_effect, speculatable, same_type];
+    Assembly { operand ":" type(operand) attr-dict }
+  }
+  op GL.Fract from GLUnaryFP {
+    Doc "Returns the `x - floor(x)` of the operand";
+  }
+  op GL.PackHalf2x16 from SpirvOp {
+    Doc "Pack two-component vector of 32-bit floats into a 32-bit integer";
+    Operands   (operand: any_type);
+    Results    (result: i32);
+    Properties [pure];
+    Assembly { attr-dict operand ":" type(operand) "->" type(result) }
+  }
+  op GL.UnpackHalf2x16 from SpirvOp {
+    Doc "Unpack 32-bit integer into two-component vector of 32-bit floats";
+    Operands   (operand: i32);
+    Results    (result: any_type);
+    Properties [pure];
+    Assembly { attr-dict operand ":" type(operand) "->" type(result) }
+  }
+  op GL.PackSnorm4x8 from SpirvOp {
+    Doc "Pack four-component vector of normalized 32-bit floats into a 32-bit integer";
+    Operands   (operand: any_type);
+    Results    (result: i32);
+    Properties [pure];
+    Assembly { attr-dict operand ":" type(operand) "->" type(result) }
+  }
+  op GL.UnpackSnorm4x8 from SpirvOp {
+    Doc "Unpack 32-bit integer into four-component vector of normalized 32-bit floats";
+    Operands   (operand: i32);
+    Results    (result: any_type);
+    Properties [pure];
+    Assembly { attr-dict operand ":" type(operand) "->" type(result) }
+  }
+
+  // == SPIRVGraphOps.td
+  op ARM.Graph from SpirvOp {
+    Doc "Declare or define a SPIR-V graph";
+    Attributes (function_type: type, arg_attrs: optional<array<dictionary>>, res_attrs: optional<array<dictionary>>, entry_point: optional<bool>, sym_name: string, sym_visibility: optional<string>);
+    Regions    (body: region);
+    Properties [automatic_allocation_scope, symbol, symbol_visibility, has_parent(module), isolated_from_above];
+    Implements [CallableOpInterface, FunctionOpInterface];
+    Assembly Custom;
+  }
+  op ARM.GraphConstant from SpirvOp {
+    Doc "Declare a graph constant.";
+    Results    (output: tensor_arm);
+    Attributes (graph_constant_id: i32);
+    Properties [has_parent(ARM.Graph), pure];
+    Assembly { "id" "=" graph_constant_id attr-dict ":" type(output) }
+  }
+  op ARM.GraphEntryPoint from SpirvOp {
+    Doc "Declare a graph entry point and its interface.";
+    Attributes (fn: symbol_ref, interface: array<symbol_ref>);
+    Properties [has_parent(module)];
+    Assembly Custom;
+  }
+  op ARM.GraphOutputs from SpirvOp {
+    Doc "Define graph outputs.";
+    Operands   (value: variadic<tensor_arm>);
+    Properties [has_parent(ARM.Graph), pure, terminator];
+    Assembly { value attr-dict ":" type(value) }
+  }
+
+  // == SPIRVGroupOps.td
+  op KHR.GroupFMul from GroupBinaryFP {
+    Doc "A floating-point multiplication group operation specified for all values of 'X' specified by invocations in the group.";
+  }
+  op GroupBroadcast from SpirvOp {
+    Doc "Broadcast the Value of the invocation identified by the local id LocalId to the result of all invocations in the group.";
+    Operands   (value: scalar_or_vector, localid: int_scalar_or_vector);
+    Results    (result: scalar_or_vector);
+    Attributes (execution_scope: Scope);
+    Properties [pure, same_type(value, result)];
+    Assembly { execution_scope value "," localid attr-dict ":" type(value) "," type(localid) }
+  }
+  op GroupFAdd from GroupBinaryFP {
+    Doc "A floating-point add group operation specified for all values of X specified by invocations in the group.";
+  }
+  op GroupFMax from GroupBinaryFP {
+    Doc "A floating-point maximum group operation specified for all values of X specified by invocations in the group.";
+  }
+  op GroupFMin from GroupBinaryFP {
+    Doc "A floating-point minimum group operation specified for all values of X specified by invocations in the group.";
+  }
+  op GroupIAdd from GroupBinaryInt {
+    Doc "An integer add group operation specified for all values of X specified by invocations in the group.";
+  }
+  op KHR.GroupIMul from GroupBinaryInt {
+    Doc "An integer multiplication group operation specified for all values of 'X' specified by invocations in the group.";
+  }
+  op GroupSMax from GroupBinaryInt {
+    Doc "A signed integer maximum group operation specified for all values of X specified by invocations in the group.";
+  }
+  op GroupSMin from GroupBinaryInt {
+    Doc "A signed integer minimum group operation specified for all values of X specified by invocations in the group.";
+  }
+  op GroupUMax from GroupBinaryInt {
+    Doc "An unsigned integer maximum group operation specified for all values of X specified by invocations in the group.";
+  }
+  op GroupUMin from GroupBinaryInt {
+    Doc "An unsigned integer minimum group operation specified for all values of X specified by invocations in the group.";
+  }
+  op INTEL.SubgroupBlockRead from SpirvOp {
+    Doc "See extension SPV_INTEL_subgroups";
+    Operands   (ptr: any_ptr);
+    Results    (value: any_type);
+    Assembly { ptr attr-dict ":" type(ptr) "->" type(value) }
+  }
+  op INTEL.SubgroupBlockWrite from SpirvOp {
+    Doc "See extension SPV_INTEL_subgroups";
+    Operands   (ptr: any_ptr, value: any_type);
+    Assembly Custom;
+  }
+  op KHR.SubgroupBallot from SpirvOp {
+    Doc "See extension SPV_KHR_shader_ballot";
+    Operands   (predicate: bool_scalar);
+    Results    (result: i32_vec4);
+    Assembly { predicate attr-dict ":" type(result) }
+  }
+
+  // == SPIRVImageOps.td
+  op SampledImage from SpirvOp {
+    Doc "Create a sampled image, containing both a sampler and an image.";
+    Operands   (image: image, sampler: sampler);
+    Results    (result: sampled_image);
+    Properties [pure];
+    Assembly { image "," sampler attr-dict ":" type(image) "," type(sampler) "->" type(result) }
+  }
+  op ImageDrefGather from SpirvOp {
+    Doc "Gathers the requested depth-comparison from four texels.";
+    Operands   (sampled_image: sampled_image, coordinate: fp_scalar_or_vector, dref: f32, operand_arguments: variadic<any_type>);
+    Results    (result: scalar_or_vector);
+    Attributes (image_operands: optional<ImageOperands>);
+    Properties [pure];
+    Assembly { sampled_image "," coordinate "," dref custom<ImageOperands>(image_operands) if operand_arguments { "," operand_arguments } attr-dict ":" type(sampled_image) "," type(coordinate) "," type(dref) if operand_arguments { "," type(operand_arguments) } "->" type(result) }
+  }
+  op ImageQuerySize from SpirvOp {
+    Doc "Query the dimensions of Image, with no level of detail.";
+    Operands   (image: image);
+    Results    (result: int_scalar_or_vector);
+    Properties [pure];
+    Assembly { image attr-dict ":" type(image) "->" type(result) }
+  }
+  op ImageRead from SpirvOp {
+    Doc "Read a texel from an image without a sampler.";
+    Operands   (image: image, coordinate: fp_scalar_or_vector | int_scalar_or_vector, operand_arguments: variadic<any_type>);
+    Results    (result: fp_scalar_or_vector | int_scalar_or_vector);
+    Attributes (image_operands: optional<ImageOperands>);
+    Assembly { image "," coordinate custom<ImageOperands>(image_operands) if operand_arguments { "," operand_arguments } attr-dict ":" type(image) "," type(coordinate) if operand_arguments { "," type(operand_arguments) } "->" type(result) }
+  }
+  op ImageWrite from SpirvOp {
+    Doc "Write a texel to an image without a sampler.";
+    Operands   (image: image, coordinate: fp_scalar_or_vector | int_scalar_or_vector, texel: fp_scalar_or_vector | int_scalar_or_vector, operand_arguments: variadic<any_type>);
+    Attributes (image_operands: optional<ImageOperands>);
+    Assembly { image "," coordinate "," texel custom<ImageOperands>(image_operands) if operand_arguments { "," operand_arguments } attr-dict ":" type(image) "," type(coordinate) "," type(texel) if operand_arguments { "," type(operand_arguments) } }
+  }
+  op Image from SpirvOp {
+    Doc "Extract the image from a sampled image.";
+    Operands   (sampled_image: sampled_image);
+    Results    (result: image);
+    Properties [pure];
+    Assembly { sampled_image attr-dict ":" type(sampled_image) }
+  }
+  op ImageSampleExplicitLod from SpirvOp {
+    Doc "Sample an image using an explicit level of detail.";
+    Operands   (sampled_image: sampled_image, coordinate: fp_scalar_or_vector | int_scalar_or_vector, operand_arguments: variadic<any_type>);
+    Results    (result: scalar_or_vector);
+    Attributes (image_operands: ImageOperands);
+    Implements [ExplicitLodOpInterface];
+    Assembly { sampled_image "," coordinate custom<ImageOperands>(image_operands) if operand_arguments { "," operand_arguments } attr-dict ":" type(sampled_image) "," type(coordinate) if operand_arguments { "," type(operand_arguments) } "->" type(result) }
+  }
+  op ImageSampleImplicitLod from SpirvOp {
+    Doc "Sample an image with an implicit level of detail.";
+    Operands   (sampled_image: sampled_image, coordinate: fp_scalar_or_vector, operand_arguments: variadic<any_type>);
+    Results    (result: scalar_or_vector);
+    Attributes (image_operands: optional<ImageOperands>);
+    Implements [ImplicitLodOpInterface];
+    Assembly { sampled_image "," coordinate custom<ImageOperands>(image_operands) if operand_arguments { "," operand_arguments } attr-dict ":" type(sampled_image) "," type(coordinate) if operand_arguments { "," type(operand_arguments) } "->" type(result) }
+  }
+  op ImageSampleProjDrefImplicitLod from SpirvOp {
+    Doc "Sample an image with a project coordinate, doing depth-comparison, with an implicit level of detail.";
+    Operands   (sampled_image: sampled_image, coordinate: fp_scalar_or_vector | int_scalar_or_vector, dref: f32, operand_arguments: variadic<any_type>);
+    Results    (result: int_scalar | fp);
+    Attributes (image_operands: optional<ImageOperands>);
+    Implements [ImplicitLodOpInterface];
+    Assembly { sampled_image "," coordinate "," dref custom<ImageOperands>(image_operands) if operand_arguments { "," operand_arguments } attr-dict ":" type(sampled_image) "," type(coordinate) "," type(dref) if operand_arguments { "," type(operand_arguments) } "->" type(result) }
+  }
+  op ImageFetch from SpirvOp {
+    Doc "Fetch a single texel from an image whose Sampled operand is 1.";
+    Operands   (image: image, coordinate: int_scalar_or_vector, operand_arguments: variadic<any_type>);
+    Results    (result: scalar_or_vector);
+    Attributes (image_operands: optional<ImageOperands>);
+    Implements [FetchOpInterface];
+    Assembly { image "," coordinate custom<ImageOperands>(image_operands) if operand_arguments { "," operand_arguments } attr-dict ":" type(image) "," type(coordinate) if operand_arguments { "," type(operand_arguments) } "->" type(result) }
+  }
+
+  // == SPIRVIntegerDotProductOps.td
+  op SDot from SpirvOp {
+    Doc "Signed integer dot product of Vector 1 and Vector 2.";
+    Operands   (vector1: int_scalar_or_vector, vector2: int_scalar_or_vector);
+    Results    (result: int_scalar);
+    Attributes (format: optional<PackedVectorFormat>);
+    Properties [commutative, pure, same_type(vector1, vector2)];
+    Assembly { vector1 "," vector2 if format { "," format } attr-dict ":" type(vector1) "->" type(result) }
+  }
+  op SUDot from SpirvOp {
+    Doc "Mixed-signedness integer dot product of Vector 1 and Vector 2. Components of Vector 1 are treated as signed, components of Vector 2 are treated as unsigned.";
+    Operands   (vector1: int_scalar_or_vector, vector2: int_scalar_or_vector);
+    Results    (result: int_scalar);
+    Attributes (format: optional<PackedVectorFormat>);
+    Properties [pure, same_type(vector1, vector2)];
+    Assembly { vector1 "," vector2 if format { "," format } attr-dict ":" type(vector1) "->" type(result) }
+  }
+  op UDot from SpirvOp {
+    Doc "Unsigned integer dot product of Vector 1 and Vector 2.";
+    Operands   (vector1: int_scalar_or_vector, vector2: int_scalar_or_vector);
+    Results    (result: int_scalar);
+    Attributes (format: optional<PackedVectorFormat>);
+    Properties [commutative, pure, same_type(vector1, vector2)];
+    Assembly { vector1 "," vector2 if format { "," format } attr-dict ":" type(vector1) "->" type(result) }
+  }
+  op SDotAccSat from DotAccSat {
+    Doc "Signed integer dot product of Vector 1 and Vector 2 and signed saturating addition of the result with Accumulator.";
+  }
+  op SUDotAccSat from DotAccSat {
+    Doc "Mixed-signedness integer dot product of Vector 1 and Vector 2 and signed saturating addition of the result with Accumulator. Components of Vector 1 are treated as signed, components of Vector 2 are.";
+  }
+  op UDotAccSat from DotAccSat {
+    Doc "Unsigned integer dot product of Vector 1 and Vector 2 and unsigned saturating addition of the result with Accumulator.";
+  }
+
+  // == SPIRVLogicalOps.td
+  op Any from SpirvOp {
+    Doc "Result is true if any component of Vector is true.";
+    Operands   (vector: scalar_or_vector);
+    Results    (result: bool_scalar);
+    Properties [pure];
+    Assembly { vector attr-dict ":" type(vector) }
+  }
+  op All from SpirvOp {
+    Doc "Result is true if all components of Vector are true.";
+    Operands   (vector: scalar_or_vector);
+    Results    (result: bool_scalar);
+    Properties [pure];
+    Assembly { vector attr-dict ":" type(vector) }
+  }
+  op FOrdEqual from FPCompareOrdered {
+    Doc "Floating-point comparison for being ordered and equal.";
+    Properties [commutative];
+  }
+  op FOrdGreaterThan from FPCompareOrdered {
+    Doc "Floating-point comparison if operands are ordered and Operand 1 is greater than Operand 2.";
+  }
+  op FOrdGreaterThanEqual from FPCompareOrdered {
+    Doc "Floating-point comparison if operands are ordered and Operand 1 is greater than or equal to Operand 2.";
+  }
+  op FOrdLessThan from FPCompareOrdered {
+    Doc "Floating-point comparison if operands are ordered and Operand 1 is less than Operand 2.";
+  }
+  op FOrdLessThanEqual from FPCompareOrdered {
+    Doc "Floating-point comparison if operands are ordered and Operand 1 is less than or equal to Operand 2.";
+  }
+  op FOrdNotEqual from FPCompareOrdered {
+    Doc "Floating-point comparison for being ordered and not equal.";
+    Properties [commutative];
+  }
+  op FUnordEqual from FPCompareOrdered {
+    Doc "Floating-point comparison for being unordered or equal.";
+    Properties [commutative];
+  }
+  op FUnordGreaterThan from FPCompareOrdered {
+    Doc "Floating-point comparison if operands are unordered or Operand 1 is greater than Operand 2.";
+  }
+  op FUnordGreaterThanEqual from FPCompareOrdered {
+    Doc "Floating-point comparison if operands are unordered or Operand 1 is greater than or equal to Operand 2.";
+  }
+  op FUnordLessThan from FPCompareOrdered {
+    Doc "Floating-point comparison if operands are unordered or Operand 1 is less than Operand 2.";
+  }
+  op FUnordLessThanEqual from FPCompareOrdered {
+    Doc "Floating-point comparison if operands are unordered or Operand 1 is less than or equal to Operand 2.";
+  }
+  op FUnordNotEqual from FPCompareOrdered {
+    Doc "Floating-point comparison for being unordered or not equal.";
+    Properties [commutative];
+  }
+  op IEqual from IntCompare {
+    Doc "Integer comparison for equality.";
+    Properties [commutative];
+  }
+  op INotEqual from IntCompare {
+    Doc "Integer comparison for inequality.";
+    Properties [commutative];
+  }
+  op IsFinite from FPClassTest {
+    Doc "Result is true if x is an IEEE Finite, otherwise result is false";
+  }
+  op IsInf from FPClassTest {
+    Doc "Result is true if x is an IEEE Inf, otherwise result is false";
+  }
+  op IsNan from FPClassTest {
+    Doc "Result is true if x is an IEEE NaN, otherwise result is false.";
+  }
+  op IsNormal from FPClassTest {
+    Doc "Result is true if x is an IEEE normal number, otherwise result is false";
+  }
+  op LogicalAnd from BoolBinary {
+    Doc "Result is true if both Operand 1 and Operand 2 are true. Result is false if either Operand 1 or Operand 2 are false.";
+  }
+  op LogicalEqual from BoolBinary {
+    Doc "Result is true if Operand 1 and Operand 2 have the same value. Result is false if Operand 1 and Operand 2 have different values.";
+  }
+  op LogicalNot from SpirvOp {
+    Doc "Result is true if Operand is false. Result is false if Operand is true.";
+    Operands   (operand: bool_scalar_or_vector);
+    Results    (result: bool_scalar_or_vector);
+    Properties [pure, same_type, same_shape, same_shape(result, operand)];
+    Assembly { operand ":" type(operand) attr-dict }
+  }
+  op LogicalNotEqual from BoolBinary {
+    Doc "Result is true if Operand 1 and Operand 2 have different values. Result is false if Operand 1 and Operand 2 have the same value.";
+  }
+  op LogicalOr from BoolBinary {
+    Doc "Result is true if either Operand 1 or Operand 2 is true. Result is false if both Operand 1 and Operand 2 are false.";
+  }
+  op Ordered from FPCompareOrdered {
+    Doc "Result is true if both x == x and y == y are true, where IEEE comparison is used, otherwise result is false.";
+    Properties [commutative];
+  }
+  op SGreaterThan from IntCompare {
+    Doc "Signed-integer comparison if Operand 1 is greater than Operand 2.";
+  }
+  op SGreaterThanEqual from IntCompare {
+    Doc "Signed-integer comparison if Operand 1 is greater than or equal to Operand 2.";
+  }
+  op SLessThan from IntCompare {
+    Doc "Signed-integer comparison if Operand 1 is less than Operand 2.";
+  }
+  op SLessThanEqual from IntCompare {
+    Doc "Signed-integer comparison if Operand 1 is less than or equal to Operand 2.";
+  }
+  op Select from SpirvOp {
+    Doc "Select between two objects. Before version 1.4, results are only computed per component.";
+    Operands   (condition: bool_scalar_or_vector, true_value: select_type, false_value: select_type);
+    Results    (result: select_type);
+    Properties [pure, same_type(true_value, false_value), same_type(false_value, result)];
+    Implements [SelectLikeOpInterface];
+    Assembly { condition "," true_value "," false_value attr-dict ":" type(condition) "," type(result) }
+  }
+  op UGreaterThan from IntCompare {
+    Doc "Unsigned-integer comparison if Operand 1 is greater than Operand 2.";
+  }
+  op UGreaterThanEqual from IntCompare {
+    Doc "Unsigned-integer comparison if Operand 1 is greater than or equal to Operand 2.";
+  }
+  op ULessThan from IntCompare {
+    Doc "Unsigned-integer comparison if Operand 1 is less than Operand 2.";
+  }
+  op Unordered from FPCompareOrdered {
+    Doc "Result is true if either x or y is an IEEE NaN, otherwise result is false.";
+    Properties [commutative];
+  }
+  op ULessThanEqual from IntCompare {
+    Doc "Unsigned-integer comparison if Operand 1 is less than or equal to Operand 2.";
+  }
+
+  // == SPIRVMatrixOps.td
+  op MatrixTimesMatrix from SpirvOp {
+    Doc "Linear-algebraic multiply of LeftMatrix X RightMatrix.";
+    Operands   (leftmatrix: matrix, rightmatrix: matrix);
+    Results    (result: matrix);
+    Properties [pure, same_element_type];
+    Assembly { leftmatrix "," rightmatrix attr-dict ":" type(leftmatrix) "," type(rightmatrix) "->" type(result) }
+  }
+  op OuterProduct from SpirvOp {
+    Doc "Linear-algebraic outer product of vector1 and vector2.";
+    Operands   (vector1: scalar_or_vector, vector2: scalar_or_vector);
+    Results    (result: matrix);
+    Properties [pure, same_element_type];
+    Assembly { vector1 "," vector2 attr-dict ":" type(vector1) "," type(vector2) "->" type(result) }
+  }
+  op MatrixTimesScalar from SpirvOp {
+    Doc "Scale a floating-point matrix.";
+    Operands   (matrix: matrix_or_coop_matrix, scalar: fp);
+    Results    (result: matrix_or_coop_matrix);
+    Properties [pure, same_element_type, same_type(matrix, result)];
+    Assembly { matrix "," scalar attr-dict ":" type(matrix) "," type(scalar) }
+  }
+  op MatrixTimesVector from SpirvOp {
+    Doc "Linear-algebraic Matrix X Vector.";
+    Operands   (matrix: matrix, vector: scalar_or_vector);
+    Results    (result: scalar_or_vector);
+    Properties [pure, same_element_type];
+    Assembly { matrix "," vector attr-dict ":" type(matrix) "," type(vector) "->" type(result) }
+  }
+  op Transpose from SpirvOp {
+    Doc "Transpose a matrix.";
+    Operands   (matrix: matrix);
+    Results    (result: matrix);
+    Properties [pure, same_element_type];
+    Assembly { matrix attr-dict ":" type(matrix) "->" type(result) }
+  }
+  op VectorTimesMatrix from SpirvOp {
+    Doc "Linear-algebraic Vector X Matrix.";
+    Operands   (vector: scalar_or_vector, matrix: matrix);
+    Results    (result: scalar_or_vector);
+    Properties [pure, same_element_type];
+    Assembly { vector "," matrix attr-dict ":" type(vector) "," type(matrix) "->" type(result) }
+  }
+
+  // == SPIRVMemoryOps.td
+  op AccessChain from AccessChainPair {
+    Doc "Create a pointer into a composite object.";
+  }
+  op InBoundsAccessChain from AccessChainPair {
+    Doc "Create a pointer into a composite object that is known to stay within the base object.";
+  }
+  op CopyMemory from SpirvOp {
+    Doc "Copy from the memory pointed to by Source to the memory pointed to by Target. Both operands must be non-void pointers and having the same `<id>` Type operand in their OpTypePointer type declaration.";
+    Operands   (target: any_ptr, source: any_ptr);
+    Attributes (memory_access: optional<MemoryAccess>, alignment: optional<i32>, source_memory_access: optional<MemoryAccess>, source_alignment: optional<i32>);
+    Implements [AlignmentAttrOpInterface];
+    Assembly Custom;
+  }
+  op InBoundsPtrAccessChain from SpirvOp {
+    Doc "Has the same semantics as OpPtrAccessChain, with the addition that the resulting pointer is known to point within the base object.";
+    Operands   (base_ptr: any_ptr, element: int_scalar, indices: variadic<int_scalar>);
+    Results    (result: any_ptr);
+    Properties [pure];
+    Assembly { base_ptr "[" element if indices { indices } "]" attr-dict ":" type(base_ptr) "," type(element) if indices { "," type(indices) } "->" type(result) }
+  }
+  op Load from SpirvOp {
+    Doc "Load through a pointer.";
+    Operands   (ptr: any_ptr_or_untyped_ptr);
+    Results    (value: any_type);
+    Attributes (memory_access: optional<MemoryAccess>, alignment: optional<i32>);
+    Implements [AlignmentAttrOpInterface];
+    Assembly Custom;
+  }
+  op PtrAccessChain from SpirvOp {
+    Doc "Has the same semantics as OpAccessChain, with the addition of the Element operand.";
+    Operands   (base_ptr: any_ptr, element: int_scalar, indices: variadic<int_scalar>);
+    Results    (result: any_ptr);
+    Properties [pure];
+    Assembly { base_ptr "[" element if indices { indices } "]" attr-dict ":" type(base_ptr) "," type(element) if indices { "," type(indices) } "->" type(result) }
+  }
+  op PtrEqual from SpirvOp {
+    Doc "Result is true if Operand 1 and Operand 2 have the same value. Result is false if Operand 1 and Operand 2 have different values.";
+    Operands   (operand1: any_ptr, operand2: any_ptr);
+    Results    (result: bool_scalar);
+    Properties [pure, same_type(operand1, operand2)];
+    Assembly { operand1 "," operand2 ":" type(operand1) attr-dict }
+  }
+  op PtrNotEqual from SpirvOp {
+    Doc "Result is true if Operand 1 and Operand 2 have different values. Result is false if Operand 1 and Operand 2 have the same value.";
+    Operands   (operand1: any_ptr, operand2: any_ptr);
+    Results    (result: bool_scalar);
+    Properties [pure, same_type(operand1, operand2)];
+    Assembly { operand1 "," operand2 ":" type(operand1) attr-dict }
+  }
+  op Store from SpirvOp {
+    Doc "Store through a pointer.";
+    Operands   (ptr: any_ptr_or_untyped_ptr, value: any_type);
+    Attributes (memory_access: optional<MemoryAccess>, alignment: optional<i32>);
+    Implements [AlignmentAttrOpInterface];
+    Assembly Custom;
+  }
+  op Variable from SpirvOp {
+    Doc "Allocate an object in memory, resulting in a pointer to it, which can be used with OpLoad and OpStore.";
+    Operands   (initializer: optional<any_type>);
+    Results    (pointer: any_ptr);
+    Attributes (storage_class: StorageClass);
+    Assembly Custom;
+  }
+
+  // == SPIRVMeshOps.td
+  op EXT.EmitMeshTasks from SpirvOp {
+    Doc "Defines the grid size of subsequent mesh shader workgroups to generate upon completion of the task shader workgroup.";
+    Operands   (group_count_x: any_type, group_count_y: any_type, group_count_z: any_type, payload: optional<any_ptr>);
+    Properties [terminator];
+    Assembly { group_count_x "," group_count_y "," group_count_z "," payload attr-dict ":" type(group_count_x) "," type(group_count_y) "," type(group_count_z) "," type(payload) }
+  }
+  op EXT.SetMeshOutputs from SpirvOp {
+    Doc "Sets the actual output size of the primitives and vertices that the mesh shader workgroup will emit upon completion.";
+    Operands   (vertex_count: any_type, primitive_count: any_type);
+    Assembly { vertex_count "," primitive_count attr-dict ":" type(vertex_count) "," type(primitive_count) }
+  }
+
+  // == SPIRVMiscOps.td
+  op KHR.AssumeTrue from SpirvOp {
+    Doc "TBD";
+    Operands   (condition: bool_scalar);
+    Assembly { condition attr-dict }
+  }
+  op KHR.Expect from SpirvOp {
+    Doc "Provides a hint to the optimizer that the value is likely to equal the expected value.";
+    Operands   (value: int_scalar_or_vector, expectedValue: int_scalar_or_vector);
+    Results    (result: int_scalar_or_vector);
+    Properties [pure, same_type(value, expectedValue), same_type(expectedValue, result)];
+    Assembly { value "," expectedValue attr-dict ":" type(result) }
+  }
+  op Undef from SpirvOp {
+    Doc "Make an intermediate object whose value is undefined.";
+    Results    (result: any_type);
+    Properties [pure];
+    Assembly { attr-dict ":" type(result) }
+  }
+
+  // == SPIRVNonUniformOps.td
+  op GroupNonUniformBallot from SpirvOp {
+    Doc "Result is a bitfield value combining the Predicate value from all invocations in the group that execute the same dynamic instance of this instruction. The bit is set to one if the corresponding inv.";
+    Operands   (predicate: bool_scalar);
+    Results    (result: int_vec4);
+    Attributes (execution_scope: Scope);
+    Assembly { execution_scope predicate attr-dict ":" type(result) }
+  }
+  op GroupNonUniformBallotFindLSB from SpirvOp {
+    Doc "Find the least significant bit set to 1 in Value, considering only the bits in Value required to represent all bits of the group's invocations. If none of the considered bits is set to 1, the resul.";
+    Operands   (value: int_vec4);
+    Results    (result: int_scalar);
+    Attributes (execution_scope: Scope);
+    Assembly { execution_scope value attr-dict ":" type(value) "," type(result) }
+  }
+  op GroupNonUniformBallotFindMSB from SpirvOp {
+    Doc "Find the most significant bit set to 1 in Value, considering only the bits in Value required to represent all bits of the group's invocations. If none of the considered bits is set to 1, the result.";
+    Operands   (value: int_vec4);
+    Results    (result: int_scalar);
+    Attributes (execution_scope: Scope);
+    Assembly { execution_scope value attr-dict ":" type(value) "," type(result) }
+  }
+  op GroupNonUniformBroadcast from SpirvOp {
+    Doc "Result is the Value of the invocation identified by the id Id to all active invocations in the group.";
+    Operands   (value: scalar_or_vector, id: int_scalar);
+    Results    (result: scalar_or_vector);
+    Attributes (execution_scope: Scope);
+    Properties [pure, same_type(value, result)];
+    Assembly { execution_scope value "," id attr-dict ":" type(value) "," type(id) }
+  }
+  op GroupNonUniformBroadcastFirst from SpirvOp {
+    Doc "Broadcast the value from the active invocation with the lowest id in the subgroup.";
+    Operands   (value: scalar_or_vector);
+    Results    (result: scalar_or_vector);
+    Attributes (execution_scope: Scope);
+    Properties [pure, same_type(value, result)];
+    Assembly { execution_scope value attr-dict ":" type(value) }
+  }
+  op GroupNonUniformElect from SpirvOp {
+    Doc "Result is true only in the active invocation with the lowest id in the group, otherwise result is false.";
+    Results    (result: bool_scalar);
+    Attributes (execution_scope: Scope);
+    Assembly { execution_scope attr-dict ":" type(result) }
+  }
+  op GroupNonUniformFAdd from NonUniformBinaryFP {
+    Doc "A floating point add group operation of all Value operands contributed by active invocations in the group.";
+  }
+  op GroupNonUniformFMax from NonUniformBinaryFP {
+    Doc "A floating point maximum group operation of all Value operands contributed by active invocations in by group.";
+  }
+  op GroupNonUniformFMin from NonUniformBinaryFP {
+    Doc "A floating point minimum group operation of all Value operands contributed by active invocations in the group.";
+  }
+  op GroupNonUniformFMul from NonUniformBinaryFP {
+    Doc "A floating point multiply group operation of all Value operands contributed by active invocations in the group.";
+  }
+  op GroupNonUniformIAdd from NonUniformBinaryInt {
+    Doc "An integer add group operation of all Value operands contributed by active invocations in the group.";
+  }
+  op GroupNonUniformIMul from NonUniformBinaryInt {
+    Doc "An integer multiply group operation of all Value operands contributed by active invocations in the group.";
+  }
+  op GroupNonUniformSMax from NonUniformBinaryInt {
+    Doc "A signed integer maximum group operation of all Value operands contributed by active invocations in the group.";
+  }
+  op GroupNonUniformSMin from NonUniformBinaryInt {
+    Doc "A signed integer minimum group operation of all Value operands contributed by active invocations in the group.";
+  }
+  op GroupNonUniformShuffle from SpirvOp {
+    Doc "Result is the Value of the invocation identified by the id Id.";
+    Operands   (value: scalar_or_vector, id: int_scalar);
+    Results    (result: scalar_or_vector);
+    Attributes (execution_scope: Scope);
+    Properties [pure, same_type(value, result)];
+    Assembly { execution_scope value "," id attr-dict ":" type(value) "," type(id) }
+  }
+  op GroupNonUniformShuffleDown from SpirvOp {
+    Doc "Result is the Value of the invocation identified by the current invocation’s id within the group + Delta.";
+    Operands   (value: scalar_or_vector, delta: int_scalar);
+    Results    (result: any_type);
+    Attributes (execution_scope: Scope);
+    Properties [pure, same_type(value, result)];
+    Assembly { execution_scope value "," delta attr-dict ":" type(value) "," type(delta) }
+  }
+  op GroupNonUniformShuffleUp from SpirvOp {
+    Doc "Result is the Value of the invocation identified by the current invocation’s id within the group - Delta.";
+    Operands   (value: scalar_or_vector, delta: int_scalar);
+    Results    (result: any_type);
+    Attributes (execution_scope: Scope);
+    Properties [pure, same_type(value, result)];
+    Assembly { execution_scope value "," delta attr-dict ":" type(value) "," type(delta) }
+  }
+  op GroupNonUniformShuffleXor from SpirvOp {
+    Doc "Result is the Value of the invocation identified by the current invocation’s id within the group xor’ed with Mask.";
+    Operands   (value: scalar_or_vector, mask: int_scalar);
+    Results    (result: any_type);
+    Attributes (execution_scope: Scope);
+    Properties [pure, same_type(value, result)];
+    Assembly { execution_scope value "," mask attr-dict ":" type(value) "," type(mask) }
+  }
+  op GroupNonUniformUMax from NonUniformBinaryInt {
+    Doc "An unsigned integer maximum group operation of all Value operands contributed by active invocations in the group.";
+  }
+  op GroupNonUniformUMin from NonUniformBinaryInt {
+    Doc "An unsigned integer minimum group operation of all Value operands contributed by active invocations in the group.";
+  }
+  op GroupNonUniformBitwiseAnd from NonUniformBinaryInt {
+    Doc "A bitwise `and` group operation of all Value operands contributed by active invocations in the group.";
+  }
+  op GroupNonUniformBitwiseOr from NonUniformBinaryInt {
+    Doc "A bitwise `or` group operation of all Value operands contributed by active invocations in the group.";
+  }
+  op GroupNonUniformBitwiseXor from NonUniformBinaryInt {
+    Doc "A bitwise `xor` group operation of all Value operands contributed by active invocations in the group.";
+  }
+  op GroupNonUniformLogicalAnd from NonUniformBinaryBool {
+    Doc "A logical `and` group operation of all Value operands contributed by active invocations in the group.";
+  }
+  op GroupNonUniformLogicalOr from NonUniformBinaryBool {
+    Doc "A logical `or` group operation of all Value operands contributed by active invocations in the group.";
+  }
+  op GroupNonUniformLogicalXor from NonUniformBinaryBool {
+    Doc "A logical `xor` group operation of all Value operands contributed by active invocations in the group.";
+  }
+  op GroupNonUniformBallotBitCount from SpirvOp {
+    Doc "Result is the number of bits that are set to 1 in Value, considering only the bits in Value required to represent all bits of the scope restricted tangle.";
+    Operands   (value: scalar_or_vector);
+    Results    (result: int_scalar);
+    Attributes (execution_scope: Scope, group_operation: GroupOperation);
+    Assembly { execution_scope group_operation value attr-dict ":" type(value) "->" type(result) }
+  }
+  op GroupNonUniformRotateKHR from SpirvOp {
+    Doc "Rotate values across invocations within a subgroup.";
+    Operands   (value: scalar_or_vector, delta: int_scalar, cluster_size: optional<int_scalar>);
+    Results    (results: scalar_or_vector);
+    Attributes (execution_scope: Scope);
+    Properties [pure, same_type(value, results)];
+    Assembly { execution_scope value "," delta if cluster_size { "," "cluster_size" "(" cluster_size ")" } attr-dict ":" type(value) "," type(delta) if cluster_size { "," type(cluster_size) } "->" type(results) }
+  }
+  op GroupNonUniformAll from SpirvOp {
+    Doc "Evaluates a predicate for all tangled invocations within the Execution scope, resulting in true if predicate evaluates to true for all tangled invocations within the Execution scope, otherwise the.";
+    Operands   (predicate: bool_scalar);
+    Results    (result: bool_scalar);
+    Attributes (execution_scope: Scope);
+    Assembly { execution_scope predicate attr-dict ":" type(result) }
+  }
+  op GroupNonUniformAny from SpirvOp {
+    Doc "Evaluates a predicate for all tangled invocations within the Execution scope, resulting in true if predicate evaluates to true for any tangled invocations within the Execution scope, otherwise the.";
+    Operands   (predicate: bool_scalar);
+    Results    (result: bool_scalar);
+    Attributes (execution_scope: Scope);
+    Assembly { execution_scope predicate attr-dict ":" type(result) }
+  }
+  op GroupNonUniformAllEqual from SpirvOp {
+    Doc "Evaluates a value for all tangled invocations within the Execution scope. The result is true if Value is equal for all tangled invocations within the Execution scope. Otherwise, the result is false.";
+    Operands   (value: scalar_or_vector);
+    Results    (result: bool_scalar);
+    Attributes (execution_scope: Scope);
+    Assembly { execution_scope value attr-dict ":" type(value) "," type(result) }
+  }
+  op GroupNonUniformQuadSwap from SpirvOp {
+    Doc "Swap the Value of the invocation within the quad with another invocation in the quad using Direction.";
+    Operands   (value: scalar_or_vector);
+    Results    (result: scalar_or_vector);
+    Attributes (execution_scope: Scope, direction: QuadSwapDirection);
+    Properties [same_type(value, result)];
+    Assembly { execution_scope direction value attr-dict ":" type(value) }
+  }
+
+  // == SPIRVPrimitiveOps.td
+  op EmitVertex from SpirvOp {
+    Doc "Emits the current values of all output variables to the current output primitive. After execution, the values of all output variables are undefined.";
+    Assembly { attr-dict }
+  }
+  op EndPrimitive from SpirvOp {
+    Doc "Finish the current primitive and start a new one. No vertex is emitted.";
+    Assembly { attr-dict }
+  }
+
+  // == SPIRVCLOps.td
+  op CL.atan2 from CLBinaryFP {
+    Doc "Compute the arc tangent of y / x.";
+  }
+  op CL.acos from CLUnaryFP {
+    Doc "Compute the arc cosine of x.";
+  }
+  op CL.acosh from CLUnaryFP {
+    Doc "Compute the inverse hyperbolic cosine of x .";
+  }
+  op CL.asin from CLUnaryFP {
+    Doc "Compute the arc sine of x.";
+  }
+  op CL.asinh from CLUnaryFP {
+    Doc "Compute the inverse hyperbolic sine of x.";
+  }
+  op CL.atan from CLUnaryFP {
+    Doc "Compute the arc tangent of x.";
+  }
+  op CL.atanh from CLUnaryFP {
+    Doc "Compute the hyperbolic arc tangent of x.";
+  }
+  op CL.cbrt from CLUnaryFP {
+    Doc "Compute the cube root of x.";
+  }
+  op CL.ceil from CLUnaryFP {
+    Doc "Round x to integral value using the round to positive infinity rounding mode.";
+  }
+  op CL.copysign from CLBinaryFP {
+    Doc "Computes the value with the magnitude of x and the sign of y.";
+  }
+  op CL.cos from CLUnaryFP {
+    Doc "Compute the cosine of x radians.";
+  }
+  op CL.cosh from CLUnaryFP {
+    Doc "Compute the hyperbolic cosine of x radians.";
+  }
+  op CL.erfc from CLUnaryFP {
+    Doc "Complementary error function of x.";
+  }
+  op CL.erf from CLUnaryFP {
+    Doc "Error function of x encountered in integrating the normal distribution.";
+  }
+  op CL.exp from CLUnaryFP {
+    Doc "Exponentiation of Operand 1";
+  }
+  op CL.exp2 from CLUnaryFP {
+    Doc "Compute the base-2 exponential of x.";
+  }
+  op CL.exp10 from CLUnaryFP {
+    Doc "Compute the base-10 exponential of x.";
+  }
+  op CL.expm1 from CLUnaryFP {
+    Doc "Compute the base-e exponential of x minus 1.0.";
+  }
+  op CL.fabs from CLUnaryFP {
+    Doc "Absolute value of operand";
+  }
+  op CL.fmax from CLBinaryFP {
+    Doc "Return maximum of two floating-point operands";
+  }
+  op CL.fmin from CLBinaryFP {
+    Doc "Return minimum of two floating-point operands";
+  }
+  op CL.fclamp from SpirvOp {
+    Doc "Clamp x between min and max values.";
+    Operands   (x: fp_scalar_or_vector, y: fp_scalar_or_vector, z: fp_scalar_or_vector);
+    Results    (result: fp_scalar_or_vector);
+    Properties [no_memory_effect, same_type];
+    Assembly { x "," y "," z attr-dict ":" type(result) }
+  }
+  op CL.fdim from CLBinaryFP {
+    Doc "Compute the positive difference between x and y.";
+  }
+  op CL.fmod from CLBinaryFP {
+    Doc "Modulus. Returns x - y * trunc(x / y), with the same sign as x.";
+  }
+  op CL.hypot from CLBinaryFP {
+    Doc "Compute the square root of x^2 + y^2.";
+  }
+  op CL.floor from CLUnaryFP {
+    Doc "Round x to the integral value using the round to negative infinity rounding mode.";
+  }
+  op CL.fma from SpirvOp {
+    Doc "Compute the correctly rounded floating-point representation of the sum of c with the infinitely precise product of a and b. Rounding of intermediate products shall not occur. Edge case results are.";
+    Operands   (x: fp_scalar_or_vector, y: fp_scalar_or_vector, z: fp_scalar_or_vector);
+    Results    (result: fp_scalar_or_vector);
+    Properties [no_memory_effect, speculatable, same_type];
+    Assembly { x "," y "," z attr-dict ":" type(result) }
+  }
+  op CL.ilogb from SpirvOp {
+    Doc "Return the exponent as an integer value.";
+    Operands   (x: fp_scalar_or_vector);
+    Results    (result: i32_scalar_or_vector);
+    Properties [pure, same_shape];
+    Assembly { attr-dict x ":" type(x) "->" type(result) }
+  }
+  op CL.ldexp from SpirvOp {
+    Doc "Builds y such that y = significand * 2^exponent.";
+    Operands   (x: fp_scalar_or_vector, exp: int_scalar_or_vector);
+    Results    (y: fp_scalar_or_vector);
+    Properties [pure, same_type(x, y)];
+    Assembly { attr-dict x "," exp ":" type(x) "," type(exp) "->" type(y) }
+  }
+  op CL.log from CLUnaryFP {
+    Doc "Compute the natural logarithm of x.";
+  }
+  op CL.log2 from CLUnaryFP {
+    Doc "Compute the base-2 logarithm of x.";
+  }
+  op CL.log10 from CLUnaryFP {
+    Doc "Compute the base-10 logarithm of x.";
+  }
+  op CL.log1p from CLUnaryFP {
+    Doc "Compute the natural logarithm of x + 1.0.";
+  }
+  op CL.mix from SpirvOp {
+    Doc "Returns the linear blend of x & y implemented as: x + (y - x) * a";
+    Operands   (x: fp_scalar_or_vector, y: fp_scalar_or_vector, z: fp_scalar_or_vector);
+    Results    (result: fp_scalar_or_vector);
+    Properties [no_memory_effect, speculatable, same_type];
+    Assembly { x "," y "," z attr-dict ":" type(result) }
+  }
+  op CL.pow from CLBinaryFP {
+    Doc "Compute x to the power y.";
+  }
+  op CL.pown from SpirvOp {
+    Doc "Compute x to the power y, where y is an integer.";
+    Operands   (x: fp_scalar_or_vector, y: int_scalar_or_vector);
+    Results    (result: fp_scalar_or_vector);
+    Properties [pure, same_type(x, result)];
+    Assembly { attr-dict x "," y ":" type(x) "," type(y) "->" type(result) }
+  }
+  op CL.rint from CLUnaryFP {
+    Doc "Round x to integral value (using round to nearest even rounding mode) in floating-point format.";
+  }
+  op CL.rootn from SpirvOp {
+    Doc "Compute the n-th root of x, where n is an integer.";
+    Operands   (x: fp_scalar_or_vector, n: int_scalar_or_vector);
+    Results    (result: fp_scalar_or_vector);
+    Properties [pure, same_type(x, result)];
+    Assembly { attr-dict x "," n ":" type(x) "," type(n) "->" type(result) }
+  }
+  op CL.round from CLUnaryFP {
+    Doc "Return the integral value nearest to x rounding halfway cases away from zero, regardless of the current rounding direction.";
+  }
+  op CL.rsqrt from CLUnaryFP {
+    Doc "Compute inverse square root of x.";
+  }
+  op CL.s_abs from IntUnary {
+    Doc "Absolute value of operand";
+  }
+  op CL.s_clamp from SpirvOp {
+    Doc "Clamp x between min and max values.";
+    Operands   (x: int_scalar_or_vector, y: int_scalar_or_vector, z: int_scalar_or_vector);
+    Results    (result: int_scalar_or_vector);
+    Properties [no_memory_effect, same_type];
+    Assembly { x "," y "," z attr-dict ":" type(result) }
+  }
+  op CL.u_clamp from SpirvOp {
+    Doc "Clamp x between min and max values.";
+    Operands   (x: int_scalar_or_vector, y: int_scalar_or_vector, z: int_scalar_or_vector);
+    Results    (result: int_scalar_or_vector);
+    Properties [no_memory_effect, same_type];
+    Assembly { x "," y "," z attr-dict ":" type(result) }
+  }
+  op CL.clz from IntUnary {
+    Doc "Count leading zeros in operand";
+  }
+  op CL.ctz from IntUnary {
+    Doc "Count trailing zeros in operand";
+  }
+  op CL.s_max from CLBinaryInt {
+    Doc "Return maximum of two signed integer operands";
+  }
+  op CL.s_min from CLBinaryInt {
+    Doc "Return minimum of two signed integer operands";
+  }
+  op CL.sin from CLUnaryFP {
+    Doc "Compute sine of x radians.";
+  }
+  op CL.sincos from SpirvOp {
+    Doc "Compute sine and cosine of x radians.";
+    Operands   (x: fp_scalar_or_vector, cosval: any_type);
+    Results    (result: fp_scalar_or_vector);
+    Properties [same_type(x, result)];
+    Assembly { attr-dict x "," cosval ":" type(x) "," type(cosval) "->" type(result) }
+  }
+  op CL.sinh from CLUnaryFP {
+    Doc "Compute hyperbolic sine of x radians.";
+  }
+  op CL.sqrt from CLUnaryFP {
+    Doc "Compute square root of x.";
+  }
+  op CL.tan from CLUnaryFP {
+    Doc "Compute tangent of x radians.";
+  }
+  op CL.tanh from CLUnaryFP {
+    Doc "Compute hyperbolic tangent of x radians.";
+  }
+  op CL.trunc from CLUnaryFP {
+    Doc "Round to integral value using the round to zero rounding mode.";
+  }
+  op CL.u_max from CLBinaryInt {
+    Doc "Return maximum of two unsigned integer operands";
+  }
+  op CL.u_min from CLBinaryInt {
+    Doc "Return minimum of two unsigned integer operands";
+  }
+  op CL.printf from SpirvOp {
+    Doc "The printf extended instruction writes output to an implementation- defined stream such as stdout under control of the string pointed to by format that specifies how subsequent arguments are conver.";
+    Operands   (format: any_type, arguments: variadic<any_type>);
+    Results    (result: i32);
+    Assembly { format if arguments { arguments } attr-dict ":" type(format) if arguments { "," type(arguments) } "->" type(result) }
+  }
+
+  // == SPIRVStructureOps.td
+  op mlir.addressof from SpirvOp {
+    Doc "Get the address of a global variable.";
+    Results    (pointer: any_ptr);
+    Attributes (variable: symbol_ref);
+    Properties [has_parent(func), pure];
+    Implements [OpAsmOpInterface, SymbolUserOpInterface];
+    Assembly { variable attr-dict ":" type(pointer) }
+  }
+  op Constant from SpirvOp {
+    Doc "Declare a new integer-type or floating-point-type scalar constant.";
+    Results    (constant: any_type);
+    Attributes (value: any);
+    Properties [constant_like, pure];
+    Implements [OpAsmOpInterface];
+    Assembly Custom;
+  }
+  op EXT.ConstantCompositeReplicate from SpirvOp {
+    Doc "Declare a new replicated composite constant op.";
+    Results    (replicated_constant: composite);
+    Attributes (value: any);
+    Properties [pure];
+    Assembly { " " "[" value "]" ":" type(replicated_constant) attr-dict }
+  }
+  op EntryPoint from SpirvOp {
+    Doc "Declare an entry point, its execution model, and its interface.";
+    Attributes (execution_model: ExecutionModel, fn: symbol_ref, interface: array<symbol_ref>);
+    Properties [has_parent(module)];
+    Assembly Custom;
+  }
+  op ExecutionMode from SpirvOp {
+    Doc "Declare an execution mode for an entry point.";
+    Attributes (fn: symbol_ref, execution_mode: ExecutionMode, values: array<i32>);
+    Properties [has_parent(module)];
+    Assembly Custom;
+  }
+  op ExecutionModeId from SpirvOp {
+    Doc "Declare an execution mode for an entry point, using <id>s as Extra Operands.";
+    Attributes (fn: symbol_ref, execution_mode: ExecutionMode, values: array<symbol_ref>);
+    Implements [SymbolUserOpInterface];
+    Assembly Custom;
+  }
+  op func from SpirvOp {
+    Doc "Declare or define a function";
+    Attributes (function_type: type, arg_attrs: optional<array<dictionary>>, res_attrs: optional<array<dictionary>>, sym_name: string, function_control: FunctionControl, linkage_attributes: optional<any>, sym_visibility: optional<string>);
+    Regions    (body: region);
+    Properties [automatic_allocation_scope, symbol, symbol_visibility, has_parent(module), isolated_from_above];
+    Implements [FunctionOpInterface];
+    Assembly Custom;
+  }
+  op GlobalVariable from SpirvOp {
+    Doc "Allocate an object in memory at module scope. The object is referenced using a symbol name.";
+    Attributes (type: type, sym_name: string, initializer: optional<symbol_ref>, location: optional<i32>, binding: optional<i32>, descriptor_set: optional<i32>, built_in: optional<string>, linkage_attributes: optional<any>, sym_visibility: optional<string>);
+    Properties [has_parent(module), symbol, symbol_visibility];
+    Implements [SymbolOpInterface, SymbolUserOpInterface];
+    Assembly Custom;
+  }
+  op module from SpirvOp {
+    Doc "The top-level op that defines a SPIR-V module";
+    Attributes (addressing_model: AddressingModel, memory_model: MemoryModel, vce_triple: optional<any>, sym_name: optional<string>, sym_visibility: optional<string>);
+    Regions    (body: region [no_region_args, no_terminator, single_block]);
+    Properties [isolated_from_above, symbol_table, symbol, symbol_visibility];
+    Implements [SymbolOpInterface];
+    Assembly Custom;
+  }
+  op mlir.referenceof from SpirvOp {
+    Doc "Reference a specialization constant.";
+    Results    (reference: any_type);
+    Attributes (spec_const: symbol_ref);
+    Properties [pure];
+    Implements [SymbolUserOpInterface];
+    Assembly { spec_const attr-dict ":" type(reference) }
+  }
+  op SpecConstant from SpirvOp {
+    Doc "Declare a new integer-type or floating-point-type scalar specialization constant.";
+    Attributes (sym_name: string, default_value: any, sym_visibility: optional<string>);
+    Properties [has_parent(module), symbol, symbol_visibility];
+    Implements [SymbolOpInterface];
+    Assembly Custom;
+  }
+  op SpecConstantComposite from SpirvOp {
+    Doc "Declare a new composite specialization constant.";
+    Attributes (type: type, sym_name: string, constituents: array<symbol_ref>, sym_visibility: optional<string>);
+    Properties [has_parent(module), symbol, symbol_visibility];
+    Implements [SymbolOpInterface, SymbolUserOpInterface];
+    Assembly Custom;
+  }
+  op EXT.SpecConstantCompositeReplicate from SpirvOp {
+    Doc "Declare a new replicated composite specialization constant op.";
+    Attributes (type: type, sym_name: string, constituent: symbol_ref, sym_visibility: optional<string>);
+    Properties [has_parent(module), symbol, symbol_visibility];
+    Implements [SymbolOpInterface, SymbolUserOpInterface];
+    Assembly Custom;
+  }
+  op SpecConstantOperation from SpirvOp {
+    Doc "Declare a new specialization constant that results from doing an operation.";
+    Results    (result: any_type);
+    Regions    (body: region [single_block]);
+    Properties [pure, has_parent(func)];
+    Assembly Custom;
+  }
+  op mlir.yield from SpirvOp {
+    Doc "Yields the result computed in `spirv.SpecConstantOperation`'s region back to the parent op.";
+    Operands   (operand: any_type);
+    Properties [pure, terminator];
+    Assembly { attr-dict operand ":" type(operand) }
+  }
+
+  // == SPIRVTosaOps.td
+  op Tosa.ArgMax from SpirvOp {
+    Doc "Perform argmax on the input.";
+    Operands   (input: tensor_arm<i8 | i16 | f16 | f32 | bf16 | fp8>);
+    Results    (results: any_type);
+    Attributes (axis: i32 [non_negative], nan_mode: TosaExtNaNPropagationModeType);
+    Properties [pure, has_parent(ARM.Graph)];
+    Assembly { "axis" "=" axis "," "nan_mode" "=" nan_mode "," input attr-dict ":" type(input) "->" type(results) }
+  }
+  op Tosa.AvgPool2D from SpirvOp {
+    Doc "Performs average pooling on the input.";
+    Operands   (input: tensor_arm<i8 | i16 | f16 | f32 | bf16 | fp8, 4>, input_zp: tensor_arm<i8 | i16 | f16 | f32 | bf16 | fp8, 1>, output_zp: tensor_arm<i8 | i16 | f16 | f32 | bf16 | fp8, 1>);
+    Results    (results: tensor_arm<i8 | i16 | f16 | f32 | bf16 | fp8, 4>);
+    Attributes (kernel: array<i32>, stride: array<i32>, pad: array<i32>, acc_type: TosaExtAccType);
+    Properties [no_memory_effect, same_element_type, has_parent(ARM.Graph)];
+    Assembly { "kernel" "=" custom<SPIRV_I32_1DArmTensor>(kernel) "," "stride" "=" custom<SPIRV_I32_1DArmTensor>(stride) "," "pad" "=" custom<SPIRV_I32_1DArmTensor>(pad) "," "acc_type" "=" acc_type "," input "," input_zp "," output_zp attr-dict ":" type(input) "," type(input_zp) "," type(output_zp) "->" type(results) }
+  }
+  op Tosa.Conv2D from SpirvOp {
+    Doc "2D Convolution operator.";
+    Operands   (input: tensor_arm<i8 | i16 | f16 | f32 | bf16 | fp8, 4>, weight: tensor_arm<i8 | f16 | f32 | bf16 | fp8, 4>, bias: tensor_arm<i32 | i64 | f16 | f32 | bf16, 1>, input_zp: tensor_arm<i8 | i16 | f16 | f32 | bf16 | fp8, 1>, weight_zp: tensor_arm<i8 | f16 | f32 | bf16 | fp8, 1>);
+    Results    (results: tensor_arm<i32 | i64 | f16 | f32 | bf16, 4>);
+    Attributes (pad: array<i32>, stride: array<i32>, dilation: array<i32>, acc_type: TosaExtAccType, local_bound: bool);
+    Properties [no_memory_effect, same_element_type, has_parent(ARM.Graph)];
+    Assembly { "pad" "=" custom<SPIRV_I32_1DArmTensor>(pad) "," "stride" "=" custom<SPIRV_I32_1DArmTensor>(stride) "," "dilation" "=" custom<SPIRV_I32_1DArmTensor>(dilation) "," "acc_type" "=" acc_type "," "local_bound" "=" local_bound "," input "," weight "," bias "," input_zp "," weight_zp attr-dict ":" type(input) "," type(weight) "," type(bias) "," type(input_zp) "," type(weight_zp) "->" type(results) }
+  }
+  op Tosa.Conv3D from SpirvOp {
+    Doc "3D Convolution operator.";
+    Operands   (input: tensor_arm<i8 | i16 | f16 | f32 | bf16 | fp8, 5>, weight: tensor_arm<i8 | f16 | f32 | bf16 | fp8, 5>, bias: tensor_arm<i32 | i64 | f16 | f32 | bf16, 1>, input_zp: tensor_arm<i8 | i16 | f16 | f32 | bf16 | fp8, 1>, weight_zp: tensor_arm<i8 | f16 | f32 | bf16 | fp8, 1>);
+    Results    (results: tensor_arm<i32 | i64 | f16 | f32 | bf16, 5>);
+    Attributes (pad: array<i32>, stride: array<i32>, dilation: array<i32>, acc_type: TosaExtAccType, local_bound: bool);
+    Properties [no_memory_effect, same_element_type, has_parent(ARM.Graph)];
+    Assembly { "pad" "=" custom<SPIRV_I32_1DArmTensor>(pad) "," "stride" "=" custom<SPIRV_I32_1DArmTensor>(stride) "," "dilation" "=" custom<SPIRV_I32_1DArmTensor>(dilation) "," "acc_type" "=" acc_type "," "local_bound" "=" local_bound "," input "," weight "," bias "," input_zp "," weight_zp attr-dict ":" type(input) "," type(weight) "," type(bias) "," type(input_zp) "," type(weight_zp) "->" type(results) }
+  }
+  op Tosa.DepthwiseConv2D from SpirvOp {
+    Doc "Depthwise 2D Convolution operator.";
+    Operands   (input: tensor_arm<i8 | i16 | f16 | f32 | bf16 | fp8, 4>, weight: tensor_arm<i8 | f16 | f32 | bf16 | fp8, 4>, bias: tensor_arm<i32 | i64 | f16 | f32 | bf16, 1>, input_zp: tensor_arm<i8 | i16 | f16 | f32 | bf16 | fp8, 1>, weight_zp: tensor_arm<i8 | f16 | f32 | bf16 | fp8, 1>);
+    Results    (results: tensor_arm<i32 | i64 | f16 | f32 | bf16, 4>);
+    Attributes (pad: array<i32>, stride: array<i32>, dilation: array<i32>, acc_type: TosaExtAccType, local_bound: bool);
+    Properties [no_memory_effect, same_element_type, has_parent(ARM.Graph)];
+    Assembly { "pad" "=" custom<SPIRV_I32_1DArmTensor>(pad) "," "stride" "=" custom<SPIRV_I32_1DArmTensor>(stride) "," "dilation" "=" custom<SPIRV_I32_1DArmTensor>(dilation) "," "acc_type" "=" acc_type "," "local_bound" "=" local_bound "," input "," weight "," bias "," input_zp "," weight_zp attr-dict ":" type(input) "," type(weight) "," type(bias) "," type(input_zp) "," type(weight_zp) "->" type(results) }
+  }
+  op Tosa.FFT2D from SpirvOp {
+    Doc "Performs FFT2D operation on the input.";
+    Operands   (input_real: tensor_arm<f32, 3>, input_imag: tensor_arm<f32, 3>);
+    Results    (results: tensor_arm<tuple<f32, f32>, 3>);
+    Attributes (inverse: bool, local_bound: bool);
+    Properties [pure, has_parent(ARM.Graph)];
+    Assembly { "inverse" "=" inverse "," "local_bound" "=" local_bound "," input_real "," input_imag attr-dict ":" type(input_real) "," type(input_imag) "->" type(results) }
+  }
+  op Tosa.MatMul from SpirvOp {
+    Doc "Matrix Multiplication operator.";
+    Operands   (A: tensor_arm<i8 | i16 | f16 | f32 | bf16 | fp8, 3>, B: tensor_arm<i8 | i16 | f16 | f32 | bf16 | fp8, 3>, A_zp: tensor_arm<i8 | i16 | f16 | f32 | bf16 | fp8, 1>, B_zp: tensor_arm<i8 | i16 | f16 | f32 | bf16 | fp8, 1>);
+    Results    (results: tensor_arm<i32 | i64 | f16 | f32, 3>);
+    Properties [no_memory_effect, same_element_type, has_parent(ARM.Graph)];
+    Assembly { A "," B "," A_zp "," B_zp attr-dict ":" type(A) "," type(B) "," type(A_zp) "," type(B_zp) "->" type(results) }
+  }
+  op Tosa.MaxPool2D from SpirvOp {
+    Doc "Performs max pooling on the input.";
+    Operands   (input: tensor_arm<i8 | i16 | f16 | f32 | bf16 | fp8, 4>);
+    Results    (results: tensor_arm<i8 | i16 | f16 | f32 | bf16 | fp8, 4>);
+    Attributes (kernel: array<i32>, stride: array<i32>, pad: array<i32>, nan_mode: TosaExtNaNPropagationModeType);
+    Properties [pure, same_element_type, has_parent(ARM.Graph)];
+    Assembly { "kernel" "=" custom<SPIRV_I32_1DArmTensor>(kernel) "," "stride" "=" custom<SPIRV_I32_1DArmTensor>(stride) "," "pad" "=" custom<SPIRV_I32_1DArmTensor>(pad) "," "nan_mode" "=" nan_mode "," input attr-dict ":" type(input) "->" type(results) }
+  }
+  op Tosa.RFFT2D from SpirvOp {
+    Doc "Performs RFFT2D operation on the input.";
+    Operands   (input_real: tensor_arm<f32, 3>);
+    Results    (results: tensor_arm<tuple<f32, f32>, 3>);
+    Attributes (local_bound: bool);
+    Properties [pure, has_parent(ARM.Graph)];
+    Assembly { "local_bound" "=" local_bound "," input_real attr-dict ":" type(input_real) "->" type(results) }
+  }
+  op Tosa.TransposeConv2D from SpirvOp {
+    Doc "Transpose 2D Convolution operator.";
+    Operands   (input: tensor_arm<i8 | i16 | f16 | f32 | bf16 | fp8, 4>, weight: tensor_arm<i8 | f16 | f32 | bf16 | fp8, 4>, bias: tensor_arm<i32 | i64 | f16 | f32 | bf16, 1>, input_zp: tensor_arm<i8 | i16 | f16 | f32 | bf16 | fp8, 1>, weight_zp: tensor_arm<i8 | f16 | f32 | bf16 | fp8, 1>);
+    Results    (results: tensor_arm<i32 | i64 | f16 | f32 | bf16, 4>);
+    Attributes (out_pad: array<i32>, stride: array<i32>, acc_type: TosaExtAccType, local_bound: bool);
+    Properties [no_memory_effect, same_element_type, has_parent(ARM.Graph)];
+    Assembly { "out_pad" "=" custom<SPIRV_I32_1DArmTensor>(out_pad) "," "stride" "=" custom<SPIRV_I32_1DArmTensor>(stride) "," "acc_type" "=" acc_type "," "local_bound" "=" local_bound "," input "," weight "," bias "," input_zp "," weight_zp attr-dict ":" type(input) "," type(weight) "," type(bias) "," type(input_zp) "," type(weight_zp) "->" type(results) }
+  }
+  op Tosa.Clamp from SpirvOp {
+    Doc "Computes Clamp(min, max).";
+    Operands   (input: tensor_arm<i8 | i16 | f16 | f32 | bf16>);
+    Results    (results: tensor_arm<i8 | i16 | f16 | f32 | bf16>);
+    Attributes (min_val: any, max_val: any, nan_mode: TosaExtNaNPropagationModeType);
+    Properties [pure, same_element_type, has_parent(ARM.Graph), same_type(input, results)];
+    Assembly { "min_val" "=" min_val "," "max_val" "=" max_val "," "nan_mode" "=" nan_mode "," input attr-dict ":" type(input) "->" type(results) }
+  }
+  op Tosa.Erf from TosaUnaryActivation {
+    Doc "Gauss Error Function.";
+  }
+  op Tosa.Sigmoid from TosaUnaryActivation {
+    Doc "Sigmoid operator.";
+  }
+  op Tosa.Tanh from TosaUnaryActivation {
+    Doc "Hyperbolic Tangent operator.";
+  }
+  op Tosa.Add from SpirvOp {
+    Doc "Addition operator.";
+    Operands   (input1: tensor_arm<i32 | f16 | f32 | bf16>, input2: tensor_arm<i32 | f16 | f32 | bf16>);
+    Results    (results: tensor_arm<i32 | f16 | f32 | bf16>);
+    Properties [no_memory_effect, same_element_type, same_rank, broadcastable, has_parent(ARM.Graph)];
+    Assembly { input1 "," input2 attr-dict ":" type(input1) "," type(input2) "->" type(results) }
+  }
+  op Tosa.ArithmeticRightShift from SpirvOp {
+    Doc "Arithmetic Right Shift.";
+    Operands   (input1: tensor_arm<i8 | i16 | i32>, input2: tensor_arm<i8 | i16 | i32>);
+    Results    (results: tensor_arm<i8 | i16 | i32>);
+    Attributes (round: bool);
+    Properties [no_memory_effect, same_element_type, same_rank, broadcastable, has_parent(ARM.Graph)];
+    Assembly { "round" "=" round "," input1 "," input2 attr-dict ":" type(input1) "," type(input2) "->" type(results) }
+  }
+  op Tosa.BitwiseAnd from TosaBinaryInt {
+    Doc "Bitwise AND operator.";
+  }
+  op Tosa.BitwiseOr from TosaBinaryInt {
+    Doc "Bitwise OR operator.";
+  }
+  op Tosa.BitwiseXor from TosaBinaryInt {
+    Doc "Bitwise XOR operator.";
+  }
+  op Tosa.IntDiv from SpirvOp {
+    Doc "Integer Divide operator.";
+    Operands   (input1: tensor_arm<i32>, input2: tensor_arm<i32>);
+    Results    (results: tensor_arm<i32>);
+    Properties [no_memory_effect, same_element_type, same_rank, broadcastable, has_parent(ARM.Graph)];
+    Assembly { input1 "," input2 attr-dict ":" type(input1) "," type(input2) "->" type(results) }
+  }
+  op Tosa.LogicalAnd from TosaLogical {
+    Doc "Logical AND operator.";
+  }
+  op Tosa.LogicalLeftShift from SpirvOp {
+    Doc "Logical Left Shift operator.";
+    Operands   (input1: tensor_arm<i8 | i16 | i32>, input2: tensor_arm<i8 | i16 | i32>);
+    Results    (results: tensor_arm<i8 | i16 | i32>);
+    Properties [no_memory_effect, same_element_type, same_rank, broadcastable, has_parent(ARM.Graph)];
+    Assembly { input1 "," input2 attr-dict ":" type(input1) "," type(input2) "->" type(results) }
+  }
+  op Tosa.LogicalRightShift from SpirvOp {
+    Doc "Logical Right Shift operator.";
+    Operands   (input1: tensor_arm<i8 | i16 | i32>, input2: tensor_arm<i8 | i16 | i32>);
+    Results    (results: tensor_arm<i8 | i16 | i32>);
+    Properties [no_memory_effect, same_element_type, same_rank, broadcastable, has_parent(ARM.Graph)];
+    Assembly { input1 "," input2 attr-dict ":" type(input1) "," type(input2) "->" type(results) }
+  }
+  op Tosa.LogicalOr from TosaLogical {
+    Doc "Logical OR operator.";
+  }
+  op Tosa.LogicalXor from TosaLogical {
+    Doc "Logical XOR operator.";
+  }
+  op Tosa.Maximum from SpirvOp {
+    Doc "Maximum.";
+    Operands   (input1: tensor_arm<i32 | f16 | f32 | bf16>, input2: tensor_arm<i32 | f16 | f32 | bf16>);
+    Results    (results: tensor_arm<i32 | f16 | f32 | bf16>);
+    Attributes (nan_mode: TosaExtNaNPropagationModeType);
+    Properties [pure, same_element_type, same_rank, broadcastable, has_parent(ARM.Graph)];
+    Assembly { "nan_mode" "=" nan_mode "," input1 "," input2 attr-dict ":" type(input1) "," type(input2) "->" type(results) }
+  }
+  op Tosa.Minimum from SpirvOp {
+    Doc "Minimum.";
+    Operands   (input1: tensor_arm<i32 | f16 | f32 | bf16>, input2: tensor_arm<i32 | f16 | f32 | bf16>);
+    Results    (results: tensor_arm<i32 | f16 | f32 | bf16>);
+    Attributes (nan_mode: TosaExtNaNPropagationModeType);
+    Properties [pure, same_element_type, same_rank, broadcastable, has_parent(ARM.Graph)];
+    Assembly { "nan_mode" "=" nan_mode "," input1 "," input2 attr-dict ":" type(input1) "," type(input2) "->" type(results) }
+  }
+  op Tosa.Mul from SpirvOp {
+    Doc "Multiplication operator.";
+    Operands   (input1: tensor_arm<i8 | i16 | i32 | f16 | f32 | bf16>, input2: tensor_arm<i8 | i16 | i32 | f16 | f32 | bf16>, shift: tensor_arm<i8, 1>);
+    Results    (results: tensor_arm<i32 | f16 | f32 | bf16>);
+    Properties [no_memory_effect, same_element_type, same_rank, broadcastable, has_parent(ARM.Graph)];
+    Assembly { input1 "," input2 "," shift attr-dict ":" type(input1) "," type(input2) "," type(shift) "->" type(results) }
+  }
+  op Tosa.Pow from SpirvOp {
+    Doc "Power operator.";
+    Operands   (input1: tensor_arm<f16 | f32 | bf16>, input2: tensor_arm<f16 | f32 | bf16>);
+    Results    (results: tensor_arm<f16 | f32 | bf16>);
+    Properties [no_memory_effect, same_element_type, same_rank, broadcastable, has_parent(ARM.Graph)];
+    Assembly { input1 "," input2 attr-dict ":" type(input1) "," type(input2) "->" type(results) }
+  }
+  op Tosa.Sub from SpirvOp {
+    Doc "Subtraction operator.";
+    Operands   (input1: tensor_arm<i32 | f16 | f32 | bf16>, input2: tensor_arm<i32 | f16 | f32 | bf16>);
+    Results    (results: tensor_arm<i32 | f16 | f32 | bf16>);
+    Properties [no_memory_effect, same_element_type, same_rank, broadcastable, has_parent(ARM.Graph)];
+    Assembly { input1 "," input2 attr-dict ":" type(input1) "," type(input2) "->" type(results) }
+  }
+  op Tosa.Table from SpirvOp {
+    Doc "Table lookup operator.";
+    Operands   (input1: tensor_arm<i8 | i16>, table: tensor_arm<i8 | i16, 1>);
+    Results    (results: tensor_arm<i8 | i32>);
+    Properties [no_memory_effect, same_element_type, has_parent(ARM.Graph)];
+    Assembly { input1 "," table attr-dict ":" type(input1) "," type(table) "->" type(results) }
+  }
+  op Tosa.Abs from SpirvOp {
+    Doc "Absolute value operation.";
+    Operands   (input1: tensor_arm<i32 | f16 | f32 | bf16>);
+    Results    (results: tensor_arm<i32 | f16 | f32 | bf16>);
+    Properties [no_memory_effect, has_parent(ARM.Graph), same_type(input1, results)];
+    Assembly { input1 attr-dict ":" type(input1) "->" type(results) }
+  }
+  op Tosa.BitwiseNot from SpirvOp {
+    Doc "Bitwise NOT operator.";
+    Operands   (input1: tensor_arm<i8 | i16 | i32>);
+    Results    (results: tensor_arm<i8 | i16 | i32>);
+    Properties [pure, has_parent(ARM.Graph), same_type(input1, results)];
+    Assembly { input1 attr-dict ":" type(input1) "->" type(results) }
+  }
+  op Tosa.Ceil from TosaUnaryElementwise {
+    Doc "Ceil operator.";
+  }
+  op Tosa.Clz from SpirvOp {
+    Doc "Count Leading Zero operator.";
+    Operands   (input1: tensor_arm<i32>);
+    Results    (results: tensor_arm<i32>);
+    Properties [pure, has_parent(ARM.Graph), same_type(input1, results)];
+    Assembly { input1 attr-dict ":" type(input1) "->" type(results) }
+  }
+  op Tosa.Cos from TosaUnaryElementwise {
+    Doc "Cosine operator.";
+  }
+  op Tosa.Exp from TosaUnaryElementwise {
+    Doc "Exp operator.";
+  }
+  op Tosa.Floor from TosaUnaryElementwise {
+    Doc "Floor operator.";
+  }
+  op Tosa.Log from TosaUnaryElementwise {
+    Doc "Log operator.";
+  }
+  op Tosa.LogicalNot from SpirvOp {
+    Doc "Logical NOT operator.";
+    Operands   (input1: tensor_arm<bool_scalar>);
+    Results    (results: tensor_arm<bool_scalar>);
+    Properties [pure, has_parent(ARM.Graph), same_type(input1, results)];
+    Assembly { input1 attr-dict ":" type(input1) "->" type(results) }
+  }
+  op Tosa.Negate from SpirvOp {
+    Doc "Negate operator.";
+    Operands   (input1: tensor_arm<i8 | i16 | i32 | f16 | f32 | bf16>, input1_zp: tensor_arm<i8 | i16 | i32 | f16 | f32 | bf16, 1>, output_zp: tensor_arm<i8 | i16 | i32 | f16 | f32 | bf16, 1>);
+    Results    (results: tensor_arm<i8 | i16 | i32 | f16 | f32 | bf16>);
+    Properties [no_memory_effect, same_element_type, has_parent(ARM.Graph), same_type(input1, results)];
+    Assembly { input1 "," input1_zp "," output_zp attr-dict ":" type(input1) "," type(input1_zp) "," type(output_zp) "->" type(results) }
+  }
+  op Tosa.Reciprocal from TosaUnaryElementwise {
+    Doc "Reciprocal operator.";
+  }
+  op Tosa.Rsqrt from TosaUnaryElementwise {
+    Doc "Reverse Square Root operator.";
+  }
+  op Tosa.Sin from TosaUnaryElementwise {
+    Doc "Sin operator.";
+  }
+  op Tosa.Select from SpirvOp {
+    Doc "Select operator.";
+    Operands   (condition: tensor_arm<bool_scalar>, true_value: tensor_arm<bool_scalar | i8 | i16 | i32 | f16 | f32 | bf16>, false_value: tensor_arm<bool_scalar | i8 | i16 | i32 | f16 | f32 | bf16>);
+    Results    (results: tensor_arm<bool_scalar | i8 | i16 | i32 | f16 | f32 | bf16>);
+    Properties [pure, same_element_type, same_rank, has_parent(ARM.Graph)];
+    Implements [SelectLikeOpInterface];
+    Assembly { condition "," true_value "," false_value attr-dict ":" type(condition) "," type(true_value) "," type(false_value) "->" type(results) }
+  }
+  op Tosa.Equal from TosaCompare {
+    Doc "Equal comparison operation";
+  }
+  op Tosa.Greater from TosaCompare {
+    Doc "Greater comparison operation";
+  }
+  op Tosa.GreaterEqual from TosaCompare {
+    Doc "Greater or Equal comparison operation";
+  }
+  op Tosa.ReduceAll from SpirvOp {
+    Doc "Reduce All operator.";
+    Operands   (input: tensor_arm<bool_scalar>);
+    Results    (results: tensor_arm<bool_scalar>);
+    Attributes (axis: i32 [non_negative]);
+    Properties [pure, same_element_type, same_rank, has_parent(ARM.Graph)];
+    Assembly { "axis" "=" axis "," input attr-dict ":" type(input) "->" type(results) }
+  }
+  op Tosa.ReduceAny from SpirvOp {
+    Doc "Reduce Any operator.";
+    Operands   (input: tensor_arm<bool_scalar>);
+    Results    (results: tensor_arm<bool_scalar>);
+    Attributes (axis: i32 [non_negative]);
+    Properties [pure, same_element_type, same_rank, has_parent(ARM.Graph)];
+    Assembly { "axis" "=" axis "," input attr-dict ":" type(input) "->" type(results) }
+  }
+  op Tosa.ReduceMax from SpirvOp {
+    Doc "Reduce Max operator.";
+    Operands   (input: tensor_arm<i8 | i16 | i32 | f16 | f32 | bf16>);
+    Results    (results: tensor_arm<i8 | i16 | i32 | f16 | f32 | bf16>);
+    Attributes (axis: i32 [non_negative], nan_mode: TosaExtNaNPropagationModeType);
+    Properties [pure, same_element_type, same_rank, has_parent(ARM.Graph)];
+    Assembly { "axis" "=" axis "," "nan_mode" "=" nan_mode "," input attr-dict ":" type(input) "->" type(results) }
+  }
+  op Tosa.ReduceMin from SpirvOp {
+    Doc "Reduce Min operator.";
+    Operands   (input: tensor_arm<i8 | i16 | i32 | f16 | f32 | bf16>);
+    Results    (results: tensor_arm<i8 | i16 | i32 | f16 | f32 | bf16>);
+    Attributes (axis: i32 [non_negative], nan_mode: TosaExtNaNPropagationModeType);
+    Properties [pure, same_element_type, same_rank, has_parent(ARM.Graph)];
+    Assembly { "axis" "=" axis "," "nan_mode" "=" nan_mode "," input attr-dict ":" type(input) "->" type(results) }
+  }
+  op Tosa.ReduceProduct from SpirvOp {
+    Doc "Reduce Product operator.";
+    Operands   (input: tensor_arm<f16 | f32 | bf16>);
+    Results    (results: tensor_arm<f16 | f32 | bf16>);
+    Attributes (axis: i32 [non_negative]);
+    Properties [pure, same_element_type, same_rank, has_parent(ARM.Graph)];
+    Assembly { "axis" "=" axis "," input attr-dict ":" type(input) "->" type(results) }
+  }
+  op Tosa.ReduceSum from SpirvOp {
+    Doc "Reduce Sum operator.";
+    Operands   (input: tensor_arm<i32 | f16 | f32 | bf16>);
+    Results    (results: tensor_arm<i32 | f16 | f32 | bf16>);
+    Attributes (axis: i32 [non_negative]);
+    Properties [no_memory_effect, same_element_type, same_rank, has_parent(ARM.Graph)];
+    Assembly { "axis" "=" axis "," input attr-dict ":" type(input) "->" type(results) }
+  }
+  op Tosa.Concat from SpirvOp {
+    Doc "Concatenates tensors along one dimension.";
+    Operands   (input1: variadic<tensor_arm<bool_scalar | i8 | i16 | i32 | f16 | f32 | bf16 | fp8>>);
+    Results    (results: tensor_arm<bool_scalar | i8 | i16 | i32 | f16 | f32 | bf16 | fp8>);
+    Attributes (axis: i32 [non_negative]);
+    Properties [pure, has_parent(ARM.Graph)];
+    Assembly { "axis" "=" axis "," input1 attr-dict ":" type(input1) "->" type(results) }
+  }
+  op Tosa.Pad from SpirvOp {
+    Doc "Pads a tensor with value specified.";
+    Operands   (input1: tensor_arm<bool_scalar | i8 | i16 | i32 | f16 | f32 | bf16 | fp8>, padding: tensor_arm<i32, 1>, pad_const: tensor_arm<bool_scalar | i8 | i16 | i32 | f16 | f32 | bf16 | fp8, 1>);
+    Results    (results: tensor_arm<bool_scalar | i8 | i16 | i32 | f16 | f32 | bf16 | fp8>);
+    Properties [pure, same_element_type, same_rank, has_parent(ARM.Graph)];
+    Assembly { input1 "," padding "," pad_const attr-dict ":" type(input1) "," type(padding) "," type(pad_const) "->" type(results) }
+  }
+  op Tosa.Reshape from SpirvOp {
+    Doc "Reshape operator.";
+    Operands   (input1: tensor_arm<bool_scalar | i8 | i16 | i32 | f16 | f32 | bf16 | fp8>, shape: tensor_arm<i32, 1>);
+    Results    (results: tensor_arm<bool_scalar | i8 | i16 | i32 | f16 | f32 | bf16 | fp8>);
+    Properties [pure, same_element_type, has_parent(ARM.Graph)];
+    Assembly { input1 "," shape attr-dict ":" type(input1) "," type(shape) "->" type(results) }
+  }
+  op Tosa.Reverse from SpirvOp {
+    Doc "Reverse operator.";
+    Operands   (input1: tensor_arm<bool_scalar | i8 | i16 | i32 | f16 | f32 | bf16 | fp8>);
+    Results    (results: tensor_arm<bool_scalar | i8 | i16 | i32 | f16 | f32 | bf16 | fp8>);
+    Attributes (axis: i32 [non_negative]);
+    Properties [pure, has_parent(ARM.Graph), same_type(input1, results)];
+    Assembly { "axis" "=" axis "," input1 attr-dict ":" type(input1) "->" type(results) }
+  }
+  op Tosa.Slice from SpirvOp {
+    Doc "Slice operator.";
+    Operands   (input1: tensor_arm<bool_scalar | i8 | i16 | i32 | f16 | f32 | bf16 | fp8>, start: tensor_arm<i32, 1>, size: tensor_arm<i32, 1>);
+    Results    (results: tensor_arm<bool_scalar | i8 | i16 | i32 | f16 | f32 | bf16 | fp8>);
+    Properties [pure, same_element_type, has_parent(ARM.Graph)];
+    Assembly { input1 "," start "," size attr-dict ":" type(input1) "," type(start) "," type(size) "->" type(results) }
+  }
+  op Tosa.Tile from SpirvOp {
+    Doc "Tile operator.";
+    Operands   (input1: tensor_arm<bool_scalar | i8 | i16 | i32 | f16 | f32 | bf16 | fp8>, multiples: tensor_arm<i32, 1>);
+    Results    (results: tensor_arm<bool_scalar | i8 | i16 | i32 | f16 | f32 | bf16 | fp8>);
+    Properties [pure, same_element_type, same_rank, has_parent(ARM.Graph)];
+    Assembly { input1 "," multiples attr-dict ":" type(input1) "," type(multiples) "->" type(results) }
+  }
+  op Tosa.Transpose from SpirvOp {
+    Doc "Transpose operator.";
+    Operands   (input1: tensor_arm<bool_scalar | i8 | i16 | i32 | f16 | f32 | bf16 | fp8>);
+    Results    (results: tensor_arm<bool_scalar | i8 | i16 | i32 | f16 | f32 | bf16 | fp8>);
+    Attributes (perms: array<i32>);
+    Properties [pure, same_element_type, same_rank, has_parent(ARM.Graph)];
+    Assembly { "perms" "=" custom<SPIRV_I32_1DArmTensor>(perms) "," input1 attr-dict ":" type(input1) "->" type(results) }
+  }
+  op Tosa.Gather from SpirvOp {
+    Doc "Gather operation.";
+    Operands   (values: tensor_arm<i8 | i16 | i32 | f16 | f32 | bf16 | fp8, 3>, indices: tensor_arm<i32, 2>);
+    Results    (results: tensor_arm<i8 | i16 | i32 | f16 | f32 | bf16 | fp8, 3>);
+    Properties [no_memory_effect, same_element_type, has_parent(ARM.Graph)];
+    Assembly { values "," indices attr-dict ":" type(values) "," type(indices) "->" type(results) }
+  }
+  op Tosa.Scatter from SpirvOp {
+    Doc "Scatter operation.";
+    Operands   (values_in: tensor_arm<i8 | i16 | i32 | f16 | f32 | bf16 | fp8, 3>, indices: tensor_arm<i32, 2>, input: tensor_arm<i8 | i16 | i32 | f16 | f32 | bf16 | fp8, 3>);
+    Results    (results: tensor_arm<i8 | i16 | i32 | f16 | f32 | bf16 | fp8, 3>);
+    Properties [no_memory_effect, same_element_type, has_parent(ARM.Graph), same_type(values_in, results)];
+    Assembly { values_in "," indices "," input attr-dict ":" type(values_in) "," type(indices) "," type(input) "->" type(results) }
+  }
+  op Tosa.Resize from SpirvOp {
+    Doc "Resize operation, supports various resize/upsample modes.";
+    Operands   (input: tensor_arm<i8 | i16 | f16 | f32 | bf16, 4>, scale: tensor_arm<i32, 1>, offset: tensor_arm<i32, 1>, border: tensor_arm<i32, 1>);
+    Results    (results: tensor_arm<i32 | i8 | i64 | i16 | f16 | f32 | bf16, 4>);
+    Attributes (mode: TosaExtResizeModeType);
+    Properties [pure, has_parent(ARM.Graph)];
+    Assembly { "mode" "=" mode "," input "," scale "," offset "," border attr-dict ":" type(input) "," type(scale) "," type(offset) "," type(border) "->" type(results) }
+  }
+  op Tosa.Cast from SpirvOp {
+    Doc "Cast operation.";
+    Operands   (input: tensor_arm<bool_scalar | i8 | i16 | i32 | f16 | f32 | bf16 | fp8>);
+    Results    (results: tensor_arm<i8 | i16 | i32 | bool_scalar | f16 | f32 | bf16 | fp8>);
+    Properties [pure, has_parent(ARM.Graph)];
+    Assembly { input attr-dict ":" type(input) "->" type(results) }
+  }
+  op Tosa.Rescale from SpirvOp {
+    Doc "Rescale operator.";
+    Operands   (input: tensor_arm<i8 | i16 | i32 | i64>, multiplier: tensor_arm<i16 | i32, 1>, shift: tensor_arm<i8, 1>, input_zp: tensor_arm<i8 | i16 | i32 | i64, 1>, output_zp: tensor_arm<i8 | i16 | i32, 1>);
+    Results    (results: tensor_arm<i8 | i16 | i32>);
+    Attributes (scale32: bool, rounding_mode: TosaExtRoundingModeType, per_channel: bool, input_unsigned: bool, output_unsigned: bool);
+    Properties [no_memory_effect, same_element_type, has_parent(ARM.Graph)];
+    Assembly { "scale32" "=" scale32 "," "rounding_mode" "=" rounding_mode "," "per_channel" "=" per_channel "," "input_unsigned" "=" input_unsigned "," "output_unsigned" "=" output_unsigned "," input "," multiplier "," shift "," input_zp "," output_zp attr-dict ":" type(input) "," type(multiplier) "," type(shift) "," type(input_zp) "," type(output_zp) "->" type(results) }
+  }
+}
+
+/// ---- 附：Custom 通道逐条依据（上游 op/基类无 assemblyFormat，parser/printer
+/// 手写在 SPIRV 的 cpp 里；hasCustomAssemblyFormat 由 SPIRV_Op 统一置 1）----
+///   IAddCarry                                SPIRVArithmeticOps.td:303
+///   ISubBorrow                               SPIRVArithmeticOps.td:407
+///   SMulExtended                             SPIRVArithmeticOps.td:550
+///   UMulExtended                             SPIRVArithmeticOps.td:678
+///   CompositeExtract                         SPIRVCompositeOps.td:76
+///   CompositeInsert                          SPIRVCompositeOps.td:127
+///   BranchConditional                        SPIRVControlFlowOps.td:73
+///   mlir.loop                                SPIRVControlFlowOps.td:538
+///   mlir.selection                           SPIRVControlFlowOps.td:718
+///   GL.FClamp                                SPIRVGLOps.td:996
+///   GL.UClamp                                SPIRVGLOps.td:1026
+///   GL.SClamp                                SPIRVGLOps.td:1055
+///   GL.NClamp                                SPIRVGLOps.td:1136
+///   GL.Fma                                   SPIRVGLOps.td:1161
+///   GL.SmoothStep                            SPIRVGLOps.td:1514
+///   ARM.Graph                                SPIRVGraphOps.td:37
+///   ARM.GraphEntryPoint                      SPIRVGraphOps.td:162
+///   INTEL.SubgroupBlockWrite                 SPIRVGroupOps.td:705
+///   CopyMemory                               SPIRVMemoryOps.td:118
+///   Load                                     SPIRVMemoryOps.td:221
+///   Store                                    SPIRVMemoryOps.td:443
+///   Variable                                 SPIRVMemoryOps.td:500
+///   Constant                                 SPIRVStructureOps.td:72
+///   EntryPoint                               SPIRVStructureOps.td:185
+///   ExecutionMode                            SPIRVStructureOps.td:247
+///   ExecutionModeId                          SPIRVStructureOps.td:297
+///   func                                     SPIRVStructureOps.td:363
+///   GlobalVariable                           SPIRVStructureOps.td:473
+///   module                                   SPIRVStructureOps.td:577
+///   SpecConstant                             SPIRVStructureOps.td:707
+///   SpecConstantComposite                    SPIRVStructureOps.td:760
+///   EXT.SpecConstantCompositeReplicate       SPIRVStructureOps.td:816
+///   SpecConstantOperation                    SPIRVStructureOps.td:857
+
+/// ---- 附：custom<…> 钩子（名字与实参顺序严格照上游调用）----
+///   SwitchOpCases                1 个 op: Switch
+///   ImageOperands                7 个 op: ImageDrefGather, ImageRead, ImageWrite, ImageSampleExplicitLod, ImageSampleImplicitLod, ImageSampleProjDrefImplicitLod, ImageFetch
+///   SPIRV_I32_1DArmTensor        7 个 op: Tosa.AvgPool2D, Tosa.Conv2D, Tosa.Conv3D, Tosa.DepthwiseConv2D, Tosa.MaxPool2D, Tosa.TransposeConv2D, Tosa.Transpose
+

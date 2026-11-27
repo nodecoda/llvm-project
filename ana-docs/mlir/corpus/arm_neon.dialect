@@ -61,7 +61,7 @@ dialect arm_neon {
     Assembly { a "," b attr-dict ":" type(a) "to" type(res) }
   }
 
-  op smull from widening_multiply {
+  op intr.smull from widening_multiply {
     Doc "有符号乘长：a、b 是 8/4/2 lane 的 i8/i16/i32 向量，结果是对应 lane 数的 i16/i32/i64 向量。";
   }
 
@@ -77,24 +77,24 @@ dialect arm_neon {
   }
 
   /// 本地事实 dot_group(4)：源每 4 个 i8 lane 归约成结果的一个 i32 lane。
-  op sdot from multiply_accumulate {
+  op intr.sdot from multiply_accumulate {
     Doc "有符号点积累加：src1、src2 是 8/16 lane 的 i8 向量，每 4 个 lane 求点积后加到 acc 的对应 i32 lane。";
     Properties [dot_group(4)];
   }
 
-  op smmla from multiply_accumulate {
+  op intr.smmla from multiply_accumulate {
     Doc "有符号 8 位矩阵乘累加：2x8 乘 8x2 得 2x2 的 i32 矩阵，加到 acc 的 4 个 i32 lane。";
   }
 
-  op ummla from multiply_accumulate {
+  op intr.ummla from multiply_accumulate {
     Doc "无符号 8 位矩阵乘累加：形状与 smmla 相同，源按无符号解释。";
   }
 
-  op usmmla from multiply_accumulate {
+  op intr.usmmla from multiply_accumulate {
     Doc "无符号乘有符号的 8 位矩阵乘累加：src1 无符号、src2 有符号，结果加到 acc。";
   }
 
-  op bfmmla from multiply_accumulate {
+  op intr.bfmmla from multiply_accumulate {
     Doc "bf16 矩阵乘累加：2x4 乘 4x2 的 bf16 矩阵，结果以 f32 累加到 acc。";
   }
 

@@ -6,7 +6,8 @@
 ///   2. 掩码层：create_mask、constant_mask、mask、yield（mask region 出口）；
 ///   3. 算术/收缩层：fma、outerproduct、contract、reduction、multi_reduction、scan；
 ///   4. 元素/形状重排层：broadcast、step、bitcast、interleave、deinterleave、
-///      extract、insert、insert_strided_slice、extract_strided_slice、shuffle、
+///      extract、insert、scalable.extract、scalable.insert、insert_strided_slice、
+///      extract_strided_slice、shuffle、
 ///      shape_cast、transpose、to_elements、from_elements；
 ///   5. 环境/诊断层：vscale、print。
 ///
@@ -16,7 +17,7 @@
 ///   - mask 是一个带单块 region 的"作用域"，被掩码的 op 写在里面；
 ///   - gather/scatter 用"偏移列表 + 索引向量 + 掩码 + 载荷"四段描述随机访问。
 ///
-/// 文本通道（37 个 op）：块格式 32，`Assembly Custom;` 5，`Assembly Generic;` 0。
+/// 文本通道（39 个 op）：块格式 34，`Assembly Custom;` 5，`Assembly Generic;` 0。
 /// 5 个 Custom 全部对应上游 hasCustomAssemblyFormat：
 /// transfer_read、transfer_write、contract、mask、outerproduct。
 /// broadcast/shape_cast/transpose 共享 shape_manipulation 的文本，
@@ -372,6 +373,25 @@ dialect vector {
     Assembly   { value_to_store "," dest
                  custom<DynamicIndexList>(dynamic_position, static_position)
                  attr-dict ":" type(value_to_store) "into" type(dest) }
+  }
+
+  op scalable.insert {
+    Doc "Insert a fixed-length subvector into a scalable vector at `pos`; `pos` is a multiple of the subvector length (vector.scalable.insert).";
+    Operands   (value_to_store: any, dest: any);
+    Results    (result: any);
+    Attributes (pos: i64);
+    Properties [same_element_type(value_to_store, dest), same_type(dest, result)];
+    Assembly   { value_to_store "," dest "[" pos "]" attr-dict
+                 ":" type(value_to_store) "into" type(dest) }
+  }
+
+  op scalable.extract {
+    Doc "Extract a fixed-length subvector from a scalable vector at `pos`; `pos` is a multiple of the result length (vector.scalable.extract).";
+    Operands   (source: any);
+    Results    (result: any);
+    Attributes (pos: i64);
+    Properties [same_element_type(source, result)];
+    Assembly   { source "[" pos "]" attr-dict ":" type(result) "from" type(source) }
   }
 
   op insert_strided_slice from strided_subvector {

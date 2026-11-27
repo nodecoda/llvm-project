@@ -4,7 +4,7 @@
 > `tools/gap-registry.tsv`（债务账本）、`tools/hook-registry.tsv`、
 > `tools/fact-glossary.tsv`；文法：`dialect-grammar.y` 的 `Gap(name)`、
 > `ref(...)`、`else`、`oilist<sep>`；上位规则见 [19 章](19-escape-hatches.md)。
-> 语料：44 个方言、1358 个 op（本章数字随语料更新；历史数字见各轮章节）。
+> 语料：50 个方言、2777 个 op（本章数字随语料更新；历史数字见各轮章节）。
 
 ## 0. 问题：许可证写得出来，就等于没有许可证
 
@@ -15,7 +15,7 @@
 | 滥用 | 上一版为什么拦不住 | 本轮的反例 |
 | --- | --- | --- |
 | **假陈述**：把声明式文本标成 `Custom` | 只检查"有没有写"，没检查"写的和上游是否一致" | 第一次跑 L1 抓到 16 个 op |
-| **近似实参**：钩子只传一部分参数，假装覆盖了 | 只检查钩子名存在，没检查实参 | L3b 第一次跑抓到 7 个 op（§5） |
+| **近似实参**：钩子只传一部分参数，假装覆盖了 | 只检查钩子名存在，没检查实参 | 实参形状检查共抓到 9 个 op（§5） |
 | **永久缺口**：`Gap` 写一次就永远在，没人负责关 | 只检查名字登记，没有期限与关闭证据 | 3 条缺口全部在本轮关闭（§5） |
 
 共同的病根：**逃逸点的自由度没有被语法本身约束**。`Gap` 能写在 `if` 里，
@@ -46,6 +46,20 @@
 | `custom<Hook>(a,b)` | 钩子名在上游 TD 闭包里出现，或在 `hook-registry` 登记 | 只覆盖实参列出的部件 | 实参必须与上游逐位对应 | L3 + **L3b** |
 | `Gap(name)` | 该名字在 `gap-registry` 登记为 `open`，见证集合精确 | **只表示缺失的那一处**；块其余部分照常描述 | 一个 op 至多一个，写在文本脊上 | L4 + L7 |
 
+### 2.1 证据的权威来源
+
+上游集合不再由正则扫描 `.td` 文本推断，而是由 `llvm-tblgen --dump-json`
+给出每个 op 的 `opName`、`assemblyFormat`、`hasCustomAssemblyFormat`。
+理由是拼接助记符（`"convert." # !tolower(src) # "x2.to.f4x2"`）、
+`multiclass` 展开与 `foreach` 生成的名字对正则不可见；看不见就会"静默跳过"，
+而静默跳过正是本章要消灭的黑洞。缺 `LLVM_TBLGEN` 时审计器直接失败
+（`L0 ... set LLVM_TBLGEN`），不降级为"看起来全绿"。
+
+另有一条**规范化**（不是逃逸）：上游 `enum($x)` 表示"用属性 x 的枚举打印器
+输出助记符"，本文法没有单独的 `enum()` 指令，块里直接引用部件 `x`。
+这个改写是全域、机械的，并且被 **N1** 逐 op 检查：上游打印 `enum($x)`，
+块就必须出现 `x`。本轮 N1 抓到 gpu/sparse_tensor 的 17 个 op 漏写枚举部件。
+
 两条容易混的边界：
 
 - `custom<Hook>` 的**名字**是本文本的标签，不要求与上游同名；但若上游有同名
@@ -73,7 +87,7 @@
 | E7 | **逃逸不携带语义**：事实只从 `Properties`/`Implements` 来；本地事实不得跨方言 | 否则逃逸点会变成"随便加谓词"的后门 | L5 |
 
 E3 是这一轮最重要的新规则：它把"钩子名对"升级成"钩子看到的部件对"。
-证据是它第一次运行就抓到 7 个 op 的实参偏差（§5.1）。
+证据是固化前的手工比对加 L3b 第一次运行，一共抓到 9 个 op 的实参偏差（§5.1）。
 
 E4 的三条窄化直接落在文法里，而不是审计器里：
 
@@ -110,7 +124,7 @@ S3 第一次落地时抓到一个真问题：`func.call_indirect` 的 `Gap(oilis
 
 ### 5.1 `ref_type` → `A_REF`
 
-上游有 6 个 op 的钩子实参里出现 `ref(...)`：
+上游有 9 个 op 的钩子实参里出现 `ref(...)`（语法形状加实参形状两轮检查的并集）：
 
 | op | 旧实参 | 上游实参形状 | 处置 |
 | --- | --- | --- | --- |
@@ -118,10 +132,11 @@ S3 第一次落地时抓到一个真问题：`func.call_indirect` 的 `Gap(oilis
 | `gpu.launch_func` | `type(grid_size_x)`（注释自认"近似"） | `T, ref(cluster_size_x), T, T, T` | 按上游写全 |
 | `pdl.range` | `type(arguments)` | `ref(type(arguments))` | 改写 |
 | `pdl.results` | `index` | `ref(index)` | 改写 |
+| `pdl_interp.create_range` | `arguments` | `ref(type(arguments))` | 改写 |
 | `omp.iterator` | 4 个 | 7 个（缺 3 个 `type(...)`） | 补全 |
 | `omp.interop.init/use/destroy` | 4 个 | 6 个（缺 2 个 `type(...)`） | 补全 |
 
-这 6 个 op 是 L3b 的第一次运行结果。`gpu.launch_func` 的注释写着
+这 9 个 op 是形状检查的并集结果：cf/gpu/pdl/pdl_interp 由 `ref` 产生式暴露，omp 两族由 L3b 暴露。`gpu.launch_func` 的注释写着
 "用单参形式近似该钩子"——这句话本身就是滥用：**近似不是许可证**。
 现在文法里有 `ref_arg`，近似没有存在的理由。
 
@@ -153,7 +168,15 @@ Assembly { attr-dict sourceA "," if sourceB { sourceB } else { "undef" }
 `else` 体只接受字符串字面量。缺省分支是"打印固定文本"，不是第二个格式；
 想放结构就走正常分支，或者给文法加一个具名产生式。这条限制是 S6。
 
-### 5.4 债务账本
+### 5.4 `qualified` 作用于属性
+
+上游 `llvm.intr.dbg.declare` / `dbg.value` 打印 `qualified($varInfo)`、
+`nvvm.barrier.reduction` 打印 `qualified($reductionOp)`——这些是**属性**，不是类型。
+旧文法只有 `qualified(type(x))`，语料只好"按裸名打印"并在 Doc 里道歉；这正是
+S2 说的"派生形式没覆盖到，就退化成近似"。现在加 `qualified(x)`（`x` 必须是
+已声明部件），三个 op 恢复原样。`qualified` 只能包一层，不允许 `qualified(qualified(x))`。
+
+### 5.5 债务账本
 
 `gap-registry.tsv` 现在是**账本**，不是待办清单：
 
@@ -206,14 +229,16 @@ python3 tools/escape-audit.py --selftest   # 17 cases, 0 failed
 
 | 指标 | 当前 | 红线 | 说明 |
 | --- | --- | --- | --- |
-| 方言 / op | 44 / 1358 | — | 语料规模 |
+| 方言 / op | 50 / 2777 | — | 语料规模 |
 | 无文本通道的 op | 0 | 0 | 每个 op 都交代了文本来源 |
-| `Custom` 占 op 比 | 72/1358 = 5.3% | 25% | 上一版 5.7% |
-| `Generic` | 73 | — | 上游无格式的 op |
+| `Custom` 占 op 比 | 122/2777 = 4.4% | 25% | 上游手写打印器 |
+| `Generic` | 132 | — | 上游无格式的 op |
 | 具名缺口 | 0 | 12 | 三条全部关闭（§5） |
-| 钩子调用 | 321 | — | 每个都过 L3 + L3b |
+| 钩子调用 | 396 | — | 每个都过 L3 + L3b |
+| `enum($x)` 规范化 | 逐 op | — | N1：上游打印枚举助记符，块里必须出现该部件 |
+| 模板格式无法判定 | 0 | — | tblgen 逐 op 解析，不再有 `!if` 悬念 |
 | 单次使用的本地事实 | 35% | 50% | 41 核心 + 20 本地 |
-| 设计分歧（block vs 上游 custom/generic） | 23 | 30 | 见 §8 |
+| 设计分歧（block vs 上游 custom） | 7 组 / 71 op | 30 组 | 按 schema 去重，见 §8 |
 
 每方言账本由审计器直接输出（`## per-dialect escapes`），两个离群值：
 
@@ -221,6 +246,9 @@ python3 tools/escape-audit.py --selftest   # 17 cases, 0 failed
 | --- | --- | --- | --- | --- |
 | `affine` | 16 | 11 | 69% | 上游确实为 affine 的循环/访存逐 op 写了打印器 |
 | `scf` | 12 | 7 | 58% | `for`/`if`/`while`/`parallel` 等都是手写格式 |
+| `spirv` | 430 | 33 | 8% | 397 个 op 有声明式格式，33 个只有手写 parser/printer |
+| `llvm` | 323 | 8 | 2% | 其余走 block/Generic，intrinsic 族基本没有格式 |
+| `linalg` | 78 | 7 | 9% | 结构化算符上游全部手写打印；语料用一个 `Structured` schema 重建 |
 
 两者都通过 L1（上游真有 `hasCustomAssemblyFormat`），所以是"上游的选择"，
 不是本文法的逃逸。E6 的 80% 上限特意留出这个空间：**预算是为了发现异常，
@@ -228,25 +256,35 @@ python3 tools/escape-audit.py --selftest   # 17 cases, 0 failed
 
 ## 8. 设计分歧不是逃逸
 
-还有 23 个 op 的块格式与上游"不一致"：
+有 71 个 op 的块格式与上游"不一致"，但只来自 **7 个设计决定**：
 
-| 上游形态 | 数量 | 例子 | 性质 |
+| 组（按 schema 去重） | op 数 | 上游形态 | 性质 |
 | --- | --- | --- | --- |
-| 手写打印器 | 13 | `linalg.matmul`、`arith.select`、`emitc.include` | 本文法用统一 schema 把上游逐 op 手写的文本**重建**出来 |
-| 无任何格式 | 10 | `arm_sve.sdot`、`arm_sme.zero` | 本文法为上游的 generic 形态**定义**了一个可读文本 |
+| `linalg.Structured` 收敛的命名算符 | 65 | 手写打印器 | 一个 schema 重建上游逐 op 手写的 `ins(...) outs(...)` |
+| `linalg.yield` | 1 | 手写打印器 | 文本就是操作数列表 |
+| `affine.vector_load` / `vector_store` | 2 | 手写打印器 | 访存修饰由手写打印器给出，语料用 `oilist` 重建 |
+| `arith.select` | 1 | 手写打印器 | `cond ? a : b` 与属性形式 |
+| `emitc.include` | 1 | 手写打印器 | include 路径与常量两种形态 |
+| `smt.int.constant` | 1 | 手写打印器 | 定值打印 |
 
-这两类都不是逃逸：没有跳过任何结构，块里的每个引用都能解析。它们是
-**描述**层面的设计选择，所以 L1/L2 不管，只计数并设上限（30）。
-超过上限时先问："是不是块格式缺了某个构造，才逼得语料去猜上游？"
+这些都不是逃逸：没有跳过任何结构，块里的每个引用都能解析。它们是
+**描述**层面的设计选择，所以 L1/L2 不管，只计数并设上限。
+
+**计数单位是决定，不是实例**：同一个 schema 收敛的一族 op 是一个设计决定。
+按 op 计数会让 `linalg` 的 65 个同形算符把预算撑爆，从而掩盖真正的异常；
+按组计数后，任何新组都会立刻可见。超过上限时先问：
+"是不是块格式缺了某个构造，才逼得语料去猜上游？"
 
 ## 9. 工具与验证
 
 ```bash
 cd ana-docs/mlir
-bison -Wall -Wcounterexamples -Werror -o /tmp/dg.c dialect-grammar.y   # 151 条产生式 / 0 冲突
+bison -Wall -Wcounterexamples -Werror -o /tmp/dg.c dialect-grammar.y   # 62 条规则 / 152 条产生式 / 0 冲突
 python3 tools/dialect-corpus.py        # 四段审计 + gap 计数
-python3 tools/dialect-coverage.py      # 覆盖缺口必须为 0
-python3 tools/escape-audit.py          # L0–L9；失败退出 1
+export LLVM_TBLGEN=/path/to/build/bin/llvm-tblgen
+export LLVM_BUILD_DIR=/path/to/build
+python3 tools/dialect-coverage.py      # 50 个方言必须 missing=extra=0
+python3 tools/escape-audit.py          # L0–L9 + N1；失败退出 1
 python3 tools/escape-audit.py --selftest   # 17 例拒绝路径
 ```
 

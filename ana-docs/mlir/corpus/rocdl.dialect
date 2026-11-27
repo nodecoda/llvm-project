@@ -1,0 +1,1827 @@
+/// rocdl —— AMD GPU 的 ROCDL 方言：硬件 id、屏障/等待、缓存策略内存指令、
+/// 矩阵乘累加（MFMA/SMFMAC/WMMA/SWMMAC）、点积、DPP/permlane 置换与数值转换。
+///
+/// 领域：ROCDL 把 AMDGPU 后端的 LLVM intrinsic 暴露成 MLIR op。绝大多数 op
+/// 直接对应一条 `llvm.amdgcn.*` intrinsic；本语料按上游 ROCDLOps.td 的助记符
+/// 建模，覆盖其全部 374 个 op（以 `llvm-tblgen --dump-json` 的 opName 为准）。
+///
+/// 文本通道：374 个 op 中 337 个块格式、37 个块格式加 `custom<CachePolicy>`
+/// 钩子（block-hook），0 个 Custom、0 个 Generic。
+/// 上游 ROCDLOps.td 及其 include 闭包里没有任何 op 打开
+/// `hasCustomAssemblyFormat`，也没有哪个 op 缺少 `assemblyFormat`，因此本文件
+/// 不需要 Custom 或 Generic 通道，也没有使用任何命名缺口。
+///
+/// 钩子：唯一的钩子是 `custom<CachePolicy>`，实参逐位对应上游（都只有一个
+/// 数据实参，本文件用同名的已声明属性部件）：
+///   - `$aux`（raw.ptr.buffer.*、load[.async].to.lds、global.load[.async].lds、
+///     global.load.async.to.lds.b*、global.store.async.from.lds.b*）
+///   - `$cpol`（cluster.load.async.to.lds.b*）
+///   - `$cachePolicy`（global.prefetch、flat.prefetch、tensor.load/store）
+///
+/// schema：用 39 个 schema 收敛同形 op（MFMA、SMFMAC、WMMA 的七种修饰器形状、
+/// 点积、SWMMAC 的五种形状、LDS 转置读、global/ds.load.tr*、async copy、
+/// tensor 搬运、数学近似、raw buffer 原子返回、硬件 id 寄存器、cvt.scale/
+/// cvt.scalef32 的各修饰器形状）。每个 op 仍显式给出 `from` 继承或自己的
+/// `Assembly { ... }`；没有 op 靠省略继承默认通道。
+///
+/// 事实：只用 `tools/fact-glossary.tsv` 的 core 词：
+///   - Pure trait -> `pure`（硬件 id、dot、cvt、fmed3、math、make.buffer.rsrc）；
+///   - AllTypesMatch -> 相邻 `same_type`（readfirstlane/readlane、update.dpp、
+///     permlanex16、raw buffer 原子操作、fmed3）；
+///   - 操作数上的 MemRead/MemWrite -> `memory_effect(read|write)`
+///     （LDS 转置读、global/ds.load.tr*、load-to-LDS、async copy、
+///     ptr buffer load/store/atomic、prefetch、DS 屏障原子）。
+///   没有符号、region、terminator 类 trait，故不写对应事实。
+///
+/// 只写进 Doc 的语义（文法没有对应谓词）：
+///   - 所有指针操作数都是 LLVM 指针（`!llvm.ptr<AS>`，AS 为 0/1/3/7/8/15），
+///     语料统一写 `any`，Doc 记录真实地址空间：global=1、LDS=3、buffer
+///     resource=8、named barrier=15、flat=0。
+///   - MFMA 的 `blgp` 是 B-lane 置换；f64 变体在 gfx94x 上是 NEG 位域
+///     (`neg_a|neg_b`)，不是置换。
+///   - `cbsz`/`abid`/`blgp`/`modC`/`fmtA`/`fmtB`/`scaleAType`/`fmtScaleA`/
+///     `fmtScaleB` 等是计时常量 immarg；其枚举取值集合由 ROCDLAttrs.td 定义。
+///   - `sched.barrier` 的 mask 位域：none、valu、vmem_read、vmem_write、
+///     ds_read、ds_write，以及包含 LDSDMA 的超集 all_vmem、all_ds、mfma_wmma。
+///   - `asyncmark`/`wait.asyncmark` 的 stages 是 async stage 位掩码（all 或
+///     tensor 等单 stage）；每个被点名的 stage 各有一条 mark 序列。
+///   - 特化 id 寄存器结果被建模成 i32（上游是 LLVM_Type，示例均为 i32）；
+///     `range` 是可选 LLVM_ConstantRangeAttr，语法写 `optional<any>`。
+///   - readlane/readfirstlane 的标量与 vector 形态共享一个 lane 类型，元素
+///     位宽 <= 64；语料用 `lane = scalar | vector<any>` 表达。
+///   - permlane16/permlane32 的 `.swap` 变体返回 LLVM struct pair `(i32,i32)`，
+///     语料把结果写成 `any` 并在 Doc 记录。
+///   - cvt.* 的 byteSel/wordSel/scaleSel/srcSelIndex/srcLoHiSel/dstLoHiSel/
+///     dstSelIndex 是选择源/目标字节、字或半字的 immarg；f32 打包形式的结果是
+///     vector<2xf32>/vector<8xf32> 等，低精度打包形式的结果是 i32 或
+///     vector<Nxi32>，宽度由助记符与上游 ScaleArgInfo 决定；cvt.pkrtz 的结果是
+///     vector<2xf16>。
+///   - WMMA/SWMMAC 的 signA/signB/clamp 是 i1 立即数；scale 形式的 scaleA/B
+///     是 i32（scale16 形式是 i64）。
+///   - `softmax` 之外的 math 近似（tanh/sin/cos/rcp/exp/exp2/log/sqrt/rsq）
+///     一般应优先用 arith/math/llvm，仅当可接受精度损失时使用。
+///   - `make.buffer.rsrc` 的结果是地址空间 8 的 buffer resource。
+///
+/// 工具说明：覆盖率以上游 `llvm-tblgen --dump-json` 的 opName 为真值，因此由
+/// `foreach`/模板拼出的助记符（global/ds.load.tr*、global/cluster async copy、
+/// cvt.scale/cvt.scalef32 各 pk 族）都能被识别；本文件已逐一建模，missing=0、
+/// extra=0。`tools/escape-audit.py` 的文本扫描只看字面量 `Base<"...">` 助记符，
+/// 看不到这些拼接名，故会把它们列进 “ops with no upstream record”；这是该工具
+/// 正则的已知盲区，不是本语料缺 op。
+
+dialect rocdl {
+  Doc "AMD GPU ROCDL dialect: hardware ids, barriers, cache-policy memory intrinsics, matrix ops, permutations and numeric conversions.";
+
+  // ---- 类型域 ----
+
+  // 标量 lane 与标量-or-vector lane；上游的位宽上界（<= 64）文法写不出，见文件头。
+  constraint scalar = integer | float;
+  constraint vector_any = vector<any>;
+  constraint lane = scalar | vector_any;
+
+  // ---- 硬件 id 寄存器 ----
+
+  schema SpecialId {
+    Doc "Read a hardware thread/workgroup/cluster id register; the optional range attribute bounds the returned i32.";
+    Results    (res: i32);
+    Attributes (range: optional<any>);
+    Properties [pure];
+    Assembly   { if range { "range" range } attr-dict ":" type(res) }
+  }
+
+  // ---- 基础逐元素 / 波前操作 ----
+
+  schema Mbcnt {
+    Doc "Masked bit count of threads below the current lane in a wavefront.";
+    Operands   (in0: i32, in1: i32);
+    Results    (res: i32);
+    Properties [pure];
+    Assembly   { in0 "," in1 prop-dict attr-dict ":" "(" type(in0) "," type(in1) ")" "->" type(res) }
+  }
+
+  // ---- MFMA ----
+
+  schema Mfma<ab: any, cd: any> {
+    Doc "Matrix fused multiply-add D = A*B + C with broadcast/block-layout modifiers.";
+    Operands   (a: ab, b: ab, c: cd);
+    Results    (res: cd);
+    Attributes (cbsz: i32, abid: i32, blgp: any);
+    Assembly   { a "," b "," c "," cbsz "," abid "," blgp
+                 attr-dict ":" functional-type(operands, res) }
+  }
+
+  schema MfmaScale<ab: any, cd: any> {
+    Doc "Scaled matrix fused multiply-add with per-operand opsel and scale operands.";
+    Operands   (a: vector<ab>, b: vector<ab>, c: vector<cd>,
+                scaleA: i32, scaleB: i32);
+    Results    (res: any);
+    Attributes (cbsz: any, blgp: any, opselA: i32, opselB: i32);
+    Assembly   { a "," b "," c "," cbsz "," blgp "," opselA ","
+                 scaleA "," opselB "," scaleB
+                 attr-dict ":" functional-type(operands, res) }
+  }
+
+  // ---- SMFMAC ----
+
+  schema Smfmac<atype: any, btype: any, cdtype: any> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate; index carries sparsity metadata.";
+    Operands   (a: atype, b: btype, c: cdtype, index: i32);
+    Results    (res: cdtype);
+    Attributes (cbsz: i32, abid: i32);
+    Assembly   { a "," b "," c "," index "," cbsz "," abid
+                 attr-dict ":" functional-type(operands, res) }
+  }
+
+  // ---- WMMA：七种修饰器形状 ----
+
+  schema Wmma<ab: any, cd: any> {
+    Doc "Wave matrix multiply-accumulate without extra modifiers.";
+    Operands   (a: ab, b: ab, c: cd);
+    Results    (res: cd);
+    Assembly   { a "," b "," c attr-dict ":" functional-type(operands, res) }
+  }
+
+  schema WmmaOpsel<ab: any, cd: any> {
+    Doc "Wave matrix multiply-accumulate with the opsel output-selection attribute.";
+    Operands   (a: ab, b: ab, c: cd);
+    Results    (res: cd);
+    Attributes (opsel: i1);
+    Assembly   { a "," b "," c prop-dict attr-dict
+                 ":" functional-type(operands, res) }
+  }
+
+  schema WmmaIU<ab: any, cd: any> {
+    Doc "Integer wave matrix multiply-accumulate with sign and clamp modifiers.";
+    Operands   (a: ab, b: ab, c: cd);
+    Results    (res: cd);
+    Attributes (signA: i1, signB: i1, clamp: i1);
+    Assembly   { a "," b "," c prop-dict attr-dict
+                 ":" functional-type(operands, res) }
+  }
+
+  schema WmmaModsC<ab: any, ctype: any, rtype: any> {
+    Doc "Wave matrix multiply-accumulate with modC and reuse modifiers.";
+    Operands   (a: ab, b: ab, c: ctype);
+    Results    (res: rtype);
+    Attributes (modC: any, reuseA: i1, reuseB: i1);
+    Assembly   { a "," b "," c "," "modC" "=" modC prop-dict attr-dict
+                 ":" functional-type(operands, res) }
+  }
+
+  schema WmmaModsABClamp<ab: any, cd: any> {
+    Doc "Integer wave matrix multiply-accumulate with sign, reuse and clamp modifiers.";
+    Operands   (a: ab, b: ab, c: cd);
+    Results    (res: cd);
+    Attributes (signA: i1, signB: i1, reuseA: i1, reuseB: i1, clamp: i1);
+    Assembly   { a "," b "," c prop-dict attr-dict
+                 ":" functional-type(operands, res) }
+  }
+
+  schema WmmaScale<ab: any, cd: any, exp: any> {
+    Doc "Scaled wave matrix multiply-accumulate with format and scale-type modifiers.";
+    Operands   (a: ab, b: ab, c: cd, scaleA: exp, scaleB: exp);
+    Results    (res: cd);
+    Attributes (fmtA: any, fmtB: any, modC: any, scaleAType: any,
+                fmtScaleA: any, scaleBType: any, fmtScaleB: any,
+                reuseA: i1, reuseB: i1);
+    Assembly   { a "," b "," c "," scaleA "," scaleB ","
+                 "fmtA" "=" fmtA "," "fmtB" "=" fmtB "," "modC" "=" modC ","
+                 "scaleAType" "=" scaleAType "," "fmtScaleA" "=" fmtScaleA ","
+                 "scaleBType" "=" scaleBType "," "fmtScaleB" "=" fmtScaleB
+                 prop-dict attr-dict ":" functional-type(operands, res) }
+  }
+
+  schema WmmaScaleF4<ab: any, cd: any, exp: any> {
+    Doc "Scaled F4 wave matrix multiply-accumulate with modC and scale modifiers.";
+    Operands   (a: ab, b: ab, c: cd, scaleA: exp, scaleB: exp);
+    Results    (res: cd);
+    Attributes (modC: any, scaleAType: any, fmtScaleA: any,
+                scaleBType: any, fmtScaleB: any, reuseA: i1, reuseB: i1);
+    Assembly   { a "," b "," c "," scaleA "," scaleB ","
+                 "modC" "=" modC ","
+                 "scaleAType" "=" scaleAType "," "fmtScaleA" "=" fmtScaleA ","
+                 "scaleBType" "=" scaleBType "," "fmtScaleB" "=" fmtScaleB
+                 prop-dict attr-dict ":" functional-type(operands, res) }
+  }
+
+  // ---- 点积 ----
+
+  schema Dot<atype: any, btype: any, ctype: any> {
+    Doc "Packed intra-lane dot product with the optional clamp modifier.";
+    Operands   (a: atype, b: btype, c: ctype);
+    Results    (res: ctype);
+    Attributes (clamp: i1);
+    Properties [pure];
+    Assembly   { a "," b "," c prop-dict attr-dict
+                 ":" functional-type(operands, res) }
+  }
+
+  schema DotNoClamp<atype: any, btype: any, ctype: any> {
+    Doc "Packed intra-lane dot product without a clamp modifier.";
+    Operands   (a: atype, b: btype, c: ctype);
+    Results    (res: ctype);
+    Properties [pure];
+    Assembly   { a "," b "," c attr-dict ":" functional-type(operands, res) }
+  }
+
+  schema Sudot {
+    Doc "Mixed-signedness packed dot product with per-operand sign and clamp modifiers.";
+    Operands   (a: i32, b: i32, c: i32);
+    Results    (res: i32);
+    Attributes (signA: i1, signB: i1, clamp: i1);
+    Properties [pure];
+    Assembly   { a "," b "," c prop-dict attr-dict
+                 ":" functional-type(operands, res) }
+  }
+
+  // ---- SWMMAC：五种修饰器形状 ----
+
+  schema SwmmacV<ab: any, cd: any> {
+    Doc "Sparse wave matrix multiply-accumulate with an index sparsity operand.";
+    Operands   (a: ab, b: ab, c: cd, index: i32);
+    Results    (res: cd);
+    Assembly   { a "," b "," c "," index attr-dict
+                 ":" functional-type(operands, res) }
+  }
+
+  schema SwmmacReuse<ab: any, cd: any> {
+    Doc "Sparse wave matrix multiply-accumulate with index and reuse controls.";
+    Operands   (a: ab, b: ab, c: cd, index: i32);
+    Results    (res: cd);
+    Attributes (reuseA: i1, reuseB: i1);
+    Assembly   { a "," b "," c "," index prop-dict attr-dict
+                 ":" functional-type(operands, res) }
+  }
+
+  schema SwmmacIU<ab: any, cd: any> {
+    Doc "Integer sparse wave matrix multiply-accumulate with sign and clamp modifiers.";
+    Operands   (a: ab, b: ab, c: cd, index: i32);
+    Results    (res: cd);
+    Attributes (signA: i1, signB: i1, clamp: i1);
+    Assembly   { a "," b "," c "," index prop-dict attr-dict
+                 ":" functional-type(operands, res) }
+  }
+
+  schema SwmmacModsAB<ab: any, ctype: any, rtype: any> {
+    Doc "Sparse wave matrix multiply-accumulate with sign and reuse modifiers.";
+    Operands   (a: ab, b: ab, c: ctype, index: i32);
+    Results    (res: rtype);
+    Attributes (signA: i1, signB: i1, reuseA: i1, reuseB: i1);
+    Assembly   { a "," b "," c "," index prop-dict attr-dict
+                 ":" functional-type(operands, res) }
+  }
+
+  schema SwmmacModsABClamp<ab: any, ctype: any, rtype: any> {
+    Doc "Integer sparse wave matrix multiply-accumulate with sign, reuse and clamp modifiers.";
+    Operands   (a: ab, b: ab, c: ctype, index: i32);
+    Results    (res: rtype);
+    Attributes (signA: i1, signB: i1, reuseA: i1, reuseB: i1, clamp: i1);
+    Assembly   { a "," b "," c "," index prop-dict attr-dict
+                 ":" functional-type(operands, res) }
+  }
+
+  // ---- LDS 转置读与 tensor 搬运 ----
+
+  schema LdsRead {
+    Doc "Transposed read from LDS; the mnemonic names the transpose width and result bit width.";
+    Operands   (ptr: any);
+    Results    (res: any);
+    Properties [memory_effect(read)];
+    Assembly   { ptr prop-dict attr-dict ":" type(ptr) "->" type(res) }
+  }
+
+  schema TensorLds {
+    Doc "Move a tensor tile between global memory and LDS through five descriptor groups.";
+    Operands   (dgroup0: vector<i32, 4>, dgroup1: vector<i32, 8>,
+                dgroup2: vector<i32, 4>, dgroup3: vector<i32, 4>,
+                dgroup4: vector<i32, 8>);
+    Attributes (cachePolicy: any);
+    Assembly   { dgroup0 "," dgroup1 "," dgroup2 "," dgroup3 "," dgroup4 ","
+                 custom<CachePolicy>(cachePolicy) prop-dict attr-dict
+                 ":" type(dgroup0) "," type(dgroup1) }
+  }
+
+  // ---- 数学近似 ----
+
+  schema MathOp {
+    Doc "Hardware approximation of one floating-point function.";
+    Operands   (arg: float);
+    Results    (res: float);
+    Properties [pure];
+    Assembly   { arg qualified(type(arg)) attr-dict "->" qualified(type(res)) }
+  }
+
+  // ---- raw pointer buffer 原子返回 ----
+
+  schema RawPtrAtomicRet {
+    Doc "Atomic on a raw buffer resource given as a pointer; returns the old value.";
+    Operands   (vdata: any, rsrc: any, offset: i32, soffset: i32);
+    Results    (res: any);
+    Attributes (aux: any);
+    Properties [memory_effect(read), memory_effect(write), same_type(res, vdata)];
+    Assembly   { vdata "," rsrc "," offset "," soffset ","
+                 custom<CachePolicy>(aux) prop-dict attr-dict ":" type(vdata) }
+  }
+  schema TrLoad {
+    Doc "Transposed load from global or LDS memory to a register vector; the mnemonic fixes the transpose width and result element type.";
+    Operands   (ptr: any);
+    Results    (res: any);
+    Properties [memory_effect(read)];
+    Assembly   { ptr prop-dict attr-dict ":" qualified(type(ptr)) "->" type(res) }
+  }
+
+  schema AsyncLdsCopy {
+    Doc "Asynchronously copy data between a global pointer and LDS at a constant `offset` with cache policy `aux`; no completion wait is inserted.";
+    Operands   (globalPtr: any, ldsPtr: any);
+    Attributes (offset: i32, aux: any);
+    Properties [memory_effect(read), memory_effect(write)];
+    Assembly   { globalPtr "," ldsPtr "," offset "," custom<CachePolicy>(aux) prop-dict attr-dict ":" qualified(type(globalPtr)) "," qualified(type(ldsPtr)) }
+  }
+
+  schema ClusterAsyncLdsCopy {
+    Doc "Broadcast-load data from global memory into LDS for a cluster of workgroups at a constant `offset`, with cache policy `cpol` and a per-workgroup `mask`.";
+    Operands   (globalPtr: any, ldsPtr: any, mask: i32);
+    Attributes (offset: i32, cpol: any);
+    Properties [memory_effect(read), memory_effect(write)];
+    Assembly   { globalPtr "," ldsPtr "," offset "," custom<CachePolicy>(cpol) "," mask prop-dict attr-dict ":" qualified(type(globalPtr)) "," qualified(type(ldsPtr)) }
+  }
+
+  schema CvtPkScale<st: any, rt: any> {
+    Doc "Scale packed low-precision inputs (selected by `scaleSel`) by the exponent of `scale` and convert them to the result vector.";
+    Operands   (src: st, scale: i32);
+    Results    (res: rt);
+    Attributes (scaleSel: i32);
+    Properties [pure];
+    Assembly   { attr-dict src "," scale "[" scaleSel "]" ":" type(res) }
+  }
+
+  schema CvtScaleF32<st: any, rt: any> {
+    Doc "Scale and convert packed inputs to the result vector, dividing or multiplying by the exponent part of `scale`.";
+    Operands   (src: st, scale: f32);
+    Results    (res: rt);
+    Properties [pure];
+    Assembly   { attr-dict src "," scale ":" type(res) }
+  }
+
+  schema CvtScaleF32Sr<st: any, rt: any> {
+    Doc "Scale and convert packed inputs to the result vector by the exponent part of `scale`, using `seed` for stochastic rounding.";
+    Operands   (src: st, seed: i32, scale: f32);
+    Results    (res: rt);
+    Properties [pure];
+    Assembly   { attr-dict src "," seed "," scale ":" type(res) }
+  }
+
+  schema CvtScalef32TwoPk16<rt: any> {
+    Doc "Scale two vector<16xf32> operands (logically concatenated) by the exponent part of `scale` and convert them to 32 packed values.";
+    Operands   (src0: vector<f32, 16>, src1: vector<f32, 16>, scale: f32);
+    Results    (res: rt);
+    Properties [pure];
+    Assembly   { attr-dict src0 "," src1 "," scale ":" type(res) }
+  }
+
+  schema CvtScalef32ToF16 {
+    Doc "Scale the byte selected by `srcSelIndex` from `src` by the exponent part of `scale`, convert it to f16 and insert it at `dstLoHiSel` of `oldVdst`.";
+    Operands   (oldVdst: vector<f16, 2>, src: i32, scale: f32);
+    Results    (res: vector<f16, 2>);
+    Attributes (srcSelIndex: i32, dstLoHiSel: i1);
+    Properties [pure];
+    Assembly   { attr-dict src "[" srcSelIndex "]" "," scale "->" oldVdst "[" dstLoHiSel "]" ":" type(res) }
+  }
+
+  schema CvtScalef32FromPacked<rt: any> {
+    Doc "Scale the packed value selected by `srcSelIndex` from `src` by the exponent part of `scale` and convert it to the result type.";
+    Operands   (src: i32, scale: f32);
+    Results    (res: rt);
+    Attributes (srcSelIndex: i32);
+    Properties [pure];
+    Assembly   { attr-dict src "[" srcSelIndex "]" "," scale ":" type(res) }
+  }
+
+  schema CvtScalef32PkToVec<rt: any> {
+    Doc "Scale the two packed low-precision values selected by `srcLoHiSel` from `src` by the exponent part of `scale` and convert them to the result vector.";
+    Operands   (src: i32, scale: f32);
+    Results    (res: rt);
+    Attributes (srcLoHiSel: i1);
+    Properties [pure];
+    Assembly   { attr-dict src "[" srcLoHiSel "]" "," scale ":" type(res) }
+  }
+
+  schema CvtScalef32PkFromVec2<st: any> {
+    Doc "Scale two packed values in `src0` by the exponent part of `scale`, convert them to two low-precision bytes and insert them at `dstLoHiSel` of `oldVdst`.";
+    Operands   (oldVdst: vector<i16, 2>, src0: st, scale: f32);
+    Results    (res: vector<i16, 2>);
+    Attributes (dstLoHiSel: i1);
+    Properties [pure];
+    Assembly   { attr-dict src0 "," scale "->" oldVdst "[" dstLoHiSel "]" ":" type(res) }
+  }
+
+  schema CvtScalef32PkFromTwoF32<ot: any, rt: any> {
+    Doc "Scale two f32 operands by the exponent part of `scale`, convert them to two packed bytes and insert them at `dstLoHiSel` of `oldVdst`.";
+    Operands   (oldVdst: ot, src0: f32, src1: f32, scale: f32);
+    Results    (res: rt);
+    Attributes (dstLoHiSel: i1);
+    Properties [pure];
+    Assembly   { attr-dict src0 "," src1 "," scale "->" oldVdst "[" dstLoHiSel "]" ":" type(res) }
+  }
+
+  schema CvtScalef32SrToByte<st: any> {
+    Doc "Convert `src0` to a low-precision byte with `seed` stochastic rounding, dividing by the exponent part of `scale`, and replace byte `dstSelIndex` of `oldVdst`.";
+    Operands   (oldVdst: i32, src0: st, seed: i32, scale: f32);
+    Results    (res: i32);
+    Attributes (dstSelIndex: i32);
+    Properties [pure];
+    Assembly   { attr-dict src0 "," seed "," scale "->" oldVdst "[" dstSelIndex "]" ":" type(res) }
+  }
+
+  schema CvtScalef32PkFp4<st: any> {
+    Doc "Scale two packed values in `src` by the exponent part of `scale`, convert them to packed fp4 and replace byte `dstSelIndex` of `oldVdst`.";
+    Operands   (oldVdst: i32, src: st, scale: f32);
+    Results    (res: i32);
+    Attributes (dstSelIndex: i32);
+    Properties [pure];
+    Assembly   { attr-dict src "," scale "->" oldVdst "[" dstSelIndex "]" ":" type(res) }
+  }
+
+  schema CvtScalef32SrPkFp4<st: any> {
+    Doc "Scale two packed values in `src` by the exponent part of `scale`, convert them to packed fp4 with `seed` stochastic rounding and replace byte `dstSelIndex` of `oldVdst`.";
+    Operands   (oldVdst: i32, src: st, seed: i32, scale: f32);
+    Results    (res: i32);
+    Attributes (dstSelIndex: i32);
+    Properties [pure];
+    Assembly   { attr-dict src "," seed "," scale "->" oldVdst "[" dstSelIndex "]" ":" type(res) }
+  }
+
+  op mbcnt.lo from Mbcnt {
+    Doc "Masked bit count of threads below the current lane in a wavefront; `in0` is the lane mask and `in1` the additive base.";
+  }
+  op mbcnt.hi from Mbcnt {
+    Doc "Masked bit count of threads below the current lane in a wavefront; `in0` is the lane mask and `in1` the additive base.";
+  }
+  op ds_swizzle {
+    Doc "Data-sharing swizzle within a wavefront; `offset` encodes the 16-bit swizzle pattern of ds_swizzle_b32.";
+    Operands   (src: i32, offset: i32);
+    Results    (res: i32);
+    Assembly   { src "," offset attr-dict ":" "(" type(src) "," type(offset) ")" "->" type(res) }
+  }
+  op ds_bpermute {
+    Doc "Backward (pull) permute across lanes: each lane reads `src` from the lane whose byte address is `index`, so lane id = index / 4.";
+    Operands   (index: i32, src: i32);
+    Results    (res: i32);
+    Assembly   { index "," src attr-dict ":" "(" type(index) "," type(src) ")" "->" type(res) }
+  }
+  op ballot {
+    Doc "Bit mask of the 1-bit predicate from every lane; bit n is the predicate contributed by lane n.";
+    Operands   (pred: i1);
+    Results    (res: i64);
+    Assembly   { pred attr-dict ":" type(res) }
+  }
+  op readfirstlane {
+    Doc "Return the value held by the lowest active lane of `src`; scalar and vector forms share one type.";
+    Operands   (src: lane);
+    Results    (res: lane);
+    Properties [same_type(res, src)];
+    Assembly   { src attr-dict ":" type(res) }
+  }
+  op readlane {
+    Doc "Return the value of `src0` in the lane selected by `src1`; src0 and the result share one type.";
+    Operands   (src0: lane, src1: i32);
+    Results    (res: lane);
+    Properties [same_type(res, src0)];
+    Assembly   { src0 "," src1 attr-dict ":" "(" type(src0) "," type(src1) ")" "->" type(res) }
+  }
+  op workitem.id.x from SpecialId {
+    Doc "Hardware read of the workitem.id.x id register; the optional `range` attribute bounds the returned i32.";
+  }
+  op workitem.id.y from SpecialId {
+    Doc "Hardware read of the workitem.id.y id register; the optional `range` attribute bounds the returned i32.";
+  }
+  op workitem.id.z from SpecialId {
+    Doc "Hardware read of the workitem.id.z id register; the optional `range` attribute bounds the returned i32.";
+  }
+  op workgroup.id.x from SpecialId {
+    Doc "Hardware read of the workgroup.id.x id register; the optional `range` attribute bounds the returned i32.";
+  }
+  op workgroup.id.y from SpecialId {
+    Doc "Hardware read of the workgroup.id.y id register; the optional `range` attribute bounds the returned i32.";
+  }
+  op workgroup.id.z from SpecialId {
+    Doc "Hardware read of the workgroup.id.z id register; the optional `range` attribute bounds the returned i32.";
+  }
+  op cluster.id.x from SpecialId {
+    Doc "Hardware read of the cluster.id.x id register; the optional `range` attribute bounds the returned i32.";
+  }
+  op cluster.id.y from SpecialId {
+    Doc "Hardware read of the cluster.id.y id register; the optional `range` attribute bounds the returned i32.";
+  }
+  op cluster.id.z from SpecialId {
+    Doc "Hardware read of the cluster.id.z id register; the optional `range` attribute bounds the returned i32.";
+  }
+  op cluster.workgroup.id.x from SpecialId {
+    Doc "Hardware read of the cluster.workgroup.id.x id register; the optional `range` attribute bounds the returned i32.";
+  }
+  op cluster.workgroup.id.y from SpecialId {
+    Doc "Hardware read of the cluster.workgroup.id.y id register; the optional `range` attribute bounds the returned i32.";
+  }
+  op cluster.workgroup.id.z from SpecialId {
+    Doc "Hardware read of the cluster.workgroup.id.z id register; the optional `range` attribute bounds the returned i32.";
+  }
+  op wave.id from SpecialId {
+    Doc "Hardware read of the wave.id id register; the optional `range` attribute bounds the returned i32.";
+  }
+  op wavefrontsize from SpecialId {
+    Doc "Hardware read of the wavefrontsize id register; the optional `range` attribute bounds the returned i32.";
+  }
+  op s.waitcnt {
+    Doc "Wait for outstanding memory operations to complete; the i32 bitfield selects which counters must reach zero and is chipset-dependent.";
+    Attributes (bitfield: i32);
+    Assembly   { attr-dict bitfield }
+  }
+  op s.sleep {
+    Doc "Sleep for at least `count` clock cycles.";
+    Attributes (count: i32);
+    Assembly   { attr-dict count }
+  }
+  op s.nop {
+    Doc "Insert `count` NOP cycles.";
+    Attributes (count: i16);
+    Assembly   { attr-dict count }
+  }
+  op s.barrier {
+    Doc "Workgroup barrier without memory fences; deprecated on gfx12+ in favour of s.barrier.signal and s.barrier.wait.";
+    Assembly   { attr-dict }
+  }
+  op barrier {
+    Doc "HIP __syncthreads equivalent: a workgroup-scoped release fence, amdgcn_s_barrier, then a workgroup-scoped acquire fence. Deprecated in favour of gpu.barrier.";
+    Assembly   { attr-dict }
+  }
+  op wave.barrier {
+    Doc "Wave-level barrier synchronising lanes of one wavefront; carries no memory-ordering guarantee.";
+    Assembly   { attr-dict }
+  }
+  op s.barrier.init {
+    Doc "Initialise the named barrier at `ptr` with `memberCnt` participants; available on gfx1250+.";
+    Operands   (ptr: any);
+    Attributes (memberCnt: i32);
+    Assembly   { ptr "member_cnt" "=" memberCnt attr-dict ":" qualified(type(ptr)) }
+  }
+  op s.barrier.signal {
+    Doc "Signal a named barrier by `id`; id -1 signals all barriers. Available on gfx1250+.";
+    Attributes (id: i32);
+    Assembly   { "id" "=" id attr-dict }
+  }
+  op s.barrier.signal.var {
+    Doc "Signal a named barrier given by `ptr`; memberCnt 0 retains the count from initialisation. Available on gfx1250+.";
+    Operands   (ptr: any);
+    Attributes (memberCnt: i32);
+    Assembly   { ptr "member_cnt" "=" memberCnt attr-dict ":" qualified(type(ptr)) }
+  }
+  op s.barrier.join {
+    Doc "Join the named barrier given by `ptr`; available on gfx1250+.";
+    Operands   (ptr: any);
+    Assembly   { ptr attr-dict ":" qualified(type(ptr)) }
+  }
+  op s.barrier.leave {
+    Doc "Leave the named barrier selected by `id`; available on gfx1250+.";
+    Attributes (id: i16);
+    Assembly   { "id" "=" id attr-dict }
+  }
+  op s.barrier.wait {
+    Doc "Wait on the barrier selected by `id`; id -1 waits on all barriers. Available on gfx1200+.";
+    Attributes (id: i16);
+    Assembly   { "id" "=" id attr-dict }
+  }
+  op s.barrier.signal.isfirst {
+    Doc "Signal barrier `id` and return whether this wave was first to arrive; available on gfx1200+.";
+    Attributes (id: i32);
+    Results    (res: i1);
+    Assembly   { "id" "=" id attr-dict "->" type(res) }
+  }
+  op s.get.barrier.state {
+    Doc "Query the state of barrier `id`; available on gfx1200+.";
+    Attributes (id: i32);
+    Results    (res: i32);
+    Assembly   { "id" "=" id attr-dict "->" type(res) }
+  }
+  op s.get.named.barrier.state {
+    Doc "Query the state of the named barrier given by `ptr`; available on gfx1250+.";
+    Operands   (ptr: any);
+    Results    (res: i32);
+    Assembly   { ptr attr-dict ":" qualified(type(ptr)) "->" type(res) }
+  }
+  op s.wakeup.barrier {
+    Doc "Wake waves waiting at the named barrier given by `ptr` without releasing them; available on gfx1250+.";
+    Operands   (ptr: any);
+    Assembly   { ptr attr-dict ":" qualified(type(ptr)) }
+  }
+  op s.wait.dscnt {
+    Doc "Wait until DSCNT is less than or equal to `count`; gfx12+.";
+    Attributes (count: i16);
+    Assembly   { count attr-dict }
+  }
+  op s.wait.loadcnt {
+    Doc "Wait until LOADCNT is less than or equal to `count`; gfx12+.";
+    Attributes (count: i16);
+    Assembly   { count attr-dict }
+  }
+  op s.wait.storecnt {
+    Doc "Wait until STORECNT is less than or equal to `count`; gfx12+.";
+    Attributes (count: i16);
+    Assembly   { count attr-dict }
+  }
+  op s.wait.expcnt {
+    Doc "Wait until EXPCNT is less than or equal to `count`; gfx12+.";
+    Attributes (count: i16);
+    Assembly   { count attr-dict }
+  }
+  op s.wait.asynccnt {
+    Doc "Wait until ASYNCCNT is less than or equal to `count`; gfx1250+.";
+    Attributes (count: i16);
+    Assembly   { count attr-dict }
+  }
+  op s.wait.tensorcnt {
+    Doc "Wait until TENSORCNT is less than or equal to `count`; gfx1250+.";
+    Attributes (count: i16);
+    Assembly   { count attr-dict }
+  }
+  op asyncmark {
+    Doc "Mark the end of an asynchronous-operation group. `stages` is a mask of async stages (all, or a stage such as tensor); every named stage gets the mark. Available on gfx9+.";
+    Attributes (stages: any);
+    Assembly   { if stages { "stages" "=" stages } attr-dict }
+  }
+  op wait.asyncmark {
+    Doc "Wait until at most `count` async-operation groups remain unexecuted, counting each stage named by `stages` separately. Available on gfx9+.";
+    Attributes (count: i16, stages: any);
+    Assembly   { count if stages { "stages" "=" stages } attr-dict }
+  }
+  op s.setprio {
+    Doc "Set the wavefront scheduling priority to `priority`.";
+    Attributes (priority: i16);
+    Assembly   { priority attr-dict }
+  }
+  op sched.barrier {
+    Doc "Scheduling barrier whose mask is a bitfield of the instruction groups allowed to cross it (none, valu, vmem_read, vmem_write, ds_read, ds_write, all_vmem, all_ds, mfma_wmma).";
+    Attributes (mask: any);
+    Assembly   { mask attr-dict }
+  }
+  op sched.group.barrier {
+    Doc "Scheduling group barrier with the scheduling-group mask, group size and group id.";
+    Attributes (mask: any, size: i32, groupId: i32);
+    Assembly   { mask "," size "," groupId attr-dict }
+  }
+  op iglp.opt {
+    Doc "Instruction-group-level parallelism optimisation hint with variant `variant`.";
+    Attributes (variant: i32);
+    Assembly   { variant attr-dict }
+  }
+  op mfma.f32.32x32x1f32 from Mfma<f32, vector<f32, 32>> {
+    Doc "Matrix fused multiply-add (mfma.f32.32x32x1f32): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.16x16x1f32 from Mfma<f32, vector<f32, 16>> {
+    Doc "Matrix fused multiply-add (mfma.f32.16x16x1f32): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.4x4x1f32 from Mfma<f32, vector<f32, 4>> {
+    Doc "Matrix fused multiply-add (mfma.f32.4x4x1f32): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.32x32x2f32 from Mfma<f32, vector<f32, 16>> {
+    Doc "Matrix fused multiply-add (mfma.f32.32x32x2f32): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.16x16x4f32 from Mfma<f32, vector<f32, 4>> {
+    Doc "Matrix fused multiply-add (mfma.f32.16x16x4f32): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.32x32x4f16 from Mfma<vector<f16, 4>, vector<f32, 32>> {
+    Doc "Matrix fused multiply-add (mfma.f32.32x32x4f16): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.16x16x4f16 from Mfma<vector<f16, 4>, vector<f32, 16>> {
+    Doc "Matrix fused multiply-add (mfma.f32.16x16x4f16): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.4x4x4f16 from Mfma<vector<f16, 4>, vector<f32, 4>> {
+    Doc "Matrix fused multiply-add (mfma.f32.4x4x4f16): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.32x32x8f16 from Mfma<vector<f16, 4>, vector<f32, 16>> {
+    Doc "Matrix fused multiply-add (mfma.f32.32x32x8f16): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.16x16x16f16 from Mfma<vector<f16, 4>, vector<f32, 4>> {
+    Doc "Matrix fused multiply-add (mfma.f32.16x16x16f16): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.i32.32x32x4i8 from Mfma<i32, vector<i32, 32>> {
+    Doc "Matrix fused multiply-add (mfma.i32.32x32x4i8): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.i32.16x16x4i8 from Mfma<i32, vector<i32, 16>> {
+    Doc "Matrix fused multiply-add (mfma.i32.16x16x4i8): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.i32.4x4x4i8 from Mfma<i32, vector<i32, 4>> {
+    Doc "Matrix fused multiply-add (mfma.i32.4x4x4i8): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.i32.32x32x8i8 from Mfma<i32, vector<i32, 16>> {
+    Doc "Matrix fused multiply-add (mfma.i32.32x32x8i8): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.i32.16x16x16i8 from Mfma<i32, vector<i32, 4>> {
+    Doc "Matrix fused multiply-add (mfma.i32.16x16x16i8): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.32x32x2bf16 from Mfma<vector<i16, 2>, vector<f32, 32>> {
+    Doc "Matrix fused multiply-add (mfma.f32.32x32x2bf16): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.16x16x2bf16 from Mfma<vector<i16, 2>, vector<f32, 16>> {
+    Doc "Matrix fused multiply-add (mfma.f32.16x16x2bf16): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.4x4x2bf16 from Mfma<vector<i16, 2>, vector<f32, 4>> {
+    Doc "Matrix fused multiply-add (mfma.f32.4x4x2bf16): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.32x32x4bf16 from Mfma<vector<i16, 2>, vector<f32, 16>> {
+    Doc "Matrix fused multiply-add (mfma.f32.32x32x4bf16): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.16x16x8bf16 from Mfma<vector<i16, 2>, vector<f32, 4>> {
+    Doc "Matrix fused multiply-add (mfma.f32.16x16x8bf16): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.32x32x4bf16.1k from Mfma<vector<i16, 4>, vector<f32, 32>> {
+    Doc "Matrix fused multiply-add (mfma.f32.32x32x4bf16.1k): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.16x16x4bf16.1k from Mfma<vector<i16, 4>, vector<f32, 16>> {
+    Doc "Matrix fused multiply-add (mfma.f32.16x16x4bf16.1k): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.4x4x4bf16.1k from Mfma<vector<i16, 4>, vector<f32, 4>> {
+    Doc "Matrix fused multiply-add (mfma.f32.4x4x4bf16.1k): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.32x32x8bf16.1k from Mfma<vector<i16, 4>, vector<f32, 16>> {
+    Doc "Matrix fused multiply-add (mfma.f32.32x32x8bf16.1k): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.16x16x16bf16.1k from Mfma<vector<i16, 4>, vector<f32, 4>> {
+    Doc "Matrix fused multiply-add (mfma.f32.16x16x16bf16.1k): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f64.16x16x4f64 from Mfma<f64, vector<f64, 4>> {
+    Doc "Double-precision matrix fused multiply-add (mfma.f64.16x16x4f64); `blgp` is a NEG bitfield (neg_a|neg_b) rather than a permutation on gfx94x.";
+  }
+  op mfma.f64.4x4x4f64 from Mfma<f64, f64> {
+    Doc "Double-precision matrix fused multiply-add (mfma.f64.4x4x4f64); `blgp` is a NEG bitfield (neg_a|neg_b) rather than a permutation on gfx94x.";
+  }
+  op mfma.i32.16x16x32.i8 from Mfma<i64, vector<i32, 4>> {
+    Doc "Matrix fused multiply-add (mfma.i32.16x16x32.i8): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.i32.32x32x16.i8 from Mfma<i64, vector<i32, 16>> {
+    Doc "Matrix fused multiply-add (mfma.i32.32x32x16.i8): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.16x16x8.xf32 from Mfma<vector<f32, 2>, vector<f32, 4>> {
+    Doc "Matrix fused multiply-add (mfma.f32.16x16x8.xf32): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.32x32x4.xf32 from Mfma<vector<f32, 2>, vector<f32, 16>> {
+    Doc "Matrix fused multiply-add (mfma.f32.32x32x4.xf32): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.16x16x32.bf8.bf8 from Mfma<i64, vector<f32, 4>> {
+    Doc "Matrix fused multiply-add (mfma.f32.16x16x32.bf8.bf8): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.16x16x32.bf8.fp8 from Mfma<i64, vector<f32, 4>> {
+    Doc "Matrix fused multiply-add (mfma.f32.16x16x32.bf8.fp8): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.16x16x32.fp8.bf8 from Mfma<i64, vector<f32, 4>> {
+    Doc "Matrix fused multiply-add (mfma.f32.16x16x32.fp8.bf8): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.16x16x32.fp8.fp8 from Mfma<i64, vector<f32, 4>> {
+    Doc "Matrix fused multiply-add (mfma.f32.16x16x32.fp8.fp8): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.32x32x16.bf8.bf8 from Mfma<i64, vector<f32, 16>> {
+    Doc "Matrix fused multiply-add (mfma.f32.32x32x16.bf8.bf8): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.32x32x16.bf8.fp8 from Mfma<i64, vector<f32, 16>> {
+    Doc "Matrix fused multiply-add (mfma.f32.32x32x16.bf8.fp8): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.32x32x16.fp8.bf8 from Mfma<i64, vector<f32, 16>> {
+    Doc "Matrix fused multiply-add (mfma.f32.32x32x16.fp8.bf8): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.32x32x16.fp8.fp8 from Mfma<i64, vector<f32, 16>> {
+    Doc "Matrix fused multiply-add (mfma.f32.32x32x16.fp8.fp8): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.16x16x32.bf16 from Mfma<vector<bf16, 8>, vector<f32, 4>> {
+    Doc "Matrix fused multiply-add (mfma.f32.16x16x32.bf16): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.i32.16x16x64.i8 from Mfma<vector<i32, 4>, vector<i32, 4>> {
+    Doc "Matrix fused multiply-add (mfma.i32.16x16x64.i8): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.16x16x32.f16 from Mfma<vector<f16, 8>, vector<f32, 4>> {
+    Doc "Matrix fused multiply-add (mfma.f32.16x16x32.f16): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.32x32x16.bf16 from Mfma<vector<bf16, 8>, vector<f32, 16>> {
+    Doc "Matrix fused multiply-add (mfma.f32.32x32x16.bf16): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.i32.32x32x32.i8 from Mfma<vector<i32, 4>, vector<i32, 16>> {
+    Doc "Matrix fused multiply-add (mfma.i32.32x32x32.i8): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.f32.32x32x16.f16 from Mfma<vector<f16, 8>, vector<f32, 16>> {
+    Doc "Matrix fused multiply-add (mfma.f32.32x32x16.f16): D = A*B + C. `cbsz`/`abid` select broadcast and block layout, `blgp` is the B-lane permutation.";
+  }
+  op mfma.scale.f32.16x16x128.f8f6f4 from MfmaScale<i32, f32> {
+    Doc "Scaled matrix fused multiply-add (mfma.scale.f32.16x16x128.f8f6f4) with per-operand opsel and scale operands.";
+  }
+  op mfma.scale.f32.32x32x64.f8f6f4 from MfmaScale<i32, f32> {
+    Doc "Scaled matrix fused multiply-add (mfma.scale.f32.32x32x64.f8f6f4) with per-operand opsel and scale operands.";
+  }
+  op smfmac.f32.16x16x32.f16 from Smfmac<vector<f16, 4>, vector<f16, 8>, vector<f32, 4>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.f32.16x16x32.f16); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.f32.32x32x16.f16 from Smfmac<vector<f16, 4>, vector<f16, 8>, vector<f32, 16>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.f32.32x32x16.f16); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.f32.16x16x32.bf16 from Smfmac<vector<i16, 4>, vector<i16, 8>, vector<f32, 4>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.f32.16x16x32.bf16); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.f32.32x32x16.bf16 from Smfmac<vector<i16, 4>, vector<i16, 8>, vector<f32, 16>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.f32.32x32x16.bf16); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.i32.16x16x64.i8 from Smfmac<vector<i32, 2>, vector<i32, 4>, vector<i32, 4>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.i32.16x16x64.i8); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.i32.32x32x32.i8 from Smfmac<vector<i32, 2>, vector<i32, 4>, vector<i32, 16>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.i32.32x32x32.i8); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.f32.16x16x64.bf8.bf8 from Smfmac<vector<i32, 2>, vector<i32, 4>, vector<f32, 4>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.f32.16x16x64.bf8.bf8); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.f32.16x16x64.bf8.fp8 from Smfmac<vector<i32, 2>, vector<i32, 4>, vector<f32, 4>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.f32.16x16x64.bf8.fp8); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.f32.16x16x64.fp8.bf8 from Smfmac<vector<i32, 2>, vector<i32, 4>, vector<f32, 4>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.f32.16x16x64.fp8.bf8); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.f32.16x16x64.fp8.fp8 from Smfmac<vector<i32, 2>, vector<i32, 4>, vector<f32, 4>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.f32.16x16x64.fp8.fp8); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.f32.32x32x32.bf8.bf8 from Smfmac<vector<i32, 2>, vector<i32, 4>, vector<f32, 16>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.f32.32x32x32.bf8.bf8); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.f32.32x32x32.bf8.fp8 from Smfmac<vector<i32, 2>, vector<i32, 4>, vector<f32, 16>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.f32.32x32x32.bf8.fp8); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.f32.32x32x32.fp8.bf8 from Smfmac<vector<i32, 2>, vector<i32, 4>, vector<f32, 16>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.f32.32x32x32.fp8.bf8); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.f32.32x32x32.fp8.fp8 from Smfmac<vector<i32, 2>, vector<i32, 4>, vector<f32, 16>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.f32.32x32x32.fp8.fp8); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.f32.16x16x64.bf16 from Smfmac<vector<bf16, 8>, vector<bf16, 16>, vector<f32, 4>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.f32.16x16x64.bf16); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.f32.16x16x64.f16 from Smfmac<vector<f16, 8>, vector<f16, 16>, vector<f32, 4>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.f32.16x16x64.f16); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.i32.16x16x128.i8 from Smfmac<vector<i32, 4>, vector<i32, 8>, vector<i32, 4>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.i32.16x16x128.i8); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.f32.16x16x128.bf8.bf8 from Smfmac<vector<i32, 4>, vector<i32, 8>, vector<f32, 4>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.f32.16x16x128.bf8.bf8); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.f32.16x16x128.bf8.fp8 from Smfmac<vector<i32, 4>, vector<i32, 8>, vector<f32, 4>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.f32.16x16x128.bf8.fp8); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.f32.16x16x128.fp8.bf8 from Smfmac<vector<i32, 4>, vector<i32, 8>, vector<f32, 4>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.f32.16x16x128.fp8.bf8); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.f32.16x16x128.fp8.fp8 from Smfmac<vector<i32, 4>, vector<i32, 8>, vector<f32, 4>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.f32.16x16x128.fp8.fp8); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.f32.32x32x32.bf16 from Smfmac<vector<bf16, 8>, vector<bf16, 16>, vector<f32, 16>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.f32.32x32x32.bf16); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.f32.32x32x32.f16 from Smfmac<vector<f16, 8>, vector<f16, 16>, vector<f32, 16>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.f32.32x32x32.f16); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.i32.32x32x64.i8 from Smfmac<vector<i32, 4>, vector<i32, 8>, vector<i32, 16>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.i32.32x32x64.i8); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.f32.32x32x64.bf8.bf8 from Smfmac<vector<i32, 4>, vector<i32, 8>, vector<f32, 16>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.f32.32x32x64.bf8.bf8); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.f32.32x32x64.bf8.fp8 from Smfmac<vector<i32, 4>, vector<i32, 8>, vector<f32, 16>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.f32.32x32x64.bf8.fp8); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.f32.32x32x64.fp8.bf8 from Smfmac<vector<i32, 4>, vector<i32, 8>, vector<f32, 16>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.f32.32x32x64.fp8.bf8); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op smfmac.f32.32x32x64.fp8.fp8 from Smfmac<vector<i32, 4>, vector<i32, 8>, vector<f32, 16>> {
+    Doc "Sparse 2:4 matrix fused multiply-accumulate (smfmac.f32.32x32x64.fp8.fp8); `index` carries the sparsity metadata and `cbsz`/`abid` the broadcast controls.";
+  }
+  op wmma.f32.16x16x16.f16 from Wmma<vector<f16>, vector<f32>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f32.16x16x16.f16); A, B and C are scalar-or-vector operands of the named element types.";
+  }
+  op wmma.f32.16x16x16.bf16 from Wmma<vector<any>, vector<f32>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f32.16x16x16.bf16); A, B and C are scalar-or-vector operands of the named element types.";
+  }
+  op wmma.f16.16x16x16.f16 from WmmaOpsel<vector<f16>, vector<f16>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f16.16x16x16.f16) with the `opsel` output-selection attribute.";
+  }
+  op wmma.bf16.16x16x16.bf16 from WmmaOpsel<vector<any>, vector<any>> {
+    Doc "Wave matrix multiply-accumulate (wmma.bf16.16x16x16.bf16) with the `opsel` output-selection attribute.";
+  }
+  op wmma.i32.16x16x16.iu8 from WmmaIU<vector<any>, vector<any>> {
+    Doc "Integer wave matrix multiply-accumulate (wmma.i32.16x16x16.iu8); `signA`/`signB`/`clamp` are immediate i1 modifiers.";
+  }
+  op wmma.i32.16x16x16.iu4 from WmmaIU<vector<any>, vector<any>> {
+    Doc "Integer wave matrix multiply-accumulate (wmma.i32.16x16x16.iu4); `signA`/`signB`/`clamp` are immediate i1 modifiers.";
+  }
+  op wmma.f32.16x16x16.fp8_fp8 from Wmma<vector<any>, vector<f32>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f32.16x16x16.fp8_fp8); A, B and C are scalar-or-vector operands of the named element types.";
+  }
+  op wmma.f32.16x16x16.fp8_bf8 from Wmma<vector<any>, vector<f32>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f32.16x16x16.fp8_bf8); A, B and C are scalar-or-vector operands of the named element types.";
+  }
+  op wmma.f32.16x16x16.bf8_bf8 from Wmma<vector<any>, vector<f32>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f32.16x16x16.bf8_bf8); A, B and C are scalar-or-vector operands of the named element types.";
+  }
+  op wmma.f32.16x16x16.bf8_fp8 from Wmma<vector<any>, vector<f32>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f32.16x16x16.bf8_fp8); A, B and C are scalar-or-vector operands of the named element types.";
+  }
+  op wmma.i32.16x16x32.iu4 from WmmaIU<vector<any>, vector<any>> {
+    Doc "Integer wave matrix multiply-accumulate (wmma.i32.16x16x32.iu4); `signA`/`signB`/`clamp` are immediate i1 modifiers.";
+  }
+  op wmma.f32.16x16x4.f32 from WmmaModsC<vector<f32>, vector<f32>, vector<f32>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f32.16x16x4.f32) with `modC = <enum>` and reuse controls.";
+  }
+  op wmma.f32.16x16x32.bf16 from WmmaModsC<vector<bf16>, vector<f32>, vector<f32>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f32.16x16x32.bf16) with `modC = <enum>` and reuse controls.";
+  }
+  op wmma.f32.16x16x32.f16 from WmmaModsC<vector<f16>, vector<f32>, vector<f32>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f32.16x16x32.f16) with `modC = <enum>` and reuse controls.";
+  }
+  op wmma.f16.16x16x32.f16 from WmmaModsC<vector<f16>, vector<f16>, vector<f16>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f16.16x16x32.f16) with `modC = <enum>` and reuse controls.";
+  }
+  op wmma.bf16.16x16x32.bf16 from WmmaModsC<vector<bf16>, vector<bf16>, vector<bf16>> {
+    Doc "Wave matrix multiply-accumulate (wmma.bf16.16x16x32.bf16) with `modC = <enum>` and reuse controls.";
+  }
+  op wmma.bf16f32.16x16x32.bf16 from WmmaModsC<vector<bf16>, vector<f32>, vector<bf16>> {
+    Doc "Wave matrix multiply-accumulate (wmma.bf16f32.16x16x32.bf16) whose C and D types differ, with `modC = <enum>` and reuse controls.";
+  }
+  op wmma.f32.16x16x64.fp8_fp8 from WmmaModsC<vector<any>, vector<f32>, vector<f32>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f32.16x16x64.fp8_fp8) with `modC = <enum>` and reuse controls.";
+  }
+  op wmma.f32.16x16x64.fp8_bf8 from WmmaModsC<vector<any>, vector<f32>, vector<f32>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f32.16x16x64.fp8_bf8) with `modC = <enum>` and reuse controls.";
+  }
+  op wmma.f32.16x16x64.bf8_fp8 from WmmaModsC<vector<any>, vector<f32>, vector<f32>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f32.16x16x64.bf8_fp8) with `modC = <enum>` and reuse controls.";
+  }
+  op wmma.f32.16x16x64.bf8_bf8 from WmmaModsC<vector<any>, vector<f32>, vector<f32>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f32.16x16x64.bf8_bf8) with `modC = <enum>` and reuse controls.";
+  }
+  op wmma.f16.16x16x64.fp8_fp8 from WmmaModsC<vector<any>, vector<f16>, vector<f16>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f16.16x16x64.fp8_fp8) with `modC = <enum>` and reuse controls.";
+  }
+  op wmma.f16.16x16x64.fp8_bf8 from WmmaModsC<vector<any>, vector<f16>, vector<f16>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f16.16x16x64.fp8_bf8) with `modC = <enum>` and reuse controls.";
+  }
+  op wmma.f16.16x16x64.bf8_fp8 from WmmaModsC<vector<any>, vector<f16>, vector<f16>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f16.16x16x64.bf8_fp8) with `modC = <enum>` and reuse controls.";
+  }
+  op wmma.f16.16x16x64.bf8_bf8 from WmmaModsC<vector<any>, vector<f16>, vector<f16>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f16.16x16x64.bf8_bf8) with `modC = <enum>` and reuse controls.";
+  }
+  op wmma.f32.16x16x128.fp8_fp8 from WmmaModsC<vector<any>, vector<f32>, vector<f32>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f32.16x16x128.fp8_fp8) with `modC = <enum>` and reuse controls.";
+  }
+  op wmma.f32.16x16x128.fp8_bf8 from WmmaModsC<vector<any>, vector<f32>, vector<f32>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f32.16x16x128.fp8_bf8) with `modC = <enum>` and reuse controls.";
+  }
+  op wmma.f32.16x16x128.bf8_fp8 from WmmaModsC<vector<any>, vector<f32>, vector<f32>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f32.16x16x128.bf8_fp8) with `modC = <enum>` and reuse controls.";
+  }
+  op wmma.f32.16x16x128.bf8_bf8 from WmmaModsC<vector<any>, vector<f32>, vector<f32>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f32.16x16x128.bf8_bf8) with `modC = <enum>` and reuse controls.";
+  }
+  op wmma.f16.16x16x128.fp8_fp8 from WmmaModsC<vector<any>, vector<f16>, vector<f16>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f16.16x16x128.fp8_fp8) with `modC = <enum>` and reuse controls.";
+  }
+  op wmma.f16.16x16x128.fp8_bf8 from WmmaModsC<vector<any>, vector<f16>, vector<f16>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f16.16x16x128.fp8_bf8) with `modC = <enum>` and reuse controls.";
+  }
+  op wmma.f16.16x16x128.bf8_fp8 from WmmaModsC<vector<any>, vector<f16>, vector<f16>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f16.16x16x128.bf8_fp8) with `modC = <enum>` and reuse controls.";
+  }
+  op wmma.f16.16x16x128.bf8_bf8 from WmmaModsC<vector<any>, vector<f16>, vector<f16>> {
+    Doc "Wave matrix multiply-accumulate (wmma.f16.16x16x128.bf8_bf8) with `modC = <enum>` and reuse controls.";
+  }
+  op wmma.i32.16x16x64.iu8 from WmmaModsABClamp<vector<any>, vector<any>> {
+    Doc "Integer wave matrix multiply-accumulate (wmma.i32.16x16x64.iu8) with sign, reuse and clamp modifiers.";
+  }
+  op wmma.scale.f32.16x16x128.f8f6f4 from WmmaScale<vector<any>, vector<f32>, i32> {
+    Doc "Scaled wave matrix multiply-accumulate (wmma.scale.f32.16x16x128.f8f6f4) with fmtA/fmtB, modC, scale-type and scale-format modifiers.";
+  }
+  op wmma.scale16.f32.16x16x128.f8f6f4 from WmmaScale<vector<any>, vector<f32>, i64> {
+    Doc "Scaled wave matrix multiply-accumulate (wmma.scale16.f32.16x16x128.f8f6f4) with fmtA/fmtB, modC, scale-type and scale-format modifiers.";
+  }
+  op wmma.scale.f32.32x16x128.f4 from WmmaScaleF4<vector<any>, vector<f32>, i32> {
+    Doc "Scaled F4 wave matrix multiply-accumulate (wmma.scale.f32.32x16x128.f4) with modC, scale-type and scale-format modifiers.";
+  }
+  op wmma.scale16.f32.32x16x128.f4 from WmmaScaleF4<vector<any>, vector<f32>, i64> {
+    Doc "Scaled F4 wave matrix multiply-accumulate (wmma.scale16.f32.32x16x128.f4) with modC, scale-type and scale-format modifiers.";
+  }
+  op fdot2 from Dot<vector<f16, 2>, vector<f16, 2>, f32> {
+    Doc "Packed intra-lane dot product (fdot2) with the optional `clamp` modifier.";
+  }
+  op sdot2 from Dot<vector<i16, 2>, vector<i16, 2>, i32> {
+    Doc "Packed intra-lane dot product (sdot2) with the optional `clamp` modifier.";
+  }
+  op udot2 from Dot<vector<i16, 2>, vector<i16, 2>, i32> {
+    Doc "Packed intra-lane dot product (udot2) with the optional `clamp` modifier.";
+  }
+  op sdot4 from Dot<i32, i32, i32> {
+    Doc "Packed intra-lane dot product (sdot4) with the optional `clamp` modifier.";
+  }
+  op udot4 from Dot<i32, i32, i32> {
+    Doc "Packed intra-lane dot product (udot4) with the optional `clamp` modifier.";
+  }
+  op sdot8 from Dot<i32, i32, i32> {
+    Doc "Packed intra-lane dot product (sdot8) with the optional `clamp` modifier.";
+  }
+  op udot8 from Dot<i32, i32, i32> {
+    Doc "Packed intra-lane dot product (udot8) with the optional `clamp` modifier.";
+  }
+  op fdot2.f16.f16 from DotNoClamp<vector<f16, 2>, vector<f16, 2>, f16> {
+    Doc "Packed intra-lane dot product (fdot2.f16.f16) without a clamp modifier.";
+  }
+  op fdot2.bf16.bf16 from DotNoClamp<vector<bf16, 2>, vector<bf16, 2>, bf16> {
+    Doc "Packed intra-lane dot product (fdot2.bf16.bf16) without a clamp modifier.";
+  }
+  op sudot4 from Sudot {
+    Doc "Mixed-signedness packed dot product (sudot4); `signA`/`signB` select signed lanes and `clamp` the result.";
+  }
+  op sudot8 from Sudot {
+    Doc "Mixed-signedness packed dot product (sudot8); `signA`/`signB` select signed lanes and `clamp` the result.";
+  }
+  op fdot2.f32.bf16 from Dot<vector<bf16, 2>, vector<bf16, 2>, f32> {
+    Doc "Packed intra-lane dot product (fdot2.f32.bf16) with the optional `clamp` modifier.";
+  }
+  op dot4.f32.fp8.fp8 from DotNoClamp<i32, i32, f32> {
+    Doc "Packed intra-lane dot product (dot4.f32.fp8.fp8) without a clamp modifier.";
+  }
+  op dot4.f32.fp8.bf8 from DotNoClamp<i32, i32, f32> {
+    Doc "Packed intra-lane dot product (dot4.f32.fp8.bf8) without a clamp modifier.";
+  }
+  op dot4.f32.bf8.fp8 from DotNoClamp<i32, i32, f32> {
+    Doc "Packed intra-lane dot product (dot4.f32.bf8.fp8) without a clamp modifier.";
+  }
+  op dot4.f32.bf8.bf8 from DotNoClamp<i32, i32, f32> {
+    Doc "Packed intra-lane dot product (dot4.f32.bf8.bf8) without a clamp modifier.";
+  }
+  op swmmac.f32.16x16x32.f16 from SwmmacV<vector<f16>, vector<f32>> {
+    Doc "Sparse wave matrix multiply-accumulate (swmmac.f32.16x16x32.f16) with an `index` sparsity operand.";
+  }
+  op swmmac.f32.16x16x32.bf16 from SwmmacV<vector<any>, vector<f32>> {
+    Doc "Sparse wave matrix multiply-accumulate (swmmac.f32.16x16x32.bf16) with an `index` sparsity operand.";
+  }
+  op swmmac.f16.16x16x32.f16 from SwmmacV<vector<f16>, vector<f16>> {
+    Doc "Sparse wave matrix multiply-accumulate (swmmac.f16.16x16x32.f16) with an `index` sparsity operand.";
+  }
+  op swmmac.bf16.16x16x32.bf16 from SwmmacV<vector<any>, vector<any>> {
+    Doc "Sparse wave matrix multiply-accumulate (swmmac.bf16.16x16x32.bf16) with an `index` sparsity operand.";
+  }
+  op swmmac.i32.16x16x32.iu8 from SwmmacIU<vector<any>, vector<any>> {
+    Doc "Integer sparse wave matrix multiply-accumulate (swmmac.i32.16x16x32.iu8) with sign and clamp modifiers.";
+  }
+  op swmmac.i32.16x16x32.iu4 from SwmmacIU<vector<any>, vector<any>> {
+    Doc "Integer sparse wave matrix multiply-accumulate (swmmac.i32.16x16x32.iu4) with sign and clamp modifiers.";
+  }
+  op swmmac.i32.16x16x64.iu4 from SwmmacIU<vector<any>, vector<any>> {
+    Doc "Integer sparse wave matrix multiply-accumulate (swmmac.i32.16x16x64.iu4) with sign and clamp modifiers.";
+  }
+  op swmmac.f32.16x16x32.fp8.fp8 from SwmmacV<vector<any>, vector<any>> {
+    Doc "Sparse wave matrix multiply-accumulate (swmmac.f32.16x16x32.fp8.fp8) with an `index` sparsity operand.";
+  }
+  op swmmac.f32.16x16x32.fp8.bf8 from SwmmacV<vector<any>, vector<any>> {
+    Doc "Sparse wave matrix multiply-accumulate (swmmac.f32.16x16x32.fp8.bf8) with an `index` sparsity operand.";
+  }
+  op swmmac.f32.16x16x32.bf8.fp8 from SwmmacV<vector<any>, vector<any>> {
+    Doc "Sparse wave matrix multiply-accumulate (swmmac.f32.16x16x32.bf8.fp8) with an `index` sparsity operand.";
+  }
+  op swmmac.f32.16x16x32.bf8.bf8 from SwmmacV<vector<any>, vector<any>> {
+    Doc "Sparse wave matrix multiply-accumulate (swmmac.f32.16x16x32.bf8.bf8) with an `index` sparsity operand.";
+  }
+  op swmmac.f32.16x16x64.f16 from SwmmacModsAB<vector<f16>, vector<f32>, vector<f32>> {
+    Doc "Sparse wave matrix multiply-accumulate (swmmac.f32.16x16x64.f16) with sign and reuse modifiers.";
+  }
+  op swmmac.f32.16x16x64.bf16 from SwmmacModsAB<vector<bf16>, vector<f32>, vector<f32>> {
+    Doc "Sparse wave matrix multiply-accumulate (swmmac.f32.16x16x64.bf16) with sign and reuse modifiers.";
+  }
+  op swmmac.f16.16x16x64.f16 from SwmmacModsAB<vector<f16>, vector<f16>, vector<f16>> {
+    Doc "Sparse wave matrix multiply-accumulate (swmmac.f16.16x16x64.f16) with sign and reuse modifiers.";
+  }
+  op swmmac.bf16.16x16x64.bf16 from SwmmacModsAB<vector<bf16>, vector<bf16>, vector<bf16>> {
+    Doc "Sparse wave matrix multiply-accumulate (swmmac.bf16.16x16x64.bf16) with sign and reuse modifiers.";
+  }
+  op swmmac.bf16f32.16x16x64.bf16 from SwmmacModsAB<vector<bf16>, vector<bf16>, vector<bf16>> {
+    Doc "Sparse wave matrix multiply-accumulate (swmmac.bf16f32.16x16x64.bf16) with sign and reuse modifiers.";
+  }
+  op swmmac.f32.16x16x128.fp8.fp8 from SwmmacReuse<vector<any>, vector<any>> {
+    Doc "Sparse wave matrix multiply-accumulate (swmmac.f32.16x16x128.fp8.fp8) with `index` and reuse controls.";
+  }
+  op swmmac.f32.16x16x128.fp8.bf8 from SwmmacReuse<vector<any>, vector<any>> {
+    Doc "Sparse wave matrix multiply-accumulate (swmmac.f32.16x16x128.fp8.bf8) with `index` and reuse controls.";
+  }
+  op swmmac.f32.16x16x128.bf8.fp8 from SwmmacReuse<vector<any>, vector<any>> {
+    Doc "Sparse wave matrix multiply-accumulate (swmmac.f32.16x16x128.bf8.fp8) with `index` and reuse controls.";
+  }
+  op swmmac.f32.16x16x128.bf8.bf8 from SwmmacReuse<vector<any>, vector<any>> {
+    Doc "Sparse wave matrix multiply-accumulate (swmmac.f32.16x16x128.bf8.bf8) with `index` and reuse controls.";
+  }
+  op swmmac.f16.16x16x128.fp8.fp8 from SwmmacReuse<vector<any>, vector<any>> {
+    Doc "Sparse wave matrix multiply-accumulate (swmmac.f16.16x16x128.fp8.fp8) with `index` and reuse controls.";
+  }
+  op swmmac.f16.16x16x128.fp8.bf8 from SwmmacReuse<vector<any>, vector<any>> {
+    Doc "Sparse wave matrix multiply-accumulate (swmmac.f16.16x16x128.fp8.bf8) with `index` and reuse controls.";
+  }
+  op swmmac.f16.16x16x128.bf8.fp8 from SwmmacReuse<vector<any>, vector<any>> {
+    Doc "Sparse wave matrix multiply-accumulate (swmmac.f16.16x16x128.bf8.fp8) with `index` and reuse controls.";
+  }
+  op swmmac.f16.16x16x128.bf8.bf8 from SwmmacReuse<vector<any>, vector<any>> {
+    Doc "Sparse wave matrix multiply-accumulate (swmmac.f16.16x16x128.bf8.bf8) with `index` and reuse controls.";
+  }
+  op swmmac.i32.16x16x128.iu8 from SwmmacModsABClamp<vector<any>, vector<any>, vector<any>> {
+    Doc "Integer sparse wave matrix multiply-accumulate (swmmac.i32.16x16x128.iu8) with sign, reuse and clamp modifiers.";
+  }
+  op ds.read.tr4.b64 from LdsRead {
+    Doc "Transposed read from LDS; the mnemonic names the transpose width and result bit width.";
+  }
+  op ds.read.tr8.b64 from LdsRead {
+    Doc "Transposed read from LDS; the mnemonic names the transpose width and result bit width.";
+  }
+  op ds.read.tr6.b96 from LdsRead {
+    Doc "Transposed read from LDS; the mnemonic names the transpose width and result bit width.";
+  }
+  op ds.read.tr16.b64 from LdsRead {
+    Doc "Transposed read from LDS; the mnemonic names the transpose width and result bit width.";
+  }
+
+  op ds.load.tr16.b128 from TrLoad {
+    Doc "Transposed load from LDS (address space 3) to a register vector; the mnemonic fixes the transpose width and result element type (gfx1250+).";
+  }
+  op ds.load.tr4.b64 from TrLoad {
+    Doc "Transposed load from LDS (address space 3) to a register vector; the mnemonic fixes the transpose width and result element type (gfx1250+).";
+  }
+  op ds.load.tr6.b96 from TrLoad {
+    Doc "Transposed load from LDS (address space 3) to a register vector; the mnemonic fixes the transpose width and result element type (gfx1250+).";
+  }
+  op ds.load.tr8.b64 from TrLoad {
+    Doc "Transposed load from LDS (address space 3) to a register vector; the mnemonic fixes the transpose width and result element type (gfx1250+).";
+  }
+  op global.load.tr.b128 from TrLoad {
+    Doc "Transposed load from global memory (address space 1) to a register vector; the mnemonic fixes the transpose width and result element type (gfx1250+).";
+  }
+  op global.load.tr.b64 from TrLoad {
+    Doc "Transposed load from global memory (address space 1) to a register vector; the mnemonic fixes the transpose width and result element type (gfx1250+).";
+  }
+  op global.load.tr4.b64 from TrLoad {
+    Doc "Transposed load from global memory (address space 1) to a register vector; the mnemonic fixes the transpose width and result element type (gfx1250+).";
+  }
+  op global.load.tr6.b96 from TrLoad {
+    Doc "Transposed load from global memory (address space 1) to a register vector; the mnemonic fixes the transpose width and result element type (gfx1250+).";
+  }
+  op load.to.lds {
+    Doc "Load size bytes from global pointer globalPtr to LDS pointer ldsPtr at a constant offset, using the given cache policy; the compiler inserts completion waits.";
+    Operands   (globalPtr: any, ldsPtr: any);
+    Attributes (size: i32, offset: i32, aux: any);
+    Properties [memory_effect(read), memory_effect(write)];
+    Assembly   { globalPtr "," ldsPtr "," size "," offset "," custom<CachePolicy>(aux) prop-dict attr-dict ":" type(globalPtr) }
+  }
+  op load.async.to.lds {
+    Doc "Gathering load from global memory to LDS at a constant offset, with no automatic completion waits; pair with asyncmark/wait.asyncmark.";
+    Operands   (globalPtr: any, ldsPtr: any);
+    Attributes (size: i32, offset: i32, aux: any);
+    Properties [memory_effect(read), memory_effect(write)];
+    Assembly   { globalPtr "," ldsPtr "," size "," offset "," custom<CachePolicy>(aux) prop-dict attr-dict ":" qualified(type(globalPtr)) "," qualified(type(ldsPtr)) }
+  }
+  op global.load.lds {
+    Doc "Load from a global buffer pointer to LDS with size, constant offset and cache policy; the compiler inserts completion waits.";
+    Operands   (globalPtr: any, ldsPtr: any);
+    Attributes (size: i32, offset: i32, aux: any);
+    Properties [memory_effect(read), memory_effect(write)];
+    Assembly   { globalPtr "," ldsPtr "," size "," offset "," custom<CachePolicy>(aux) prop-dict attr-dict }
+  }
+  op global.load.async.lds {
+    Doc "Async load from an address-space-1 global pointer to LDS with a cache policy; no automatic completion waits.";
+    Operands   (globalPtr: any, ldsPtr: any);
+    Attributes (size: i32, offset: i32, aux: any);
+    Properties [memory_effect(read), memory_effect(write)];
+    Assembly   { globalPtr "," ldsPtr "," size "," offset "," custom<CachePolicy>(aux) prop-dict attr-dict ":" qualified(type(globalPtr)) "," qualified(type(ldsPtr)) }
+  }
+
+  op global.load.async.to.lds.b128 from AsyncLdsCopy {
+    Doc "Asynchronously copy 128 bits from a global pointer to LDS at constant `offset` with cache policy `aux`; no completion wait is inserted (gfx1250+).";
+  }
+  op global.load.async.to.lds.b32 from AsyncLdsCopy {
+    Doc "Asynchronously copy 32 bits from a global pointer to LDS at constant `offset` with cache policy `aux`; no completion wait is inserted (gfx1250+).";
+  }
+  op global.load.async.to.lds.b64 from AsyncLdsCopy {
+    Doc "Asynchronously copy 64 bits from a global pointer to LDS at constant `offset` with cache policy `aux`; no completion wait is inserted (gfx1250+).";
+  }
+  op global.load.async.to.lds.b8 from AsyncLdsCopy {
+    Doc "Asynchronously copy 8 bits from a global pointer to LDS at constant `offset` with cache policy `aux`; no completion wait is inserted (gfx1250+).";
+  }
+  op global.store.async.from.lds.b128 from AsyncLdsCopy {
+    Doc "Asynchronously copy 128 bits from LDS to a global pointer at constant `offset` with cache policy `aux`; no completion wait is inserted (gfx1250+).";
+  }
+  op global.store.async.from.lds.b32 from AsyncLdsCopy {
+    Doc "Asynchronously copy 32 bits from LDS to a global pointer at constant `offset` with cache policy `aux`; no completion wait is inserted (gfx1250+).";
+  }
+  op global.store.async.from.lds.b64 from AsyncLdsCopy {
+    Doc "Asynchronously copy 64 bits from LDS to a global pointer at constant `offset` with cache policy `aux`; no completion wait is inserted (gfx1250+).";
+  }
+  op global.store.async.from.lds.b8 from AsyncLdsCopy {
+    Doc "Asynchronously copy 8 bits from LDS to a global pointer at constant `offset` with cache policy `aux`; no completion wait is inserted (gfx1250+).";
+  }
+  op cluster.load.async.to.lds.b128 from ClusterAsyncLdsCopy {
+    Doc "Broadcast-load 128 bits from global memory into LDS for a cluster of workgroups at constant `offset`, with cache policy `cpol` and per-workgroup `mask` (gfx1250+).";
+  }
+  op cluster.load.async.to.lds.b32 from ClusterAsyncLdsCopy {
+    Doc "Broadcast-load 32 bits from global memory into LDS for a cluster of workgroups at constant `offset`, with cache policy `cpol` and per-workgroup `mask` (gfx1250+).";
+  }
+  op cluster.load.async.to.lds.b64 from ClusterAsyncLdsCopy {
+    Doc "Broadcast-load 64 bits from global memory into LDS for a cluster of workgroups at constant `offset`, with cache policy `cpol` and per-workgroup `mask` (gfx1250+).";
+  }
+  op cluster.load.async.to.lds.b8 from ClusterAsyncLdsCopy {
+    Doc "Broadcast-load 8 bits from global memory into LDS for a cluster of workgroups at constant `offset`, with cache policy `cpol` and per-workgroup `mask` (gfx1250+).";
+  }
+  op tensor.load.to.lds from TensorLds {
+    Doc "Move a tensor tile between global memory and LDS through five descriptor groups, with an optional cache policy.";
+  }
+  op tensor.store.from.lds from TensorLds {
+    Doc "Move a tensor tile between global memory and LDS through five descriptor groups, with an optional cache policy.";
+  }
+  op make.buffer.rsrc {
+    Doc "Build a buffer resource (pointer in address space 8) from a base pointer, an i16 stride, the number of records and i32 flags.";
+    Operands   (base: any, stride: i16, numRecords: integer, flags: i32);
+    Results    (res: any);
+    Properties [pure];
+    Assembly   { operands attr-dict ":" type(base) "," type(numRecords) "to" type(res) }
+  }
+  op raw.ptr.buffer.load {
+    Doc "Load from the raw buffer resource `rsrc` at offset/soffset with a cache policy; returns the loaded value.";
+    Operands   (rsrc: any, offset: i32, soffset: i32);
+    Results    (res: any);
+    Attributes (aux: any);
+    Properties [memory_effect(read)];
+    Assembly   { rsrc "," offset "," soffset "," custom<CachePolicy>(aux) prop-dict attr-dict ":" type(res) }
+  }
+  op ptr.s.buffer.load {
+    Doc "Load from the raw buffer resource `rsrc` at `offset`, additionally marking the load invariant in LLVM IR.";
+    Operands   (rsrc: any, offset: i32);
+    Results    (res: any);
+    Attributes (aux: any);
+    Properties [memory_effect(read)];
+    Assembly   { rsrc "," offset "," custom<CachePolicy>(aux) prop-dict attr-dict ":" type(res) }
+  }
+  op raw.ptr.buffer.load.lds {
+    Doc "Load from raw buffer resource `rsrc` into LDS at `ldsPtr`, using size, voffset, soffset and offset.";
+    Operands   (rsrc: any, ldsPtr: any, size: i32, voffset: i32, soffset: i32, offset: i32);
+    Attributes (aux: any);
+    Properties [memory_effect(read), memory_effect(write)];
+    Assembly   { rsrc "," ldsPtr "," size "," voffset "," soffset "," offset "," custom<CachePolicy>(aux) prop-dict attr-dict }
+  }
+  op raw.ptr.buffer.load.async.lds {
+    Doc "Async variant of raw.ptr.buffer.load.lds; the compiler does not insert completion waits, so pair it with asyncmark/wait.asyncmark.";
+    Operands   (rsrc: any, ldsPtr: any, size: i32, voffset: i32, soffset: i32, offset: i32);
+    Attributes (aux: any);
+    Properties [memory_effect(read), memory_effect(write)];
+    Assembly   { rsrc "," ldsPtr "," size "," voffset "," soffset "," offset "," custom<CachePolicy>(aux) prop-dict attr-dict }
+  }
+  op raw.ptr.buffer.store {
+    Doc "Store `vdata` to raw buffer resource `rsrc` at offset/soffset with a cache policy.";
+    Operands   (vdata: any, rsrc: any, offset: i32, soffset: i32);
+    Attributes (aux: any);
+    Properties [memory_effect(write)];
+    Assembly   { vdata "," rsrc "," offset "," soffset "," custom<CachePolicy>(aux) prop-dict attr-dict ":" type(vdata) }
+  }
+  op raw.ptr.buffer.atomic.cmpswap {
+    Doc "Atomic compare-and-swap on raw buffer resource `rsrc`; src, cmp and the result share one type.";
+    Operands   (src: any, cmp: any, rsrc: any, offset: i32, soffset: i32);
+    Results    (res: any);
+    Attributes (aux: any);
+    Properties [memory_effect(read), memory_effect(write), same_type(res, src), same_type(src, cmp)];
+    Assembly   { src "," cmp "," rsrc "," offset "," soffset "," custom<CachePolicy>(aux) prop-dict attr-dict ":" type(res) }
+  }
+  op raw.ptr.buffer.atomic.fmax from RawPtrAtomicRet {
+    Doc "Atomic 'fmax' on a raw buffer resource given as a pointer; returns the old value.";
+  }
+  op raw.ptr.buffer.atomic.smax from RawPtrAtomicRet {
+    Doc "Atomic 'smax' on a raw buffer resource given as a pointer; returns the old value.";
+  }
+  op raw.ptr.buffer.atomic.umin from RawPtrAtomicRet {
+    Doc "Atomic 'umin' on a raw buffer resource given as a pointer; returns the old value.";
+  }
+  op raw.ptr.buffer.atomic.fadd from RawPtrAtomicRet {
+    Doc "Atomic 'fadd' on a raw buffer resource given as a pointer; returns the old value.";
+  }
+  op raw.buffer.load {
+    Doc "Deprecated load whose buffer resource is a vector<4xi32>; use raw.ptr.buffer.load with a make.buffer.rsrc resource instead.";
+    Operands   (rsrc: vector<i32, 4>, offset: i32, soffset: i32);
+    Results    (res: any);
+    Attributes (aux: any);
+    Assembly   { rsrc "," offset "," soffset "," custom<CachePolicy>(aux) attr-dict ":" type(res) }
+  }
+  op raw.buffer.store {
+    Doc "Deprecated store whose buffer resource is a vector<4xi32>; use raw.ptr.buffer.store instead.";
+    Operands   (vdata: any, rsrc: vector<i32, 4>, offset: i32, soffset: i32);
+    Attributes (aux: any);
+    Assembly   { vdata "," rsrc "," offset "," soffset "," custom<CachePolicy>(aux) attr-dict ":" type(vdata) }
+  }
+  op raw.buffer.atomic.cmpswap {
+    Doc "Deprecated compare-and-swap whose buffer resource is a vector<4xi32>; src, cmp and the result share one type.";
+    Operands   (src: any, cmp: any, rsrc: vector<i32, 4>, offset: i32, soffset: i32);
+    Results    (res: any);
+    Attributes (aux: any);
+    Properties [same_type(res, src), same_type(src, cmp)];
+    Assembly   { attr-dict "(" src "," cmp "," rsrc "," offset "," soffset "," custom<CachePolicy>(aux) ")" ":" type(res) "," type(rsrc) }
+  }
+  op global.prefetch {
+    Doc "Prefetch one byte per lane from global memory into the WGP or L2 cache with the given cache policy; gfx1250+.";
+    Operands   (ptr: any);
+    Attributes (cachePolicy: any);
+    Properties [memory_effect(read), memory_effect(write)];
+    Assembly   { ptr "," custom<CachePolicy>(cachePolicy) prop-dict attr-dict ":" qualified(type(ptr)) }
+  }
+  op flat.prefetch {
+    Doc "Prefetch one byte per lane from flat memory into the WGP or L2 cache with the given cache policy; gfx1250+.";
+    Operands   (ptr: any);
+    Attributes (cachePolicy: any);
+    Properties [memory_effect(read), memory_effect(write)];
+    Assembly   { ptr "," custom<CachePolicy>(cachePolicy) prop-dict attr-dict ":" qualified(type(ptr)) }
+  }
+  op ds.atomic.barrier.arrive.rtn.b64 {
+    Doc "Wait on the DS barrier at `barrierPtr` and decrement its pending count by `val`, returning the old 64-bit barrier state; gfx1250+.";
+    Operands   (barrierPtr: any, val: i64);
+    Results    (res: i64);
+    Properties [memory_effect(read), memory_effect(write)];
+    Assembly   { barrierPtr "," val prop-dict attr-dict ":" qualified(type(barrierPtr)) "," type(val) "->" type(res) }
+  }
+  op ds.atomic.async.barrier.arrive.b64 {
+    Doc "Fire-and-forget DS barrier arrive at `barrierPtr`; ordered with async LDS loads and tracked by ASYNCCNT; gfx1250+.";
+    Operands   (barrierPtr: any);
+    Properties [memory_effect(read), memory_effect(write)];
+    Assembly   { barrierPtr prop-dict attr-dict ":" qualified(type(barrierPtr)) }
+  }
+  op raw.buffer.atomic.fadd {
+    Doc "Deprecated atomic floating-point add on a vector<4xi32> buffer resource; vdata and the result share one type.";
+    Operands   (vdata: any, rsrc: vector<i32, 4>, offset: i32, soffset: i32);
+    Results    (res: any);
+    Attributes (aux: any);
+    Properties [same_type(res, vdata)];
+    Assembly   { vdata "," rsrc "," offset "," soffset "," custom<CachePolicy>(aux) attr-dict ":" type(vdata) }
+  }
+  op raw.buffer.atomic.fmax {
+    Doc "Deprecated atomic floating-point max on a vector<4xi32> buffer resource; vdata and the result share one type.";
+    Operands   (vdata: any, rsrc: vector<i32, 4>, offset: i32, soffset: i32);
+    Results    (res: any);
+    Attributes (aux: any);
+    Properties [same_type(res, vdata)];
+    Assembly   { vdata "," rsrc "," offset "," soffset "," custom<CachePolicy>(aux) attr-dict ":" type(vdata) }
+  }
+  op raw.buffer.atomic.smax {
+    Doc "Deprecated atomic signed integer max on a vector<4xi32> buffer resource; vdata and the result share one type.";
+    Operands   (vdata: any, rsrc: vector<i32, 4>, offset: i32, soffset: i32);
+    Results    (res: any);
+    Attributes (aux: any);
+    Properties [same_type(res, vdata)];
+    Assembly   { vdata "," rsrc "," offset "," soffset "," custom<CachePolicy>(aux) attr-dict ":" type(vdata) }
+  }
+  op raw.buffer.atomic.umin {
+    Doc "Deprecated atomic unsigned integer min on a vector<4xi32> buffer resource; vdata and the result share one type.";
+    Operands   (vdata: any, rsrc: vector<i32, 4>, offset: i32, soffset: i32);
+    Results    (res: any);
+    Attributes (aux: any);
+    Properties [same_type(res, vdata)];
+    Assembly   { vdata "," rsrc "," offset "," soffset "," custom<CachePolicy>(aux) attr-dict ":" type(vdata) }
+  }
+  op update.dpp {
+    Doc "Data-parallel-primitives update: combines `old` and `src` under the dppCtrl/rowMask/bankMask/boundCtrl modifiers; old, src and the result share one type.";
+    Operands   (old: lane, src: lane);
+    Results    (res: lane);
+    Attributes (dppCtrl: i32, rowMask: i32, bankMask: i32, boundCtrl: i1);
+    Properties [same_type(res, src), same_type(src, old)];
+    Assembly   { attr-dict old "," src "with" dppCtrl "," rowMask "," bankMask "," boundCtrl ":" type(src) }
+  }
+  op permlanex16 {
+    Doc "Cross-row 16-lane permutation with immediate fi/boundControl modifiers; res, old and src0 share one type and src1/src2 share another.";
+    Operands   (old: lane, src0: lane, src1: i32, src2: i32);
+    Results    (res: lane);
+    Attributes (fi: i1, boundControl: i1);
+    Properties [same_type(res, old), same_type(old, src0), same_type(src1, src2)];
+    Assembly   { attr-dict old "," src0 "," src1 "," src2 "," fi "," boundControl ":" type(src0) "," type(src1) }
+  }
+  op permlane16.swap {
+    Doc "Swap lanes between groups of 16 threads; the result is the LLVM struct pair (i32, i32).";
+    Operands   (old: i32, src: i32);
+    Results    (res: any);
+    Attributes (fi: i1, boundControl: i1);
+    Assembly   { attr-dict old "," src "," fi "," boundControl ":" "(" type(old) "," type(src) ")" "->" type(res) }
+  }
+  op permlane32.swap {
+    Doc "Swap lanes between groups of 32 threads; the result is the LLVM struct pair (i32, i32).";
+    Operands   (old: i32, src: i32);
+    Results    (res: any);
+    Attributes (fi: i1, boundControl: i1);
+    Assembly   { attr-dict old "," src "," fi "," boundControl ":" "(" type(old) "," type(src) ")" "->" type(res) }
+  }
+  op permlane16.var {
+    Doc "Per-lane variable-selector intra-row (within 16-lane row) permutation; src1 carries the per-lane source indices.";
+    Operands   (old: i32, src0: i32, src1: i32);
+    Results    (res: i32);
+    Attributes (fi: i1, boundControl: i1);
+    Assembly   { attr-dict old "," src0 "," src1 "," fi "," boundControl ":" functional-type(operands, res) }
+  }
+  op permlanex16.var {
+    Doc "Per-lane variable-selector cross-row permutation; src1 carries the per-lane source indices.";
+    Operands   (old: i32, src0: i32, src1: i32);
+    Results    (res: i32);
+    Attributes (fi: i1, boundControl: i1);
+    Assembly   { attr-dict old "," src0 "," src1 "," fi "," boundControl ":" functional-type(operands, res) }
+  }
+  op cvt.pkrtz {
+    Doc "Convert two f32 values into a packed vector<2xf16> with round-to-zero.";
+    Operands   (srcA: f32, srcB: f32);
+    Results    (res: vector<f16, 2>);
+    Properties [pure];
+    Assembly   { attr-dict srcA "," srcB ":" type(res) }
+  }
+  op cvt.f32.bf8 {
+    Doc "Convert the 8-bit bf8 value selected by `byteSel` from `srcA` to f32.";
+    Operands   (srcA: i32);
+    Results    (res: f32);
+    Attributes (byteSel: i32);
+    Properties [pure];
+    Assembly   { attr-dict srcA "[" byteSel "]" ":" type(res) }
+  }
+  op cvt.f32.fp8 {
+    Doc "Convert the 8-bit fp8 value selected by `byteSel` from `srcA` to f32.";
+    Operands   (srcA: i32);
+    Results    (res: f32);
+    Attributes (byteSel: i32);
+    Properties [pure];
+    Assembly   { attr-dict srcA "[" byteSel "]" ":" type(res) }
+  }
+  op cvt.pk.f32.fp8 {
+    Doc "Unpack the fp8 word selected by `wordSel` from `src` to a vector<2xf32>.";
+    Operands   (src: i32);
+    Results    (res: vector<f32, 2>);
+    Attributes (wordSel: i1);
+    Properties [pure];
+    Assembly   { attr-dict src "[" wordSel "]" ":" type(res) }
+  }
+  op cvt.pk.f32.bf8 {
+    Doc "Unpack the bf8 word selected by `wordSel` from `src` to a vector<2xf32>.";
+    Operands   (src: i32);
+    Results    (res: vector<f32, 2>);
+    Attributes (wordSel: i1);
+    Properties [pure];
+    Assembly   { attr-dict src "[" wordSel "]" ":" type(res) }
+  }
+  op cvt.pk.bf8.f32 {
+    Doc "Convert srcA and srcB to bf8 and replace the word selected by `wordSel` of `old`, returning the updated i32.";
+    Operands   (srcA: f32, srcB: f32, old: i32);
+    Results    (res: i32);
+    Attributes (wordSel: i1);
+    Properties [pure];
+    Assembly   { attr-dict srcA "," srcB "->" old "[" wordSel "]" ":" type(res) }
+  }
+  op cvt.pk.fp8.f32 {
+    Doc "Convert srcA and srcB to fp8 and replace the word selected by `wordSel` of `old`, returning the updated i32.";
+    Operands   (srcA: f32, srcB: f32, old: i32);
+    Results    (res: i32);
+    Attributes (wordSel: i1);
+    Properties [pure];
+    Assembly   { attr-dict srcA "," srcB "->" old "[" wordSel "]" ":" type(res) }
+  }
+  op cvt.sr.bf8.f32 {
+    Doc "Stochastic-rounding convert srcA to bf8 using the rounding factor in srcB, replacing the byte selected by `byteSel` of `old`.";
+    Operands   (srcA: f32, srcB: i32, old: i32);
+    Results    (res: i32);
+    Attributes (byteSel: i32);
+    Properties [pure];
+    Assembly   { attr-dict srcA "," srcB "->" old "[" byteSel "]" ":" type(res) }
+  }
+  op cvt.sr.fp8.f32 {
+    Doc "Stochastic-rounding convert srcA to fp8 using the rounding factor in srcB, replacing the byte selected by `byteSel` of `old`.";
+    Operands   (srcA: f32, srcB: i32, old: i32);
+    Results    (res: i32);
+    Attributes (byteSel: i32);
+    Properties [pure];
+    Assembly   { attr-dict srcA "," srcB "->" old "[" byteSel "]" ":" type(res) }
+  }
+  op cvt.scalef32.pk.fp4.f32 {
+    Doc "Scale src0 and src1 by the exponent of `scale`, convert to packed fp4 and replace byte `dstSelIndex` of `oldVdst`.";
+    Operands   (oldVdst: i32, src0: f32, src1: f32, scale: f32);
+    Results    (res: i32);
+    Attributes (dstSelIndex: i32);
+    Properties [pure];
+    Assembly   { attr-dict src0 "," src1 "," scale "->" oldVdst "[" dstSelIndex "]" ":" type(res) }
+  }
+
+  op cvt.scale.pk16.bf16.bf6 from CvtPkScale<vector<i32, 3>, vector<bf16, 16>> {
+    Doc "Scale packed vector<i32, 3> values (selected by `scaleSel`) by the exponent of `scale` and convert them to vector<bf16, 16> (gfx1250+).";
+  }
+  op cvt.scale.pk16.bf16.fp6 from CvtPkScale<vector<i32, 3>, vector<bf16, 16>> {
+    Doc "Scale packed vector<i32, 3> values (selected by `scaleSel`) by the exponent of `scale` and convert them to vector<bf16, 16> (gfx1250+).";
+  }
+  op cvt.scale.pk16.f16.bf6 from CvtPkScale<vector<i32, 3>, vector<f16, 16>> {
+    Doc "Scale packed vector<i32, 3> values (selected by `scaleSel`) by the exponent of `scale` and convert them to vector<f16, 16> (gfx1250+).";
+  }
+  op cvt.scale.pk16.f16.fp6 from CvtPkScale<vector<i32, 3>, vector<f16, 16>> {
+    Doc "Scale packed vector<i32, 3> values (selected by `scaleSel`) by the exponent of `scale` and convert them to vector<f16, 16> (gfx1250+).";
+  }
+  op cvt.scale.pk16.f32.bf6 from CvtPkScale<vector<i32, 3>, vector<f32, 16>> {
+    Doc "Scale packed vector<i32, 3> values (selected by `scaleSel`) by the exponent of `scale` and convert them to vector<f32, 16> (gfx1250+).";
+  }
+  op cvt.scale.pk16.f32.fp6 from CvtPkScale<vector<i32, 3>, vector<f32, 16>> {
+    Doc "Scale packed vector<i32, 3> values (selected by `scaleSel`) by the exponent of `scale` and convert them to vector<f32, 16> (gfx1250+).";
+  }
+  op cvt.scale.pk8.bf16.bf8 from CvtPkScale<vector<i32, 2>, vector<bf16, 8>> {
+    Doc "Scale packed vector<i32, 2> values (selected by `scaleSel`) by the exponent of `scale` and convert them to vector<bf16, 8> (gfx1250+).";
+  }
+  op cvt.scale.pk8.bf16.fp4 from CvtPkScale<i32, vector<bf16, 8>> {
+    Doc "Scale packed i32 values (selected by `scaleSel`) by the exponent of `scale` and convert them to vector<bf16, 8> (gfx1250+).";
+  }
+  op cvt.scale.pk8.bf16.fp8 from CvtPkScale<vector<i32, 2>, vector<bf16, 8>> {
+    Doc "Scale packed vector<i32, 2> values (selected by `scaleSel`) by the exponent of `scale` and convert them to vector<bf16, 8> (gfx1250+).";
+  }
+  op cvt.scale.pk8.f16.bf8 from CvtPkScale<vector<i32, 2>, vector<f16, 8>> {
+    Doc "Scale packed vector<i32, 2> values (selected by `scaleSel`) by the exponent of `scale` and convert them to vector<f16, 8> (gfx1250+).";
+  }
+  op cvt.scale.pk8.f16.fp4 from CvtPkScale<i32, vector<f16, 8>> {
+    Doc "Scale packed i32 values (selected by `scaleSel`) by the exponent of `scale` and convert them to vector<f16, 8> (gfx1250+).";
+  }
+  op cvt.scale.pk8.f16.fp8 from CvtPkScale<vector<i32, 2>, vector<f16, 8>> {
+    Doc "Scale packed vector<i32, 2> values (selected by `scaleSel`) by the exponent of `scale` and convert them to vector<f16, 8> (gfx1250+).";
+  }
+  op cvt.scale.pk8.f32.bf8 from CvtPkScale<vector<i32, 2>, vector<f32, 8>> {
+    Doc "Scale packed vector<i32, 2> values (selected by `scaleSel`) by the exponent of `scale` and convert them to vector<f32, 8> (gfx1250+).";
+  }
+  op cvt.scale.pk8.f32.fp4 from CvtPkScale<i32, vector<f32, 8>> {
+    Doc "Scale packed i32 values (selected by `scaleSel`) by the exponent of `scale` and convert them to vector<f32, 8> (gfx1250+).";
+  }
+  op cvt.scale.pk8.f32.fp8 from CvtPkScale<vector<i32, 2>, vector<f32, 8>> {
+    Doc "Scale packed vector<i32, 2> values (selected by `scaleSel`) by the exponent of `scale` and convert them to vector<f32, 8> (gfx1250+).";
+  }
+  op cvt.scalef32.pk16.bf6.bf16 from CvtScaleF32<vector<bf16, 16>, vector<i32, 3>> {
+    Doc "Scale and convert packed vector<bf16, 16> to vector<i32, 3> by the exponent part of `scale` (gfx1250+).";
+  }
+  op cvt.scalef32.pk16.bf6.f16 from CvtScaleF32<vector<f16, 16>, vector<i32, 3>> {
+    Doc "Scale and convert packed vector<f16, 16> to vector<i32, 3> by the exponent part of `scale` (gfx1250+).";
+  }
+  op cvt.scalef32.pk16.bf6.f32 from CvtScaleF32<vector<f32, 16>, vector<i32, 3>> {
+    Doc "Scale and convert packed vector<f32, 16> to vector<i32, 3> by the exponent part of `scale` (gfx1250+).";
+  }
+  op cvt.scalef32.pk16.fp6.bf16 from CvtScaleF32<vector<bf16, 16>, vector<i32, 3>> {
+    Doc "Scale and convert packed vector<bf16, 16> to vector<i32, 3> by the exponent part of `scale` (gfx1250+).";
+  }
+  op cvt.scalef32.pk16.fp6.f16 from CvtScaleF32<vector<f16, 16>, vector<i32, 3>> {
+    Doc "Scale and convert packed vector<f16, 16> to vector<i32, 3> by the exponent part of `scale` (gfx1250+).";
+  }
+  op cvt.scalef32.pk16.fp6.f32 from CvtScaleF32<vector<f32, 16>, vector<i32, 3>> {
+    Doc "Scale and convert packed vector<f32, 16> to vector<i32, 3> by the exponent part of `scale` (gfx1250+).";
+  }
+  op cvt.scalef32.pk32.bf16.bf6 from CvtScaleF32<vector<i32, 6>, vector<bf16, 32>> {
+    Doc "Scale and convert packed vector<i32, 6> to vector<bf16, 32> by the exponent part of `scale` (gfx1250+).";
+  }
+  op cvt.scalef32.pk32.bf16.fp6 from CvtScaleF32<vector<i32, 6>, vector<bf16, 32>> {
+    Doc "Scale and convert packed vector<i32, 6> to vector<bf16, 32> by the exponent part of `scale` (gfx1250+).";
+  }
+  op cvt.scalef32.pk32.bf6.bf16 from CvtScaleF32<vector<bf16, 32>, vector<i32, 6>> {
+    Doc "Scale and convert packed vector<bf16, 32> to vector<i32, 6> by the exponent part of `scale` (gfx1250+).";
+  }
+  op cvt.scalef32.pk32.bf6.f16 from CvtScaleF32<vector<f16, 32>, vector<i32, 6>> {
+    Doc "Scale and convert packed vector<f16, 32> to vector<i32, 6> by the exponent part of `scale` (gfx1250+).";
+  }
+  op cvt.scalef32.pk32.f16.bf6 from CvtScaleF32<vector<i32, 6>, vector<f16, 32>> {
+    Doc "Scale and convert packed vector<i32, 6> to vector<f16, 32> by the exponent part of `scale` (gfx1250+).";
+  }
+  op cvt.scalef32.pk32.f16.fp6 from CvtScaleF32<vector<i32, 6>, vector<f16, 32>> {
+    Doc "Scale and convert packed vector<i32, 6> to vector<f16, 32> by the exponent part of `scale` (gfx1250+).";
+  }
+  op cvt.scalef32.pk32.f32.bf6 from CvtScaleF32<vector<i32, 6>, vector<f32, 32>> {
+    Doc "Scale and convert packed vector<i32, 6> to vector<f32, 32> by the exponent part of `scale` (gfx1250+).";
+  }
+  op cvt.scalef32.pk32.f32.fp6 from CvtScaleF32<vector<i32, 6>, vector<f32, 32>> {
+    Doc "Scale and convert packed vector<i32, 6> to vector<f32, 32> by the exponent part of `scale` (gfx1250+).";
+  }
+  op cvt.scalef32.pk32.fp6.bf16 from CvtScaleF32<vector<bf16, 32>, vector<i32, 6>> {
+    Doc "Scale and convert packed vector<bf16, 32> to vector<i32, 6> by the exponent part of `scale` (gfx1250+).";
+  }
+  op cvt.scalef32.pk32.fp6.f16 from CvtScaleF32<vector<f16, 32>, vector<i32, 6>> {
+    Doc "Scale and convert packed vector<f16, 32> to vector<i32, 6> by the exponent part of `scale` (gfx1250+).";
+  }
+  op cvt.scalef32.pk8.bf8.bf16 from CvtScaleF32<vector<bf16, 8>, vector<i32, 2>> {
+    Doc "Scale and convert packed vector<bf16, 8> to vector<i32, 2> by the exponent part of `scale` (gfx1250+).";
+  }
+  op cvt.scalef32.pk8.bf8.f16 from CvtScaleF32<vector<f16, 8>, vector<i32, 2>> {
+    Doc "Scale and convert packed vector<f16, 8> to vector<i32, 2> by the exponent part of `scale` (gfx1250+).";
+  }
+  op cvt.scalef32.pk8.bf8.f32 from CvtScaleF32<vector<f32, 8>, vector<i32, 2>> {
+    Doc "Scale and convert packed vector<f32, 8> to vector<i32, 2> by the exponent part of `scale` (gfx1250+).";
+  }
+  op cvt.scalef32.pk8.fp4.bf16 from CvtScaleF32<vector<bf16, 8>, i32> {
+    Doc "Scale and convert packed vector<bf16, 8> to i32 by the exponent part of `scale` (gfx1250+).";
+  }
+  op cvt.scalef32.pk8.fp4.f16 from CvtScaleF32<vector<f16, 8>, i32> {
+    Doc "Scale and convert packed vector<f16, 8> to i32 by the exponent part of `scale` (gfx1250+).";
+  }
+  op cvt.scalef32.pk8.fp4.f32 from CvtScaleF32<vector<f32, 8>, i32> {
+    Doc "Scale and convert packed vector<f32, 8> to i32 by the exponent part of `scale` (gfx1250+).";
+  }
+  op cvt.scalef32.pk8.fp8.bf16 from CvtScaleF32<vector<bf16, 8>, vector<i32, 2>> {
+    Doc "Scale and convert packed vector<bf16, 8> to vector<i32, 2> by the exponent part of `scale` (gfx1250+).";
+  }
+  op cvt.scalef32.pk8.fp8.f16 from CvtScaleF32<vector<f16, 8>, vector<i32, 2>> {
+    Doc "Scale and convert packed vector<f16, 8> to vector<i32, 2> by the exponent part of `scale` (gfx1250+).";
+  }
+  op cvt.scalef32.pk8.fp8.f32 from CvtScaleF32<vector<f32, 8>, vector<i32, 2>> {
+    Doc "Scale and convert packed vector<f32, 8> to vector<i32, 2> by the exponent part of `scale` (gfx1250+).";
+  }
+  op cvt.scalef32.sr.pk16.bf6.bf16 from CvtScaleF32Sr<vector<bf16, 16>, vector<i32, 3>> {
+    Doc "Scale and convert packed vector<bf16, 16> to vector<i32, 3> by the exponent part of `scale`, using `seed` for stochastic rounding (gfx1250+).";
+  }
+  op cvt.scalef32.sr.pk16.bf6.f16 from CvtScaleF32Sr<vector<f16, 16>, vector<i32, 3>> {
+    Doc "Scale and convert packed vector<f16, 16> to vector<i32, 3> by the exponent part of `scale`, using `seed` for stochastic rounding (gfx1250+).";
+  }
+  op cvt.scalef32.sr.pk16.bf6.f32 from CvtScaleF32Sr<vector<f32, 16>, vector<i32, 3>> {
+    Doc "Scale and convert packed vector<f32, 16> to vector<i32, 3> by the exponent part of `scale`, using `seed` for stochastic rounding (gfx1250+).";
+  }
+  op cvt.scalef32.sr.pk16.fp6.bf16 from CvtScaleF32Sr<vector<bf16, 16>, vector<i32, 3>> {
+    Doc "Scale and convert packed vector<bf16, 16> to vector<i32, 3> by the exponent part of `scale`, using `seed` for stochastic rounding (gfx1250+).";
+  }
+  op cvt.scalef32.sr.pk16.fp6.f16 from CvtScaleF32Sr<vector<f16, 16>, vector<i32, 3>> {
+    Doc "Scale and convert packed vector<f16, 16> to vector<i32, 3> by the exponent part of `scale`, using `seed` for stochastic rounding (gfx1250+).";
+  }
+  op cvt.scalef32.sr.pk16.fp6.f32 from CvtScaleF32Sr<vector<f32, 16>, vector<i32, 3>> {
+    Doc "Scale and convert packed vector<f32, 16> to vector<i32, 3> by the exponent part of `scale`, using `seed` for stochastic rounding (gfx1250+).";
+  }
+  op cvt.scalef32.sr.pk32.bf6.bf16 from CvtScaleF32Sr<vector<bf16, 32>, vector<i32, 6>> {
+    Doc "Scale and convert packed vector<bf16, 32> to vector<i32, 6> by the exponent part of `scale`, using `seed` for stochastic rounding (gfx1250+).";
+  }
+  op cvt.scalef32.sr.pk32.bf6.f16 from CvtScaleF32Sr<vector<f16, 32>, vector<i32, 6>> {
+    Doc "Scale and convert packed vector<f16, 32> to vector<i32, 6> by the exponent part of `scale`, using `seed` for stochastic rounding (gfx1250+).";
+  }
+  op cvt.scalef32.sr.pk32.bf6.f32 from CvtScaleF32Sr<vector<f32, 32>, vector<i32, 6>> {
+    Doc "Scale and convert packed vector<f32, 32> to vector<i32, 6> by the exponent part of `scale`, using `seed` for stochastic rounding (gfx1250+).";
+  }
+  op cvt.scalef32.sr.pk32.fp6.bf16 from CvtScaleF32Sr<vector<bf16, 32>, vector<i32, 6>> {
+    Doc "Scale and convert packed vector<bf16, 32> to vector<i32, 6> by the exponent part of `scale`, using `seed` for stochastic rounding (gfx1250+).";
+  }
+  op cvt.scalef32.sr.pk32.fp6.f16 from CvtScaleF32Sr<vector<f16, 32>, vector<i32, 6>> {
+    Doc "Scale and convert packed vector<f16, 32> to vector<i32, 6> by the exponent part of `scale`, using `seed` for stochastic rounding (gfx1250+).";
+  }
+  op cvt.scalef32.sr.pk32.fp6.f32 from CvtScaleF32Sr<vector<f32, 32>, vector<i32, 6>> {
+    Doc "Scale and convert packed vector<f32, 32> to vector<i32, 6> by the exponent part of `scale`, using `seed` for stochastic rounding (gfx1250+).";
+  }
+  op cvt.scalef32.sr.pk8.bf8.bf16 from CvtScaleF32Sr<vector<bf16, 8>, vector<i32, 2>> {
+    Doc "Scale and convert packed vector<bf16, 8> to vector<i32, 2> by the exponent part of `scale`, using `seed` for stochastic rounding (gfx1250+).";
+  }
+  op cvt.scalef32.sr.pk8.bf8.f16 from CvtScaleF32Sr<vector<f16, 8>, vector<i32, 2>> {
+    Doc "Scale and convert packed vector<f16, 8> to vector<i32, 2> by the exponent part of `scale`, using `seed` for stochastic rounding (gfx1250+).";
+  }
+  op cvt.scalef32.sr.pk8.bf8.f32 from CvtScaleF32Sr<vector<f32, 8>, vector<i32, 2>> {
+    Doc "Scale and convert packed vector<f32, 8> to vector<i32, 2> by the exponent part of `scale`, using `seed` for stochastic rounding (gfx1250+).";
+  }
+  op cvt.scalef32.sr.pk8.fp4.bf16 from CvtScaleF32Sr<vector<bf16, 8>, i32> {
+    Doc "Scale and convert packed vector<bf16, 8> to i32 by the exponent part of `scale`, using `seed` for stochastic rounding (gfx1250+).";
+  }
+  op cvt.scalef32.sr.pk8.fp4.f16 from CvtScaleF32Sr<vector<f16, 8>, i32> {
+    Doc "Scale and convert packed vector<f16, 8> to i32 by the exponent part of `scale`, using `seed` for stochastic rounding (gfx1250+).";
+  }
+  op cvt.scalef32.sr.pk8.fp4.f32 from CvtScaleF32Sr<vector<f32, 8>, i32> {
+    Doc "Scale and convert packed vector<f32, 8> to i32 by the exponent part of `scale`, using `seed` for stochastic rounding (gfx1250+).";
+  }
+  op cvt.scalef32.sr.pk8.fp8.bf16 from CvtScaleF32Sr<vector<bf16, 8>, vector<i32, 2>> {
+    Doc "Scale and convert packed vector<bf16, 8> to vector<i32, 2> by the exponent part of `scale`, using `seed` for stochastic rounding (gfx1250+).";
+  }
+  op cvt.scalef32.sr.pk8.fp8.f16 from CvtScaleF32Sr<vector<f16, 8>, vector<i32, 2>> {
+    Doc "Scale and convert packed vector<f16, 8> to vector<i32, 2> by the exponent part of `scale`, using `seed` for stochastic rounding (gfx1250+).";
+  }
+  op cvt.scalef32.sr.pk8.fp8.f32 from CvtScaleF32Sr<vector<f32, 8>, vector<i32, 2>> {
+    Doc "Scale and convert packed vector<f32, 8> to vector<i32, 2> by the exponent part of `scale`, using `seed` for stochastic rounding (gfx1250+).";
+  }
+  op cvt.scalef32.2xpk16.bf6.f32 from CvtScalef32TwoPk16<vector<i32, 6>> {
+    Doc "Scale two vector<16xf32> operands (logically concatenated) by the exponent part of `scale` and convert them to vector<i32, 6> (gfx1250+).";
+  }
+  op cvt.scalef32.2xpk16.fp6.f32 from CvtScalef32TwoPk16<vector<i32, 6>> {
+    Doc "Scale two vector<16xf32> operands (logically concatenated) by the exponent part of `scale` and convert them to vector<i32, 6> (gfx1250+).";
+  }
+  op cvt.scalef32.f16.bf8 from CvtScalef32ToF16 {
+    Doc "Scale the byte selected by `srcSelIndex` from `src` by the exponent part of `scale`, convert it to f16 and insert it at `dstLoHiSel` of `oldVdst` (gfx1250+).";
+  }
+  op cvt.scalef32.f16.fp8 from CvtScalef32ToF16 {
+    Doc "Scale the byte selected by `srcSelIndex` from `src` by the exponent part of `scale`, convert it to f16 and insert it at `dstLoHiSel` of `oldVdst` (gfx1250+).";
+  }
+  op cvt.scalef32.f32.bf8 from CvtScalef32FromPacked<f32> {
+    Doc "Scale the packed value selected by `srcSelIndex` from `src` by the exponent part of `scale` and convert it to f32 (gfx1250+).";
+  }
+  op cvt.scalef32.f32.fp8 from CvtScalef32FromPacked<f32> {
+    Doc "Scale the packed value selected by `srcSelIndex` from `src` by the exponent part of `scale` and convert it to f32 (gfx1250+).";
+  }
+  op cvt.scalef32.pk.bf16.fp4 from CvtScalef32FromPacked<vector<bf16, 2>> {
+    Doc "Scale the packed value selected by `srcSelIndex` from `src` by the exponent part of `scale` and convert it to vector<bf16, 2> (gfx1250+).";
+  }
+  op cvt.scalef32.pk.f16.fp4 from CvtScalef32FromPacked<vector<f16, 2>> {
+    Doc "Scale the packed value selected by `srcSelIndex` from `src` by the exponent part of `scale` and convert it to vector<f16, 2> (gfx1250+).";
+  }
+  op cvt.scalef32.pk.f32.fp4 from CvtScalef32FromPacked<vector<f32, 2>> {
+    Doc "Scale the packed value selected by `srcSelIndex` from `src` by the exponent part of `scale` and convert it to vector<f32, 2> (gfx1250+).";
+  }
+  op cvt.scalef32.pk.bf16.bf8 from CvtScalef32PkToVec<vector<bf16, 2>> {
+    Doc "Scale the two packed low-precision values selected by `srcLoHiSel` from `src` by the exponent part of `scale` and convert them to vector<bf16, 2> (gfx1250+).";
+  }
+  op cvt.scalef32.pk.bf16.fp8 from CvtScalef32PkToVec<vector<bf16, 2>> {
+    Doc "Scale the two packed low-precision values selected by `srcLoHiSel` from `src` by the exponent part of `scale` and convert them to vector<bf16, 2> (gfx1250+).";
+  }
+  op cvt.scalef32.pk.f16.bf8 from CvtScalef32PkToVec<vector<f16, 2>> {
+    Doc "Scale the two packed low-precision values selected by `srcLoHiSel` from `src` by the exponent part of `scale` and convert them to vector<f16, 2> (gfx1250+).";
+  }
+  op cvt.scalef32.pk.f16.fp8 from CvtScalef32PkToVec<vector<f16, 2>> {
+    Doc "Scale the two packed low-precision values selected by `srcLoHiSel` from `src` by the exponent part of `scale` and convert them to vector<f16, 2> (gfx1250+).";
+  }
+  op cvt.scalef32.pk.f32.bf8 from CvtScalef32PkToVec<vector<f32, 2>> {
+    Doc "Scale the two packed low-precision values selected by `srcLoHiSel` from `src` by the exponent part of `scale` and convert them to vector<f32, 2> (gfx1250+).";
+  }
+  op cvt.scalef32.pk.f32.fp8 from CvtScalef32PkToVec<vector<f32, 2>> {
+    Doc "Scale the two packed low-precision values selected by `srcLoHiSel` from `src` by the exponent part of `scale` and convert them to vector<f32, 2> (gfx1250+).";
+  }
+  op cvt.scalef32.pk.bf8.bf16 from CvtScalef32PkFromVec2<vector<bf16, 2>> {
+    Doc "Scale two vector<bf16, 2> values in `src0` by the exponent part of `scale`, convert them to two low-precision bytes and insert them at `dstLoHiSel` of `oldVdst` (gfx1250+).";
+  }
+  op cvt.scalef32.pk.bf8.f16 from CvtScalef32PkFromVec2<vector<f16, 2>> {
+    Doc "Scale two vector<f16, 2> values in `src0` by the exponent part of `scale`, convert them to two low-precision bytes and insert them at `dstLoHiSel` of `oldVdst` (gfx1250+).";
+  }
+  op cvt.scalef32.pk.fp8.bf16 from CvtScalef32PkFromVec2<vector<bf16, 2>> {
+    Doc "Scale two vector<bf16, 2> values in `src0` by the exponent part of `scale`, convert them to two low-precision bytes and insert them at `dstLoHiSel` of `oldVdst` (gfx1250+).";
+  }
+  op cvt.scalef32.pk.fp8.f16 from CvtScalef32PkFromVec2<vector<f16, 2>> {
+    Doc "Scale two vector<f16, 2> values in `src0` by the exponent part of `scale`, convert them to two low-precision bytes and insert them at `dstLoHiSel` of `oldVdst` (gfx1250+).";
+  }
+  op cvt.scalef32.pk.bf8.f32 from CvtScalef32PkFromTwoF32<vector<i16, 2>, vector<i16, 2>> {
+    Doc "Scale `src0` and `src1` by the exponent part of `scale`, convert them to two packed low-precision bytes and insert them at `dstLoHiSel` of `oldVdst` (gfx1250+).";
+  }
+  op cvt.scalef32.pk.fp8.f32 from CvtScalef32PkFromTwoF32<vector<i16, 2>, vector<i16, 2>> {
+    Doc "Scale `src0` and `src1` by the exponent part of `scale`, convert them to two packed low-precision bytes and insert them at `dstLoHiSel` of `oldVdst` (gfx1250+).";
+  }
+  op cvt.scalef32.sr.bf8.bf16 from CvtScalef32SrToByte<bf16> {
+    Doc "Convert `src0` (bf16) to a low-precision byte with `seed` stochastic rounding, dividing by the exponent part of `scale`, and replace byte `dstSelIndex` of `oldVdst` (gfx1250+).";
+  }
+  op cvt.scalef32.sr.bf8.f16 from CvtScalef32SrToByte<f16> {
+    Doc "Convert `src0` (f16) to a low-precision byte with `seed` stochastic rounding, dividing by the exponent part of `scale`, and replace byte `dstSelIndex` of `oldVdst` (gfx1250+).";
+  }
+  op cvt.scalef32.sr.bf8.f32 from CvtScalef32SrToByte<f32> {
+    Doc "Convert `src0` (f32) to a low-precision byte with `seed` stochastic rounding, dividing by the exponent part of `scale`, and replace byte `dstSelIndex` of `oldVdst` (gfx1250+).";
+  }
+  op cvt.scalef32.sr.fp8.bf16 from CvtScalef32SrToByte<bf16> {
+    Doc "Convert `src0` (bf16) to a low-precision byte with `seed` stochastic rounding, dividing by the exponent part of `scale`, and replace byte `dstSelIndex` of `oldVdst` (gfx1250+).";
+  }
+  op cvt.scalef32.sr.fp8.f16 from CvtScalef32SrToByte<f16> {
+    Doc "Convert `src0` (f16) to a low-precision byte with `seed` stochastic rounding, dividing by the exponent part of `scale`, and replace byte `dstSelIndex` of `oldVdst` (gfx1250+).";
+  }
+  op cvt.scalef32.sr.fp8.f32 from CvtScalef32SrToByte<f32> {
+    Doc "Convert `src0` (f32) to a low-precision byte with `seed` stochastic rounding, dividing by the exponent part of `scale`, and replace byte `dstSelIndex` of `oldVdst` (gfx1250+).";
+  }
+  op cvt.scalef32.pk.fp4.bf16 from CvtScalef32PkFp4<vector<bf16, 2>> {
+    Doc "Scale two vector<bf16, 2> values in `src` by the exponent part of `scale`, convert them to packed fp4 and replace byte `dstSelIndex` of `oldVdst` (gfx1250+).";
+  }
+  op cvt.scalef32.pk.fp4.f16 from CvtScalef32PkFp4<vector<f16, 2>> {
+    Doc "Scale two vector<f16, 2> values in `src` by the exponent part of `scale`, convert them to packed fp4 and replace byte `dstSelIndex` of `oldVdst` (gfx1250+).";
+  }
+  op cvt.scalef32.sr.pk.fp4.bf16 from CvtScalef32SrPkFp4<vector<bf16, 2>> {
+    Doc "Scale two vector<bf16, 2> values in `src` by the exponent part of `scale`, convert them to packed fp4 with `seed` stochastic rounding and replace byte `dstSelIndex` of `oldVdst` (gfx1250+).";
+  }
+  op cvt.scalef32.sr.pk.fp4.f16 from CvtScalef32SrPkFp4<vector<f16, 2>> {
+    Doc "Scale two vector<f16, 2> values in `src` by the exponent part of `scale`, convert them to packed fp4 with `seed` stochastic rounding and replace byte `dstSelIndex` of `oldVdst` (gfx1250+).";
+  }
+  op cvt.scalef32.sr.pk.fp4.f32 from CvtScalef32SrPkFp4<vector<f32, 2>> {
+    Doc "Scale two vector<f32, 2> values in `src` by the exponent part of `scale`, convert them to packed fp4 with `seed` stochastic rounding and replace byte `dstSelIndex` of `oldVdst` (gfx1250+).";
+  }
+  op fmed3 {
+    Doc "Median of three floating-point values using the hardware V_MED3 instruction; src0, src1, src2 and the result share one lane type.";
+    Operands   (src0: lane, src1: lane, src2: lane);
+    Results    (res: lane);
+    Properties [pure, same_type(res, src0), same_type(src0, src1), same_type(src1, src2)];
+    Assembly   { src0 "," src1 "," src2 attr-dict ":" type(res) }
+  }
+  op tanh from MathOp {
+    Doc "Hardware approximation of tanh; prefer arith/math/llvm unless the small precision loss is acceptable.";
+  }
+  op sin from MathOp {
+    Doc "Hardware approximation of sin; prefer arith/math/llvm unless the small precision loss is acceptable.";
+  }
+  op cos from MathOp {
+    Doc "Hardware approximation of cos; prefer arith/math/llvm unless the small precision loss is acceptable.";
+  }
+  op rcp from MathOp {
+    Doc "Hardware approximation of rcp; prefer arith/math/llvm unless the small precision loss is acceptable.";
+  }
+  op exp from MathOp {
+    Doc "Hardware approximation of exp; prefer arith/math/llvm unless the small precision loss is acceptable.";
+  }
+  op exp2 from MathOp {
+    Doc "Hardware approximation of exp2; prefer arith/math/llvm unless the small precision loss is acceptable.";
+  }
+  op log from MathOp {
+    Doc "Hardware approximation of log; prefer arith/math/llvm unless the small precision loss is acceptable.";
+  }
+  op sqrt from MathOp {
+    Doc "Hardware approximation of sqrt; prefer arith/math/llvm unless the small precision loss is acceptable.";
+  }
+  op rsq from MathOp {
+    Doc "Hardware approximation of rsq; prefer arith/math/llvm unless the small precision loss is acceptable.";
+  }
+}
