@@ -74,7 +74,7 @@
 | [23-corpus-round-eight.md](23-corpus-round-eight.md) | 第八轮：三条恒真检查修成会失败、覆盖审计量出 258 个缺失 op 并补账、带引号的 `name`、schema 名全局解析缺陷 |
 | [24-escape-licenses.md](24-escape-licenses.md) | 逃逸点契约：断言与描述分离、五通道许可证、设计规则 E0–E10（封闭集/单通道/可证伪/实参即范围/不组合/有期限/不带语义/家族软名/覆盖收口/守卫可缺失）、范围细则 S1–S10、L0–L12 与 33 例 selftest、三条缺口关闭（`ref`/`oilist<sep>`/`else`）、分方言预算账本 |
 | [25-definition-audit.md](25-definition-audit.md) | 定义层契约：四元组（范围/形状/证据/预算）、四通道（块/Custom/Generic/Modeled+脊）、D0–D14、category 封闭词表（rename/cxx-type/cxx-enum/builtin/constraint/borrowed-enum）、符号级见证、modeled 扁脊与 12/4 预算、覆盖与健全性分离（287 声明；367 未声明 = 204 unreferenced + 163 substituted，0 unaccounted） |
-| [26-single-dialect-statements.md](26-single-dialect-statements.md) | 单方言语句文法：只描述 arith 的文本、56 个助记符 / 8 类语句、18 条语料事实、五个外来槽位、与定义层文法的复杂度对比、`arith-grammar.y` + 参考词法器 + 24 例自检 |
+| [26-single-dialect-statements.md](26-single-dialect-statements.md) | 单方言语句文法：只描述 arith 的文本、56 个助记符 / 8 类语句、18 条语料事实、五个外来槽位、三层逃逸点与边界归属、与定义层文法的复杂度对比、`arith-grammar.y` + 参考词法器 + 24 例自检 |
 
 ## 一页结论
 
