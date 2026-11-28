@@ -1,9 +1,9 @@
 # MLIR 源码分析：文本解析器与 TableGen 声明层
 
-本目录有两个主题：
+本目录有三个主题：
 
 - **A. 文本解析**（01–09）：`mlir/lib/AsmParser/` 如何把 MLIR 文本变成内存中的 IR。
-- **B. 声明层**（10–23）：`mlir/**/*.td` 如何通过 `include` 组成 ODS 依赖图，
+- **B. 声明层**（10–25）：`mlir/**/*.td` 如何通过 `include` 组成 ODS 依赖图，
   这张图如何经 `mlir-tblgen` 变成 `.inc` 再进入 C++，寄生在 TD 语法里的
   ODS 语义结构是什么样子（13 章给出两门可编译的语义文法），如果只描述
   方言领域本身、不描述代码生成这门定义语言应该长什么样（14 章），以及
@@ -27,16 +27,23 @@
   `else` 只打字符串、`oilist` 分隔符显式），审计层逐位比对钩子实参（L3b），
   缺口登记成有期限、可销账的债。三条缺口在同一轮被三条产生式关掉，
   语料到 50 个方言、2777 个 op、0 个 open 缺口。
+- **C. 单方言文本**（26）：把前提换掉之后，"一个方言自己的文本"是什么文法——
+  arith 的 56 个助记符落成 8 类语句（助记符是引导词、形状是产生式），
+  `assemblyFormat` 的内容就是语句，别的方言当注释；2922 条语句与 2930 个
+  语句头逐文件对账（26 章，`arith-grammar.y` + `tools/arith-lex.c`）。
 
 - 分析基线：worktree `/home/ubuntu/llvm/trees/pr-ctpop`，分支 `research/mlir`。
-  01–09 基于 `5f7f36636abe`；10–24 基于 `53a80edfeb2e`（2026-11-27）。
+  01–09 基于 `5f7f36636abe`；10–24 基于 `53a80edfeb2e`（2026-11-27）；
+  25–26 基于 `fc717f92328d`（2026-11-28）。
 - 所有 `file:line` 引用均以对应提交为准；上游演进后行号可能漂移，函数名相对稳定。
 - 01–09 的范围以 `mlir/lib/AsmParser/` 为中心；为解释边界，少量引用
   `mlir/include/mlir/Parser/Parser.h`、`mlir/include/mlir/AsmParser/*`、
   `mlir/include/mlir/IR/OpImplementation.h` 与 `mlir/lib/Parser/Parser.cpp`。
-- 10–24 的范围是 `mlir/include`、`mlir/lib`、`mlir/python` 下的 412 个 `.td`
+- 10–25 的范围是 `mlir/include`、`mlir/lib`、`mlir/python` 下的 412 个 `.td`
   （不含 `mlir/test`、`mlir/examples`、`mlir/unittests`）；14 章的样例在
-  `sketch/`，15–24 章的语料在 `corpus/`，v1 归档在 `design-first-v1/`。
+  `sketch/`，15–25 章的语料在 `corpus/`，v1 归档在 `design-first-v1/`。
+- 26 章反过来只看 `mlir/test/Dialect/Arith/*.mlir` 与
+  `mlir/include/mlir/Dialect/Arith/IR/ArithOps.td`、`mlir/lib/Dialect/Arith/IR/ArithOps.cpp`。
 
 ## 章节
 
@@ -67,6 +74,7 @@
 | [23-corpus-round-eight.md](23-corpus-round-eight.md) | 第八轮：三条恒真检查修成会失败、覆盖审计量出 258 个缺失 op 并补账、带引号的 `name`、schema 名全局解析缺陷 |
 | [24-escape-licenses.md](24-escape-licenses.md) | 逃逸点契约：断言与描述分离、五通道许可证、设计规则 E0–E10（封闭集/单通道/可证伪/实参即范围/不组合/有期限/不带语义/家族软名/覆盖收口/守卫可缺失）、范围细则 S1–S10、L0–L12 与 33 例 selftest、三条缺口关闭（`ref`/`oilist<sep>`/`else`）、分方言预算账本 |
 | [25-definition-audit.md](25-definition-audit.md) | 定义层契约：四元组（范围/形状/证据/预算）、四通道（块/Custom/Generic/Modeled+脊）、D0–D14、category 封闭词表（rename/cxx-type/cxx-enum/builtin/constraint/borrowed-enum）、符号级见证、modeled 扁脊与 12/4 预算、覆盖与健全性分离（287 声明；367 未声明 = 204 unreferenced + 163 substituted，0 unaccounted） |
+| [26-single-dialect-statements.md](26-single-dialect-statements.md) | 单方言语句文法：只描述 arith 的文本、56 个助记符 / 8 类语句、18 条语料事实、五个外来槽位、与定义层文法的复杂度对比、`arith-grammar.y` + 参考词法器 + 24 例自检 |
 
 ## 一页结论
 
@@ -198,6 +206,12 @@
     同名静默解析会掩盖拼写错误；R7 的判据要改（22 章）。
 42. **Custom 的正当理由只剩缺省/派生文本**：`undef`、公共类型、由位宽导出的
     次数；其余 Custom 都应先问“缺哪个元素”（22 章）。
+43. **只描述一个方言时，复杂度塌一个量级**：arith 56 个助记符是 8 条语句产生式
+    （助记符=关键字、形状=类），186 行、0 冲突；`dialect-grammar.y` 的 62 个
+    非终结符来自 50 个方言的形状分歧，不是来自 op 的数量（26 章）。
+44. **“没丢语句”要比“没报错”更强的检查**：逐文件对账语句头数 = 语句数 +
+    诊断数，一上线就抓到两个词法器把 region 体当槽位吞掉的 bug（12 条），
+    而“0 意外失败”对此完全无感（26 章）。
 
 ## A 部分：`mlir/lib/AsmParser/` 文件职责
 
@@ -269,6 +283,10 @@
 | `tools/escape-audit.py` | 逃逸点许可证审计：L0–L12 + 规范化 N1（`enum($x)`）、tblgen 逐 op 证据、预算硬上限；L3d 查本地标签的子句关键字，L4 的 scope 是封闭词表，L10 查块覆盖与家族软名，L11 查守卫可缺失，L12 拒绝定义层指令；缺 `LLVM_TBLGEN` 或查不到上游记录即失败 |
 | `tools/def-audit.py` | 定义层审计：D0–D14；通道与上游一致、参数全覆盖、enum 逐项一致、`params` 全量规则、modeled 符号级见证与扁平脊、12/4 预算、定义块钩子上游存在；`--coverage` 把未声明记录分成 unreferenced / substituted / unaccounted 三类（unaccounted 非空、或有 substituted 却无头部 `/// 定义层范围:` 注记即失败），alias 目标与 ledger 行不计欠账，`--selftest` 23 例 |
 | `tools/def-exceptions.tsv` | 定义层逃逸账本：7 列（dialect/kind/corpus/upstream/witness/category/reason），34 行 = 3 rename + 31 modeled（20 cxx-type、4 borrowed-enum、3 builtin、2 cxx-enum、2 constraint） |
+| `26-single-dialect-statements.md` | 单方言文法的结论章：模型（助记符=关键字、形状=产生式）、8 类语句、18 条事实、外来槽位、custom/generic 两通道、诚实边界 |
+| `arith-grammar.y` | 只描述 arith 文本的语句文法（186 行、22 个非终结符、8 类语句，bison 0 冲突） |
+| `tools/arith-lex.c` | 参考词法器 + 驱动：56 条引导词表、五个外来槽位、`brace_is_dict`、语句序列（"其余当注释"） |
+| `tools/arith-check.py` | 语料对账（语句头 = 语句 + 诊断，逐文件）+ 24 例自测；抓到过 12 条被吞语句 |
 | `tools/fact-glossary.tsv` | 事实词表：41 核心 + 20 本地（含 owner 与释义），新词未登记即失败 |
 | `tools/gap-registry.tsv` | 表达力缺口登记：4 个名字 / 9 个 op，见证集合必须与语料一致 |
 | `tools/hook-registry.tsv` | 上游找不到同名 `custom<>` 的本地钩子标签及理由 |
