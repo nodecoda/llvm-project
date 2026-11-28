@@ -476,6 +476,18 @@ let assemblyFormat = "$lhs `,` $rhs (`overflow` `` $overflowFlags^)?
 （`FormatGen.h:169`：`Literal` / `String` / `Variable` / `Whitespace` /
 `Directive` / `Optional`）。所以它是"字段值里的另一门语言"——本章把它单列。
 
+这门语言有两个性质，决定了它和"真逃逸"的分工：
+
+1. **封闭**。词汇表固定为 16 个指令词（`FormatGen.h:58-76`），方言只能**实例化**
+   它，不能新增指令——加一条要改 tblgen。所以"各方言按这个语法定义自己的文本"
+   是成立的，但**解释权在 tblgen，不在方言**：同一个 `attr-dict` 在所有方言里
+   含义相同，方言提供的只是变量绑定（该 op 有哪些 operand/result/attr）。
+2. **只管语法，不管语义**。`assemblyFormat` 说的全是"文本长什么样"，一个字都
+   不说 op 做什么；语义的逃逸是另一组口子——`CPred<"...">`（类型约束里的 C++
+   表达式）、`hasVerifier` / `hasFolder` / `hasCanonicalizer` /
+   `extraClassDeclaration`。两组口子分开记账：格式逃逸放弃的是**检查**，
+   语义逃逸放弃的是**领域事实的声明性**。
+
 ### 5.2 token 表
 
 来自 `FormatGen.h:40-82`：
