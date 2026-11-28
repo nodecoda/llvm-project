@@ -31,10 +31,13 @@
   arith 的 56 个助记符落成 8 类语句（助记符是引导词、形状是产生式），
   `assemblyFormat` 的内容就是语句，别的方言当注释；2922 条语句与 2930 个
   语句头逐文件对账（26 章，`arith-grammar.y` + `tools/arith-lex.c`）。
+- **D. 学习路线**（27）：以 arith 为载体练到精通：56 个 op 的语义族谱、
+  三种 NaN、除法四个方向、poison 规则、变换与降级地图；6 阶段计划每阶段带
+  可检验的通关判据，18 道自测题与 7 个动手实验（27 章）。
 
 - 分析基线：worktree `/home/ubuntu/llvm/trees/pr-ctpop`，分支 `research/mlir`。
   01–09 基于 `5f7f36636abe`；10–24 基于 `53a80edfeb2e`（2026-11-27）；
-  25–26 基于 `fc717f92328d`（2026-11-28）。
+  25–27 基于 `fc717f92328d`（2026-11-28）。
 - 所有 `file:line` 引用均以对应提交为准；上游演进后行号可能漂移，函数名相对稳定。
 - 01–09 的范围以 `mlir/lib/AsmParser/` 为中心；为解释边界，少量引用
   `mlir/include/mlir/Parser/Parser.h`、`mlir/include/mlir/AsmParser/*`、
@@ -75,6 +78,7 @@
 | [24-escape-licenses.md](24-escape-licenses.md) | 逃逸点契约：断言与描述分离、五通道许可证、设计规则 E0–E10（封闭集/单通道/可证伪/实参即范围/不组合/有期限/不带语义/家族软名/覆盖收口/守卫可缺失）、范围细则 S1–S10、L0–L12 与 33 例 selftest、三条缺口关闭（`ref`/`oilist<sep>`/`else`）、分方言预算账本 |
 | [25-definition-audit.md](25-definition-audit.md) | 定义层契约：四元组（范围/形状/证据/预算）、四通道（块/Custom/Generic/Modeled+脊）、D0–D14、category 封闭词表（rename/cxx-type/cxx-enum/builtin/constraint/borrowed-enum）、符号级见证、modeled 扁脊与 12/4 预算、覆盖与健全性分离（287 声明；367 未声明 = 204 unreferenced + 163 substituted，0 unaccounted） |
 | [26-single-dialect-statements.md](26-single-dialect-statements.md) | 单方言语句文法：只描述 arith 的文本、56 个助记符 / 8 类语句、18 条语料事实、五个外来槽位、三层逃逸点与边界归属、与定义层文法的复杂度对比、`arith-grammar.y` + 参考词法器 + 24 例自检 |
+| [27-arith-mastery.md](27-arith-mastery.md) | arith 精通路线：56 op 的语义族谱、三种 NaN、除法四方向、poison 规则、变换/降级地图、6 阶段计划（含通关判据）、18 道自测、7 个实验 |
 
 ## 一页结论
 
